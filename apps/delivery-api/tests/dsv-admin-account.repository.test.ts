@@ -15,6 +15,7 @@ type Account = {
   lastAuthenticatedAt: Date | null;
   lockedUntil: Date | null;
   loginId: string;
+  mustChangePassword: boolean;
   passwordHash: string;
   passwordSalt: string;
   previousPasswordHash: string | null;
@@ -43,6 +44,7 @@ describe('PrismaDsvAdminAccountRepository', () => {
     expect(identity).toMatchObject({
       accountId: bootstrap.accountId,
       displayName: '운영 관리자',
+      mustChangePassword: false,
       scopes: dsvAdminScopes,
     });
     expect(identity.activeSessionId).toMatch(/^[0-9a-f-]{36}$/u);
@@ -121,15 +123,20 @@ describe('PrismaDsvAdminAccountRepository', () => {
     expect(created.account).toMatchObject({
       displayName: 'DSV 운영 관리자',
       loginId: 'dsv-admin',
+      mustChangePassword: true,
       scopes: dsvOperatorScopes,
       status: 'ACTIVE',
     });
     expect(created.account).not.toHaveProperty('passwordHash');
-    expect(await repository.authenticate({ loginId: 'dsv-admin', password: created.temporaryPassword })).not.toBeNull();
+    expect(await repository.authenticate({ loginId: 'dsv-admin', password: created.temporaryPassword })).toMatchObject({
+      mustChangePassword: true,
+      scopes: ['dsv:session:read'],
+    });
     expect(await repository.list()).toHaveLength(1);
 
     const reset = await repository.resetPassword({ accountId: created.account.id });
     expect(reset.temporaryPassword).not.toBe(created.temporaryPassword);
+    expect(reset.account.mustChangePassword).toBe(true);
     expect(await repository.authenticate({ loginId: 'dsv-admin', password: created.temporaryPassword })).toBeNull();
     expect(await repository.authenticate({ loginId: 'dsv-admin', password: reset.temporaryPassword })).not.toBeNull();
 
@@ -172,6 +179,7 @@ function createPrisma(): {
         lastAuthenticatedAt: null,
         lockedUntil: null,
         loginId: data.loginId ?? '',
+        mustChangePassword: data.mustChangePassword ?? false,
         passwordHash: data.passwordHash ?? '',
         passwordSalt: data.passwordSalt ?? '',
         previousPasswordHash: data.previousPasswordHash ?? null,

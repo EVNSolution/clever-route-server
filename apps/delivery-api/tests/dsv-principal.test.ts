@@ -68,6 +68,19 @@ describe('DSV principal authorization', () => {
     }
   });
 
+  test('limits temporary-password administrators to credential-session access', () => {
+    const principal = createDsvAdminPrincipal({
+      mustChangePassword: true,
+      scopes: ['dsv:session:read', 'dsv:control:read'],
+      shopId: 'shop-1',
+    });
+
+    expect(principal.mustChangePassword).toBe(true);
+    expect(principal.scopes).toEqual(['dsv:session:read']);
+    expect(() => requireDsvScopes(principal, ['dsv:session:read'])).not.toThrow();
+    expect(() => requireDsvScopes(principal, ['dsv:control:read'])).toThrow(DsvForbiddenError);
+  });
+
   test('ACTIVE CustomerAccount status grants CUSTOMER_USER scope from the canonical customerId and shopId', () => {
     const principal = createDsvCustomerUserPrincipalFromAccount({
       account: {

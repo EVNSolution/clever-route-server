@@ -69,6 +69,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
     expect(mapDsvV1SessionPrincipal({
       actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       displayName: '운영 관리자',
+      mustChangePassword: true,
       principalType: 'DSV_ADMIN',
       scopes: ['dsv:session:read'],
       shopId: 'shop-1',
@@ -76,6 +77,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       csrfToken: 'csrf-2',
       displayName: '운영 관리자',
+      mustChangePassword: true,
       principalType: 'DSV_ADMIN',
       scopes: ['dsv:session:read'],
       shopId: 'shop-1',

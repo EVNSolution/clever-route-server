@@ -953,6 +953,7 @@ model DsvAdminAccount {
   passwordSalt         String                @db.Text
   previousPasswordHash String?               @db.Text
   previousPasswordSalt String?               @db.Text
+  mustChangePassword   Boolean               @default(false)
   status               DsvAdminAccountStatus @default(ACTIVE)
   scopes               String[]              @default([])
   tokenVersion         Int                   @default(0)

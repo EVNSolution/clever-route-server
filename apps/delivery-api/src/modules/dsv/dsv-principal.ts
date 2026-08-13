@@ -40,6 +40,7 @@ type DsvPrincipalBase = {
 export type DsvAdminPrincipal = DsvPrincipalBase & {
   actorId?: string;
   displayName?: string;
+  mustChangePassword?: boolean;
   principalType: 'DSV_ADMIN';
   shopDomain?: string;
 };
@@ -120,6 +121,7 @@ export class DsvForbiddenError extends Error {
 export function createDsvAdminPrincipal(input: {
   actorId?: string;
   displayName?: string;
+  mustChangePassword?: boolean;
   scopes?: readonly DsvScope[];
   shopDomain?: string;
   shopId: string;
@@ -127,8 +129,9 @@ export function createDsvAdminPrincipal(input: {
   return {
     actorId: input.actorId ?? 'legacy-env-admin',
     ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+    ...(input.mustChangePassword === undefined ? {} : { mustChangePassword: input.mustChangePassword }),
     principalType: 'DSV_ADMIN',
-    scopes: input.scopes ?? dsvAdminScopes,
+    scopes: input.mustChangePassword === true ? ['dsv:session:read'] : input.scopes ?? dsvAdminScopes,
     ...(input.shopDomain === undefined ? {} : { shopDomain: input.shopDomain }),
     shopId: input.shopId,
   };

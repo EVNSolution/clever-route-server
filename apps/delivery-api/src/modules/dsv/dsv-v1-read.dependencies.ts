@@ -190,6 +190,7 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
     return createDsvAdminPrincipal({
       actorId: account.accountId,
       ...(account.displayName === undefined ? {} : { displayName: account.displayName }),
+      mustChangePassword: account.mustChangePassword,
       scopes: account.scopes,
       shopDomain: shop.shopDomain,
       shopId: shop.id,

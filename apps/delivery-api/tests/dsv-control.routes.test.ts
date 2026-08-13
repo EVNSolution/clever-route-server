@@ -232,6 +232,7 @@ describe('DSV control routes', () => {
       lastAuthenticatedAt: null,
       lockedUntil: null,
       loginId: 'dsv-admin',
+      mustChangePassword: true,
       scopes: dsvAdminScopes,
       status: 'ACTIVE' as const,
       updatedAt: new Date('2026-08-09T01:00:00.000Z'),
@@ -2104,6 +2105,7 @@ async function createHarness(overrides: {
             accountId: adminAccountId,
             activeSessionId: adminSessionId,
             displayName: '운영 관리자',
+            mustChangePassword: false,
             scopes: dsvAdminScopes,
           }
         : null)),
@@ -2114,6 +2116,7 @@ async function createHarness(overrides: {
             accountId: adminAccountId,
             activeSessionId: adminSessionId,
             displayName: '운영 관리자',
+            mustChangePassword: false,
             scopes: dsvAdminScopes,
           }
         : null)),
@@ -2153,6 +2156,7 @@ function createOperatorInvitationService(): DsvAdminOperatorInvitationService & 
     id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     lastAuthenticatedAt: new Date('2026-08-09T01:00:00.000Z'),
     loginId: 'operator-login',
+    mustChangePassword: false,
     scopes: dsvOperatorScopes,
     status: 'ACTIVE' as const,
     updatedAt: new Date('2026-08-09T01:00:00.000Z'),

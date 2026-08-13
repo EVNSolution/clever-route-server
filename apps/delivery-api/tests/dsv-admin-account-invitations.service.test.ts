@@ -166,6 +166,13 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       password: 'PreviousStrongPassw0rd!',
     })).rejects.toMatchObject({ code: 'PASSWORD_REUSED' });
 
+    harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(account({ ...existing, mustChangePassword: true }));
+    await expect(harness.service.updateCredentials({
+      accountId,
+      currentPassword: 'KnownStrongPassw0rd!',
+      loginId: 'operator-new',
+    })).rejects.toMatchObject({ code: 'PASSWORD_CHANGE_REQUIRED' });
+
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
     harness.prisma.dsvAdminAccount.findUnique.mockResolvedValueOnce(null);
     harness.prisma.dsvAdminAccount.update.mockResolvedValueOnce(account({ activeSessionId, loginId: 'operator-new', scopes: dsvAdminScopes }));
@@ -181,6 +188,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
         activeSessionId: string;
         passwordHash?: string;
         passwordSalt?: string;
+        mustChangePassword?: boolean;
         previousPasswordHash?: string;
         previousPasswordSalt?: string;
       };
@@ -188,6 +196,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
     expect(updateCalls[0]?.[0].data.activeSessionId).toEqual(expect.any(String));
     expect(updateCalls[0]?.[0].data.passwordHash).toEqual(expect.any(String));
     expect(updateCalls[0]?.[0].data.passwordSalt).toEqual(expect.any(String));
+    expect(updateCalls.at(-1)?.[0].data.mustChangePassword).toBe(false);
     expect(updateCalls[0]?.[0].data.previousPasswordHash).toBe(existing.passwordHash);
     expect(updateCalls[0]?.[0].data.previousPasswordSalt).toBe(existing.passwordSalt);
   });
@@ -309,6 +318,7 @@ function account(overrides: Record<string, unknown> = {}) {
     id: accountId,
     lastAuthenticatedAt: new Date('2026-08-09T01:00:00.000Z'),
     loginId: 'operator-login',
+    mustChangePassword: false,
     passwordHash: 'hash',
     passwordSalt: 'salt',
     previousPasswordHash: null,

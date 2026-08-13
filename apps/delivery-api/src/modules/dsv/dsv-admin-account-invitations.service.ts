@@ -30,6 +30,7 @@ export type DsvAdminOperatorAccountMetadata = {
   id: string;
   lastAuthenticatedAt: Date | null;
   loginId: string;
+  mustChangePassword: boolean;
   scopes: readonly DsvScope[];
   status: 'ACTIVE' | 'DISABLED';
   updatedAt: Date;
@@ -203,6 +204,9 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
     )) {
       throw new DsvAdminOperatorInvitationError('PASSWORD_REUSED', '현재 비밀번호와 직전 비밀번호는 다시 사용할 수 없습니다');
     }
+    if (existing.mustChangePassword && input.password === undefined) {
+      throw new DsvAdminOperatorInvitationError('PASSWORD_CHANGE_REQUIRED', '새 비밀번호를 설정해야 합니다');
+    }
     if (loginId !== undefined && loginId !== existing.loginId) {
       const loginAccount = await this.prisma.dsvAdminAccount.findUnique({ select: { id: true }, where: { loginId } });
       if (loginAccount !== null && loginAccount.id !== existing.id) {
@@ -228,6 +232,7 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
         lockedUntil: null,
         ...(loginId === undefined ? {} : { loginId }),
         ...passwordCredentials,
+        ...(input.password === undefined ? {} : { mustChangePassword: false }),
       },
       where: { id: existing.id },
     }).catch((error: unknown) => {
@@ -301,6 +306,7 @@ export class DsvAdminOperatorInvitationError extends Error {
       | 'INVITATION_LINK_NOT_CONFIGURED'
       | 'LOGIN_ID_EXISTS'
       | 'NOT_FOUND'
+      | 'PASSWORD_CHANGE_REQUIRED'
       | 'PASSWORD_REUSED'
       | 'WEAK_PASSWORD',
     message: string,
@@ -336,6 +342,7 @@ function accountMetadata(account: {
   id: string;
   lastAuthenticatedAt: Date | null;
   loginId: string;
+  mustChangePassword: boolean;
   scopes: string[];
   status: 'ACTIVE' | 'DISABLED';
   updatedAt: Date;
@@ -351,6 +358,7 @@ function accountMetadata(account: {
     id: account.id,
     lastAuthenticatedAt: account.lastAuthenticatedAt,
     loginId: account.loginId,
+    mustChangePassword: account.mustChangePassword,
     scopes,
     status: account.status,
     updatedAt: account.updatedAt,

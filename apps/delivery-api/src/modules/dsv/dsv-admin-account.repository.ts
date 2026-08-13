@@ -14,6 +14,7 @@ export type DsvAdminAccountIdentity = {
   accountId: string;
   activeSessionId: string;
   displayName?: string;
+  mustChangePassword: boolean;
   scopes: readonly DsvScope[];
 };
 
@@ -33,6 +34,7 @@ export type DsvAdminAccountSummary = {
   lastAuthenticatedAt: Date | null;
   lockedUntil: Date | null;
   loginId: string;
+  mustChangePassword: boolean;
   scopes: readonly DsvScope[];
   status: DsvAdminAccountStatus;
   updatedAt: Date;
@@ -190,6 +192,7 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         lockedUntil: null,
         passwordHash,
         passwordSalt,
+        mustChangePassword: false,
         previousPasswordHash: existing.passwordHash,
         previousPasswordSalt: existing.passwordSalt,
         scopes: [...dsvAdminScopes],
@@ -225,6 +228,7 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
       data: {
         ...(displayName === null ? {} : { displayName }),
         loginId,
+        mustChangePassword: true,
         passwordHash,
         passwordSalt,
         scopes: [...dsvOperatorScopes],
@@ -248,6 +252,7 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         lockedUntil: null,
         passwordHash,
         passwordSalt,
+        mustChangePassword: true,
         previousPasswordHash: existing.passwordHash,
         previousPasswordSalt: existing.passwordSalt,
         status: 'ACTIVE',
@@ -297,6 +302,7 @@ function identity(
     activeSessionId: string | null;
     displayName: string | null;
     id: string;
+    mustChangePassword: boolean;
   },
   scopes: readonly DsvScope[],
 ): DsvAdminAccountIdentity {
@@ -305,7 +311,8 @@ function identity(
     accountId: account.id,
     activeSessionId: account.activeSessionId,
     ...(account.displayName === null ? {} : { displayName: account.displayName }),
-    scopes,
+    mustChangePassword: account.mustChangePassword,
+    scopes: account.mustChangePassword ? ['dsv:session:read'] : scopes,
   };
 }
 
@@ -318,6 +325,7 @@ function summary(
     lastAuthenticatedAt: Date | null;
     lockedUntil: Date | null;
     loginId: string;
+    mustChangePassword: boolean;
     status: DsvAdminAccountStatus;
     updatedAt: Date;
   },
@@ -331,6 +339,7 @@ function summary(
     lastAuthenticatedAt: account.lastAuthenticatedAt,
     lockedUntil: account.lockedUntil,
     loginId: account.loginId,
+    mustChangePassword: account.mustChangePassword,
     scopes,
     status: account.status,
     updatedAt: account.updatedAt,

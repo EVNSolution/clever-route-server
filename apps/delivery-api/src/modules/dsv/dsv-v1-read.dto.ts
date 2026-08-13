@@ -82,6 +82,7 @@ export type DsvV1SessionPrincipalInput = {
   customerId?: string | null;
   displayName?: string | null;
   driverId?: string | null;
+  mustChangePassword?: boolean;
   principalType: DsvV1PrincipalType;
   scopes: readonly string[];
   shopId: string;
@@ -93,6 +94,7 @@ export type DsvV1SessionDto = {
   customerId?: string;
   displayName?: string;
   driverId?: string;
+  mustChangePassword?: boolean;
   principalType: DsvV1PrincipalType;
   scopes: string[];
   shopId: string;
@@ -585,6 +587,7 @@ export function mapDsvV1SessionPrincipal(
     ...(input.customerId === undefined || input.customerId === null ? {} : { customerId: input.customerId }),
     ...(input.displayName === undefined || input.displayName === null ? {} : { displayName: input.displayName }),
     ...(input.driverId === undefined || input.driverId === null ? {} : { driverId: input.driverId }),
+    ...(input.mustChangePassword === undefined ? {} : { mustChangePassword: input.mustChangePassword }),
     principalType: input.principalType,
     scopes: [...input.scopes],
     shopId: input.shopId,
