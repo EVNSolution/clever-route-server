@@ -151,8 +151,10 @@ assert repo_expected.count('20260723170000_add_customer_notification_outbox_work
 assert repo_expected.count('20260803090000_orders_async_sync') == 1, repo_expected
 assert repo_expected.count('20260804020000_orders_pagination_selection') == 1, repo_expected
 assert repo_expected.count('20260806150000_add_routes_app_release_registry') == 1, repo_expected
-assert len(repo_expected) == 72, repo_expected
-assert repo_expected[-1] == '20260806150000_add_routes_app_release_registry', repo_expected[-1]
+assert repo_expected.count('20260813130000_add_dsv_password_history') == 1, repo_expected
+assert repo_expected.count('20260813140000_require_dsv_admin_password_change') == 1, repo_expected
+assert len(repo_expected) == 78, repo_expected
+assert repo_expected[-1] == '20260813140000_require_dsv_admin_password_change', repo_expected[-1]
 assert repo_expected.count('20260722233000_align_migration_history_to_schema') == 1, repo_expected
 
 empty = status_from_history([], expected)
