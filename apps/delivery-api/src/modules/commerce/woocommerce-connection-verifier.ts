@@ -5,9 +5,9 @@ import { isIP } from 'node:net';
 
 import { normalizeCommerceSiteUrl } from './commerce-connection.repository.js';
 
-type ResolveHostAddresses = (hostname: string) => Promise<string[]>;
+export type ResolveHostAddresses = (hostname: string) => Promise<string[]>;
 type LookupAddressFamily = 4 | 6;
-type PinnedLookup = (
+export type PinnedLookup = (
   hostname: string,
   options: { all?: boolean; family?: number },
   callback: (error: NodeJS.ErrnoException | null, address: string | Array<{ address: string; family: LookupAddressFamily }>, family?: LookupAddressFamily) => void
