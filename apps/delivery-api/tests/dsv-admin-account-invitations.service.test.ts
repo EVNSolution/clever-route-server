@@ -197,6 +197,14 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
     })).rejects.toMatchObject({ code: 'PASSWORD_CHANGE_REQUIRED' });
 
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
+    await expect(harness.service.updateCredentials({
+      accountId,
+      currentPassword: 'KnownStrongPassw0rd!',
+      loginId: existing.loginId,
+      ...credentialContext,
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+    harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
     harness.prisma.dsvAdminAccount.findUnique.mockResolvedValueOnce(null);
     harness.prisma.dsvAdminAccount.update.mockResolvedValueOnce(account({ activeSessionId, loginId: 'operator-new', scopes: dsvAdminScopes }));
 

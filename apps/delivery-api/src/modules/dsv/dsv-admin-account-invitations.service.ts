@@ -239,6 +239,9 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
     if (existing.mustChangePassword && input.password === undefined) {
       throw new DsvAdminOperatorInvitationError('PASSWORD_CHANGE_REQUIRED', '새 비밀번호를 설정해야 합니다');
     }
+    if (loginId === existing.loginId && input.password === undefined) {
+      throw new DsvAdminOperatorInvitationError('BAD_REQUEST', 'A different loginId or password is required');
+    }
     if (loginId !== undefined && loginId !== existing.loginId) {
       const loginAccount = await this.prisma.dsvAdminAccount.findUnique({ select: { id: true }, where: { loginId } });
       if (loginAccount !== null && loginAccount.id !== existing.id) {
