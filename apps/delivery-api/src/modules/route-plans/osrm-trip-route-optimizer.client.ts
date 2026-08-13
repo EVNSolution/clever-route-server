@@ -6,8 +6,9 @@ import type {
   RouteOptimizationResult,
   RouteOptimizationService,
 } from './route-optimization.types.js';
+import { normalizeRouteEngineBaseUrl } from './route-engine-coverage.js';
 
-type FetchLike = (url: string, init: { method: 'GET'; signal?: AbortSignal }) => Promise<Response>;
+type FetchLike = (url: string, init: { method: 'GET'; redirect: 'error'; signal?: AbortSignal }) => Promise<Response>;
 
 export type OsrmTripRouteOptimizationClientOptions = {
   baseUrl: string;
@@ -40,7 +41,7 @@ export class OsrmTripRouteOptimizationClient implements RouteOptimizationService
   private readonly timeoutMs: number;
 
   constructor(options: OsrmTripRouteOptimizationClientOptions) {
-    this.baseUrl = normalizeBaseUrl(options.baseUrl);
+    this.baseUrl = normalizeRouteEngineBaseUrl('OSRM', options.baseUrl);
     this.fetch = options.fetch ?? fetch;
     this.timeoutMs = normalizeTimeoutMs(options.timeoutMs);
   }
@@ -67,6 +68,7 @@ export class OsrmTripRouteOptimizationClient implements RouteOptimizationService
     try {
       response = await this.fetch(buildTripUrl(this.baseUrl, input.detail, request.coordinates), {
         method: 'GET',
+        redirect: 'error',
         signal: controller.signal,
       });
     } catch (error) {
@@ -188,12 +190,6 @@ function buildOptimizationResult(
       shopifyOrderGid: stop.shopifyOrderGid,
     })),
   };
-}
-
-function normalizeBaseUrl(value: string): string {
-  const normalized = value.trim().replace(/\/+$/u, '');
-  if (normalized === '') throw new Error('OSRM Trip base URL must be configured explicitly.');
-  return normalized;
 }
 
 function normalizeTimeoutMs(value: number | undefined): number {

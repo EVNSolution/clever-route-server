@@ -3,6 +3,19 @@ import type { RouteGeometryProvider } from './route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from './route-plan.types.js';
 
 export type RouteEngineCoverage = 'ontario' | 'korea';
+export type RouteEngineProvider = 'OSRM' | 'VROOM';
+
+const ALLOWED_ROUTE_ENGINE_ORIGINS: Record<RouteEngineProvider, ReadonlySet<string>> = {
+  OSRM: new Set([
+    'http://osrm-ontario:5000',
+    'http://osrm-korea:5000',
+    'https://router.project-osrm.org',
+  ]),
+  VROOM: new Set([
+    'http://vroom:3000',
+    'http://vroom-korea:3000',
+  ]),
+};
 
 export type RouteEngineCoverageDefinition = {
   bounds: {
@@ -198,17 +211,44 @@ export function readConfiguredCoverageBaseUrls(
   for (const coverage of ROUTE_ENGINE_COVERAGE_ORDER) {
     const explicit = readCoverageBaseUrl(env, prefix, coverage);
     if (explicit !== undefined) {
-      urls[coverage] = explicit;
+      urls[coverage] = normalizeRouteEngineBaseUrl(prefix, explicit);
     }
   }
 
   const legacy = readOptional(prefix === 'OSRM' ? env.OSRM_BASE_URL : env.VROOM_BASE_URL);
   if (legacy !== undefined) {
     const legacyCoverage = readLegacyRouteEngineCoverage(env);
-    urls[legacyCoverage] ??= legacy;
+    urls[legacyCoverage] ??= normalizeRouteEngineBaseUrl(prefix, legacy);
   }
 
   return urls;
+}
+
+export function normalizeRouteEngineBaseUrl(provider: RouteEngineProvider, value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === '') {
+    throw new Error(`${provider} base URL must be configured explicitly.`);
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error(`${provider} base URL is invalid.`);
+  }
+
+  if (
+    url.username !== ''
+    || url.password !== ''
+    || url.pathname !== '/'
+    || url.search !== ''
+    || url.hash !== ''
+    || !ALLOWED_ROUTE_ENGINE_ORIGINS[provider].has(url.origin)
+  ) {
+    throw new Error(`${provider} base URL is not an approved route engine origin.`);
+  }
+
+  return url.origin;
 }
 
 export function selectCoverageForRoutePlan(

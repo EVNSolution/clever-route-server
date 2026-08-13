@@ -5,7 +5,7 @@ import type { RoutePlanDetail } from '../src/modules/route-plans/route-plan.type
 
 type TestFetchLike = (
   url: string,
-  init: { method: 'GET'; signal?: AbortSignal },
+  init: { method: 'GET'; redirect: 'error'; signal?: AbortSignal },
 ) => Promise<Response>;
 
 const detail = {
@@ -46,7 +46,7 @@ describe('OsrmTripRouteOptimizationClient', () => {
       ],
     }));
     const client = new OsrmTripRouteOptimizationClient({
-      baseUrl: 'https://router.example.test/',
+      baseUrl: 'https://router.project-osrm.org/',
       fetch,
     });
 
@@ -55,8 +55,9 @@ describe('OsrmTripRouteOptimizationClient', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = fetch.mock.calls[0] ?? [];
     expect(init?.method).toBe('GET');
+    expect(init?.redirect).toBe('error');
     expect(url).toBe(
-      'https://router.example.test/trip/v1/driving/126.7052,37.4563;126.978,37.5665;127.0473,37.5172?roundtrip=false&source=first&destination=any&overview=false&steps=false',
+      'https://router.project-osrm.org/trip/v1/driving/126.7052,37.4563;126.978,37.5665;127.0473,37.5172?roundtrip=false&source=first&destination=any&overview=false&steps=false',
     );
     expect(result).toEqual({
       missingCoordinateStops: 1,
@@ -79,7 +80,7 @@ describe('OsrmTripRouteOptimizationClient', () => {
         { trips_index: 0, waypoint_index: 2 },
       ],
     }));
-    const client = new OsrmTripRouteOptimizationClient({ baseUrl: 'https://router.example.test', fetch });
+    const client = new OsrmTripRouteOptimizationClient({ baseUrl: 'https://router.project-osrm.org', fetch });
 
     await client.optimizeStopOrder({
       detail: { ...detail, routePlan: { ...detail.routePlan, routeEndMode: 'RETURN_TO_DEPOT' } },
@@ -93,7 +94,7 @@ describe('OsrmTripRouteOptimizationClient', () => {
     const fetch = vi.fn<TestFetchLike>().mockResolvedValue(
       Response.json({ code: 'NoTrips', message: 'No trip found' }, { status: 400 }),
     );
-    const client = new OsrmTripRouteOptimizationClient({ baseUrl: 'https://router.example.test', fetch });
+    const client = new OsrmTripRouteOptimizationClient({ baseUrl: 'https://router.project-osrm.org', fetch });
 
     const outcome = await client.optimizeStopOrderWithDiagnostics({
       detail,
@@ -108,7 +109,7 @@ describe('OsrmTripRouteOptimizationClient', () => {
 
   test('does not call OSRM without a depot or at least two routable stops', async () => {
     const fetch = vi.fn<TestFetchLike>();
-    const client = new OsrmTripRouteOptimizationClient({ baseUrl: 'https://router.example.test', fetch });
+    const client = new OsrmTripRouteOptimizationClient({ baseUrl: 'https://router.project-osrm.org', fetch });
 
     const outcome = await client.optimizeStopOrderWithDiagnostics({
       detail: {

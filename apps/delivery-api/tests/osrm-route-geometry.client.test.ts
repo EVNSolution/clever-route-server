@@ -34,7 +34,7 @@ describe('OsrmRouteGeometryProvider', () => {
 
   test('requests a full GeoJSON route through depot and ordered stops', async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json(routeOkPayload()));
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
     const result = await provider.buildRoute({
       routePlan: detail.routePlan,
@@ -45,8 +45,8 @@ describe('OsrmRouteGeometryProvider', () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?overview=full&geometries=geojson&steps=false',
-      expect.objectContaining({ method: 'GET' })
+      'http://osrm-ontario:5000/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?overview=full&geometries=geojson&steps=false',
+      expect.objectContaining({ method: 'GET', redirect: 'error' })
     );
     const requestedUrl = String(fetch.mock.calls[0]?.[0] ?? '');
     expect(requestedUrl).toContain('/route/v1/driving/');
@@ -113,7 +113,7 @@ describe('OsrmRouteGeometryProvider', () => {
         ]
       })
     );
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
     const result = await provider.buildRoute({
       routePlan: detail.routePlan,
@@ -164,7 +164,7 @@ describe('OsrmRouteGeometryProvider', () => {
         { distance: 0, location: [-79.3831, 43.6531], name: 'Depot Road' }
       ]
     }));
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
     const result = await provider.buildRoute({
       ...detail,
@@ -172,7 +172,7 @@ describe('OsrmRouteGeometryProvider', () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561;-79.3832,43.6532?overview=full&geometries=geojson&steps=false',
+      'http://osrm-ontario:5000/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561;-79.3832,43.6532?overview=full&geometries=geojson&steps=false',
       expect.objectContaining({ method: 'GET' })
     );
     expect(result.routeStopPoints).toHaveLength(2);
@@ -201,7 +201,7 @@ describe('OsrmRouteGeometryProvider', () => {
         ]
       })
     );
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
     const result = await provider.buildRoute({
       routePlan: detail.routePlan,
@@ -239,7 +239,7 @@ describe('OsrmRouteGeometryProvider', () => {
 
   test('rejects when OSRM fails', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 502 }));
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
     await expect(provider.buildRoute({
       routePlan: detail.routePlan,
@@ -260,7 +260,7 @@ describe('OsrmRouteGeometryProvider', () => {
 
     for (const payload of invalidPayloads) {
       const fetch = vi.fn().mockResolvedValue(Response.json(payload));
-      const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+      const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
       await expect(provider.buildRoute(detail)).rejects.toThrow(/OSRM route response/u);
     }
@@ -268,7 +268,7 @@ describe('OsrmRouteGeometryProvider', () => {
 
   test('rejects when the OSRM provider rejects', async () => {
     const fetch = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
     await expect(provider.buildRoute(detail)).rejects.toThrow('connect ECONNREFUSED');
   });
@@ -281,7 +281,7 @@ describe('OsrmRouteGeometryProvider', () => {
           init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
         })
     );
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch, timeoutMs: 1 });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch, timeoutMs: 1 });
 
     try {
       const resultPromise = provider.buildRoute(detail);
@@ -296,7 +296,7 @@ describe('OsrmRouteGeometryProvider', () => {
 
   test('returns null geometry and no stop points instead of calling OSRM when there are fewer than two routable points', async () => {
     const fetch = vi.fn();
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
     const result = await provider.buildRoute({
       routePlan: { ...detail.routePlan, depot: { latitude: null, longitude: null } },
@@ -361,7 +361,7 @@ function legacyRouteGeometry(): unknown {
 describe('OsrmRouteGeometryProvider legacy compatibility', () => {
   test('keeps returning only route geometry through the legacy method', async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json(legacyRouteGeometry()));
-    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
 
     const geometry = await provider.buildRouteGeometry({
       routePlan: detail.routePlan,
