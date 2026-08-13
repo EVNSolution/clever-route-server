@@ -17,6 +17,9 @@ path = pathlib.Path(sys.argv[1])
 payload = json.loads(path.read_text())
 command = payload['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-edge-caddy-deploy.sh').read_text()
+caddyfile = pathlib.Path('infra/caddy/Caddyfile').read_text()
+dsv_block = caddyfile.split('dsv.cleversystem.ai {', 1)[1].split('clever-route-app-dev.cleversystem.ai {', 1)[0]
+shopify_blocks = caddyfile.split('clever-route-app-dev.cleversystem.ai {', 1)[1]
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 write_idx = command.index('cat "$candidate" > "$CADDYFILE"')
 container_validate_idx = command.index('if ! docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" exec -T caddy caddy validate --config /etc/caddy/Caddyfile')
@@ -29,16 +32,35 @@ checks = {
     'updates_caddyfile_in_place_before_validate': write_idx < container_validate_idx and 'install -m 0644 "$candidate" "$CADDYFILE"' not in command,
     'validates_container_before_reload': container_validate_idx < container_reload_idx,
     'reloads_not_restarts': 'exec -T caddy caddy reload --config /etc/caddy/Caddyfile' in command and 'restart caddy' not in command,
-    'rollback_restores_backup': 'cp "$backup" "$CADDYFILE"' in command and 'restore_caddy' in command and 'reload failed' in command and 'route-api smoke failed' in command and 'route-legacy smoke failed' in command and 'shopify-prod smoke failed' in command and 'shopify-legacy-admin smoke failed' in command,
+    'rollback_restores_backup': 'cp "$backup" "$CADDYFILE"' in command and 'restore_caddy' in command and 'reload failed' in command and 'route-api smoke failed' in command and 'route-legacy smoke failed' in command and 'dsv security header smoke failed' in command and 'shopify-prod smoke failed' in command and 'shopify-legacy-admin smoke failed' in command,
     'smoke_hosts': all(url in command for url in [
         'https://clever-route-api.cleversystem.ai/healthz',
         'https://clever-route.cleversystem.ai/healthz',
+        'https://dsv.cleversystem.ai/',
         'https://clever-route-app-dev.cleversystem.ai/auth/login',
         'https://clever-route-app.cleversystem.ai/auth/login',
         'https://clever-admin.cleversystem.ai/auth/login',
         'https://clever-kfood-app.cleversystem.ai/auth/login',
     ]),
     'does_not_touch_runtime_lane': 'clever-route-api-migrate' not in command and 'force-recreate clever-route-api' not in command and 'route-ops-web-static' not in command,
+    'dsv_static_security_headers': all(value in dsv_block for value in [
+        "default-src 'self'",
+        "connect-src 'self' https://tiles.openfreemap.org",
+        "script-src 'self'",
+        "frame-ancestors 'none'",
+        'Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"',
+        'Referrer-Policy "no-referrer"',
+        'X-Content-Type-Options "nosniff"',
+        'X-Frame-Options "DENY"',
+    ]),
+    'dsv_script_policy_stays_strict': "script-src 'self';" in dsv_block and "'unsafe-eval'" not in dsv_block and "script-src 'self' 'unsafe-inline'" not in dsv_block,
+    'shopify_headers_unchanged': all(header not in shopify_blocks for header in [
+        'Content-Security-Policy',
+        'Permissions-Policy',
+        'Referrer-Policy',
+        'X-Content-Type-Options',
+        'X-Frame-Options',
+    ]),
     'history_append': '"lane":"edge-caddy"' in command,
     'wrapper_no_publish_or_migration': '--publish' not in wrapper and 'DELIVERY_API_IMAGE' not in wrapper and 'ROUTE_OPS_WEB_STATIC_IMAGE' not in wrapper and 'clever-route-api-migrate' not in wrapper,
 }

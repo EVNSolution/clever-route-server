@@ -18,6 +18,7 @@ Current host blocks:
 ```text
 clever-route-api.cleversystem.ai      -> clever-route-api:3000
 clever-route.cleversystem.ai          -> clever-route-api:3000      [legacy Route API alias]
+dsv.cleversystem.ai                   -> clever-dsv-web:80           [same-origin /api/dsv -> clever-route-api:3000]
 clever-route-app.cleversystem.ai      -> clever-route-app:3000      [external Shopify compose, production]
 clever-route-app-dev.cleversystem.ai  -> clever-route-app-dev:3000  [external Shopify compose, dev]
 clever-admin.cleversystem.ai          -> clever-route-app:3000      [legacy Shopify production alias]
@@ -35,11 +36,16 @@ A real Edge Caddy deploy does this in order:
 5. Installs the candidate to `infra/caddy/Caddyfile`.
 6. Validates the live Caddy container config.
 7. Reloads Caddy in place; it does not restart the container.
-8. Public-smokes canonical and legacy Route API hosts plus Shopify prod/dev/K-food hosts.
+8. Public-smokes canonical and legacy Route API hosts, DSV security headers, and Shopify prod/dev/K-food hosts.
 9. Restores the backup and reloads Caddy if validation, reload, or smoke fails.
 10. Appends `.deploy/deploy-history.jsonl` with `lane=edge-caddy`.
 
 Dry-run stops after candidate validation and performs no ingress mutation.
+
+The DSV host owns its browser security policy at this edge. The policy applies only
+to static DSV responses, keeps the same-origin API and OpenFreeMap tile host available,
+and denies framing and unused browser capabilities. Shopify host blocks do not inherit
+these headers.
 
 ## Commands
 
