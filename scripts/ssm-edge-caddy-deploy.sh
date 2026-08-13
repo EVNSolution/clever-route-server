@@ -11,6 +11,7 @@ SERVICE_TAG_VALUE="${EDGE_CADDY_SSM_TAG_VALUE:-${ROUTE_OPS_SSM_TAG_VALUE:-clever
 COMMIT_SHA="$(git rev-parse --short=40 HEAD)"
 ROUTE_HEALTH_URL="${EDGE_CADDY_ROUTE_HEALTH_URL:-https://clever-route-api.cleversystem.ai/healthz}"
 LEGACY_ROUTE_HEALTH_URL="${EDGE_CADDY_LEGACY_ROUTE_HEALTH_URL:-https://clever-route.cleversystem.ai/healthz}"
+DSV_URL="${EDGE_CADDY_DSV_URL:-https://dsv.cleversystem.ai/}"
 SHOPIFY_DEV_URL="${EDGE_CADDY_SHOPIFY_DEV_URL:-https://clever-route-app-dev.cleversystem.ai/auth/login}"
 SHOPIFY_PROD_URL="${EDGE_CADDY_SHOPIFY_PROD_URL:-https://clever-route-app.cleversystem.ai/auth/login}"
 SHOPIFY_LEGACY_ADMIN_URL="${EDGE_CADDY_SHOPIFY_LEGACY_ADMIN_URL:-https://clever-admin.cleversystem.ai/auth/login}"
@@ -35,6 +36,7 @@ Env:
   APP_DIR                     default: /srv/clever-route-server
   COMPOSE_FILE                default: infra/compose/docker-compose.prod.yml
   CADDYFILE                   default: infra/caddy/Caddyfile
+  EDGE_CADDY_DSV_URL          default: https://dsv.cleversystem.ai/
   EDGE_CADDY_SKIP_SMOKE       set to 1 to skip public smoke checks after reload
 USAGE
 }
@@ -79,6 +81,7 @@ DRY_RUN=__DRY_RUN__
 SKIP_SMOKE=__SKIP_SMOKE__
 ROUTE_HEALTH_URL=__ROUTE_HEALTH_URL__
 LEGACY_ROUTE_HEALTH_URL=__LEGACY_ROUTE_HEALTH_URL__
+DSV_URL=__DSV_URL__
 SHOPIFY_DEV_URL=__SHOPIFY_DEV_URL__
 SHOPIFY_PROD_URL=__SHOPIFY_PROD_URL__
 SHOPIFY_LEGACY_ADMIN_URL=__SHOPIFY_LEGACY_ADMIN_URL__
@@ -133,9 +136,24 @@ smoke_status() {
   fi
   printf 'edge caddy smoke ok: %s %s status=%s\n' "$name" "$url" "$status"
 }
+smoke_dsv_security_headers() {
+  local headers=/tmp/edge-caddy-smoke-dsv.headers csp script_src frame_ancestors
+  if ! smoke_status dsv "$DSV_URL" 200 299; then return 1; fi
+  curl -fsS -D "$headers" -o /dev/null "$DSV_URL"
+  csp="$(grep -i '^content-security-policy:' "$headers" | head -n 1 | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//' || true)"
+  script_src="$(printf '%s' "$csp" | tr ';' '\n' | sed 's/^[[:space:]]*//' | grep '^script-src ' || true)"
+  frame_ancestors="$(printf '%s' "$csp" | tr ';' '\n' | sed 's/^[[:space:]]*//' | grep '^frame-ancestors ' || true)"
+  [ "$script_src" = "script-src 'self'" ] || { echo 'edge caddy smoke failed: dsv Content-Security-Policy allows an unexpected script source' >&2; return 1; }
+  [ "$frame_ancestors" = "frame-ancestors 'none'" ] || { echo 'edge caddy smoke failed: dsv Content-Security-Policy does not block framing' >&2; return 1; }
+  grep -Eqi '^permissions-policy:[[:space:]]*camera=\(\), geolocation=\(\), microphone=\(\), payment=\(\), usb=\(\)[[:space:]]*$' "$headers" || { echo 'edge caddy smoke failed: dsv Permissions-Policy is incomplete' >&2; return 1; }
+  grep -Eqi '^x-frame-options:[[:space:]]*DENY[[:space:]]*$' "$headers" || { echo 'edge caddy smoke failed: dsv X-Frame-Options is not DENY' >&2; return 1; }
+  grep -Eqi '^referrer-policy:[[:space:]]*no-referrer[[:space:]]*$' "$headers" || { echo 'edge caddy smoke failed: dsv Referrer-Policy is not no-referrer' >&2; return 1; }
+  grep -Eqi '^x-content-type-options:[[:space:]]*nosniff[[:space:]]*$' "$headers" || { echo 'edge caddy smoke failed: dsv X-Content-Type-Options is not nosniff' >&2; return 1; }
+}
 if [ "$SKIP_SMOKE" != "1" ]; then
   if ! smoke_status route-api "$ROUTE_HEALTH_URL" 200 299; then restore_caddy 'route-api smoke failed'; exit 1; fi
   if ! smoke_status route-legacy "$LEGACY_ROUTE_HEALTH_URL" 200 299; then restore_caddy 'route-legacy smoke failed'; exit 1; fi
+  if ! smoke_dsv_security_headers; then restore_caddy 'dsv security header smoke failed'; exit 1; fi
   if ! smoke_status shopify-dev "$SHOPIFY_DEV_URL" 200 499; then restore_caddy 'shopify-dev smoke failed'; exit 1; fi
   if ! smoke_status shopify-prod "$SHOPIFY_PROD_URL" 200 499; then restore_caddy 'shopify-prod smoke failed'; exit 1; fi
   if ! smoke_status shopify-legacy-admin "$SHOPIFY_LEGACY_ADMIN_URL" 200 499; then restore_caddy 'shopify-legacy-admin smoke failed'; exit 1; fi
@@ -163,6 +181,7 @@ replacements = {
     '__SKIP_SMOKE__': shlex.quote(os.environ['SKIP_SMOKE']),
     '__ROUTE_HEALTH_URL__': shlex.quote(os.environ['ROUTE_HEALTH_URL']),
     '__LEGACY_ROUTE_HEALTH_URL__': shlex.quote(os.environ['LEGACY_ROUTE_HEALTH_URL']),
+    '__DSV_URL__': shlex.quote(os.environ['DSV_URL']),
     '__SHOPIFY_DEV_URL__': shlex.quote(os.environ['SHOPIFY_DEV_URL']),
     '__SHOPIFY_PROD_URL__': shlex.quote(os.environ['SHOPIFY_PROD_URL']),
     '__SHOPIFY_LEGACY_ADMIN_URL__': shlex.quote(os.environ['SHOPIFY_LEGACY_ADMIN_URL']),
@@ -179,7 +198,7 @@ PY
 
 [ -f "$CADDYFILE" ] || fail "missing Caddyfile: $CADDYFILE"
 CADDYFILE_B64="$(base64 < "$CADDYFILE" | tr -d '\n')"
-export APP_DIR COMPOSE_FILE CADDYFILE COMPOSE_PROJECT COMMIT_SHA DRY_RUN SKIP_SMOKE ROUTE_HEALTH_URL LEGACY_ROUTE_HEALTH_URL SHOPIFY_DEV_URL SHOPIFY_PROD_URL SHOPIFY_LEGACY_ADMIN_URL SHOPIFY_KFOOD_URL CADDYFILE_B64
+export APP_DIR COMPOSE_FILE CADDYFILE COMPOSE_PROJECT COMMIT_SHA DRY_RUN SKIP_SMOKE ROUTE_HEALTH_URL LEGACY_ROUTE_HEALTH_URL DSV_URL SHOPIFY_DEV_URL SHOPIFY_PROD_URL SHOPIFY_LEGACY_ADMIN_URL SHOPIFY_KFOOD_URL CADDYFILE_B64
 parameters_path="$(mktemp /tmp/edge-caddy-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then

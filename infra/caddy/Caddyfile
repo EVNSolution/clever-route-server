@@ -41,6 +41,13 @@ dsv.cleversystem.ai {
 	}
 
 	handle {
+		header {
+			Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self' https://tiles.openfreemap.org; font-src 'self' data:; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; img-src 'self' data: blob: https://tiles.openfreemap.org; manifest-src 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:"
+			Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+			Referrer-Policy "no-referrer"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+		}
 		reverse_proxy clever-dsv-web:80 {
 			lb_try_duration 30s
 			lb_try_interval 500ms
