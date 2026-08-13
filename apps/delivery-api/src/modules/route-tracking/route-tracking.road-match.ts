@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 
 import {
   coordinateInCoverage,
+  normalizeRouteEngineBaseUrl,
   type RouteEngineCoverage,
 } from '../route-plans/route-engine-coverage.js';
 import { ROUTE_TRACKING_V1_POLICY } from './route-tracking.policy.js';
@@ -23,7 +24,7 @@ const MAX_OSRM_MATCH_POINTS = 80;
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
 const EARTH_RADIUS_METERS = 6_371_000;
 
-type FetchLike = (url: string, init: { method: 'GET'; signal?: AbortSignal }) => Promise<Response>;
+type FetchLike = (url: string, init: { method: 'GET'; redirect: 'error'; signal?: AbortSignal }) => Promise<Response>;
 
 export type RouteTrackingRoadMatchProvider = {
   match(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchedPathV1 | null>;
@@ -71,8 +72,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
   constructor(options: OsrmRouteTrackingRoadMatchProviderOptions) {
     this.baseUrls = Object.fromEntries(
       Object.entries(options.baseUrls)
-        .map(([coverage, baseUrl]) => [coverage, normalizeBaseUrl(baseUrl)])
-        .filter((entry): entry is [RouteEngineCoverage, string] => entry[1] !== null)
+        .map(([coverage, baseUrl]) => [coverage, normalizeRouteEngineBaseUrl('OSRM', baseUrl)])
     );
     this.fetch = options.fetch ?? fetch;
     this.gpsPrecisionMeters = normalizeGpsPrecision(options.gpsPrecisionMeters);
@@ -146,6 +146,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     try {
       response = await this.fetch(buildMatchUrl(baseUrl, chunk, this.gpsPrecisionMeters), {
         method: 'GET',
+        redirect: 'error',
         signal: controller.signal,
       });
     } catch {
@@ -541,11 +542,6 @@ function readText(value: unknown): string | null {
 
 function toJsonOrNull(value: unknown): Prisma.JsonObject | typeof Prisma.JsonNull {
   return value === null ? Prisma.JsonNull : value as Prisma.JsonObject;
-}
-
-function normalizeBaseUrl(value: string | undefined): string | null {
-  if (value === undefined || value.trim() === '') return null;
-  return value.trim().replace(/\/+$/u, '');
 }
 
 function normalizeGpsPrecision(value: number | undefined): number | null {

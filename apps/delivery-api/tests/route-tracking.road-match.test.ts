@@ -26,7 +26,7 @@ describe('route tracking road matching', () => {
       tracepoints: [{}, {}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example', ontario: 'https://osrm-ontario.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000', ontario: 'http://osrm-ontario:5000' },
       fetch,
     });
 
@@ -37,8 +37,13 @@ describe('route tracking road matching', () => {
     ]));
 
     expect(fetch).toHaveBeenCalledTimes(1);
-    const requestedUrl = String((fetch.mock.calls as unknown as Array<[string, { method: 'GET'; signal?: AbortSignal }]>)[0]![0]);
-    expect(requestedUrl).toContain('https://osrm-korea.example/match/v1/driving/');
+    const [requestedUrlValue, requestInit] = (fetch.mock.calls as unknown as Array<[
+      string,
+      { method: 'GET'; redirect: 'error'; signal?: AbortSignal },
+    ]>)[0]!;
+    const requestedUrl = String(requestedUrlValue);
+    expect(requestInit.redirect).toBe('error');
+    expect(requestedUrl).toContain('http://osrm-korea:5000/match/v1/driving/');
     expect(requestedUrl).toContain('overview=full');
     expect(requestedUrl).toContain('geometries=geojson');
     expect(requestedUrl).toContain('gaps=split');
@@ -73,7 +78,7 @@ describe('route tracking road matching', () => {
       tracepoints: [{}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
       gpsPrecisionMeters: 75,
     });
@@ -97,7 +102,7 @@ describe('route tracking road matching', () => {
       tracepoints: [{}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
     });
     const firstSegment = Array.from({ length: 81 }, (_, index) => [126.9 + index * 0.0001, 37.5] as [number, number]);
@@ -123,7 +128,7 @@ describe('route tracking road matching', () => {
       tracepoints: [{}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
       maxMatchPoints: 16,
     });
@@ -146,7 +151,7 @@ describe('route tracking road matching', () => {
       tracepoints: [{}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
       maxMatchPoints: 500,
     });
@@ -172,7 +177,7 @@ describe('route tracking road matching', () => {
       tracepoints: [{}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
     });
 
@@ -202,7 +207,7 @@ describe('route tracking road matching', () => {
       tracepoints: [{}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { ontario: 'https://osrm-ontario.example' },
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
       fetch,
     });
 
@@ -215,7 +220,7 @@ describe('route tracking road matching', () => {
   test('classifies OSRM transport failures as retryable without changing match null behavior', async () => {
     const fetch = vi.fn(() => Promise.reject(new Error('OSRM unavailable')));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
     });
 
@@ -229,7 +234,7 @@ describe('route tracking road matching', () => {
   test('classifies completed OSRM NoMatch responses as non-retryable', async () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ code: 'NoMatch' }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
     });
 
@@ -251,7 +256,7 @@ describe('route tracking road matching', () => {
       })))
       .mockRejectedValueOnce(new Error('OSRM unavailable'));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
     });
 
@@ -283,7 +288,7 @@ describe('route tracking road matching', () => {
       ],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
     });
 
@@ -314,7 +319,7 @@ describe('route tracking road matching', () => {
       tracepoints: [{}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { korea: 'https://osrm-korea.example', ontario: 'https://osrm-ontario.example' },
+      baseUrls: { korea: 'http://osrm-korea:5000', ontario: 'http://osrm-ontario:5000' },
       fetch,
     });
 

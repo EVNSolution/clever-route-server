@@ -46,6 +46,13 @@ Frontend and driver clients must never receive or call these internal URLs:
 - `vroom:3000`
 - `vroom-korea:3000`
 
+The delivery API accepts only these exact internal origins. Development may additionally use
+`https://router.project-osrm.org`. Route engine configuration with another scheme, hostname,
+port, credentials, path, query, or fragment is rejected before a request is made. OSRM and
+VROOM HTTP clients also reject redirects so an approved origin cannot redirect the API to an
+internal or metadata endpoint. Additions require a reviewed deployment-topology change; do not
+replace this origin check with client-IP pinning or a private-address blacklist.
+
 The bootstrap router state may expose coverage names only, for example:
 
 ```json

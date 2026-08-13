@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   CoverageAwareRouteGeometryProvider,
   CoverageAwareRouteOptimizationService,
+  normalizeRouteEngineBaseUrl,
   readConfiguredCoverageBaseUrls,
   readRouteEngineRegistrySummary,
   selectCoverageForRoutePlan,
@@ -15,6 +16,39 @@ type DiagnosticOptimizer = RouteOptimizationService & {
 };
 
 describe('route engine coverage registry', () => {
+  test('allows only reviewed route engine origins and normalizes a trailing slash', () => {
+    expect(normalizeRouteEngineBaseUrl('OSRM', 'http://osrm-ontario:5000/')).toBe('http://osrm-ontario:5000');
+    expect(normalizeRouteEngineBaseUrl('OSRM', 'http://osrm-korea:5000')).toBe('http://osrm-korea:5000');
+    expect(normalizeRouteEngineBaseUrl('OSRM', 'https://router.project-osrm.org/')).toBe('https://router.project-osrm.org');
+    expect(normalizeRouteEngineBaseUrl('VROOM', 'http://vroom:3000/')).toBe('http://vroom:3000');
+    expect(normalizeRouteEngineBaseUrl('VROOM', 'http://vroom-korea:3000')).toBe('http://vroom-korea:3000');
+  });
+
+  test.each([
+    'http://169.254.169.254',
+    'http://127.0.0.1:5000',
+    'http://osrm-korea:5001',
+    'http://user:secret@osrm-korea:5000',
+    'http://osrm-korea:5000/private',
+    'http://osrm-korea:5000?next=http://169.254.169.254',
+    'http://osrm-korea:5000#internal',
+  ])('rejects unapproved or decorated OSRM origin %s', (baseUrl) => {
+    expect(() => normalizeRouteEngineBaseUrl('OSRM', baseUrl)).toThrow(
+      'OSRM base URL is not an approved route engine origin.',
+    );
+  });
+
+  test('rejects malformed route engine URLs without echoing the configured value', () => {
+    const configuredValue = 'not-a-url-with-secret';
+
+    expect(() => normalizeRouteEngineBaseUrl('OSRM', configuredValue)).toThrow('OSRM base URL is invalid.');
+    try {
+      normalizeRouteEngineBaseUrl('OSRM', configuredValue);
+    } catch (error) {
+      expect(String(error)).not.toContain(configuredValue);
+    }
+  });
+
   test('selects Korea when every valid route point is in the Korea coverage bounds', () => {
     const selection = selectCoverageForRoutePlan(koreaDetail(), ['ontario', 'korea'], 'korea');
 

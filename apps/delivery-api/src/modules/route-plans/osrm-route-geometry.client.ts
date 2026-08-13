@@ -8,8 +8,9 @@ import type {
   RoutePlanSummary
 } from './route-plan.types.js';
 import type { RouteGeometryProvider } from './route-plan.service.js';
+import { normalizeRouteEngineBaseUrl } from './route-engine-coverage.js';
 
-type FetchLike = (url: string, init: { method: 'GET'; signal?: AbortSignal }) => Promise<Response>;
+type FetchLike = (url: string, init: { method: 'GET'; redirect: 'error'; signal?: AbortSignal }) => Promise<Response>;
 
 type OsrmRouteGeometryProviderOptions = {
   baseUrl: string;
@@ -38,7 +39,7 @@ export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
   private readonly timeoutMs: number;
 
   constructor(options: OsrmRouteGeometryProviderOptions) {
-    this.baseUrl = normalizeBaseUrl(options.baseUrl);
+    this.baseUrl = normalizeRouteEngineBaseUrl('OSRM', options.baseUrl);
     this.fetch = options.fetch ?? fetch;
     this.timeoutMs =
       typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
@@ -59,6 +60,7 @@ export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
     try {
       response = await this.fetch(buildRouteUrl(this.baseUrl, routePoints.map((point) => point.coordinate)), {
         method: 'GET',
+        redirect: 'error',
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -297,14 +299,6 @@ function emptyLeg(): OsrmLeg {
 
 function isOkOsrmPayload(payload: unknown): boolean {
   return objectOrNull(payload)?.code === 'Ok';
-}
-
-function normalizeBaseUrl(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed === '') {
-    throw new Error('OSRM base URL must be configured explicitly.');
-  }
-  return trimmed.replace(/\/+$/u, '');
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {

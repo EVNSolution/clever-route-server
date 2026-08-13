@@ -7,6 +7,7 @@ type TestFetchInit = {
   body: string;
   headers: Record<string, string>;
   method: 'POST';
+  redirect: 'error';
   signal?: AbortSignal;
 };
 type TestFetchLike = (url: string, init: TestFetchInit) => Promise<Response>;
@@ -39,7 +40,7 @@ const detail = {
 describe('VroomRouteOptimizationClient', () => {
   test('requires explicit VROOM base URL configuration', () => {
     expect(() => new VroomRouteOptimizationClient({ baseUrl: '' })).toThrow(
-      'VROOM_BASE_URL must be configured explicitly.',
+      'VROOM base URL must be configured explicitly.',
     );
   });
 
@@ -69,6 +70,7 @@ describe('VroomRouteOptimizationClient', () => {
     const [url, init] = fetchCall;
     expect(url).toBe('http://vroom:3000/');
     expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('error');
     expect(init.headers).toEqual({ Accept: 'application/json', 'Content-Type': 'application/json' });
     const requestBody = JSON.parse(init.body) as Record<string, unknown>;
     expect(requestBody).toEqual({
@@ -104,7 +106,7 @@ describe('VroomRouteOptimizationClient', () => {
         unassigned: [],
       }),
     );
-    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom', fetch });
+    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom:3000', fetch });
 
     const result = await client.optimizeStopOrder({
       detail: { ...detail, routePlan: { ...detail.routePlan, routeEndMode: 'RETURN_TO_DEPOT' } },
@@ -124,7 +126,7 @@ describe('VroomRouteOptimizationClient', () => {
         unassigned: [{ id: 2 }],
       }),
     );
-    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom', fetch });
+    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom:3000', fetch });
 
     const outcome = await client.optimizeStopOrderWithDiagnostics({ detail, shopDomain: 'tenant-a.example.test' });
 
@@ -143,7 +145,7 @@ describe('VroomRouteOptimizationClient', () => {
         unassigned: [],
       }),
     );
-    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom', fetch });
+    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom:3000', fetch });
 
     const outcome = await client.optimizeStopOrderWithDiagnostics({ detail, shopDomain: 'tenant-a.example.test' });
 
@@ -156,7 +158,7 @@ describe('VroomRouteOptimizationClient', () => {
 
   test('returns invalid-input diagnostics without calling VROOM when required depot coordinates are missing', async () => {
     const fetch = vi.fn<TestFetchLike>();
-    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom', fetch });
+    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom:3000', fetch });
 
     const outcome = await client.optimizeStopOrderWithDiagnostics({
       detail: { ...detail, routePlan: { ...detail.routePlan, depot: { latitude: null, longitude: null } } },
@@ -174,11 +176,11 @@ describe('VroomRouteOptimizationClient', () => {
     const timeoutFetch = vi.fn<TestFetchLike>().mockResolvedValue(new Response(null, { status: 504 }));
 
     const validationOutcome = await new VroomRouteOptimizationClient({
-      baseUrl: 'http://vroom',
+      baseUrl: 'http://vroom:3000',
       fetch: validationFetch,
     }).optimizeStopOrderWithDiagnostics({ detail, shopDomain: 'tenant-a.example.test' });
     const timeoutOutcome = await new VroomRouteOptimizationClient({
-      baseUrl: 'http://vroom',
+      baseUrl: 'http://vroom:3000',
       fetch: timeoutFetch,
     }).optimizeStopOrderWithDiagnostics({ detail, shopDomain: 'tenant-a.example.test' });
 

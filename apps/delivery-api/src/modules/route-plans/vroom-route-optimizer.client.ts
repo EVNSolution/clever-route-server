@@ -7,6 +7,7 @@ import type {
   RouteOptimizationResult,
   RouteOptimizationService,
 } from './route-optimization.types.js';
+import { normalizeRouteEngineBaseUrl } from './route-engine-coverage.js';
 
 type FetchLike = (
   url: string,
@@ -14,6 +15,7 @@ type FetchLike = (
     body: string;
     headers: Record<string, string>;
     method: 'POST';
+    redirect: 'error';
     signal?: AbortSignal;
   },
 ) => Promise<Response>;
@@ -66,7 +68,7 @@ export class VroomRouteOptimizationClient implements RouteOptimizationService {
   private readonly timeoutMs: number;
 
   constructor(options: VroomRouteOptimizationClientOptions) {
-    this.baseUrl = normalizeBaseUrl(options.baseUrl);
+    this.baseUrl = normalizeRouteEngineBaseUrl('VROOM', options.baseUrl);
     this.fetch = options.fetch ?? fetch;
     this.timeoutMs = normalizeTimeoutMs(options.timeoutMs);
   }
@@ -98,6 +100,7 @@ export class VroomRouteOptimizationClient implements RouteOptimizationService {
           'Content-Type': 'application/json',
         },
         method: 'POST',
+        redirect: 'error',
         signal: controller.signal,
       });
     } catch (error) {
@@ -223,14 +226,6 @@ function buildOptimizationResult(
       shopifyOrderGid: stop.shopifyOrderGid,
     })),
   };
-}
-
-function normalizeBaseUrl(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed === '') {
-    throw new Error('VROOM_BASE_URL must be configured explicitly.');
-  }
-  return trimmed.replace(/\/+$/u, '');
 }
 
 function normalizeTimeoutMs(value: number | undefined): number {
