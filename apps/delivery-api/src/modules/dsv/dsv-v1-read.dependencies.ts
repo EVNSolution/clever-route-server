@@ -155,7 +155,7 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
     if (adminSubject !== null && adminSubject.kind === 'account') {
       await this.adminAccounts.invalidateSession({
         accountId: adminSubject.accountId,
-        tokenVersion: adminSubject.tokenVersion,
+        activeSessionId: adminSubject.activeSessionId,
       });
       return;
     }
@@ -163,11 +163,11 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
     const customerSubject = parseCustomerSubject(subject.slice(customerSubjectPrefix.length));
     if (customerSubject === null) throw new DsvV1AuthenticationError();
     await this.prisma.customerAccount.updateMany({
-      data: { scopeVersion: { increment: 1 } },
+      data: { activeSessionId: null },
       where: {
+        activeSessionId: customerSubject.activeSessionId,
         id: customerSubject.accountId,
         issuer: 'CLEVER_DSV',
-        scopeVersion: customerSubject.scopeVersion,
         status: 'ACTIVE',
       },
     });
@@ -184,7 +184,7 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
     if (shop === null) throw new DsvV1AuthenticationError();
     const account = await this.adminAccounts.resolveSession({
       accountId: subject.accountId,
-      tokenVersion: subject.tokenVersion,
+      activeSessionId: subject.activeSessionId,
     });
     if (account === null) throw new DsvV1AuthenticationError();
     return createDsvAdminPrincipal({
@@ -196,7 +196,7 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
     });
   }
 
-  private async resolveCustomer(subject: { accountId: string; scopeVersion: number }): Promise<DsvPrincipal> {
+  private async resolveCustomer(subject: { accountId: string; activeSessionId: string }): Promise<DsvPrincipal> {
     const account = await this.prisma.customerAccount.findUnique({
       select: {
         customer: { select: { id: true, shopId: true } },
@@ -207,12 +207,12 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
         shopId: true,
         status: true,
         subject: true,
-        scopeVersion: true,
+        activeSessionId: true,
       },
       where: { id: subject.accountId },
     });
     if (account === null) throw new DsvV1AuthenticationError();
-    if (account.scopeVersion !== subject.scopeVersion) throw new DsvV1AuthenticationError();
+    if (account.activeSessionId !== subject.activeSessionId) throw new DsvV1AuthenticationError();
     if (account.status !== 'ACTIVE') throw new DsvV1ForbiddenError('DSV customer account is inactive');
     if (account.shop.id !== account.shopId || account.customer.id !== account.customerId || account.customer.shopId !== account.shopId) {
       throw new DsvV1ForbiddenError('DSV customer account scope is invalid');
@@ -225,13 +225,13 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
   }
 }
 
-function parseCustomerSubject(value: string): { accountId: string; scopeVersion: number } | null {
+function parseCustomerSubject(value: string): { accountId: string; activeSessionId: string } | null {
   const parts = value.split(':');
   const accountId = parts[0] ?? '';
   if (!uuidPattern.test(accountId) || parts.length !== 2) return null;
-  const scopeVersion = Number(parts[1]);
-  if (!Number.isInteger(scopeVersion) || scopeVersion < 0) return null;
-  return { accountId, scopeVersion };
+  const activeSessionId = parts[1] ?? '';
+  if (!uuidPattern.test(activeSessionId)) return null;
+  return { accountId, activeSessionId };
 }
 
 function readOptional(value: string | undefined): string | undefined {

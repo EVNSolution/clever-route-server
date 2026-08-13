@@ -31,8 +31,8 @@ export type DsvCustomerInviteMetadata = {
 
 export type DsvCustomerSessionIdentity = {
   accountId: string;
+  activeSessionId: string;
   customerId: string;
-  scopeVersion: number;
   shopDomain: string;
   shopId: string;
 };
@@ -186,7 +186,7 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     }
     const status = input.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE';
     const updated = await this.prisma.customerAccount.update({
-      data: { scopeVersion: { increment: 1 }, status },
+      data: { activeSessionId: null, status },
       include: latestSignupInviteInclude,
       where: { id: account.id },
     });
@@ -238,11 +238,11 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
       if (consumed.count !== 1) throw new DsvCustomerAccountServiceError('INVALID_TOKEN', 'Invitation token is invalid');
       const account = await tx.customerAccount.update({
         data: {
+          activeSessionId: randomUUID(),
           lastAuthenticatedAt: now,
           loginId,
           passwordHash,
           passwordSalt,
-          scopeVersion: { increment: 1 },
           status: 'ACTIVE',
         },
         where: { id: invite.accountId },
@@ -261,8 +261,8 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     });
     return {
       accountId: updated.id,
+      activeSessionId: requireActiveSessionId(updated.activeSessionId),
       customerId: updated.customerId,
-      scopeVersion: updated.scopeVersion,
       shopDomain: invite.shop.shopDomain,
       shopId: updated.shopId,
     };
@@ -290,8 +290,8 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     }
     const updated = await this.prisma.customerAccount.update({
       data: {
+        activeSessionId: randomUUID(),
         lastAuthenticatedAt: new Date(),
-        scopeVersion: { increment: 1 },
       },
       where: { id: account.id },
     });
@@ -306,8 +306,8 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     });
     return {
       accountId: updated.id,
+      activeSessionId: requireActiveSessionId(updated.activeSessionId),
       customerId: updated.customerId,
-      scopeVersion: updated.scopeVersion,
       shopDomain: account.shop.shopDomain,
       shopId: updated.shopId,
     };
@@ -509,8 +509,18 @@ export function loadDsvCustomerAccountWebPublicOrigin(value: string | undefined)
   return url.origin;
 }
 
-export function createCustomerSessionSubject(input: { accountId: string; scopeVersion: number }): string {
-  return `dsv-customer-account:${input.accountId}:${input.scopeVersion}`;
+export function createCustomerSessionSubject(input: { accountId: string; activeSessionId: string }): string {
+  if (!uuidPattern.test(input.accountId) || !uuidPattern.test(input.activeSessionId)) {
+    throw new Error('Invalid DSV customer session subject');
+  }
+  return `dsv-customer-account:${input.accountId}:${input.activeSessionId}`;
+}
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function requireActiveSessionId(value: string | null): string {
+  if (value === null) throw new Error('DSV customer account has no active session');
+  return value;
 }
 
 const latestSignupInviteInclude = {

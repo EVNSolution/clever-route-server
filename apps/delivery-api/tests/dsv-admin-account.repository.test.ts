@@ -7,6 +7,7 @@ import {
 import { dsvAdminScopes, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
 
 type Account = {
+  activeSessionId: string | null;
   createdAt: Date;
   displayName: string | null;
   failedLoginAttempts: number;
@@ -18,7 +19,6 @@ type Account = {
   passwordSalt: string;
   scopes: string[];
   status: 'ACTIVE' | 'DISABLED';
-  tokenVersion: number;
   updatedAt: Date;
 };
 
@@ -37,12 +37,13 @@ describe('PrismaDsvAdminAccountRepository', () => {
       loginId: 'operator',
       password: 'correct-password-2026',
     });
-    expect(identity).toEqual({
+    if (identity === null) throw new Error('session missing');
+    expect(identity).toMatchObject({
       accountId: bootstrap.accountId,
       displayName: '운영 관리자',
       scopes: dsvAdminScopes,
-      tokenVersion: 1,
     });
+    expect(identity.activeSessionId).toMatch(/^[0-9a-f-]{36}$/u);
     expect(fake.account?.lastAuthenticatedAt).toBeInstanceOf(Date);
   });
 
@@ -79,11 +80,13 @@ describe('PrismaDsvAdminAccountRepository', () => {
       resetExisting: true,
     });
     expect(reset.reset).toBe(true);
-    expect(await repository.resolveSession({ accountId: bootstrap.accountId, tokenVersion: 0 })).toBeNull();
-    expect(await repository.authenticate({
+    expect(fake.account?.activeSessionId).toBeNull();
+    const authenticated = await repository.authenticate({
       loginId: 'operator',
       password: 'replacement-password-2026',
-    })).toMatchObject({ accountId: bootstrap.accountId, tokenVersion: 2 });
+    });
+    expect(authenticated).toMatchObject({ accountId: bootstrap.accountId });
+    expect(authenticated?.activeSessionId).toMatch(/^[0-9a-f-]{36}$/u);
   });
 
   test('keeps only the latest successful login active and invalidates it on logout', async () => {
@@ -93,13 +96,13 @@ describe('PrismaDsvAdminAccountRepository', () => {
 
     const first = await repository.authenticate({ loginId: 'operator', password: 'correct-password-2026' });
     const second = await repository.authenticate({ loginId: 'operator', password: 'correct-password-2026' });
-    expect(first?.tokenVersion).toBe(1);
-    expect(second?.tokenVersion).toBe(2);
-    expect(await repository.resolveSession({ accountId: bootstrap.accountId, tokenVersion: 1 })).toBeNull();
-    expect(await repository.resolveSession({ accountId: bootstrap.accountId, tokenVersion: 2 })).not.toBeNull();
+    if (first === null || second === null) throw new Error('session missing');
+    expect(first.activeSessionId).not.toBe(second.activeSessionId);
+    expect(await repository.resolveSession({ accountId: bootstrap.accountId, activeSessionId: first.activeSessionId })).toBeNull();
+    expect(await repository.resolveSession({ accountId: bootstrap.accountId, activeSessionId: second.activeSessionId })).not.toBeNull();
 
-    await repository.invalidateSession({ accountId: bootstrap.accountId, tokenVersion: 2 });
-    expect(await repository.resolveSession({ accountId: bootstrap.accountId, tokenVersion: 2 })).toBeNull();
+    await repository.invalidateSession({ accountId: bootstrap.accountId, activeSessionId: second.activeSessionId });
+    expect(await repository.resolveSession({ accountId: bootstrap.accountId, activeSessionId: second.activeSessionId })).toBeNull();
   });
 
   test('creates, lists, resets, and disables managed administrator accounts without exposing password material', async () => {
@@ -154,6 +157,7 @@ function createPrisma(): {
   const delegate = {
     create: ({ data }: { data: Partial<Account> }) => {
       const account: Account = {
+        activeSessionId: null,
         createdAt: new Date(),
         displayName: data.displayName ?? null,
         failedLoginAttempts: 0,
@@ -165,7 +169,6 @@ function createPrisma(): {
         passwordSalt: data.passwordSalt ?? '',
         scopes: data.scopes ?? [],
         status: 'ACTIVE',
-        tokenVersion: 0,
         updatedAt: new Date(),
       };
       state.accounts.push(account);

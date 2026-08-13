@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -151,11 +152,11 @@ export type DsvAdminAssignmentCommandService = {
 };
 
 type DsvControlSession = {
+  activeSessionId: string;
   actor: string;
   principal: DsvPrincipal;
   session: NonNullable<ReturnType<typeof verifyAdminWebSessionFromRequest>>;
   shopDomain: string;
-  tokenVersion: number;
 };
 
 export type DsvControlDependencies = {
@@ -181,7 +182,16 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
   registerDsvAdminOperatorInvitationRoutes(app, dependencies);
   registerDsvCustomerAccountRoutes(app, dependencies);
 
-  app.post(`${apiRoot}/auth/login`, async (request, reply) => {
+  app.post(`${apiRoot}/auth/login`, {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-admin-login',
+        keyGenerator: (request) => dsvLoginRateLimitKey(request.body, 'admin'),
+        max: 5,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
     const body = objectBody(request.body);
     const id = readTrimmed(body?.id);
     const password = readPassword(body?.password);
@@ -207,10 +217,16 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       sessionSecret: dependencies.sessionSecret,
       subject: createDsvAdminSessionSubject({
         accountId: account.accountId,
+        activeSessionId: account.activeSessionId,
         shopDomain,
-        tokenVersion: account.tokenVersion,
       }),
     });
+    request.log.info({
+      accountId: account.accountId,
+      event: 'dsv_admin_session_rotated',
+      requestId: request.id,
+      shopDomain,
+    }, 'DSV admin session rotated');
     return sendData(reply.header('Set-Cookie', cookieHeader), {
       csrfToken: session.csrfToken,
       expiresAt: new Date(session.expiresAt).toISOString(),
@@ -230,7 +246,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }));
       await dependencies.adminAccounts.invalidateSession({
         accountId: session.actor,
-        tokenVersion: session.tokenVersion,
+        activeSessionId: session.activeSessionId,
       });
       return sendData(clearedReply, { loggedOut: true });
     }));
@@ -1225,6 +1241,7 @@ function registerDsvCustomerAccountRoutes(app: FastifyInstance, dependencies: Ds
     config: {
       rateLimit: {
         groupId: 'dsv-customer-login',
+        keyGenerator: (request) => dsvLoginRateLimitKey(request.body, 'customer'),
         max: 10,
         timeWindow: '15 minutes',
       },
@@ -1234,16 +1251,21 @@ function registerDsvCustomerAccountRoutes(app: FastifyInstance, dependencies: Ds
     const input = readCustomerLoginBody(request.body);
     if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'ID, password, and shopDomain are required');
     const identity = await service.login({ ...input, requestId: request.id });
-    return identity === null
-      ? sendError(reply, 401, 'UNAUTHORIZED', '로그인 정보가 올바르지 않습니다.')
-      : sendCustomerSession(reply, dependencies, identity);
+    if (identity === null) return sendError(reply, 401, 'UNAUTHORIZED', '로그인 정보가 올바르지 않습니다.');
+    request.log.info({
+      accountId: identity.accountId,
+      event: 'dsv_customer_session_rotated',
+      requestId: request.id,
+      shopDomain: identity.shopDomain,
+    }, 'DSV customer session rotated');
+    return sendCustomerSession(reply, dependencies, identity);
   });
 }
 
 function sendCustomerSession(
   reply: FastifyReply,
   dependencies: DsvControlDependencies,
-  identity: { accountId: string; customerId: string; scopeVersion: number; shopDomain: string; shopId: string },
+  identity: { accountId: string; activeSessionId: string; customerId: string; shopDomain: string; shopId: string },
 ): unknown {
   const { cookieHeader, session } = createAdminWebSession({
     cookieName: dependencies.cookieName,
@@ -1253,7 +1275,7 @@ function sendCustomerSession(
     sessionSecret: dependencies.sessionSecret,
     subject: createCustomerSessionSubject({
       accountId: identity.accountId,
-      scopeVersion: identity.scopeVersion,
+      activeSessionId: identity.activeSessionId,
     }),
   });
   return sendData(reply.header('Set-Cookie', cookieHeader), {
@@ -1280,8 +1302,8 @@ async function sendDsvAdminSession(
     sessionSecret: dependencies.sessionSecret,
     subject: createDsvAdminSessionSubject({
       accountId: account.id,
+      activeSessionId: account.activeSessionId,
       shopDomain,
-      tokenVersion: account.tokenVersion,
     }),
   });
   const shopId = await dependencies.repository.resolveShopId(shopDomain);
@@ -1327,11 +1349,12 @@ async function readDsvSession(request: FastifyRequest, dependencies: DsvControlD
   if (shopId === null) return null;
   const account = await dependencies.adminAccounts.resolveSession({
     accountId: subject.accountId,
-    tokenVersion: subject.tokenVersion,
+    activeSessionId: subject.activeSessionId,
   });
   if (account === null) return null;
   const actorId = account.accountId;
   return {
+    activeSessionId: subject.activeSessionId,
     actor: actorId,
     principal: createDsvAdminPrincipal({
       actorId,
@@ -1342,7 +1365,6 @@ async function readDsvSession(request: FastifyRequest, dependencies: DsvControlD
     }),
     session,
     shopDomain,
-    tokenVersion: subject.tokenVersion,
   };
 }
 
@@ -1528,6 +1550,12 @@ function objectBody(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function dsvLoginRateLimitKey(value: unknown, surface: 'admin' | 'customer'): string {
+  const loginId = readTrimmed(objectBody(value)?.id)?.toLowerCase() ?? '';
+  const digest = createHash('sha256').update(loginId).digest('base64url');
+  return `dsv-${surface}-login:${digest}`;
+}
+
 function readOperatorInvitationBody(value: unknown): { displayName?: string; email: string; message?: string } | null {
   const body = objectBody(value);
   if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'email', 'message'])) return null;
@@ -1676,7 +1704,6 @@ function adminOperatorAccountData(account: DsvAdminOperatorAccountMetadata): Rec
     loginId: account.loginId,
     scopes: account.scopes,
     status: account.status,
-    tokenVersion: account.tokenVersion,
     updatedAt: account.updatedAt.toISOString(),
   };
 }

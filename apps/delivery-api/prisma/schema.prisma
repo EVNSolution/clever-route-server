@@ -909,6 +909,7 @@ model CustomerAccount {
   passwordSalt        String?                    @db.Text
   status              CustomerAccountStatus      @default(ACTIVE)
   scopeVersion        Int                        @default(1)
+  activeSessionId     String?                    @db.Uuid
   lastAuthenticatedAt DateTime?                  @db.Timestamptz(6)
   createdAt           DateTime                   @default(now()) @db.Timestamptz(6)
   updatedAt           DateTime                   @updatedAt @db.Timestamptz(6)
@@ -951,6 +952,7 @@ model DsvAdminAccount {
   status              DsvAdminAccountStatus @default(ACTIVE)
   scopes              String[]              @default([])
   tokenVersion        Int                   @default(0)
+  activeSessionId     String?               @db.Uuid
   failedLoginAttempts Int                   @default(0)
   lockedUntil         DateTime?             @db.Timestamptz(6)
   lastAuthenticatedAt DateTime?             @db.Timestamptz(6)

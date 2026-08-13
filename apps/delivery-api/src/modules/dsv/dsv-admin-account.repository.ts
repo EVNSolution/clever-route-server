@@ -1,4 +1,4 @@
-import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 
 import {
@@ -12,15 +12,15 @@ export type DsvAdminAccountPrismaClient = Pick<PrismaClient, 'dsvAdminAccount'>;
 
 export type DsvAdminAccountIdentity = {
   accountId: string;
+  activeSessionId: string;
   displayName?: string;
   scopes: readonly DsvScope[];
-  tokenVersion: number;
 };
 
 export type DsvAdminAccountAuthenticator = {
   authenticate(input: { loginId: string; password: string }): Promise<DsvAdminAccountIdentity | null>;
-  invalidateSession(input: { accountId: string; tokenVersion: number }): Promise<void>;
-  resolveSession(input: { accountId: string; tokenVersion: number }): Promise<DsvAdminAccountIdentity | null>;
+  invalidateSession(input: { accountId: string; activeSessionId: string }): Promise<void>;
+  resolveSession(input: { accountId: string; activeSessionId: string }): Promise<DsvAdminAccountIdentity | null>;
 };
 
 export type DsvAdminAccountStatus = 'ACTIVE' | 'DISABLED';
@@ -104,33 +104,33 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
 
     const updated = await this.prisma.dsvAdminAccount.update({
       data: {
+        activeSessionId: randomUUID(),
         failedLoginAttempts: 0,
         lastAuthenticatedAt: now,
         lockedUntil: null,
-        tokenVersion: { increment: 1 },
       },
       where: { id: account.id },
     });
     return identity(updated, scopes);
   }
 
-  async invalidateSession(input: { accountId: string; tokenVersion: number }): Promise<void> {
+  async invalidateSession(input: { accountId: string; activeSessionId: string }): Promise<void> {
     await this.prisma.dsvAdminAccount.updateMany({
-      data: { tokenVersion: { increment: 1 } },
+      data: { activeSessionId: null },
       where: {
+        activeSessionId: input.activeSessionId,
         id: input.accountId,
         status: 'ACTIVE',
-        tokenVersion: input.tokenVersion,
       },
     });
   }
 
-  async resolveSession(input: { accountId: string; tokenVersion: number }): Promise<DsvAdminAccountIdentity | null> {
+  async resolveSession(input: { accountId: string; activeSessionId: string }): Promise<DsvAdminAccountIdentity | null> {
     const account = await this.prisma.dsvAdminAccount.findFirst({
       where: {
+        activeSessionId: input.activeSessionId,
         id: input.accountId,
         status: 'ACTIVE',
-        tokenVersion: input.tokenVersion,
       },
     });
     if (account === null) return null;
@@ -178,7 +178,7 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         passwordSalt,
         scopes: [...dsvAdminScopes],
         status: 'ACTIVE',
-        tokenVersion: { increment: 1 },
+        activeSessionId: null,
       },
       where: { id: existing.id },
     });
@@ -233,7 +233,7 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         passwordHash,
         passwordSalt,
         status: 'ACTIVE',
-        tokenVersion: { increment: 1 },
+        activeSessionId: null,
       },
       where: { id: input.accountId },
     });
@@ -250,7 +250,7 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         failedLoginAttempts: 0,
         lockedUntil: null,
         status: input.status,
-        tokenVersion: { increment: 1 },
+        activeSessionId: null,
       },
       where: { id: input.accountId },
     });
@@ -276,17 +276,18 @@ function generateTemporaryPassword(): string {
 
 function identity(
   account: {
+    activeSessionId: string | null;
     displayName: string | null;
     id: string;
-    tokenVersion: number;
   },
   scopes: readonly DsvScope[],
 ): DsvAdminAccountIdentity {
+  if (account.activeSessionId === null) throw new Error('DSV admin account has no active session');
   return {
     accountId: account.id,
+    activeSessionId: account.activeSessionId,
     ...(account.displayName === null ? {} : { displayName: account.displayName }),
     scopes,
-    tokenVersion: account.tokenVersion,
   };
 }
 

@@ -10,6 +10,7 @@ import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-co
 
 const shopId = '99999999-9999-4999-8999-999999999999';
 const accountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const activeSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const token = 'valid_token_value_12345678901234567890';
 
 describe('PrismaDsvAdminOperatorInvitationService', () => {
@@ -131,7 +132,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
     expect(createCalls[0]?.[0].data.status).toBe('ACTIVE');
   });
 
-  test('updates credentials only after current password verification and increments tokenVersion', async () => {
+  test('updates credentials only after current password verification and rotates the active session ID', async () => {
     const harness = createHarness();
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(null);
 
@@ -144,18 +145,18 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
     const existing = account({ passwordHash: 'u8cQd0OCZBOk6AIvkd2Yhdo-y2lZ_TINAqO12jhqiVRlNq3PraljjgTaSYKPmlr5y4XedfYMh98iADbAbdwlcw', passwordSalt: 'known-salt', scopes: dsvAdminScopes });
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
     harness.prisma.dsvAdminAccount.findUnique.mockResolvedValueOnce(null);
-    harness.prisma.dsvAdminAccount.update.mockResolvedValueOnce(account({ loginId: 'operator-new', scopes: dsvAdminScopes, tokenVersion: 2 }));
+    harness.prisma.dsvAdminAccount.update.mockResolvedValueOnce(account({ activeSessionId, loginId: 'operator-new', scopes: dsvAdminScopes }));
 
     await expect(harness.service.updateCredentials({
       accountId,
       currentPassword: 'KnownStrongPassw0rd!',
       loginId: 'operator-new',
       password: 'NewStrongPassw0rd!',
-    })).resolves.toMatchObject({ loginId: 'operator-new', scopes: dsvAdminScopes, tokenVersion: 2 });
+    })).resolves.toMatchObject({ activeSessionId, loginId: 'operator-new', scopes: dsvAdminScopes });
     const updateCalls = harness.prisma.dsvAdminAccount.update.mock.calls as unknown as Array<[{
-      data: { tokenVersion: { increment: number }; passwordHash?: string; passwordSalt?: string };
+      data: { activeSessionId: string; passwordHash?: string; passwordSalt?: string };
     }]>;
-    expect(updateCalls[0]?.[0].data.tokenVersion).toEqual({ increment: 1 });
+    expect(updateCalls[0]?.[0].data.activeSessionId).toEqual(expect.any(String));
     expect(updateCalls[0]?.[0].data.passwordHash).toEqual(expect.any(String));
     expect(updateCalls[0]?.[0].data.passwordSalt).toEqual(expect.any(String));
   });
@@ -270,6 +271,7 @@ function invite(overrides: Record<string, unknown> = {}) {
 
 function account(overrides: Record<string, unknown> = {}) {
   return {
+    activeSessionId,
     createdAt: new Date('2026-08-09T01:00:00.000Z'),
     displayName: 'DSV 운영자',
     email: 'operator@example.com',
@@ -280,7 +282,6 @@ function account(overrides: Record<string, unknown> = {}) {
     passwordSalt: 'salt',
     scopes: dsvOperatorScopes,
     status: 'ACTIVE',
-    tokenVersion: 1,
     updatedAt: new Date('2026-08-09T01:00:00.000Z'),
     ...overrides,
   };

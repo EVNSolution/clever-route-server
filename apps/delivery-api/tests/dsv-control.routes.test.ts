@@ -42,6 +42,8 @@ const targetRoutePlanId = '12121212-1212-4121-8121-121212121212';
 const adminAccountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const customerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const customerAccountId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const adminSessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const customerSessionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 describe('DSV control routes', () => {
   test('invalidates the active server session before clearing the admin cookie', async () => {
@@ -57,9 +59,40 @@ describe('DSV control routes', () => {
       expect(logout.statusCode).toBe(200);
       expect(invalidateSession).toHaveBeenCalledWith({
         accountId: adminAccountId,
-        tokenVersion: 0,
+        activeSessionId: adminSessionId,
       });
       expect(logout.headers['set-cookie']).toContain('Max-Age=0');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('limits repeated admin session rotations by normalized login ID', async () => {
+    const { app } = await createHarness();
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const response = await app.inject({
+          method: 'POST',
+          payload: { id: attempt % 2 === 0 ? 'Operator' : ' operator ', password: 'correct-password', shopDomain: 'tomatonofood.com' },
+          url: '/api/dsv/auth/login',
+        });
+        expect(response.statusCode).toBe(200);
+      }
+
+      const limited = await app.inject({
+        method: 'POST',
+        payload: { id: 'operator', password: 'correct-password', shopDomain: 'tomatonofood.com' },
+        url: '/api/dsv/auth/login',
+      });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } });
+
+      const separateLoginId = await app.inject({
+        method: 'POST',
+        payload: { id: 'another-operator', password: 'wrong-password', shopDomain: 'tomatonofood.com' },
+        url: '/api/dsv/auth/login',
+      });
+      expect(separateLoginId.statusCode).toBe(401);
     } finally {
       await app.close();
     }
@@ -368,7 +401,6 @@ describe('DSV control routes', () => {
             id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
             loginId: 'operator-login',
             scopes: dsvOperatorScopes,
-            tokenVersion: 1,
           },
           actorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
           principalType: 'DSV_ADMIN',
@@ -389,7 +421,7 @@ describe('DSV control routes', () => {
     }
   });
 
-  test('updates current DSV operator credentials and refreshes tokenVersion in the session cookie', async () => {
+  test('updates current DSV operator credentials and refreshes the active session in the cookie', async () => {
     const operatorInvitationService = createOperatorInvitationService();
     const { app } = await createHarness({ operatorInvitationService });
     try {
@@ -415,7 +447,6 @@ describe('DSV control routes', () => {
         data: {
           account: {
             loginId: 'operator-login',
-            tokenVersion: 1,
           },
           actorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
           principalType: 'DSV_ADMIN',
@@ -2067,23 +2098,23 @@ async function createHarness(overrides: {
   const resourceService = createResourceService();
   const invalidateSession = vi.fn(() => Promise.resolve());
   const adminAccounts = {
-    authenticate: vi.fn(({ loginId, password }) =>
-      Promise.resolve(loginId === 'operator' && password === 'correct-password'
+    authenticate: vi.fn(({ loginId, password }: { loginId: string; password: string }) =>
+      Promise.resolve(loginId.trim().toLowerCase() === 'operator' && password === 'correct-password'
         ? {
             accountId: adminAccountId,
+            activeSessionId: adminSessionId,
             displayName: '운영 관리자',
             scopes: dsvAdminScopes,
-            tokenVersion: 0,
           }
         : null)),
     invalidateSession,
-    resolveSession: vi.fn(({ accountId, tokenVersion }) =>
-      Promise.resolve(accountId === adminAccountId && tokenVersion === 0
+    resolveSession: vi.fn(({ accountId, activeSessionId }) =>
+      Promise.resolve(accountId === adminAccountId && activeSessionId === adminSessionId
         ? {
             accountId: adminAccountId,
+            activeSessionId: adminSessionId,
             displayName: '운영 관리자',
             scopes: dsvAdminScopes,
-            tokenVersion: 0,
           }
         : null)),
   } satisfies DsvControlDependencies['adminAccounts'];
@@ -2115,6 +2146,7 @@ function createOperatorInvitationService(): DsvAdminOperatorInvitationService & 
   validateInvitation: ReturnType<typeof vi.fn<DsvAdminOperatorInvitationService['validateInvitation']>>;
 } {
   const account = {
+    activeSessionId: adminSessionId,
     createdAt: new Date('2026-08-09T01:00:00.000Z'),
     displayName: 'DSV 운영자',
     email: 'operator@example.com',
@@ -2123,7 +2155,6 @@ function createOperatorInvitationService(): DsvAdminOperatorInvitationService & 
     loginId: 'operator-login',
     scopes: dsvOperatorScopes,
     status: 'ACTIVE' as const,
-    tokenVersion: 1,
     updatedAt: new Date('2026-08-09T01:00:00.000Z'),
   };
   return {
@@ -2164,8 +2195,8 @@ function createCustomerAccountService(): DsvCustomerAccountService & {
   };
   const identity = {
     accountId: customerAccountId,
+    activeSessionId: customerSessionId,
     customerId,
-    scopeVersion: 2,
     shopDomain: 'tomatonofood.com',
     shopId,
   };

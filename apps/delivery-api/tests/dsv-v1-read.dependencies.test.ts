@@ -10,6 +10,8 @@ const sessionSecret = '12345678901234567890123456789012';
 const shopId = '11111111-1111-4111-8111-111111111111';
 const customerId = '22222222-2222-4222-8222-222222222222';
 const accountId = '33333333-3333-4333-8333-333333333333';
+const activeSessionId = '44444444-4444-4444-8444-444444444444';
+const staleSessionId = '55555555-5555-4555-8555-555555555555';
 
 describe('loadDsvV1ReadDependencies', () => {
   test('uses the default DSV cookie name when no configured name is provided', () => {
@@ -187,10 +189,10 @@ describe('DsvV1SessionResolver', () => {
     const { dsvAdminAccount, prisma, shop } = createPrismaMock();
     shop.findFirst.mockResolvedValueOnce({ id: shopId, shopDomain: 'example.myshopify.com' });
     dsvAdminAccount.findFirst.mockResolvedValueOnce({
+      activeSessionId,
       displayName: '운영 관리자',
       id: accountId,
       scopes: [...dsvAdminScopes],
-      tokenVersion: 3,
     });
     const resolver = loadResolver(prisma, {
       CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
@@ -198,8 +200,8 @@ describe('DsvV1SessionResolver', () => {
 
     const principal = await resolver.resolve(createDsvAdminSessionSubject({
       accountId,
+      activeSessionId,
       shopDomain: 'example.myshopify.com',
-      tokenVersion: 3,
     }));
 
     expect(principal).toMatchObject({
@@ -229,7 +231,7 @@ describe('DsvV1SessionResolver', () => {
     customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow());
     const resolver = loadResolver(prisma);
 
-    const principal = await resolver.resolve(`dsv-customer-account:${accountId}:1`);
+    const principal = await resolver.resolve(`dsv-customer-account:${accountId}:${activeSessionId}`);
 
     expect(customerAccount.findUnique).toHaveBeenCalledWith({
       select: {
@@ -237,7 +239,7 @@ describe('DsvV1SessionResolver', () => {
         customerId: true,
         id: true,
         issuer: true,
-        scopeVersion: true,
+        activeSessionId: true,
         shop: { select: { id: true, shopDomain: true } },
         shopId: true,
         status: true,
@@ -254,20 +256,20 @@ describe('DsvV1SessionResolver', () => {
     });
   });
 
-  test('accepts scope-versioned customer subjects and rejects stale versions', async () => {
+  test('accepts the active customer session ID and rejects a stale session ID', async () => {
     const { customerAccount, prisma } = createPrismaMock();
-    customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow({ scopeVersion: 3 }));
+    customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow({ activeSessionId }));
     const resolver = loadResolver(prisma);
 
-    await expect(resolver.resolve(`dsv-customer-account:${accountId}:3`))
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:${activeSessionId}`))
       .resolves.toMatchObject({ customerId, principalType: 'CUSTOMER_USER' });
 
-    customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow({ scopeVersion: 4 }));
-    await expect(resolver.resolve(`dsv-customer-account:${accountId}:3`))
+    customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow({ activeSessionId }));
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:${staleSessionId}`))
       .rejects.toBeInstanceOf(DsvV1AuthenticationError);
   });
 
-  test('rejects legacy customer subjects without a session version', async () => {
+  test('rejects legacy customer subjects without an active session ID', async () => {
     const { customerAccount, prisma } = createPrismaMock();
     const resolver = loadResolver(prisma);
 
@@ -276,19 +278,19 @@ describe('DsvV1SessionResolver', () => {
     expect(customerAccount.findUnique).not.toHaveBeenCalled();
   });
 
-  test('invalidates only the active customer session version', async () => {
+  test('invalidates only the matching active customer session ID', async () => {
     const { customerAccount, prisma } = createPrismaMock();
     customerAccount.updateMany.mockResolvedValueOnce({ count: 1 });
     const resolver = loadResolver(prisma);
 
-    await resolver.invalidate(`dsv-customer-account:${accountId}:3`);
+    await resolver.invalidate(`dsv-customer-account:${accountId}:${activeSessionId}`);
 
     expect(customerAccount.updateMany).toHaveBeenCalledWith({
-      data: { scopeVersion: { increment: 1 } },
+      data: { activeSessionId: null },
       where: {
+        activeSessionId,
         id: accountId,
         issuer: 'CLEVER_DSV',
-        scopeVersion: 3,
         status: 'ACTIVE',
       },
     });
@@ -299,7 +301,7 @@ describe('DsvV1SessionResolver', () => {
     customerAccount.findUnique.mockResolvedValueOnce(null);
     const resolver = loadResolver(prisma);
 
-    await expect(resolver.resolve(`dsv-customer-account:${accountId}:1`))
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:${activeSessionId}`))
       .rejects.toBeInstanceOf(DsvV1AuthenticationError);
   });
 
@@ -308,7 +310,7 @@ describe('DsvV1SessionResolver', () => {
     customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow({ status: 'INACTIVE' }));
     const resolver = loadResolver(prisma);
 
-    await expect(resolver.resolve(`dsv-customer-account:${accountId}:1`))
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:${activeSessionId}`))
       .rejects.toMatchObject({
         message: 'DSV customer account is inactive',
         name: 'DsvV1ForbiddenError',
@@ -323,7 +325,7 @@ describe('DsvV1SessionResolver', () => {
     customerAccount.findUnique.mockResolvedValueOnce(account);
     const resolver = loadResolver(prisma);
 
-    await expect(resolver.resolve(`dsv-customer-account:${accountId}:1`))
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:${activeSessionId}`))
       .rejects.toMatchObject({
         message: 'DSV customer account scope is invalid',
         name: 'DsvV1ForbiddenError',
@@ -340,19 +342,20 @@ describe('DsvV1SessionResolver', () => {
 });
 
 type CustomerAccountRow = {
+  activeSessionId: string | null;
   customer: { id: string; shopId: string };
   customerId: string;
   id: string;
   issuer: string;
   shop: { id: string; shopDomain: string };
   shopId: string;
-  scopeVersion: number;
   status: string;
   subject: string;
 };
 
 type CustomerAccountFindUnique = (args: {
   select: {
+    activeSessionId: true;
     customer: { select: { id: true; shopId: true } };
     customerId: true;
     id: true;
@@ -418,13 +421,14 @@ function loadResolver(
 }
 
 function customerAccountRow(input: {
+  activeSessionId?: string | null;
   canonicalCustomerId?: string;
   canonicalCustomerShopId?: string;
   canonicalShopId?: string;
-  scopeVersion?: number;
   status?: string;
 } = {}): CustomerAccountRow {
   return {
+    activeSessionId: input.activeSessionId ?? activeSessionId,
     customer: {
       id: input.canonicalCustomerId ?? customerId,
       shopId: input.canonicalCustomerShopId ?? shopId,
@@ -432,7 +436,6 @@ function customerAccountRow(input: {
     customerId,
     id: accountId,
     issuer: 'customer-portal',
-    scopeVersion: input.scopeVersion ?? 1,
     shop: { id: input.canonicalShopId ?? shopId, shopDomain: 'example.myshopify.com' },
     shopId,
     status: input.status ?? 'ACTIVE',

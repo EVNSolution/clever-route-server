@@ -89,6 +89,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
   app.setErrorHandler((error, request, reply) => {
     if (hasStatusCode(error, 429)) {
+      if (isDsvLoginRequest(request)) {
+        request.log.warn({
+          event: 'dsv_login_rate_limited',
+          requestId: request.id,
+          route: request.routeOptions.url
+        }, 'DSV login rate limited');
+      }
       return reply.code(429).send({
         data: null,
         error: {
@@ -125,11 +132,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
   await app.register(helmet);
   await app.register(cors, { origin: options.corsOrigin ?? false });
-  if (options.dsvDriverAuth !== undefined || options.dsvControl !== undefined) {
-    await app.register(rateLimit, {
-      global: false
-    });
-  }
   registerApiDocsRoutes(app);
   registerPrivacyRoutes(app);
   registerHealthRoutes(app);
@@ -174,12 +176,23 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     registerDriverAuthRoutes(app, options.driverAuth);
   }
 
-  if (options.dsvControl !== undefined) {
-    registerDsvControlRoutes(app, options.dsvControl);
+  const dsvControl = options.dsvControl;
+  if (dsvControl !== undefined) {
+    await app.register(async (dsvControlApp) => {
+      await dsvControlApp.register(rateLimit, {
+        global: false,
+        hook: 'preHandler'
+      });
+      registerDsvControlRoutes(dsvControlApp, dsvControl);
+    });
   }
 
-  if (options.dsvDriverAuth !== undefined) {
-    registerDsvDriverAuthRoutes(app, options.dsvDriverAuth);
+  const dsvDriverAuth = options.dsvDriverAuth;
+  if (dsvDriverAuth !== undefined) {
+    await app.register(async (dsvDriverAuthApp) => {
+      await dsvDriverAuthApp.register(rateLimit, { global: false });
+      registerDsvDriverAuthRoutes(dsvDriverAuthApp, dsvDriverAuth);
+    });
   }
 
   if (options.dsvDriverAppRelease !== undefined) {
@@ -218,6 +231,11 @@ function hasStatusCode(error: unknown, statusCode: number): boolean {
     && error !== null
     && 'statusCode' in error
     && error.statusCode === statusCode;
+}
+
+function isDsvLoginRequest(request: FastifyRequest): boolean {
+  return request.routeOptions.url === '/api/dsv/auth/login'
+    || request.routeOptions.url === '/api/dsv/customer/auth/login';
 }
 
 function withSafeRequestLogging(logger: AppLoggerOption): AppLoggerOption {

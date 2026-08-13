@@ -10,6 +10,7 @@ import type { RouteGroupingService } from '../src/modules/route-grouping/route-g
 const sessionSecret = '0123456789abcdef0123456789abcdef';
 const loginSecret = 'operator-password';
 const adminAccountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const activeSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 describe('loadDsvControlDependencies', () => {
   afterEach(() => {
@@ -66,12 +67,12 @@ describe('loadDsvControlDependencies', () => {
       adminAccounts: {
         authenticate: vi.fn(({ loginId, password }) =>
           Promise.resolve(loginId === 'operator' && password === loginSecret
-            ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
+            ? { accountId: adminAccountId, activeSessionId, scopes: dsvAdminScopes }
             : null)),
         invalidateSession: vi.fn(() => Promise.resolve()),
-        resolveSession: vi.fn(({ accountId, tokenVersion }) =>
-          Promise.resolve(accountId === adminAccountId && tokenVersion === 0
-            ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
+        resolveSession: vi.fn(({ accountId, activeSessionId: requestedSessionId }) =>
+          Promise.resolve(accountId === adminAccountId && requestedSessionId === activeSessionId
+            ? { accountId: adminAccountId, activeSessionId, scopes: dsvAdminScopes }
             : null)),
       },
       env: {
@@ -110,12 +111,12 @@ describe('loadDsvControlDependencies', () => {
       adminAccounts: {
         authenticate: vi.fn(({ loginId, password }) =>
           Promise.resolve(loginId === 'operator' && password === loginSecret
-            ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
+            ? { accountId: adminAccountId, activeSessionId, scopes: dsvAdminScopes }
             : null)),
         invalidateSession: vi.fn(() => Promise.resolve()),
-        resolveSession: vi.fn(({ accountId, tokenVersion }) =>
-          Promise.resolve(accountId === adminAccountId && tokenVersion === 0
-            ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
+        resolveSession: vi.fn(({ accountId, activeSessionId: requestedSessionId }) =>
+          Promise.resolve(accountId === adminAccountId && requestedSessionId === activeSessionId
+            ? { accountId: adminAccountId, activeSessionId, scopes: dsvAdminScopes }
             : null)),
       },
       env: {
