@@ -67,12 +67,12 @@ describe('loadDsvControlDependencies', () => {
       adminAccounts: {
         authenticate: vi.fn(({ loginId, password }) =>
           Promise.resolve(loginId === 'operator' && password === loginSecret
-            ? { accountId: adminAccountId, activeSessionId, scopes: dsvAdminScopes }
+            ? { accountId: adminAccountId, activeSessionId, mustChangePassword: false, scopes: dsvAdminScopes }
             : null)),
         invalidateSession: vi.fn(() => Promise.resolve()),
         resolveSession: vi.fn(({ accountId, activeSessionId: requestedSessionId }) =>
           Promise.resolve(accountId === adminAccountId && requestedSessionId === activeSessionId
-            ? { accountId: adminAccountId, activeSessionId, scopes: dsvAdminScopes }
+            ? { accountId: adminAccountId, activeSessionId, mustChangePassword: false, scopes: dsvAdminScopes }
             : null)),
       },
       env: {
@@ -111,12 +111,12 @@ describe('loadDsvControlDependencies', () => {
       adminAccounts: {
         authenticate: vi.fn(({ loginId, password }) =>
           Promise.resolve(loginId === 'operator' && password === loginSecret
-            ? { accountId: adminAccountId, activeSessionId, scopes: dsvAdminScopes }
+            ? { accountId: adminAccountId, activeSessionId, mustChangePassword: false, scopes: dsvAdminScopes }
             : null)),
         invalidateSession: vi.fn(() => Promise.resolve()),
         resolveSession: vi.fn(({ accountId, activeSessionId: requestedSessionId }) =>
           Promise.resolve(accountId === adminAccountId && requestedSessionId === activeSessionId
-            ? { accountId: adminAccountId, activeSessionId, scopes: dsvAdminScopes }
+            ? { accountId: adminAccountId, activeSessionId, mustChangePassword: false, scopes: dsvAdminScopes }
             : null)),
       },
       env: {

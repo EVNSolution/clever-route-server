@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 
 import {
   dsvAdminScopes,
@@ -8,12 +8,19 @@ import {
   type DsvScope,
 } from './dsv-principal.js';
 
-export type DsvAdminAccountPrismaClient = Pick<PrismaClient, 'dsvAdminAccount'>;
+export type DsvAdminAccountPrismaClient = Pick<PrismaClient, '$transaction' | 'dsvAdminAccount' | 'dsvAuditEvent'>;
+
+export type DsvAdminAccountAuditContext = {
+  actorId: string;
+  requestId: string;
+  shopId: string;
+};
 
 export type DsvAdminAccountIdentity = {
   accountId: string;
   activeSessionId: string;
   displayName?: string;
+  mustChangePassword: boolean;
   scopes: readonly DsvScope[];
 };
 
@@ -33,6 +40,7 @@ export type DsvAdminAccountSummary = {
   lastAuthenticatedAt: Date | null;
   lockedUntil: Date | null;
   loginId: string;
+  mustChangePassword: boolean;
   scopes: readonly DsvScope[];
   status: DsvAdminAccountStatus;
   updatedAt: Date;
@@ -40,10 +48,11 @@ export type DsvAdminAccountSummary = {
 
 export type DsvAdminAccountManager = {
   create(input: { displayName?: string; loginId: string }): Promise<{ account: DsvAdminAccountSummary; temporaryPassword: string }>;
-  delete(input: { accountId: string }): Promise<void>;
+  delete(input: { accountId: string } & DsvAdminAccountAuditContext): Promise<void>;
   list(): Promise<DsvAdminAccountSummary[]>;
   resetPassword(input: { accountId: string }): Promise<{ account: DsvAdminAccountSummary; temporaryPassword: string }>;
-  setStatus(input: { accountId: string; status: DsvAdminAccountStatus }): Promise<DsvAdminAccountSummary>;
+  revokeSession(input: { accountId: string } & DsvAdminAccountAuditContext): Promise<{ revoked: boolean }>;
+  setStatus(input: { accountId: string; status: DsvAdminAccountStatus } & DsvAdminAccountAuditContext): Promise<DsvAdminAccountSummary>;
 };
 
 export class DsvAdminAccountManagementError extends Error {
@@ -146,11 +155,25 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
     }
     const displayName = normalizeDisplayName(input.displayName);
     const existing = await this.prisma.dsvAdminAccount.findUnique({
-      select: { id: true },
+      select: {
+        id: true,
+        passwordHash: true,
+        passwordSalt: true,
+        previousPasswordHash: true,
+        previousPasswordSalt: true,
+      },
       where: { loginId },
     });
     if (existing !== null && input.resetExisting !== true) {
       return { accountId: existing.id, created: false, reset: false };
+    }
+    if (existing !== null && (
+      await verifyPassword(input.password, existing.passwordSalt, existing.passwordHash)
+      || (existing.previousPasswordHash !== null
+        && existing.previousPasswordSalt !== null
+        && await verifyPassword(input.password, existing.previousPasswordSalt, existing.previousPasswordHash))
+    )) {
+      throw new Error('DSV admin password must differ from the current and previous passwords');
     }
 
     const passwordSalt = randomBytes(16).toString('base64url');
@@ -176,6 +199,9 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         lockedUntil: null,
         passwordHash,
         passwordSalt,
+        mustChangePassword: false,
+        previousPasswordHash: existing.passwordHash,
+        previousPasswordSalt: existing.passwordSalt,
         scopes: [...dsvAdminScopes],
         status: 'ACTIVE',
         activeSessionId: null,
@@ -209,6 +235,7 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
       data: {
         ...(displayName === null ? {} : { displayName }),
         loginId,
+        mustChangePassword: true,
         passwordHash,
         passwordSalt,
         scopes: [...dsvOperatorScopes],
@@ -232,6 +259,9 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         lockedUntil: null,
         passwordHash,
         passwordSalt,
+        mustChangePassword: true,
+        previousPasswordHash: existing.passwordHash,
+        previousPasswordSalt: existing.passwordSalt,
         status: 'ACTIVE',
         activeSessionId: null,
       },
@@ -242,32 +272,85 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
     return { account: summary(account, scopes), temporaryPassword };
   }
 
-  async setStatus(input: { accountId: string; status: DsvAdminAccountStatus }): Promise<DsvAdminAccountSummary> {
-    const existing = await this.prisma.dsvAdminAccount.findUnique({ where: { id: input.accountId } });
-    if (existing === null) throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_NOT_FOUND');
-    const account = await this.prisma.dsvAdminAccount.update({
-      data: {
-        failedLoginAttempts: 0,
-        lockedUntil: null,
-        status: input.status,
-        activeSessionId: null,
-      },
-      where: { id: input.accountId },
+  async setStatus(input: { accountId: string; status: DsvAdminAccountStatus } & DsvAdminAccountAuditContext): Promise<DsvAdminAccountSummary> {
+    const account = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.dsvAdminAccount.findUnique({ where: { id: input.accountId } });
+      if (existing === null) throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_NOT_FOUND');
+      const updated = await tx.dsvAdminAccount.update({
+        data: {
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+          status: input.status,
+          activeSessionId: null,
+        },
+        where: { id: input.accountId },
+      });
+      await createAdminAccountAudit(tx, input, {
+        eventType: input.status === 'ACTIVE' ? 'DSV_ADMIN_ACCOUNT_ENABLED' : 'DSV_ADMIN_ACCOUNT_DISABLED',
+        redactedDiff: {
+          previousStatus: existing.status,
+          sessionRevoked: existing.activeSessionId !== null,
+          status: input.status,
+        },
+      });
+      return updated;
     });
     const scopes = normalizeDsvScopes(account.scopes);
     if (scopes === null) throw new Error('DSV admin account contains unsupported scopes');
     return summary(account, scopes);
   }
 
-  async delete(input: { accountId: string }): Promise<void> {
-    const deleted = await this.prisma.dsvAdminAccount.deleteMany({
-      where: { id: input.accountId, status: 'DISABLED' },
+  async delete(input: { accountId: string } & DsvAdminAccountAuditContext): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const deleted = await tx.dsvAdminAccount.deleteMany({
+        where: { id: input.accountId, status: 'DISABLED' },
+      });
+      if (deleted.count !== 1) {
+        const existing = await tx.dsvAdminAccount.findUnique({ select: { id: true }, where: { id: input.accountId } });
+        if (existing === null) throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_NOT_FOUND');
+        throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED');
+      }
+      await createAdminAccountAudit(tx, input, { eventType: 'DSV_ADMIN_ACCOUNT_DELETED' });
     });
-    if (deleted.count === 1) return;
-    const existing = await this.prisma.dsvAdminAccount.findUnique({ select: { id: true }, where: { id: input.accountId } });
-    if (existing === null) throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_NOT_FOUND');
-    throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED');
   }
+
+  async revokeSession(input: { accountId: string } & DsvAdminAccountAuditContext): Promise<{ revoked: boolean }> {
+    const revoked = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.dsvAdminAccount.findUnique({ select: { id: true }, where: { id: input.accountId } });
+      if (existing === null) throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_NOT_FOUND');
+      const result = await tx.dsvAdminAccount.updateMany({
+        data: { activeSessionId: null },
+        where: { activeSessionId: { not: null }, id: input.accountId },
+      });
+      await createAdminAccountAudit(tx, input, {
+        eventType: 'DSV_ADMIN_ACCOUNT_SESSION_REVOKED',
+        redactedDiff: { sessionRevoked: result.count === 1 },
+      });
+      return result.count === 1;
+    });
+    return { revoked };
+  }
+}
+
+async function createAdminAccountAudit(
+  tx: Pick<Prisma.TransactionClient, 'dsvAuditEvent'>,
+  input: DsvAdminAccountAuditContext & { accountId: string },
+  event: { eventType: string; redactedDiff?: Record<string, unknown> },
+): Promise<void> {
+  await tx.dsvAuditEvent.create({
+    data: {
+      actorId: input.actorId,
+      actorType: 'DSV_ADMIN',
+      entityId: input.accountId,
+      entityType: 'DSV_ADMIN_ACCOUNT',
+      eventType: event.eventType,
+      principalType: 'DSV_ADMIN',
+      redactedDiff: (event.redactedDiff ?? {}) as Prisma.InputJsonObject,
+      redactionClass: 'PII_REDACTED',
+      requestId: input.requestId,
+      shopId: input.shopId,
+    },
+  });
 }
 
 function generateTemporaryPassword(): string {
@@ -279,6 +362,7 @@ function identity(
     activeSessionId: string | null;
     displayName: string | null;
     id: string;
+    mustChangePassword: boolean;
   },
   scopes: readonly DsvScope[],
 ): DsvAdminAccountIdentity {
@@ -287,7 +371,8 @@ function identity(
     accountId: account.id,
     activeSessionId: account.activeSessionId,
     ...(account.displayName === null ? {} : { displayName: account.displayName }),
-    scopes,
+    mustChangePassword: account.mustChangePassword,
+    scopes: account.mustChangePassword ? ['dsv:session:read'] : scopes,
   };
 }
 
@@ -300,6 +385,7 @@ function summary(
     lastAuthenticatedAt: Date | null;
     lockedUntil: Date | null;
     loginId: string;
+    mustChangePassword: boolean;
     status: DsvAdminAccountStatus;
     updatedAt: Date;
   },
@@ -313,6 +399,7 @@ function summary(
     lastAuthenticatedAt: account.lastAuthenticatedAt,
     lockedUntil: account.lockedUntil,
     loginId: account.loginId,
+    mustChangePassword: account.mustChangePassword,
     scopes,
     status: account.status,
     updatedAt: account.updatedAt,

@@ -232,23 +232,28 @@ describe('DSV control routes', () => {
       lastAuthenticatedAt: null,
       lockedUntil: null,
       loginId: 'dsv-admin',
+      mustChangePassword: true,
       scopes: dsvAdminScopes,
       status: 'ACTIVE' as const,
       updatedAt: new Date('2026-08-09T01:00:00.000Z'),
     };
     const createAccount = vi.fn(() => Promise.resolve({ account, temporaryPassword: 'temporary-password-2026' }));
     const deleteAccount = vi.fn(() => Promise.resolve());
+    const revokeSession = vi.fn(() => Promise.resolve({ revoked: true }));
     const resetPassword = vi.fn(() => Promise.resolve({ account, temporaryPassword: 'replacement-password-2026' }));
+    const setStatus = vi.fn(() => Promise.resolve({ ...account, status: 'DISABLED' as const }));
     const adminAccountManagement: DsvAdminAccountManager = {
       create: createAccount,
       delete: deleteAccount,
       list: vi.fn(() => Promise.resolve([account])),
       resetPassword,
-      setStatus: vi.fn(() => Promise.resolve({ ...account, status: 'DISABLED' as const })),
+      revokeSession,
+      setStatus,
     };
     const { app } = await createHarness({ adminAccountManagement });
     try {
       const login = await loginToDsv(app);
+      const requestIdMatcher: string = expect.any(String) as string;
       const list = await app.inject({
         headers: { cookie: login.cookie },
         method: 'GET',
@@ -283,6 +288,51 @@ describe('DSV control routes', () => {
       expect(selfDisable.statusCode).toBe(409);
       expect(selfDisable.json()).toMatchObject({ error: { code: 'ADMIN_ACCOUNT_SELF_DISABLE_FORBIDDEN' } });
 
+      const status = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'PATCH',
+        payload: { status: 'DISABLED' },
+        url: `/api/dsv/admin-accounts/${account.id}/status`,
+      });
+      expect(status.statusCode).toBe(200);
+      expect(setStatus).toHaveBeenCalledWith(expect.objectContaining({
+        accountId: account.id,
+        actorId: adminAccountId,
+        requestId: requestIdMatcher,
+        shopId,
+        status: 'DISABLED',
+      }));
+
+      const revokeWithoutCsrf = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'DELETE',
+        url: '/api/dsv/admin-accounts/' + account.id + '/session',
+      });
+      expect(revokeWithoutCsrf.statusCode).toBe(403);
+      expect(revokeSession).not.toHaveBeenCalled();
+
+      const selfRevoke = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: `/api/dsv/admin-accounts/${adminAccountId}/session`,
+      });
+      expect(selfRevoke.statusCode).toBe(409);
+      expect(selfRevoke.json()).toMatchObject({ error: { code: 'ADMIN_ACCOUNT_SELF_SESSION_REVOKE_FORBIDDEN' } });
+
+      const revoked = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: `/api/dsv/admin-accounts/${account.id}/session`,
+      });
+      expect(revoked.statusCode).toBe(200);
+      expect(revoked.json()).toEqual({ data: { accountId: account.id, revoked: true }, error: null });
+      expect(revokeSession).toHaveBeenCalledWith(expect.objectContaining({
+        accountId: account.id,
+        actorId: adminAccountId,
+        requestId: requestIdMatcher,
+        shopId,
+      }));
+
       const selfDelete = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'DELETE',
@@ -298,7 +348,12 @@ describe('DSV control routes', () => {
       });
       expect(deleted.statusCode).toBe(200);
       expect(deleted.json()).toEqual({ data: { deletedAccountId: account.id }, error: null });
-      expect(deleteAccount).toHaveBeenCalledWith({ accountId: account.id });
+      expect(deleteAccount).toHaveBeenCalledWith(expect.objectContaining({
+        accountId: account.id,
+        actorId: adminAccountId,
+        requestId: requestIdMatcher,
+        shopId,
+      }));
 
       deleteAccount.mockRejectedValueOnce(new DsvAdminAccountManagementError('ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED'));
       const activeDelete = await app.inject({
@@ -426,6 +481,7 @@ describe('DSV control routes', () => {
     const { app } = await createHarness({ operatorInvitationService });
     try {
       const login = await loginToDsv(app);
+      const requestIdMatcher: string = expect.any(String) as string;
       const missingNewCredential = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'PATCH',
@@ -461,6 +517,8 @@ describe('DSV control routes', () => {
         currentPassword: 'correct-password',
         loginId: 'operator-renamed',
         password: 'NewStrongPassw0rd!',
+        requestId: requestIdMatcher,
+        shopDomain: 'tomatonofood.com',
       });
     } finally {
       await app.close();
@@ -2104,6 +2162,7 @@ async function createHarness(overrides: {
             accountId: adminAccountId,
             activeSessionId: adminSessionId,
             displayName: '운영 관리자',
+            mustChangePassword: false,
             scopes: dsvAdminScopes,
           }
         : null)),
@@ -2114,6 +2173,7 @@ async function createHarness(overrides: {
             accountId: adminAccountId,
             activeSessionId: adminSessionId,
             displayName: '운영 관리자',
+            mustChangePassword: false,
             scopes: dsvAdminScopes,
           }
         : null)),
@@ -2153,6 +2213,7 @@ function createOperatorInvitationService(): DsvAdminOperatorInvitationService & 
     id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     lastAuthenticatedAt: new Date('2026-08-09T01:00:00.000Z'),
     loginId: 'operator-login',
+    mustChangePassword: false,
     scopes: dsvOperatorScopes,
     status: 'ACTIVE' as const,
     updatedAt: new Date('2026-08-09T01:00:00.000Z'),

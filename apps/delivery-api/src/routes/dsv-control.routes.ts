@@ -288,7 +288,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:accounts:write']));
 
   app.patch<{ Params: { accountId: string } }>(`${apiRoot}/admin-accounts/:accountId/status`, (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal }) => {
       if (dependencies.adminAccountManagement === undefined) {
         return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
       }
@@ -299,7 +299,13 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         return sendError(reply, 409, 'ADMIN_ACCOUNT_SELF_DISABLE_FORBIDDEN', '현재 로그인한 계정은 비활성화할 수 없습니다.');
       }
       try {
-        const account = await dependencies.adminAccountManagement.setStatus({ accountId: request.params.accountId, status });
+        const account = await dependencies.adminAccountManagement.setStatus({
+          accountId: request.params.accountId,
+          actorId: actor,
+          requestId: request.id,
+          shopId: principal.shopId,
+          status,
+        });
         return sendData(reply, { account: adminAccountData(account) });
       } catch (error) {
         return sendAdminAccountManagementError(reply, error);
@@ -307,7 +313,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:accounts:write']));
 
   app.delete<{ Params: { accountId: string } }>(`${apiRoot}/admin-accounts/:accountId`, (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal }) => {
       if (dependencies.adminAccountManagement === undefined) {
         return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
       }
@@ -316,8 +322,35 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         return sendError(reply, 409, 'ADMIN_ACCOUNT_SELF_DELETE_FORBIDDEN', '현재 로그인한 계정은 삭제할 수 없습니다.');
       }
       try {
-        await dependencies.adminAccountManagement.delete({ accountId: request.params.accountId });
+        await dependencies.adminAccountManagement.delete({
+          accountId: request.params.accountId,
+          actorId: actor,
+          requestId: request.id,
+          shopId: principal.shopId,
+        });
         return sendData(reply, { deletedAccountId: request.params.accountId });
+      } catch (error) {
+        return sendAdminAccountManagementError(reply, error);
+      }
+    }, ['dsv:accounts:write']));
+
+  app.delete<{ Params: { accountId: string } }>(`${apiRoot}/admin-accounts/:accountId/session`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal }) => {
+      if (dependencies.adminAccountManagement === undefined) {
+        return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
+      }
+      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', '계정 식별자가 올바르지 않습니다.');
+      if (actor === request.params.accountId) {
+        return sendError(reply, 409, 'ADMIN_ACCOUNT_SELF_SESSION_REVOKE_FORBIDDEN', '현재 로그인한 계정은 여기서 로그아웃할 수 없습니다.');
+      }
+      try {
+        const result = await dependencies.adminAccountManagement.revokeSession({
+          accountId: request.params.accountId,
+          actorId: actor,
+          requestId: request.id,
+          shopId: principal.shopId,
+        });
+        return sendData(reply, { accountId: request.params.accountId, revoked: result.revoked });
       } catch (error) {
         return sendAdminAccountManagementError(reply, error);
       }
@@ -332,6 +365,8 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         const account = await service.updateCredentials({
           accountId: session.actor,
           currentPassword: input.currentPassword,
+          requestId: request.id,
+          shopDomain: session.shopDomain,
           ...(input.loginId === undefined ? {} : { loginId: input.loginId }),
           ...(input.password === undefined ? {} : { password: input.password }),
         });
@@ -1360,6 +1395,7 @@ async function readDsvSession(request: FastifyRequest, dependencies: DsvControlD
       actorId,
       ...(account.displayName === undefined ? {} : { displayName: account.displayName }),
       scopes: account.scopes,
+      mustChangePassword: account.mustChangePassword,
       shopDomain,
       shopId,
     }),
@@ -1670,6 +1706,7 @@ function adminAccountData(account: DsvAdminAccountSummary): Record<string, unkno
     lastAuthenticatedAt: account.lastAuthenticatedAt?.toISOString() ?? null,
     lockedUntil: account.lockedUntil?.toISOString() ?? null,
     loginId: account.loginId,
+    mustChangePassword: account.mustChangePassword,
     scopes: account.scopes,
     status: account.status,
     updatedAt: account.updatedAt.toISOString(),
@@ -1702,6 +1739,7 @@ function adminOperatorAccountData(account: DsvAdminOperatorAccountMetadata): Rec
     id: account.id,
     lastAuthenticatedAt: account.lastAuthenticatedAt?.toISOString() ?? null,
     loginId: account.loginId,
+    mustChangePassword: account.mustChangePassword,
     scopes: account.scopes,
     status: account.status,
     updatedAt: account.updatedAt.toISOString(),
