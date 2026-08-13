@@ -17,6 +17,8 @@ type Account = {
   loginId: string;
   passwordHash: string;
   passwordSalt: string;
+  previousPasswordHash: string | null;
+  previousPasswordSalt: string | null;
   scopes: string[];
   status: 'ACTIVE' | 'DISABLED';
   updatedAt: Date;
@@ -81,6 +83,11 @@ describe('PrismaDsvAdminAccountRepository', () => {
     });
     expect(reset.reset).toBe(true);
     expect(fake.account?.activeSessionId).toBeNull();
+    await expect(repository.bootstrap({
+      loginId: 'operator',
+      password: 'correct-password-2026',
+      resetExisting: true,
+    })).rejects.toThrow(/current and previous/u);
     const authenticated = await repository.authenticate({
       loginId: 'operator',
       password: 'replacement-password-2026',
@@ -167,6 +174,8 @@ function createPrisma(): {
         loginId: data.loginId ?? '',
         passwordHash: data.passwordHash ?? '',
         passwordSalt: data.passwordSalt ?? '',
+        previousPasswordHash: data.previousPasswordHash ?? null,
+        previousPasswordSalt: data.previousPasswordSalt ?? null,
         scopes: data.scopes ?? [],
         status: 'ACTIVE',
         updatedAt: new Date(),

@@ -220,6 +220,16 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     await constantTimePasswordCheck(input.password);
     if (invite === null) throw new DsvCustomerAccountServiceError('INVALID_TOKEN', 'Invitation token is invalid');
     if (!isStrongPassword(input.password)) throw new DsvCustomerAccountServiceError('WEAK_PASSWORD', 'Password does not meet strength requirements');
+    if (
+      (invite.account.passwordHash !== null
+        && invite.account.passwordSalt !== null
+        && await verifyPassword(input.password, invite.account.passwordSalt, invite.account.passwordHash))
+      || (invite.account.previousPasswordHash !== null
+        && invite.account.previousPasswordSalt !== null
+        && await verifyPassword(input.password, invite.account.previousPasswordSalt, invite.account.previousPasswordHash))
+    ) {
+      throw new DsvCustomerAccountServiceError('PASSWORD_REUSED', '현재 비밀번호와 직전 비밀번호는 다시 사용할 수 없습니다');
+    }
     const loginId = invite.account.loginId;
     if (loginId === null) throw new DsvCustomerAccountServiceError('LOGIN_ID_REQUIRED', 'loginId is required for signup');
     const passwordSalt = randomBytes(16).toString('base64url');
@@ -243,6 +253,10 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
           loginId,
           passwordHash,
           passwordSalt,
+          ...(invite.account.passwordHash === null || invite.account.passwordSalt === null ? {} : {
+            previousPasswordHash: invite.account.passwordHash,
+            previousPasswordSalt: invite.account.passwordSalt,
+          }),
           status: 'ACTIVE',
         },
         where: { id: invite.accountId },
@@ -486,6 +500,7 @@ export class DsvCustomerAccountServiceError extends Error {
       | 'LOGIN_ID_EXISTS'
       | 'LOGIN_ID_REQUIRED'
       | 'NOT_FOUND'
+      | 'PASSWORD_REUSED'
       | 'WEAK_PASSWORD',
     message: string,
   ) {

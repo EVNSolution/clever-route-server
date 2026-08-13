@@ -1,3 +1,4 @@
+import { scrypt } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import {
@@ -142,7 +143,29 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       loginId: 'operator-new',
     })).rejects.toMatchObject({ code: 'CURRENT_PASSWORD_INVALID' });
 
-    const existing = account({ passwordHash: 'u8cQd0OCZBOk6AIvkd2Yhdo-y2lZ_TINAqO12jhqiVRlNq3PraljjgTaSYKPmlr5y4XedfYMh98iADbAbdwlcw', passwordSalt: 'known-salt', scopes: dsvAdminScopes });
+    const previousPasswordSalt = 'previous-salt';
+    const previousPasswordHash = await hashPassword('PreviousStrongPassw0rd!', previousPasswordSalt);
+    const existing = account({
+      passwordHash: 'u8cQd0OCZBOk6AIvkd2Yhdo-y2lZ_TINAqO12jhqiVRlNq3PraljjgTaSYKPmlr5y4XedfYMh98iADbAbdwlcw',
+      passwordSalt: 'known-salt',
+      previousPasswordHash,
+      previousPasswordSalt,
+      scopes: dsvAdminScopes,
+    });
+    harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
+    await expect(harness.service.updateCredentials({
+      accountId,
+      currentPassword: 'KnownStrongPassw0rd!',
+      password: 'KnownStrongPassw0rd!',
+    })).rejects.toMatchObject({ code: 'PASSWORD_REUSED' });
+
+    harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
+    await expect(harness.service.updateCredentials({
+      accountId,
+      currentPassword: 'KnownStrongPassw0rd!',
+      password: 'PreviousStrongPassw0rd!',
+    })).rejects.toMatchObject({ code: 'PASSWORD_REUSED' });
+
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
     harness.prisma.dsvAdminAccount.findUnique.mockResolvedValueOnce(null);
     harness.prisma.dsvAdminAccount.update.mockResolvedValueOnce(account({ activeSessionId, loginId: 'operator-new', scopes: dsvAdminScopes }));
@@ -154,11 +177,19 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       password: 'NewStrongPassw0rd!',
     })).resolves.toMatchObject({ activeSessionId, loginId: 'operator-new', scopes: dsvAdminScopes });
     const updateCalls = harness.prisma.dsvAdminAccount.update.mock.calls as unknown as Array<[{
-      data: { activeSessionId: string; passwordHash?: string; passwordSalt?: string };
+      data: {
+        activeSessionId: string;
+        passwordHash?: string;
+        passwordSalt?: string;
+        previousPasswordHash?: string;
+        previousPasswordSalt?: string;
+      };
     }]>;
     expect(updateCalls[0]?.[0].data.activeSessionId).toEqual(expect.any(String));
     expect(updateCalls[0]?.[0].data.passwordHash).toEqual(expect.any(String));
     expect(updateCalls[0]?.[0].data.passwordSalt).toEqual(expect.any(String));
+    expect(updateCalls[0]?.[0].data.previousPasswordHash).toBe(existing.passwordHash);
+    expect(updateCalls[0]?.[0].data.previousPasswordSalt).toBe(existing.passwordSalt);
   });
 
   test('maps unique races to public operator invitation errors', async () => {
@@ -280,9 +311,20 @@ function account(overrides: Record<string, unknown> = {}) {
     loginId: 'operator-login',
     passwordHash: 'hash',
     passwordSalt: 'salt',
+    previousPasswordHash: null,
+    previousPasswordSalt: null,
     scopes: dsvOperatorScopes,
     status: 'ACTIVE',
     updatedAt: new Date('2026-08-09T01:00:00.000Z'),
     ...overrides,
   };
+}
+
+function hashPassword(password: string, salt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, 64, (error, derivedKey) => {
+      if (error) reject(error);
+      else resolve(derivedKey.toString('base64url'));
+    });
+  });
 }

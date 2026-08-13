@@ -84,6 +84,52 @@ describe('PrismaDsvCustomerAccountService', () => {
     expect(consumeCalls.at(-1)?.[0].where).toMatchObject({ consumedAt: null, id: 'invite-1', revokedAt: null });
   });
 
+  test('rejects the current and immediately previous passwords during password reset', async () => {
+    const currentPassword = 'CurrentStrongPassw0rd!';
+    const previousPassword = 'PreviousStrongPassw0rd!';
+    const currentPasswordSalt = 'current-customer-salt';
+    const previousPasswordSalt = 'previous-customer-salt';
+    const resetInvite = invite({
+      account: {
+        displayName: '고객 운영자',
+        email: 'customer@example.com',
+        loginId: 'customer-login',
+        passwordHash: await hashPassword(currentPassword, currentPasswordSalt),
+        passwordSalt: currentPasswordSalt,
+        previousPasswordHash: await hashPassword(previousPassword, previousPasswordSalt),
+        previousPasswordSalt,
+      },
+      purpose: 'PASSWORD_RESET',
+    });
+
+    for (const password of [currentPassword, previousPassword]) {
+      const harness = createHarness();
+      harness.prisma.dsvCustomerAccountInvite.findUnique.mockResolvedValueOnce(resetInvite);
+      await expect(harness.service.complete({
+        password,
+        requestId: 'req-reused-password',
+        shopDomain: 'tomatonofood.com',
+        token,
+      })).rejects.toMatchObject({ code: 'PASSWORD_REUSED' });
+      expect(harness.tx.dsvCustomerAccountInvite.updateMany).not.toHaveBeenCalled();
+    }
+
+    const harness = createHarness();
+    harness.prisma.dsvCustomerAccountInvite.findUnique.mockResolvedValueOnce(resetInvite);
+    harness.tx.customerAccount.update.mockResolvedValueOnce({ activeSessionId, customerId, id: accountId, shopId });
+    await expect(harness.service.complete({
+      password: 'FreshStrongPassw0rd!',
+      requestId: 'req-fresh-password',
+      shopDomain: 'tomatonofood.com',
+      token,
+    })).resolves.toMatchObject({ accountId, activeSessionId });
+    const updateCalls = harness.tx.customerAccount.update.mock.calls as unknown as Array<[{
+      data: { previousPasswordHash?: string; previousPasswordSalt?: string };
+    }]>;
+    expect(updateCalls[0]?.[0].data.previousPasswordHash).toBe(resetInvite.account.passwordHash);
+    expect(updateCalls[0]?.[0].data.previousPasswordSalt).toBe(currentPasswordSalt);
+  });
+
   test('rotates the active session ID on every successful customer login', async () => {
     const harness = createHarness();
     const password = 'StrongPassw0rd!';
@@ -367,6 +413,10 @@ function invite(overrides: Record<string, unknown> = {}) {
       displayName: '고객 운영자',
       email: 'customer@example.com',
       loginId: 'customer-login',
+      passwordHash: null,
+      passwordSalt: null,
+      previousPasswordHash: null,
+      previousPasswordSalt: null,
     },
     accountId,
     consumedAt: null,

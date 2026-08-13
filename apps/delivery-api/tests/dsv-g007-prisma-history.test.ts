@@ -63,6 +63,11 @@ const dsvCustomerAccountInvitesMigrationName = '20260809120000_add_dsv_customer_
 const dsvAdminAccountInvitesMigrationName = '20260810120000_add_dsv_admin_account_invites';
 const uvisTrailMaterializationMigrationName = '20260810150000_add_uvis_vehicle_trail_materializations';
 const dsvActiveSessionIdsMigrationName = '20260813090000_add_dsv_active_session_ids';
+const dsvPasswordHistoryMigrationName = '20260813130000_add_dsv_password_history';
+const dsvPasswordHistoryMigrationPath = new URL(
+  `../prisma/migrations/${dsvPasswordHistoryMigrationName}/migration.sql`,
+  import.meta.url
+);
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
@@ -147,7 +152,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(76);
+    expect(migrations).toHaveLength(77);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -335,7 +340,22 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(uvisTrailMaterializationMigrationName)).toBeLessThan(
       migrations.indexOf(dsvActiveSessionIdsMigrationName)
     );
-    expect(migrations.at(-1)).toBe(dsvActiveSessionIdsMigrationName);
+    expect(migrations.indexOf(dsvActiveSessionIdsMigrationName)).toBeLessThan(
+      migrations.indexOf(dsvPasswordHistoryMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(dsvPasswordHistoryMigrationName);
+  });
+
+  test('adds one coherent previous-password credential pair to DSV account tables', async () => {
+    const migration = await readFile(dsvPasswordHistoryMigrationPath, 'utf8');
+
+    for (const tableName of ['customer_accounts', 'dsv_admin_accounts']) {
+      expect(migration).toContain(`ALTER TABLE "${tableName}"`);
+      expect(migration).toContain('ADD COLUMN "previousPasswordHash" TEXT');
+      expect(migration).toContain('ADD COLUMN "previousPasswordSalt" TEXT');
+    }
+    expect(migration).toContain('customer_accounts_previous_password_pair');
+    expect(migration).toContain('dsv_admin_accounts_previous_password_pair');
   });
 
   test('backfills shop ownership before allowing driverless signup invites', async () => {

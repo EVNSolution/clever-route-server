@@ -38,7 +38,7 @@ describe('G002 DSV Prisma foundation', () => {
     expect(account).toContain('customerId');
     expect(account).toContain('issuer');
     expect(account).toContain('subject');
-    expect(account).toContain('status              CustomerAccountStatus');
+    expect(account).toMatch(/\bstatus\s+CustomerAccountStatus\s+@default\(ACTIVE\)/u);
     expect(account).toContain('@@unique([shopId, issuer, subject])');
     expect(account).toContain('@relation(fields: [customerId, shopId], references: [id, shopId]');
 

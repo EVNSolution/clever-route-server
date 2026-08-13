@@ -146,11 +146,25 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
     }
     const displayName = normalizeDisplayName(input.displayName);
     const existing = await this.prisma.dsvAdminAccount.findUnique({
-      select: { id: true },
+      select: {
+        id: true,
+        passwordHash: true,
+        passwordSalt: true,
+        previousPasswordHash: true,
+        previousPasswordSalt: true,
+      },
       where: { loginId },
     });
     if (existing !== null && input.resetExisting !== true) {
       return { accountId: existing.id, created: false, reset: false };
+    }
+    if (existing !== null && (
+      await verifyPassword(input.password, existing.passwordSalt, existing.passwordHash)
+      || (existing.previousPasswordHash !== null
+        && existing.previousPasswordSalt !== null
+        && await verifyPassword(input.password, existing.previousPasswordSalt, existing.previousPasswordHash))
+    )) {
+      throw new Error('DSV admin password must differ from the current and previous passwords');
     }
 
     const passwordSalt = randomBytes(16).toString('base64url');
@@ -176,6 +190,8 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         lockedUntil: null,
         passwordHash,
         passwordSalt,
+        previousPasswordHash: existing.passwordHash,
+        previousPasswordSalt: existing.passwordSalt,
         scopes: [...dsvAdminScopes],
         status: 'ACTIVE',
         activeSessionId: null,
@@ -232,6 +248,8 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
         lockedUntil: null,
         passwordHash,
         passwordSalt,
+        previousPasswordHash: existing.passwordHash,
+        previousPasswordSalt: existing.passwordSalt,
         status: 'ACTIVE',
         activeSessionId: null,
       },

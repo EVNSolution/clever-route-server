@@ -195,14 +195,29 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
     if (existing === null || !currentPasswordMatches) {
       throw new DsvAdminOperatorInvitationError('CURRENT_PASSWORD_INVALID', 'Current password is invalid');
     }
+    if (input.password !== undefined && (
+      await verifyPassword(input.password, existing.passwordSalt, existing.passwordHash)
+      || (existing.previousPasswordHash !== null
+        && existing.previousPasswordSalt !== null
+        && await verifyPassword(input.password, existing.previousPasswordSalt, existing.previousPasswordHash))
+    )) {
+      throw new DsvAdminOperatorInvitationError('PASSWORD_REUSED', '현재 비밀번호와 직전 비밀번호는 다시 사용할 수 없습니다');
+    }
     if (loginId !== undefined && loginId !== existing.loginId) {
       const loginAccount = await this.prisma.dsvAdminAccount.findUnique({ select: { id: true }, where: { loginId } });
       if (loginAccount !== null && loginAccount.id !== existing.id) {
         throw new DsvAdminOperatorInvitationError('LOGIN_ID_EXISTS', 'loginId is already in use');
       }
     }
-    const passwordCredentials: { passwordHash?: string; passwordSalt?: string } = {};
+    const passwordCredentials: {
+      passwordHash?: string;
+      passwordSalt?: string;
+      previousPasswordHash?: string;
+      previousPasswordSalt?: string;
+    } = {};
     if (input.password !== undefined) {
+      passwordCredentials.previousPasswordHash = existing.passwordHash;
+      passwordCredentials.previousPasswordSalt = existing.passwordSalt;
       passwordCredentials.passwordSalt = randomBytes(16).toString('base64url');
       passwordCredentials.passwordHash = await hashPassword(input.password, passwordCredentials.passwordSalt);
     }
@@ -286,6 +301,7 @@ export class DsvAdminOperatorInvitationError extends Error {
       | 'INVITATION_LINK_NOT_CONFIGURED'
       | 'LOGIN_ID_EXISTS'
       | 'NOT_FOUND'
+      | 'PASSWORD_REUSED'
       | 'WEAK_PASSWORD',
     message: string,
   ) {
