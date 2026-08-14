@@ -9,6 +9,7 @@ import {
   ORDERS_PAGE_SIZE,
   ORDERS_SORT
 } from './order-pagination.js';
+import { parseOrderDisplaySequence } from './order-display-sequence.js';
 import {
   canonicalOrderInclude,
   toCanonicalOrderRow,
@@ -24,6 +25,7 @@ import { appScopedShopWhere, normalizeShopifyAppId } from './shopify-app-scope.j
 const SNAPSHOT_TTL_MS = 15 * 60_000;
 const SNAPSHOT_RETENTION_MS = 24 * 60 * 60_000;
 const SNAPSHOT_SKIPPED_REASON_KEYS = ['cancelled', 'missing', 'routeLocked'] as const;
+const ORDERS_SEQUENCE_INLINE_REPAIR_LIMIT = 50;
 
 type SnapshotSkippedReason = typeof SNAPSHOT_SKIPPED_REASON_KEYS[number];
 type SnapshotSkippedReasonCounts = Record<SnapshotSkippedReason, number>;
@@ -108,11 +110,7 @@ export class PrismaOrderQueryRepository {
       shopId: shop.id
     }, this.secret);
     const readWatermark = cursor?.readWatermark ?? new Date().toISOString();
-    const missingSequence = await this.prisma.order.findFirst({
-      select: { id: true },
-      where: { AND: [toCanonicalOrderWhere(shop.id, filters), { displayOrderSequence: null }] }
-    });
-    if (missingSequence !== null) throw new OrdersPaginationNotReadyError();
+    await this.ensureVisibleOrderSequencesReady(shop.id, filters);
     const tupleWhere: Prisma.OrderWhereInput = cursor === null ? {} : boundary === 'after'
       ? {
           AND: [
@@ -179,11 +177,7 @@ export class PrismaOrderQueryRepository {
     if (!Number.isSafeInteger(input.page) || input.page < 1) throw new Error('invalid page');
     const readWatermark = input.readWatermark ?? new Date().toISOString();
     if (!Number.isFinite(Date.parse(readWatermark))) throw new Error('invalid readWatermark');
-    const missingSequence = await this.prisma.order.findFirst({
-      select: { id: true },
-      where: { AND: [toCanonicalOrderWhere(input.shopId, input.filters), { displayOrderSequence: null }] }
-    });
-    if (missingSequence !== null) throw new OrdersPaginationNotReadyError();
+    await this.ensureVisibleOrderSequencesReady(input.shopId, input.filters);
 
     const where: Prisma.OrderWhereInput = {
       AND: [
@@ -543,6 +537,31 @@ export class PrismaOrderQueryRepository {
   private cursorFor(record: CanonicalOrderRecord, context: Omit<Parameters<typeof encodeOrdersCursor>[0], 'sequence' | 'orderId'>) {
     if (record.displayOrderSequence === null || record.displayOrderSequence === undefined) throw new Error('missing display sequence');
     return encodeOrdersCursor({ ...context, orderId: record.id, sequence: String(record.displayOrderSequence) }, this.secret);
+  }
+
+  private async ensureVisibleOrderSequencesReady(shopId: string, filters: ListCanonicalOrdersFilters) {
+    const baseWhere = toCanonicalOrderWhere(shopId, filters);
+    const repairCandidates = await this.prisma.order.findMany({
+      select: { id: true, name: true, sourceOrderNumber: true },
+      take: ORDERS_SEQUENCE_INLINE_REPAIR_LIMIT + 1,
+      where: { AND: [baseWhere, { displayOrderSequence: null }] }
+    });
+    if (repairCandidates.length === 0) return;
+
+    for (const order of repairCandidates.slice(0, ORDERS_SEQUENCE_INLINE_REPAIR_LIMIT)) {
+      const displayOrderSequence = parseOrderDisplaySequence(order.sourceOrderNumber ?? order.name);
+      if (displayOrderSequence === null) continue;
+      await this.prisma.order.updateMany({
+        data: { displayOrderSequence },
+        where: { displayOrderSequence: null, id: order.id }
+      });
+    }
+
+    const missingSequence = await this.prisma.order.findFirst({
+      select: { id: true },
+      where: { AND: [baseWhere, { displayOrderSequence: null }] }
+    });
+    if (missingSequence !== null) throw new OrdersPaginationNotReadyError();
   }
 
   private async findShop(

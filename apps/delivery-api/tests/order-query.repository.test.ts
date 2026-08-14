@@ -112,11 +112,91 @@ describe('PrismaOrderQueryRepository page query', () => {
   test('hard-stops instead of silently dropping reachable null sequences', async () => {
     const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>();
     const repository = new PrismaOrderQueryRepository(
-      prismaHarness({ findMany, missingSequence: { id: 'private-order-id' } }),
+      prismaHarness({
+        findMany,
+        missingSequence: { id: 'private-order-id' },
+        sequenceRepairCandidates: [{ id: 'private-order-id', name: 'manually imported order', sourceOrderNumber: null }]
+      }),
       'test-secret'
     );
     await expect(repository.listPage({ shopDomain: 'example.myshopify.com' }))
       .rejects.toBeInstanceOf(OrdersPaginationNotReadyError);
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
+  test('self-heals parseable null sequences before cursor pagination', async () => {
+    const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>(() => Promise.resolve([]));
+    const updateMany = vi.fn(() => Promise.resolve({ count: 1 }));
+    const repository = new PrismaOrderQueryRepository(
+      prismaHarness({
+        findMany,
+        missingSequence: null,
+        sequenceRepairCandidates: [{ id: 'order-1', name: '#QA-SWITCH-A1', sourceOrderNumber: null }],
+        updateMany
+      }),
+      'test-secret'
+    );
+
+    await expect(repository.listPage({ shopDomain: 'example.myshopify.com' })).resolves.toMatchObject({ rows: [] });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      data: { displayOrderSequence: 1n },
+      where: { displayOrderSequence: null, id: 'order-1' }
+    });
+    expect(findMany).toHaveBeenCalledOnce();
+  });
+
+  test('self-heals parseable null sequences before numeric pagination', async () => {
+    const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>(() => Promise.resolve([]));
+    const count = vi.fn<(query: unknown) => Promise<number>>(() => Promise.resolve(0));
+    const updateMany = vi.fn(() => Promise.resolve({ count: 1 }));
+    const repository = new PrismaOrderQueryRepository(
+      prismaHarness({
+        count,
+        findMany,
+        missingSequence: null,
+        sequenceRepairCandidates: [{ id: 'order-2', name: '#2', sourceOrderNumber: '#2002' }],
+        updateMany
+      }),
+      'test-secret'
+    );
+
+    await expect(repository.listPage({ page: 1, shopDomain: 'example.myshopify.com' })).resolves.toMatchObject({
+      count: 0,
+      pageInfo: { currentPage: 1 }
+    });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      data: { displayOrderSequence: 2002n },
+      where: { displayOrderSequence: null, id: 'order-2' }
+    });
+    expect(count).toHaveBeenCalledOnce();
+  });
+
+  test('preserves the not-ready stop when an unparseable sequence remains after repair attempts', async () => {
+    const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>();
+    const updateMany = vi.fn(() => Promise.resolve({ count: 1 }));
+    const repository = new PrismaOrderQueryRepository(
+      prismaHarness({
+        findMany,
+        missingSequence: { id: 'unparseable-order' },
+        sequenceRepairCandidates: [
+          { id: 'repairable-order', name: '#42', sourceOrderNumber: null },
+          { id: 'unparseable-order', name: 'manual order', sourceOrderNumber: null }
+        ],
+        updateMany
+      }),
+      'test-secret'
+    );
+
+    await expect(repository.listPage({ shopDomain: 'example.myshopify.com' }))
+      .rejects.toBeInstanceOf(OrdersPaginationNotReadyError);
+
+    expect(updateMany).toHaveBeenCalledOnce();
+    expect(updateMany).toHaveBeenCalledWith({
+      data: { displayOrderSequence: 42n },
+      where: { displayOrderSequence: null, id: 'repairable-order' }
+    });
     expect(findMany).not.toHaveBeenCalled();
   });
 
@@ -676,12 +756,22 @@ function firstCallArg(mock: { mock: { calls: unknown[][] } }): unknown {
   return firstCall[0];
 }
 
-function prismaHarness(input: { count?: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn>; missingSequence: { id: string } | null }): PrismaClient {
+function prismaHarness(input: {
+  count?: ReturnType<typeof vi.fn>;
+  findMany: ReturnType<typeof vi.fn>;
+  missingSequence: { id: string } | null;
+  sequenceRepairCandidates?: Array<{ id: string; name: string | null; sourceOrderNumber: string | null }>;
+  updateMany?: ReturnType<typeof vi.fn>;
+}): PrismaClient {
   return {
     order: {
       count: input.count ?? vi.fn(() => Promise.resolve(0)),
       findFirst: vi.fn(() => Promise.resolve(input.missingSequence)),
-      findMany: input.findMany
+      findMany: vi.fn((query: { select?: { sourceOrderNumber?: boolean } }) => {
+        if (query.select?.sourceOrderNumber === true) return Promise.resolve(input.sequenceRepairCandidates ?? []);
+        return (input.findMany as (query: unknown) => Promise<unknown[]>)(query);
+      }),
+      updateMany: input.updateMany ?? vi.fn(() => Promise.resolve({ count: 0 }))
     },
     shop: {
       findUnique: vi.fn(() => Promise.resolve({ id: '00000000-0000-0000-0000-000000000001' }))
