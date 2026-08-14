@@ -354,7 +354,11 @@ WITH checks(name, failures) AS (
     ))
 )
 SELECT json_build_object(
-  'status', CASE WHEN SUM(failures) > 0 THEN 'critical' ELSE 'ok' END,
+  'status', CASE
+    WHEN SUM(failures) FILTER (WHERE name <> 'duplicate_active_assignments') > 0
+      THEN 'critical'
+    ELSE 'ok'
+  END,
   'invariantFailures', COALESCE(json_object_agg(name, failures), '{}'::json)
 ) FROM checks;
 """

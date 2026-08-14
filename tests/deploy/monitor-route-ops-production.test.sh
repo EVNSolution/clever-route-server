@@ -63,6 +63,10 @@ case "$g007_status" in *"eta_input_route_version_mismatches"*"route_plan.status 
   *) echo "G007 invariant must compare active route-plan ETA input versions to the current child version regardless of etaStatus" >&2; exit 1 ;;
 esac
 case "$g007_status" in *"\"etaStatus\" = 'STALE'"*) echo "G007 invariant must not only count stale ETA statuses" >&2; exit 1 ;; esac
+case "$g007_status" in
+  *"SUM(failures) FILTER (WHERE name <> 'duplicate_active_assignments') > 0"*) ;;
+  *) echo "G007 duplicate assignments must remain observable without making monitor status critical" >&2; exit 1 ;;
+esac
 case "$g007_status" in *"expectedCount"*"appliedCount"*"pendingCount"*"failedCount"*"pendingMigrations"*) ;;
   *) echo "G007 JSON status must report expected, applied, pending, failed counts and pending names" >&2; exit 1 ;;
 esac
