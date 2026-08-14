@@ -459,7 +459,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain('route draft orders cannot be both routed and removed');
   });
 
-  test('adds selected orders to a ready child route in the membership transaction', () => {
+  test('adds selected orders to a ready or in-progress child route in the membership transaction', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const start = source.indexOf('async updateGroupingOrders(');
     const end = source.indexOf('async previewOptimization(', start);
@@ -471,17 +471,18 @@ describe('route grouping contracts', () => {
     expect(body.indexOf('await appendGroupingOrdersToChildRoute'))
       .toBeLessThan(body.indexOf('await recomputeAssignments'));
     expect(source).toContain("selected orders are already assigned to another child route");
-    expect(source).toContain("orders can only be added to a Ready child route");
+    expect(source).toContain("targetStatus !== 'READY' && targetStatus !== 'IN_PROGRESS'");
+    expect(source).toContain("orders can only be added to a Ready or in-progress child route");
   });
 
-  test('blocks draft save stop membership changes for non-ready child routes before inventory sync', () => {
+  test('allows additions to in-progress routes but blocks restricted membership changes before inventory sync', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
     const start = source.indexOf('async saveDraft(');
     const end = source.indexOf('async savePolygons(', start);
     const saveDraftBody = source.slice(start, end);
     const guardBody = source.slice(
-      source.indexOf('function assertDraftNonReadyChildStopMembershipUnchanged'),
+      source.indexOf('function assertDraftRestrictedChildStopMembershipChanges'),
       source.indexOf('function assertDraftExpectedRevisions')
     );
     const conflict = new RouteGroupingStopMembershipConflictError(['order-1'], ['route-plan-1']);
@@ -489,14 +490,16 @@ describe('route grouping contracts', () => {
     expect(conflict).toBeInstanceOf(RouteGroupingConflictError);
     expect(conflict.code).toBe('ROUTE_GROUPING_STOP_MEMBERSHIP_CONFLICT');
     expect(types).toContain('class RouteGroupingStopMembershipConflictError extends RouteGroupingConflictError');
-    expect(saveDraftBody).toContain('assertDraftNonReadyChildStopMembershipUnchanged(baseline, routes, removedOrderIds)');
-    expect(saveDraftBody).toContain('assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds)');
-    expect(saveDraftBody.indexOf('assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds)'))
+    expect(saveDraftBody).toContain('assertDraftRestrictedChildStopMembershipChanges(baseline, routes, removedOrderIds)');
+    expect(saveDraftBody).toContain('assertDraftRestrictedChildStopMembershipChanges(loaded, routes, removedOrderIds)');
+    expect(saveDraftBody.indexOf('assertDraftRestrictedChildStopMembershipChanges(loaded, routes, removedOrderIds)'))
       .toBeLessThan(saveDraftBody.indexOf('await deleteBranchOrderLocks(tx, group, undefined, removedOrderIds)'));
-    expect(saveDraftBody.indexOf('assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds)'))
+    expect(saveDraftBody.indexOf('assertDraftRestrictedChildStopMembershipChanges(loaded, routes, removedOrderIds)'))
       .toBeLessThan(saveDraftBody.indexOf('await syncRouteGroupingInventoryOrders(tx, {'));
-    expect(guardBody).toContain("deriveChildDisplayStatus(child) === 'READY'");
+    expect(guardBody).toContain("displayStatus === 'READY'");
     expect(guardBody).toContain('sameStringSet(currentOrderIds, draftOrderIds)');
+    expect(guardBody).toContain("displayStatus === 'IN_PROGRESS'");
+    expect(guardBody).toContain('currentOrderIds.every');
     expect(guardBody).toContain('removedOrderIdSet.has(orderId)');
     expect(guardBody).toContain('throw new RouteGroupingStopMembershipConflictError');
   });

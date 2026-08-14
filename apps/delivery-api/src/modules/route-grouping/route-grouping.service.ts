@@ -616,7 +616,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     if (baseline === null) return null;
     assertDraftOrderPartition(baseline, routes, removedOrderIds);
     assertDraftRoutePlanEnvelope(baseline, routes, deletedRoutePlanIds);
-    assertDraftNonReadyChildStopMembershipUnchanged(baseline, routes, removedOrderIds);
+    assertDraftRestrictedChildStopMembershipChanges(baseline, routes, removedOrderIds);
     assertDraftExpectedRevisions(baseline, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
     const releasedNotificationTargets = collectReleasedDriverNotificationTargets(
       baseline,
@@ -634,7 +634,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       assertDraftBaselineUnchanged(baseline, loaded, routes, deletedRoutePlanIds);
       assertDraftOrderPartition(loaded, routes, removedOrderIds);
       assertDraftRoutePlanEnvelope(loaded, routes, deletedRoutePlanIds);
-      assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds);
+      assertDraftRestrictedChildStopMembershipChanges(loaded, routes, removedOrderIds);
       assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
 
       if (removedOrderIds.length > 0) {
@@ -797,7 +797,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     if (loaded === null) return null;
     assertDraftOrderPartition(loaded, routes, removedOrderIds);
     assertDraftRoutePlanEnvelope(loaded, routes, deletedRoutePlanIds);
-    assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds);
+    assertDraftRestrictedChildStopMembershipChanges(loaded, routes, removedOrderIds);
     assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
 
     if (removedOrderIds.length > 0) {
@@ -1750,7 +1750,7 @@ function assertDraftRoutePlanEnvelope(group: LoadedGrouping, routes: RouteGroupi
   }
 }
 
-function assertDraftNonReadyChildStopMembershipUnchanged(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[], removedOrderIds: string[]): void {
+function assertDraftRestrictedChildStopMembershipChanges(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[], removedOrderIds: string[]): void {
   const routesByRoutePlanId = new Map(routes.map((route) => [route.routePlanId, route]));
   const removedOrderIdSet = new Set(removedOrderIds);
   const conflictingOrderIds = new Set<string>();
@@ -1758,10 +1758,14 @@ function assertDraftNonReadyChildStopMembershipUnchanged(group: LoadedGrouping, 
 
   for (const child of group.childVersions.filter((candidate) => isOperationalCurrentChild(candidate))) {
     const routePlanId = child.routePlanId;
-    if (routePlanId === null || deriveChildDisplayStatus(child) === 'READY') continue;
+    const displayStatus = deriveChildDisplayStatus(child);
+    if (routePlanId === null || displayStatus === 'READY') continue;
     const currentOrderIds = currentChildAssignments(group, child).map((assignment) => assignment.orderId);
     const draftOrderIds = routesByRoutePlanId.get(routePlanId)?.orderIds ?? [];
     if (sameStringSet(currentOrderIds, draftOrderIds)) continue;
+    const onlyAddsToInProgress = displayStatus === 'IN_PROGRESS'
+      && currentOrderIds.every((orderId) => draftOrderIds.includes(orderId) && !removedOrderIdSet.has(orderId));
+    if (onlyAddsToInProgress) continue;
     conflictingRoutePlanIds.add(routePlanId);
     currentOrderIds
       .filter((orderId) => removedOrderIdSet.has(orderId) || !draftOrderIds.includes(orderId))
@@ -2420,8 +2424,9 @@ async function appendGroupingOrdersToChildRoute(
   if (targetChild?.routePlan === null || targetChild?.routePlan === undefined) {
     throw new RouteGroupingValidationError(['target route plan must belong to the current route grouping']);
   }
-  if (deriveChildDisplayStatus(targetChild) !== 'READY') {
-    throw new RouteGroupingValidationError(['orders can only be added to a Ready child route']);
+  const targetStatus = deriveChildDisplayStatus(targetChild);
+  if (targetStatus !== 'READY' && targetStatus !== 'IN_PROGRESS') {
+    throw new RouteGroupingValidationError(['orders can only be added to a Ready or in-progress child route']);
   }
 
   const assignmentsByOrderId = new Map(group.orders.map((assignment) => [assignment.orderId, assignment]));
