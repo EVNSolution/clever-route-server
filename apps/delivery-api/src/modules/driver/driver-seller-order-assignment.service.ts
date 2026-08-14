@@ -118,7 +118,7 @@ export class DriverSellerOrderAlreadyAcquiredError extends Error {
 export class DriverSellerOrderTransferClosedError extends Error {
   readonly code = 'SELLER_ORDER_TRANSFER_CLOSED';
 
-  constructor(message = 'Orders can only be transferred before route departure.') {
+  constructor(message = 'Orders cannot leave a started route or enter a closed route.') {
     super(message);
     this.name = 'DriverSellerOrderTransferClosedError';
   }
@@ -189,11 +189,11 @@ export class DriverSellerOrderAssignmentService implements DriverSellerOrderAssi
     const { grouping } = await this.loadScopedGrouping(input);
 
     const target = requireDriverRoute(grouping, input);
-    assertTransferOpen(target);
+    assertTransferTargetOpen(target);
     const owner = requireOrderOwner(grouping, input.orderId);
     if (owner.driverId !== null) throw new DriverSellerOrderAlreadyAcquiredError();
     if (owner.routePlanId === null) throw new DriverSellerOrderAssignmentConflictError('Unassigned order route is not ready.');
-    assertTransferOpen(owner);
+    assertTransferSourceOpen(owner);
 
     const routes = moveOrder(grouping, input.orderId, owner, target);
     try {
@@ -232,7 +232,7 @@ export class DriverSellerOrderAssignmentService implements DriverSellerOrderAssi
     if (source.routePlanId !== input.routePlanId || source.driverId !== input.driverId) {
       throw new DriverSellerOrderScopeError();
     }
-    assertTransferOpen(source);
+    assertTransferSourceOpen(source);
 
     const existingUnassigned = grouping.children
       .filter((child) => child.driverId === null && child.displayStatus === 'READY' && child.routePlanId !== null)
@@ -309,8 +309,14 @@ function requireOrderOwner(grouping: RouteGroupingDetailDto, orderId: string): R
   return owner;
 }
 
-function assertTransferOpen(route: RouteGroupingChildDto): void {
+function assertTransferSourceOpen(route: RouteGroupingChildDto): void {
   if (route.displayStatus !== 'READY') throw new DriverSellerOrderTransferClosedError();
+}
+
+function assertTransferTargetOpen(route: RouteGroupingChildDto): void {
+  if (route.displayStatus !== 'READY' && route.displayStatus !== 'IN_PROGRESS') {
+    throw new DriverSellerOrderTransferClosedError();
+  }
 }
 
 function moveOrder(

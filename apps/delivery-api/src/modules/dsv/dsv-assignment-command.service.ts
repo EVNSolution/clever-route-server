@@ -220,13 +220,13 @@ export class DsvAssignmentCommandService {
         if (order === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
         assertExpectedVersion(command.input.expectedVersion, order.currentRouteVersionId);
         const owner = await this.requireOwner(tx, command.input.sellerOrderId, grouping, order.currentRouteVersionId);
-        assertTransferOpen(owner);
+        assertTransferSourceOpen(owner);
         owners.push(owner);
       }
 
       const target = await this.resolveAdminTargetRoute(tx, grouping, shop.id, firstCommand.input);
       if (target.driverId !== input.targetDriverId) throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
-      assertTransferOpen(target);
+      assertTransferTargetOpen(target);
       if (target.routePlanId === null) {
         await this.validateSpecifiedNewRouteVehicle(tx, shop.id, input.targetDriverId, input.targetVehicleId);
       } else {
@@ -385,7 +385,7 @@ export class DsvAssignmentCommandService {
         if (order === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
         assertExpectedVersion(command.input.expectedVersion, order.currentRouteVersionId);
         const owner = await this.requireOwner(tx, command.input.sellerOrderId, grouping, order.currentRouteVersionId);
-        assertTransferOpen(owner);
+        assertTransferSourceOpen(owner);
         owners.push(owner);
       }
 
@@ -540,7 +540,7 @@ export class DsvAssignmentCommandService {
           const order = orderById.get(sellerOrderId);
           if (order === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
           const owner = await this.requireOwner(tx, sellerOrderId, grouping, order.currentRouteVersionId);
-          assertTransferOpen(owner);
+          assertTransferSourceOpen(owner);
           ownerByOrderId.set(sellerOrderId, owner);
           affectedRouteScopes.push({ groupingId, routePlanId: owner.routePlanId });
         }
@@ -658,7 +658,7 @@ export class DsvAssignmentCommandService {
       payload: assignmentPayload('unassignSellerOrder', input),
       plan: async (tx, grouping, _shopId, currentRouteVersionId) => {
         const source = await this.requireOwner(tx, input.sellerOrderId, grouping, currentRouteVersionId);
-        assertTransferOpen(source);
+        assertTransferSourceOpen(source);
         const target = firstUnassignedRoute(grouping) ?? null;
         return {
           assignmentStatus: 'UNASSIGNED',
@@ -683,8 +683,8 @@ export class DsvAssignmentCommandService {
         const source = await this.requireOwner(tx, input.sellerOrderId, grouping, currentRouteVersionId);
         const target = await this.resolveAdminTargetRoute(tx, grouping, shopId, input);
         if (target.driverId !== input.targetDriverId) throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
-        assertTransferOpen(source);
-        assertTransferOpen(target);
+        assertTransferSourceOpen(source);
+        assertTransferTargetOpen(target);
         if (target.routePlanId === null) {
           await this.validateSpecifiedNewRouteVehicle(tx, shopId, input.targetDriverId, input.targetVehicleId);
         } else {
@@ -714,7 +714,7 @@ export class DsvAssignmentCommandService {
         if (source.routePlanId !== input.routePlanId || source.driverId !== input.driverId) {
           throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
         }
-        assertTransferOpen(source);
+        assertTransferSourceOpen(source);
         const target = firstUnassignedRoute(grouping) ?? null;
         return {
           assignmentStatus: 'UNASSIGNED',
@@ -737,11 +737,11 @@ export class DsvAssignmentCommandService {
       payload: assignmentPayload('acquireSellerOrder', input),
       plan: async (tx, grouping, shopId, currentRouteVersionId) => {
         const target = requireDriverRoute(grouping, input);
-        assertTransferOpen(target);
+        assertTransferTargetOpen(target);
         await this.validateSpecifiedRouteVehicle(tx, shopId, target, null);
         const source = await this.requireOwner(tx, input.sellerOrderId, grouping, currentRouteVersionId);
         if (source.driverId !== null) throw new DsvAssignmentCommandError('SELLER_ORDER_ALREADY_ACQUIRED');
-        assertTransferOpen(source);
+        assertTransferSourceOpen(source);
         return {
           assignmentStatus: 'ASSIGNED',
           etaStatus: 'PENDING',
@@ -1264,8 +1264,14 @@ function assertExpectedVersion(expectedVersion: string | null | undefined, curre
   if (expectedVersion !== actual) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
 }
 
-function assertTransferOpen(route: RouteGroupingChildDto): void {
+function assertTransferSourceOpen(route: RouteGroupingChildDto): void {
   if (route.displayStatus !== 'READY') throw new DsvAssignmentCommandError('SELLER_ORDER_TRANSFER_CLOSED');
+}
+
+function assertTransferTargetOpen(route: RouteGroupingChildDto): void {
+  if (route.displayStatus !== 'READY' && route.displayStatus !== 'IN_PROGRESS') {
+    throw new DsvAssignmentCommandError('SELLER_ORDER_TRANSFER_CLOSED');
+  }
 }
 
 function requireDriverRoute(grouping: RouteGroupingDetailDto, input: Pick<DriverRouteAccessScope, 'driverId' | 'routePlanId'>): RouteGroupingChildDto {

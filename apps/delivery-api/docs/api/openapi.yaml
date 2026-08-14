@@ -3826,7 +3826,7 @@ components:
         targetRoutePlanId:
           type: string
           format: uuid
-          description: Optional. When omitted, the command uses the selected driver's ready route in the grouping or creates a new ready draft route.
+          description: Optional READY or IN_PROGRESS target route. When omitted, the command uses the selected driver's ready route in the grouping or creates a new ready draft route.
         targetSequence:
           type: integer
           minimum: 0
@@ -3875,6 +3875,7 @@ components:
         targetRoutePlanId:
           type: string
           format: uuid
+          description: Optional READY or IN_PROGRESS target route for the entire batch.
         targetVehicleId:
           type: string
           format: uuid

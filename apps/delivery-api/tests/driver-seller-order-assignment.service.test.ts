@@ -53,6 +53,19 @@ describe('DriverSellerOrderAssignmentService', () => {
     expect(routes.flatMap((route) => route.orderIds).filter((orderId) => orderId === 'order-3')).toHaveLength(1);
   });
 
+  test('acquires into the authenticated route while it is in progress', async () => {
+    const grouping = createGrouping();
+    const target = grouping.children.find((route) => route.routePlanId === scope.routePlanId);
+    if (target === undefined) throw new Error('Expected target route fixture.');
+    target.displayStatus = 'IN_PROGRESS';
+    const saveDraft = vi.fn((input: SaveRouteGroupingDraftInput) => Promise.resolve(applyDraft(grouping, input)));
+    const service = createService({ grouping, saveDraft });
+
+    await expect(service.acquire({ ...commandScope(), orderId: 'order-3' }))
+      .resolves.toMatchObject({ routePlanId: scope.routePlanId });
+    expect(saveDraft).toHaveBeenCalledOnce();
+  });
+
   test('uses the command expected version for acquire writes when provided', async () => {
     const grouping = createGrouping();
     const saveDraft = vi.fn((input: SaveRouteGroupingDraftInput) => Promise.resolve(applyDraft(grouping, input)));

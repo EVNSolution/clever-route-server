@@ -77,6 +77,21 @@ describe('DsvAssignmentCommandService', () => {
     });
   });
 
+  test('reassign allows a new order to enter an in-progress target route', async () => {
+    const grouping = groupingFixture();
+    if (grouping.children[1] !== undefined) grouping.children[1].displayStatus = 'IN_PROGRESS';
+    const harness = createHarness({ grouping });
+
+    await harness.service.reassign({
+      ...adminInput({ commandId: 'cmd-reassign-in-progress-target' }),
+      targetDriverId: 'driver-b',
+      targetRoutePlanId: 'route-b',
+      targetVehicleId: 'vehicle-b',
+    });
+
+    expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-b')?.orderIds).toEqual(['order-a']);
+  });
+
   test('reassignMany moves 53 orders with one grouping save and one optimization schedule', async () => {
     const schedule = vi.fn();
     const orderIds = Array.from({ length: 53 }, (_, index) => `order-${index + 1}`);
@@ -105,6 +120,28 @@ describe('DsvAssignmentCommandService', () => {
     expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-b')?.orderIds).toEqual(orderIds);
     expect(result.assignmentResults.map((item) => item.sellerOrderId)).toEqual(orderIds);
     expect(schedule).toHaveBeenCalledTimes(1);
+  });
+
+  test('reassignMany allows driver selection into an in-progress target route', async () => {
+    const grouping = groupingFixture();
+    if (grouping.children[1] !== undefined) grouping.children[1].displayStatus = 'IN_PROGRESS';
+    const harness = createHarness({ grouping });
+
+    await harness.service.reassignMany({
+      actor: { actorId: 'driver-b', actorType: 'DRIVER', principalType: 'DRIVER' },
+      items: [{
+        commandId: 'cmd-driver-select-in-progress-target',
+        expectedVersion: 'version-route-a',
+        sellerOrderId: 'order-a',
+      }],
+      reason: 'DRIVER_DESTINATION_BUNDLE_ACQUIRE',
+      shopDomain: 'example.myshopify.com',
+      targetDriverId: 'driver-b',
+      targetRoutePlanId: 'route-b',
+      targetVehicleId: 'vehicle-b',
+    });
+
+    expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-b')?.orderIds).toEqual(['order-a']);
   });
 
   test('unassignMany moves 53 orders atomically with one grouping save and one optimization schedule', async () => {
@@ -533,6 +570,19 @@ describe('DsvAssignmentCommandService', () => {
     await expect(alreadyOwned.service.acquire(driverInput({ commandId: 'cmd-acquire-owned' }))).rejects.toMatchObject({
       code: 'SELLER_ORDER_ALREADY_ACQUIRED',
     } satisfies Partial<DsvAssignmentCommandError>);
+  });
+
+  test('driver acquire allows selection into its in-progress route', async () => {
+    const grouping = groupingFixture({ initiallyUnassigned: true, routeAStatus: 'IN_PROGRESS' });
+    const harness = createHarness({ grouping });
+
+    await harness.service.acquire(driverInput({
+      commandId: 'cmd-acquire-in-progress-target',
+      expectedVersion: 'version-unassigned',
+      sellerOrderId: 'order-a',
+    }));
+
+    expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-a')?.orderIds).toEqual(['order-a']);
   });
 
   test('updates canonical RoutePlanStop ETA ownership for every affected route', async () => {

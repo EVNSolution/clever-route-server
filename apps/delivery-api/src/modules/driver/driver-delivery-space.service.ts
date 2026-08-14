@@ -335,7 +335,7 @@ function translateAssignmentError(cause: DsvAssignmentCommandError): DriverDeliv
     case 'SELLER_ORDER_TARGET_VEHICLE_REQUIRED':
       return error('DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED', '차량이 연결된 경로에서만 배송을 가져올 수 있습니다.');
     case 'SELLER_ORDER_TRANSFER_CLOSED':
-      return error('DESTINATION_BUNDLE_TRANSFER_CLOSED', '배송 시작 후에는 변경할 수 없습니다.');
+      return error('DESTINATION_BUNDLE_TRANSFER_CLOSED', '진행 중인 배송은 반납할 수 없고 종료된 경로에는 추가할 수 없습니다.');
     default:
       return error('DESTINATION_BUNDLE_ASSIGNMENT_CHANGED', '배송 배정이 변경되었습니다.');
   }
