@@ -19,7 +19,7 @@ Returns only unassigned orders in the route group associated with the bearer rou
 
 Moves an unassigned order to the bearer driver's current route. The target route must already have a vehicle. The server does not guess a vehicle identifier.
 
-The move uses the existing route-group draft transaction. Route membership, stop sequence, geometry, and ETA-related route data are recalculated before one atomic commit. If two drivers acquire the same order, the first valid save succeeds and the loser receives:
+The move uses the existing route-group transaction. Route membership and ETA invalidation commit atomically; successful assignment then schedules both affected routes for asynchronous stop-order, geometry, and planned-ETA recalculation. Recalculation failure is observable but does not roll back the accepted assignment. If two drivers acquire the same order, the first valid save succeeds and the loser receives:
 
 ```json
 {
@@ -31,7 +31,7 @@ The move uses the existing route-group draft transaction. Route membership, stop
 }
 ```
 
-If route recalculation is unavailable, the transfer is not partially persisted. The API returns `422 SELLER_ORDER_ROUTE_RECALCULATION_FAILED` for invalid route inputs or `503 SELLER_ORDER_ROUTE_RECALCULATION_UNAVAILABLE` when the runtime has no route engine configuration.
+If asynchronous route recalculation is unavailable, the accepted assignment remains persisted and the server records a structured scheduling failure for operational recovery.
 
 ### POST `/driver/orders/{orderId}/release`
 

@@ -123,6 +123,7 @@ The response must not include other drivers' routes, unrelated orders, raw Shopi
 
 ## Server-authoritative ETA lifecycle
 
+- A successful pre-execution route geometry refresh stores planned stop ETAs from the route's scheduled start or the shop's planned departure time. The ETA rows are bound to the current child-route version.
 - `ROUTE_STARTED` uses the persisted driver event `createdAt` as the route start clock and writes an initial `estimatedArrivalAt` chain for every stop.
 - Each stop ETA is the server start/arrival time plus the stored drive duration for the next leg and the preceding stop's service time (default 5 minutes when absent).
 - `STOP_ARRIVED` marks the stop `ARRIVED`, compares the event's server receipt time with that stop's previous ETA, and rewrites only future stop ETAs.
