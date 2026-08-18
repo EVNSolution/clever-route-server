@@ -13,7 +13,7 @@ const context = {
   shopDomain: 'example.myshopify.com',
   shopId: 'shop-id'
 };
-const emptySpace = { available: [], mine: [], version: 'route-version-1' };
+const emptySpace = { available: [], mine: [], recipients: [], version: 'route-version-1' };
 
 describe('driver delivery space routes', () => {
   test('returns destination bundles only inside the bearer route scope', async () => {
@@ -53,6 +53,30 @@ describe('driver delivery space routes', () => {
         ...context,
         destinationId: 'destination-1',
         expectedVersion: 'route-version-1'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('delegates a destination-wide transfer to a selected in-group driver', async () => {
+    const transfer = vi.fn(() => Promise.resolve({ bundle: {}, routePlanId: 'recipient-route', version: 'route-version-2' }));
+    const app = await createApp({ transfer });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: { expectedVersion: 'route-version-1', targetDriverId: 'recipient-driver' },
+        url: '/driver/delivery-space/destination-1/transfer'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(transfer).toHaveBeenCalledWith({
+        ...context,
+        destinationId: 'destination-1',
+        expectedVersion: 'route-version-1',
+        targetDriverId: 'recipient-driver'
       });
     } finally {
       await app.close();
@@ -114,6 +138,7 @@ async function createApp(overrides: Record<string, unknown>) {
         acquire: vi.fn(() => Promise.resolve({})),
         getSpace: vi.fn(() => Promise.resolve(emptySpace)),
         release: vi.fn(() => Promise.resolve({})),
+        transfer: vi.fn(() => Promise.resolve({})),
         ...overrides
       } as never,
       driverEventService: {

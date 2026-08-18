@@ -2795,6 +2795,49 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /driver/delivery-space/{destinationId}/transfer:
+    post:
+      tags: [Driver Mobile]
+      summary: Atomically transfer every order at one owned destination to another driver in the current grouping
+      operationId: transferDriverDeliveryBundle
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: destinationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriverDeliverySpaceTransferCommand' }
+      responses:
+        '200':
+          description: The complete destination bundle moved to the selected driver's current route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverDeliverySpaceCommandEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The assignment version changed or transfer is closed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: The affected routes could not be recalculated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: Route recalculation is not configured in this runtime.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   /driver/orders/{orderId}/acquire:
     post:
       tags: [Driver Mobile]
@@ -6228,13 +6271,27 @@ components:
       properties:
         expectedVersion: { type: string, minLength: 1 }
       additionalProperties: false
+    DriverDeliverySpaceTransferCommand:
+      type: object
+      required: [expectedVersion, targetDriverId]
+      properties:
+        expectedVersion: { type: string, minLength: 1 }
+        targetDriverId: { type: string, format: uuid }
+      additionalProperties: false
+    DriverDeliveryRecipient:
+      type: object
+      required: [driverId, driverName]
+      properties:
+        driverId: { type: string, format: uuid }
+        driverName: { type: string }
+      additionalProperties: false
     DriverDeliverySpaceEnvelope:
       type: object
       required: [data, error]
       properties:
         data:
           type: object
-          required: [available, mine, version]
+          required: [available, mine, recipients, version]
           properties:
             available:
               type: array
@@ -6242,6 +6299,9 @@ components:
             mine:
               type: array
               items: { $ref: '#/components/schemas/DriverDeliveryBundle' }
+            recipients:
+              type: array
+              items: { $ref: '#/components/schemas/DriverDeliveryRecipient' }
             version: { type: string }
         error: { type: 'null' }
     DriverDeliverySpaceCommandEnvelope:

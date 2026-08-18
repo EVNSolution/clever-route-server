@@ -83,7 +83,10 @@ import type { RouteTrackingStreamHub } from '../modules/route-tracking/route-tra
 import type { AdminNotificationServiceApi } from '../modules/notifications/admin-notification.service.js';
 import type { DsvRouteOptimizationSchedulerPort } from '../modules/dsv/dsv-route-optimization.scheduler.js';
 import { DsvOrderMessageError, type DsvOrderMessageService } from '../modules/dsv/dsv-order-message.service.js';
-import { DriverDeliverySpaceError, type DriverDeliverySpaceServiceContract } from '../modules/driver/driver-delivery-space.service.js';
+import {
+  DriverDeliverySpaceError,
+  type DriverDeliverySpaceServiceContract
+} from '../modules/driver/driver-delivery-space.service.js';
 
 export type DriverApiDependencies = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
@@ -151,7 +154,9 @@ type DriverSellerOrderAssignmentBody = {
 
 type DriverDeliverySpaceParams = { destinationId?: unknown };
 type DriverDeliverySpaceCommandBody = { expectedVersion?: unknown };
+type DriverDeliverySpaceTransferBody = DriverDeliverySpaceCommandBody & { targetDriverId?: unknown };
 type DriverDeliverySpaceCommand = { destinationId: string; expectedVersion: string };
+type DriverDeliverySpaceTransferRequest = DriverDeliverySpaceCommand & { targetDriverId: string };
 
 type DriverDestinationNotesParams = { destinationId?: unknown };
 type DriverDestinationNotesBody = {
@@ -554,6 +559,28 @@ export function registerDriverEventRoutes(
         }
       );
     }
+    app.post<{ Body: DriverDeliverySpaceTransferBody; Params: DriverDeliverySpaceParams }>(
+      '/driver/delivery-space/:destinationId/transfer',
+      async (request, reply) => {
+        const auth = await authenticateDriverRequest(request, dependencies);
+        if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
+        reply.header('Cache-Control', 'private, no-store');
+
+        let command: DriverDeliverySpaceTransferRequest;
+        try {
+          command = readDriverDeliverySpaceTransferCommand(request);
+        } catch {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid delivery space transfer command'));
+        }
+
+        try {
+          const result = await deliverySpaceService.transfer({ ...auth.context, ...command });
+          return reply.code(200).send({ data: result, error: null });
+        } catch (error) {
+          return sendDriverDeliverySpaceError(reply, error);
+        }
+      }
+    );
   }
 
   const driverRouteSessionRestoreService = dependencies.driverRouteSessionRestoreService;
@@ -1950,6 +1977,19 @@ function readDriverDeliverySpaceCommand(
   return {
     destinationId: readRequiredString(request.params.destinationId),
     expectedVersion: readBoundedText(request.body?.expectedVersion, { maxLength: 120, minLength: 1 })
+  };
+}
+
+function readDriverDeliverySpaceTransferCommand(
+  request: FastifyRequest<{ Body: DriverDeliverySpaceTransferBody; Params: DriverDeliverySpaceParams }>
+): DriverDeliverySpaceTransferRequest {
+  const body = request.body ?? {};
+  assertOnlyKeys(body, new Set(['expectedVersion', 'targetDriverId']));
+
+  return {
+    destinationId: readRequiredString(request.params.destinationId),
+    expectedVersion: readBoundedText(request.body?.expectedVersion, { maxLength: 120, minLength: 1 }),
+    targetDriverId: readBoundedText(request.body?.targetDriverId, { maxLength: 120, minLength: 1 })
   };
 }
 

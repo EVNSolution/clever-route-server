@@ -51,6 +51,44 @@ describe('DriverDeliverySpaceService', () => {
     }));
   });
 
+  test('lists other ready-route drivers and transfers the whole destination atomically', async () => {
+    const harness = setup(bundleOrders('mine'), { recipients: true });
+
+    await expect(harness.service.getSpace(scope())).resolves.toMatchObject({
+      recipients: [{ driverId: 'driver-2', driverName: '양우진' }]
+    });
+    await harness.service.transfer({
+      ...scope(),
+      destinationId: 'dest-a',
+      expectedVersion: 'v1',
+      targetDriverId: 'driver-2'
+    });
+
+    expect(harness.reassignMany).toHaveBeenCalledTimes(1);
+    expect(harness.reassignMany).toHaveBeenCalledWith(expect.objectContaining({
+      actor: { actorId: 'driver-1', actorType: 'DRIVER', principalType: 'DRIVER' },
+      items: [
+        expect.objectContaining({ expectedVersion: 'version-a1', sellerOrderId: 'order-a1' }),
+        expect.objectContaining({ expectedVersion: 'version-a2', sellerOrderId: 'order-a2' })
+      ],
+      reason: 'DRIVER_DESTINATION_BUNDLE_TRANSFER',
+      targetDriverId: 'driver-2',
+      targetRoutePlanId: 'route-recipient'
+    }));
+  });
+
+  test('rejects transfer to a driver outside the current grouping', async () => {
+    const harness = setup(bundleOrders('mine'), { recipients: true });
+
+    await expect(harness.service.transfer({
+      ...scope(),
+      destinationId: 'dest-a',
+      expectedVersion: 'v1',
+      targetDriverId: 'driver-outside'
+    })).rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED' });
+    expect(harness.reassignMany).not.toHaveBeenCalled();
+  });
+
   test('reports a first-claim conflict from the atomic assignment command', async () => {
     const harness = setup(bundleOrders('public'));
     harness.reassignMany.mockRejectedValueOnce(new DsvAssignmentCommandError('SELLER_ORDER_ALREADY_ACQUIRED'));
@@ -108,9 +146,9 @@ describe('DriverDeliverySpaceService', () => {
 
 function setup(
   rows: Awaited<ReturnType<DriverDeliverySpaceRepositoryContract['listBundleOrders']>>,
-  options: { now?: Date; planDate?: string } = {}
+  options: { now?: Date; planDate?: string; recipients?: boolean } = {}
 ) {
-  const grouping = groupingDetail(options.planDate);
+  const grouping = groupingDetail(options.planDate, options.recipients);
   const getGrouping = vi.fn(() => Promise.resolve(grouping));
   const reassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-driver' }));
   const unassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-public' }));
@@ -143,9 +181,27 @@ function scope() {
   return { accountId: 'account-1', driverId: 'driver-1', routePlanId: 'route-driver', shopDomain: 'dsv.test', shopId: 'shop-1', tokenVersion: 1 };
 }
 
-function groupingDetail(planDate = '2026-08-03'): RouteGroupingDetailDto {
+function groupingDetail(planDate = '2026-08-03', recipients = false): RouteGroupingDetailDto {
   return {
-    assignments: [], branches: [], children: [], currentVersion: 1, dateRangeEnd: planDate, dateRangeStart: planDate,
+    assignments: [], branches: [], children: recipients ? [{
+      childVersion: 1,
+      color: null,
+      displayStatus: 'READY',
+      driverId: 'driver-2',
+      driverName: '양우진',
+      notificationStatus: 'NOT_REQUIRED',
+      orderIds: [],
+      routeGeometry: null,
+      routeMetrics: null,
+      routePlan: null,
+      routePlanId: 'route-recipient',
+      routeIdx: null,
+      routeStopPoints: [],
+      sortOrder: 2,
+      stops: [],
+      stopsCount: 0,
+      updatedAt: 'v1'
+    }] : [], currentVersion: 1, dateRangeEnd: planDate, dateRangeStart: planDate,
     displayStatus: 'READY', id: 'group-1', linkedInventoryId: null, name: '배송', planDate, polygons: [],
     status: 'READY', totalOrders: 0, unresolvedOrders: 0, updatedAt: 'v1', warningState: []
   };
