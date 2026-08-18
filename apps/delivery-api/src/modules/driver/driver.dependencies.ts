@@ -41,6 +41,7 @@ import type { RouteGroupingService } from '../route-grouping/route-grouping.type
 import type { RouteGroupingAssignmentDto } from '../route-grouping/route-grouping.types.js';
 import type { DsvRouteOptimizationSchedulerPort } from '../dsv/dsv-route-optimization.scheduler.js';
 import type { DsvOrderMessageService } from '../dsv/dsv-order-message.service.js';
+import type { PrismaDsvDriverNotificationDispatcher } from '../dsv/dsv-driver-notification.dispatcher.js';
 import {
   DsvAssignmentCommandError,
   DsvAssignmentCommandService,
@@ -99,6 +100,7 @@ type DriverProofMediaRepositorySafetyOptions = {
 
 type LoadDriverApiDependenciesInput = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
+  driverNotificationDispatcher?: Pick<PrismaDsvDriverNotificationDispatcher, 'dispatchByIdempotencyKey'>;
   env: DriverApiRuntimeEnv;
   prisma: PrismaClient;
   orderMessageService?: Pick<DsvOrderMessageService, 'markDriverMessageRead'>;
@@ -143,7 +145,9 @@ export function loadDriverApiDependencies(
           driverDeliverySpaceService: new DriverDeliverySpaceService(
             new PrismaDriverDeliverySpaceRepository(input.prisma),
             input.routeGroupingService,
-            dsvAssignmentCommandService as DsvAssignmentCommandService
+            dsvAssignmentCommandService as DsvAssignmentCommandService,
+            undefined,
+            input.driverNotificationDispatcher
           ),
           driverSellerOrderAssignmentService: new DriverSellerOrderAssignmentService(
             driverSellerOrderContextRepository,

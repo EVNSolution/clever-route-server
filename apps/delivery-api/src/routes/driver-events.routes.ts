@@ -153,10 +153,12 @@ type DriverSellerOrderAssignmentBody = {
 };
 
 type DriverDeliverySpaceParams = { destinationId?: unknown };
+type DriverDeliverySpaceHandoffParams = { requestId?: unknown };
 type DriverDeliverySpaceCommandBody = { expectedVersion?: unknown };
 type DriverDeliverySpaceTransferBody = DriverDeliverySpaceCommandBody & { targetDriverId?: unknown };
 type DriverDeliverySpaceCommand = { destinationId: string; expectedVersion: string };
 type DriverDeliverySpaceTransferRequest = DriverDeliverySpaceCommand & { targetDriverId: string };
+type DriverDeliverySpaceHandoffDecision = { requestId: string };
 
 type DriverDestinationNotesParams = { destinationId?: unknown };
 type DriverDestinationNotesBody = {
@@ -560,7 +562,7 @@ export function registerDriverEventRoutes(
       );
     }
     app.post<{ Body: DriverDeliverySpaceTransferBody; Params: DriverDeliverySpaceParams }>(
-      '/driver/delivery-space/:destinationId/transfer',
+      '/driver/delivery-space/:destinationId/handoff-requests',
       async (request, reply) => {
         const auth = await authenticateDriverRequest(request, dependencies);
         if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
@@ -574,13 +576,41 @@ export function registerDriverEventRoutes(
         }
 
         try {
-          const result = await deliverySpaceService.transfer({ ...auth.context, ...command });
-          return reply.code(200).send({ data: result, error: null });
+          const result = await deliverySpaceService.proposeHandoff({ ...auth.context, ...command });
+          return reply.code(201).send({ data: result, error: null });
         } catch (error) {
           return sendDriverDeliverySpaceError(reply, error);
         }
       }
     );
+    for (const action of ['accept', 'reject', 'cancel'] as const) {
+      app.post<{ Params: DriverDeliverySpaceHandoffParams }>(
+        `/driver/delivery-space/handoff-requests/:requestId/${action}`,
+        async (request, reply) => {
+          const auth = await authenticateDriverRequest(request, dependencies);
+          if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
+          reply.header('Cache-Control', 'private, no-store');
+
+          let command: DriverDeliverySpaceHandoffDecision;
+          try {
+            command = readDriverDeliverySpaceHandoffDecision(request);
+          } catch {
+            return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid handoff request'));
+          }
+
+          try {
+            const result = action === 'accept'
+              ? await deliverySpaceService.acceptHandoff({ ...auth.context, ...command })
+              : action === 'reject'
+                ? await deliverySpaceService.rejectHandoff({ ...auth.context, ...command })
+                : await deliverySpaceService.cancelHandoff({ ...auth.context, ...command });
+            return reply.code(200).send({ data: result, error: null });
+          } catch (error) {
+            return sendDriverDeliverySpaceError(reply, error);
+          }
+        }
+      );
+    }
   }
 
   const driverRouteSessionRestoreService = dependencies.driverRouteSessionRestoreService;
@@ -1990,6 +2020,14 @@ function readDriverDeliverySpaceTransferCommand(
     destinationId: readRequiredString(request.params.destinationId),
     expectedVersion: readBoundedText(request.body?.expectedVersion, { maxLength: 120, minLength: 1 }),
     targetDriverId: readBoundedText(request.body?.targetDriverId, { maxLength: 120, minLength: 1 })
+  };
+}
+
+function readDriverDeliverySpaceHandoffDecision(
+  request: FastifyRequest<{ Params: DriverDeliverySpaceHandoffParams }>
+): DriverDeliverySpaceHandoffDecision {
+  return {
+    requestId: readRequiredString(request.params.requestId)
   };
 }
 

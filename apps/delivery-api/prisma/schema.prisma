@@ -349,6 +349,15 @@ enum DsvDispatchChangeRequestStatus {
   CANCELLED
 }
 
+enum DriverBundleHandoffRequestStatus {
+  PROPOSED
+  PROCESSING
+  REJECTED
+  APPLIED
+  CANCELLED
+  INVALIDATED
+}
+
 model Shop {
   id                                String                                 @id @default(uuid()) @db.Uuid
   appId                             String                                 @default("clever") @db.Text
@@ -437,11 +446,36 @@ model Shop {
   dsvCommandReceipts                DsvCommandReceipt[]
   dsvAuditEvents                    DsvAuditEvent[]
   dsvDispatchChangeRequests         DsvDispatchChangeRequest[]
+  driverBundleHandoffRequests       DriverBundleHandoffRequest[]
 
   @@unique([appId, shopDomain])
   @@unique([appId, shopifyShopGid])
   @@index([shopDomain])
   @@map("shops")
+}
+
+model DriverBundleHandoffRequest {
+  id                  String                           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId              String                           @db.Uuid
+  shop                Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  groupingId          String                           @db.Uuid
+  destinationId       String                           @db.Text
+  sourceDriverId      String                           @db.Uuid
+  sourceRoutePlanId   String                           @db.Uuid
+  targetDriverId      String                           @db.Uuid
+  targetRoutePlanId   String                           @db.Uuid
+  expectedVersion     String                           @db.Text
+  status              DriverBundleHandoffRequestStatus @default(PROPOSED)
+  expiresAt           DateTime                         @db.Timestamptz(6)
+  respondedAt         DateTime?                        @db.Timestamptz(6)
+  createdAt           DateTime                         @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime                         @updatedAt @db.Timestamptz(6)
+
+  @@index([shopId, sourceDriverId, status, createdAt])
+  @@index([shopId, targetDriverId, status, createdAt])
+  @@index([shopId, groupingId, destinationId, status])
+  /// A partial unique index in the migration allows only one PROPOSED/PROCESSING request per destination.
+  @@map("driver_bundle_handoff_requests")
 }
 
 model AdminNotification {
