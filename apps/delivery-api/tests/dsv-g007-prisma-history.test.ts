@@ -73,6 +73,11 @@ const requireDsvAdminPasswordChangeMigrationPath = new URL(
   `../prisma/migrations/${requireDsvAdminPasswordChangeMigrationName}/migration.sql`,
   import.meta.url
 );
+const driverDestinationNotesMigrationName = '20260818100000_add_driver_destination_notes';
+const driverDestinationNotesMigrationPath = new URL(
+  `../prisma/migrations/${driverDestinationNotesMigrationName}/migration.sql`,
+  import.meta.url
+);
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
@@ -157,7 +162,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(78);
+    expect(migrations).toHaveLength(79);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -351,7 +356,29 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(dsvPasswordHistoryMigrationName)).toBeLessThan(
       migrations.indexOf(requireDsvAdminPasswordChangeMigrationName)
     );
-    expect(migrations.at(-1)).toBe(requireDsvAdminPasswordChangeMigrationName);
+    expect(migrations.indexOf(requireDsvAdminPasswordChangeMigrationName)).toBeLessThan(
+      migrations.indexOf(driverDestinationNotesMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(driverDestinationNotesMigrationName);
+  });
+
+  test('adds driver destination notes without rewriting existing customer profiles', async () => {
+    const migration = await readFile(driverDestinationNotesMigrationPath, 'utf8');
+
+    expect(migration).toContain('ALTER TABLE "delivery_customer_profiles"');
+    for (const column of [
+      'driverMemo',
+      'driverMemoUpdatedAt',
+      'driverLunchTimeRange',
+      'driverLunchTimeRangeUpdatedAt',
+      'driverLunchEntryStatus',
+      'driverLunchEntryStatusUpdatedAt',
+      'driverRequiredArrivalTime',
+      'driverRequiredArrivalTimeUpdatedAt'
+    ]) {
+      expect(migration).toContain(`ADD COLUMN "${column}"`);
+    }
+    expect(migration).not.toContain('DROP COLUMN');
   });
 
   test('adds one coherent previous-password credential pair to DSV account tables', async () => {

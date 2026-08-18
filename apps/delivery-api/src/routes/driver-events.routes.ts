@@ -15,6 +15,12 @@ import type {
   DriverAssignedRouteServiceContract,
   DriverRouteMapPreview
 } from '../modules/driver/driver-assigned-route.types.js';
+import {
+  DriverDestinationNotesScopeError,
+  type DriverDestinationNotesPatch,
+  type DriverDestinationNotesServiceContract,
+  type DriverLunchEntryStatus
+} from '../modules/driver/driver-destination-notes.repository.js';
 import type { DriverRouteMapPreviewServiceApi } from '../modules/driver/driver-route-map-preview.service.js';
 import {
   DriverSellerOrderAlreadyAcquiredError,
@@ -84,6 +90,7 @@ export type DriverApiDependencies = {
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
   driverConsentService?: DriverConsentServiceContract;
   driverDeliverySpaceService?: DriverDeliverySpaceServiceContract;
+  driverDestinationNotesService?: DriverDestinationNotesServiceContract;
   driverEventService: {
     completeDeliveryDestination?(input: {
       clientEventId: string;
@@ -145,6 +152,14 @@ type DriverSellerOrderAssignmentBody = {
 type DriverDeliverySpaceParams = { destinationId?: unknown };
 type DriverDeliverySpaceCommandBody = { expectedVersion?: unknown };
 type DriverDeliverySpaceCommand = { destinationId: string; expectedVersion: string };
+
+type DriverDestinationNotesParams = { destinationId?: unknown };
+type DriverDestinationNotesBody = {
+  lunchEntryStatus?: unknown;
+  lunchTimeRange?: unknown;
+  memo?: unknown;
+  requiredArrivalTime?: unknown;
+};
 
 type DriverRouteMapPreviewParams = {
   previewId?: unknown;
@@ -352,6 +367,49 @@ export function registerDriverEventRoutes(
         error: null
       });
     });
+  }
+
+  const driverDestinationNotesService = dependencies.driverDestinationNotesService;
+  if (driverDestinationNotesService !== undefined) {
+    app.patch<{ Body: DriverDestinationNotesBody; Params: DriverDestinationNotesParams }>(
+      '/driver/destinations/:destinationId/notes',
+      async (request, reply) => {
+        const authentication = await authenticateDriverRequest(request, dependencies);
+        if (authentication.status !== 'authenticated') {
+          return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
+        }
+        reply.header('Cache-Control', 'private, no-store');
+        const routePlanId = authentication.context.routePlanId;
+        if (routePlanId === null) {
+          return reply.code(409).send(errorResponse('ROUTE_NOT_ASSIGNED', 'Driver route is not assigned'));
+        }
+
+        let destinationId: string;
+        let patch: DriverDestinationNotesPatch;
+        try {
+          destinationId = readRequiredString(request.params.destinationId);
+          patch = readDriverDestinationNotesBody(request.body ?? {});
+        } catch {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver destination notes payload'));
+        }
+
+        try {
+          const notes = await driverDestinationNotesService.update({
+            destinationId,
+            driverId: authentication.context.driverId,
+            patch,
+            routePlanId,
+            shopId: authentication.context.shopId
+          });
+          return reply.code(200).send({ data: { destinationId, notes }, error: null });
+        } catch (error) {
+          if (error instanceof DriverDestinationNotesScopeError) {
+            return reply.code(403).send(errorResponse(error.code, error.message));
+          }
+          throw error;
+        }
+      }
+    );
   }
 
   const driverSellerOrderAssignmentService = dependencies.driverSellerOrderAssignmentService;
@@ -1407,6 +1465,61 @@ function readDriverProfileUpdateBody(body: DriverProfileUpdateBody): { displayNa
   return {
     displayName: readBoundedText(body.displayName, { maxLength: 80, minLength: 1 })
   };
+}
+
+function readDriverDestinationNotesBody(body: DriverDestinationNotesBody): DriverDestinationNotesPatch {
+  assertOnlyKeys(body, new Set(['lunchEntryStatus', 'lunchTimeRange', 'memo', 'requiredArrivalTime']));
+  const keys = Object.keys(body);
+  if (keys.length === 0) throw new Error('Destination notes patch is empty');
+
+  const patch: DriverDestinationNotesPatch = {};
+  if (Object.prototype.hasOwnProperty.call(body, 'memo')) {
+    patch.memo = readNullableBoundedText(body.memo, 1_000);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'lunchTimeRange')) {
+    patch.lunchTimeRange = readNullableLunchTimeRange(body.lunchTimeRange);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'lunchEntryStatus')) {
+    patch.lunchEntryStatus = readNullableLunchEntryStatus(body.lunchEntryStatus);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'requiredArrivalTime')) {
+    patch.requiredArrivalTime = readNullableTime(body.requiredArrivalTime);
+  }
+  return patch;
+}
+
+function readNullableBoundedText(value: unknown, maxLength: number): string | null {
+  if (value === null) return null;
+  return readBoundedText(value, { maxLength, minLength: 1 });
+}
+
+function readNullableLunchEntryStatus(value: unknown): DriverLunchEntryStatus | null {
+  if (value === null) return null;
+  if (value === 'AVAILABLE' || value === 'UNAVAILABLE') return value;
+  throw new Error('Invalid lunch entry status');
+}
+
+function readNullableLunchTimeRange(value: unknown): string | null {
+  if (value === null) return null;
+  const raw = readRequiredString(value);
+  const match = /^(\d{2}:\d{2})~(\d{2}:\d{2})$/u.exec(raw);
+  if (match === null || !isCanonicalTime(match[1]!) || !isCanonicalTime(match[2]!) || match[1]! >= match[2]!) {
+    throw new Error('Invalid lunch time range');
+  }
+  return raw;
+}
+
+function readNullableTime(value: unknown): string | null {
+  if (value === null) return null;
+  const raw = readRequiredString(value);
+  if (!isCanonicalTime(raw)) throw new Error('Invalid time');
+  return raw;
+}
+
+function isCanonicalTime(value: string): boolean {
+  const match = /^(\d{2}):(\d{2})$/u.exec(value);
+  if (match === null) return false;
+  return Number(match[1]) <= 23 && Number(match[2]) <= 59;
 }
 
 function readDriverAccountDeletionRequestBody(
