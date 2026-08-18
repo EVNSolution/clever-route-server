@@ -277,6 +277,36 @@ describe('RoutePlanAdminService route geometry policy', () => {
     expect(detail).toEqual(baseDetail);
   });
 
+  test('optimization apply refreshes geometry when the optimized sequence is unchanged', async () => {
+    const { repository, routeGeometryProvider, updateRoutePlanStops, upsertRouteGeometryCache } = createHarness(baseDetail, {
+      updateRoutePlanStopsDetail: baseDetail
+    });
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    const detail = await service.updateRoutePlanStops({
+      mutationContext: { jobId: 'optimization-job-id', source: 'route_optimization_job' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: {
+        stops: [
+          { shopifyOrderGid: 'gid://shopify/Order/101', sequence: 1 },
+          { shopifyOrderGid: 'gid://shopify/Order/102', sequence: 2 }
+        ]
+      }
+    });
+
+    expect(updateRoutePlanStops).toHaveBeenCalled();
+    expect(routeGeometryProvider.buildRoute).toHaveBeenCalledWith(baseDetail);
+    expect(upsertRouteGeometryCache).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'osrm',
+      routePlanId: 'route-plan-id',
+      shapeSignature: computeRouteShapeSignature(baseDetail),
+      source: 'OPTIMIZATION_APPLY'
+    }));
+    expect(detail?.routeGeometry).toEqual(routeResult.routeGeometry);
+    expect(detail?.routeGeometryStatus).toBe('fresh');
+  });
+
   test('aggregate driver-only save does not call OSRM even though it shares the route save endpoint', async () => {
     const { repository, routeGeometryProvider, saveRoutePlan, upsertRouteGeometryCache } = createHarness(baseDetail);
     const service = new RoutePlanAdminService(repository, routeGeometryProvider);

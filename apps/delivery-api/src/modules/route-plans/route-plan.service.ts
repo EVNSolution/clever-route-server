@@ -328,7 +328,11 @@ export class RoutePlanAdminService implements RoutePlanService {
     after: RoutePlanDetail;
     source: RouteGeometryCacheSource;
   }): Promise<RoutePlanDetail> {
-    if (input.before !== null && computeRouteShapeSignature(input.before) === computeRouteShapeSignature(input.after)) {
+    if (
+      input.source !== 'OPTIMIZATION_APPLY'
+      && input.before !== null
+      && computeRouteShapeSignature(input.before) === computeRouteShapeSignature(input.after)
+    ) {
       return input.after;
     }
     return await this.refreshRouteGeometry(input.after, input.source);
