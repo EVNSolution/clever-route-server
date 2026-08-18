@@ -135,6 +135,19 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(createCanonical).not.toMatch(/tx\.route(?:Plan|PlanStop)\.(?:create|update|upsert|delete|deleteMany|createMany|updateMany)/u);
   });
 
+  test('links assigned and unassigned import routes to their current child versions', async () => {
+    const source = await serviceSource();
+    const methodStart = source.indexOf('private async ensureDispatchGrouping');
+    const methodEnd = source.indexOf('private async recordFailedApplyAttempt', methodStart);
+    const method = source.slice(methodStart, methodEnd);
+
+    expect(method).toContain('for (const route of routes)');
+    expect(method).toContain('candidate.driverId === (route.driverId ?? null)');
+    expect(method).toContain('(candidate.routePlan?.vehicleId ?? null) === (route.vehicleId ?? null)');
+    expect(method).toContain('data: { currentRouteVersionId: child.id }');
+    expect(method).toContain("assignmentStatus: route.driverId === null ? 'UNASSIGNED' : 'ASSIGNED'");
+  });
+
   test('uses a physical destination fingerprint that is independent of customer identity', async () => {
     const source = await serviceSource();
     const fingerprintStart = source.indexOf('function addressFingerprint');
