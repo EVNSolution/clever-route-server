@@ -13,8 +13,13 @@ export type DsvRouteOptimizationSchedulerPort = {
   schedule(input: DsvRouteOptimizationScheduleInput): void;
 };
 
+export type DsvRouteOptimizationLogger = {
+  warn(bindings: Record<string, unknown>, message: string): void;
+};
+
 type DsvRouteOptimizationSchedulerOptions = {
   debounceMs?: number | undefined;
+  logger?: DsvRouteOptimizationLogger | undefined;
   retryMs?: number | undefined;
   timeoutBudgetMs?: number | undefined;
 };
@@ -31,9 +36,13 @@ type PendingRouteOptimization = {
 const DEFAULT_DEBOUNCE_MS = 750;
 const DEFAULT_RETRY_MS = 1_000;
 const DEFAULT_TIMEOUT_BUDGET_MS = 45_000;
+const consoleLogger: DsvRouteOptimizationLogger = {
+  warn: (bindings, message) => { console.warn(message, bindings); },
+};
 
 export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedulerPort {
   private readonly debounceMs: number;
+  private readonly logger: DsvRouteOptimizationLogger;
   private readonly pending = new Map<string, PendingRouteOptimization>();
   private readonly retryMs: number;
   private readonly timeoutBudgetMs: number;
@@ -47,6 +56,7 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
     options: DsvRouteOptimizationSchedulerOptions = {},
   ) {
     this.debounceMs = normalizeDelay(options.debounceMs, DEFAULT_DEBOUNCE_MS);
+    this.logger = options.logger ?? consoleLogger;
     this.retryMs = normalizeDelay(options.retryMs, DEFAULT_RETRY_MS);
     this.timeoutBudgetMs = normalizeDelay(options.timeoutBudgetMs, DEFAULT_TIMEOUT_BUDGET_MS);
   }
@@ -128,6 +138,7 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
       });
     } catch (error) {
       retry = error instanceof RouteOptimizationJobActiveError;
+      if (!retry) this.logFailure(pending, error);
     } finally {
       pending.running = false;
       if (this.pending.get(pending.key) === pending) {
@@ -137,6 +148,19 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
           this.pending.delete(pending.key);
         }
       }
+    }
+  }
+
+  private logFailure(pending: PendingRouteOptimization, error: unknown): void {
+    try {
+      this.logger.warn({
+        errorType: error instanceof Error ? error.name : 'UnknownError',
+        event: 'dsv_route_optimization_schedule_failed',
+        routePlanId: pending.routePlanId,
+        shopDomain: pending.shopDomain,
+      }, 'DSV route optimization scheduling failed');
+    } catch {
+      // Logging must not change the persisted assignment outcome.
     }
   }
 }

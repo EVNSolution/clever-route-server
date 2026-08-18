@@ -120,6 +120,38 @@ describe('DsvAssignmentCommandService', () => {
     expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-b')?.orderIds).toEqual(orderIds);
     expect(result.assignmentResults.map((item) => item.sellerOrderId)).toEqual(orderIds);
     expect(schedule).toHaveBeenCalledTimes(1);
+    expect(schedule).toHaveBeenCalledWith({
+      routePlanIds: ['route-a', 'route-b'],
+      shopDomain: 'example.myshopify.com',
+    });
+  });
+
+  test('keeps a completed bundle transfer when optimization scheduling throws and logs the failure', async () => {
+    const schedule = vi.fn(() => { throw new Error('scheduler unavailable'); });
+    const logger = { warn: vi.fn() };
+    const harness = createHarness({ logger, routeOptimizationScheduler: { schedule } });
+
+    const result = await harness.service.reassignMany({
+      actor: adminInput().actor,
+      items: [{
+        commandId: 'cmd-transfer-schedule-failure',
+        expectedVersion: 'version-route-a',
+        sellerOrderId: 'order-a',
+      }],
+      reason: 'DRIVER_DESTINATION_BUNDLE_TRANSFER',
+      shopDomain: 'example.myshopify.com',
+      targetDriverId: 'driver-b',
+      targetRoutePlanId: 'route-b',
+      targetVehicleId: 'vehicle-b',
+    });
+
+    expect(result.assignmentResults).toHaveLength(1);
+    expect(harness.updatedReceiptData().data).toMatchObject({ status: 'SUCCEEDED' });
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: 'cmd-transfer-schedule-failure',
+      event: 'dsv_assignment_route_optimization_schedule_failed',
+      routePlanIds: ['route-a', 'route-b'],
+    }), 'DSV assignment route optimization scheduling failed');
   });
 
   test('reassignMany allows driver selection into an in-progress target route', async () => {
@@ -679,6 +711,7 @@ function createHarness(input: {
   };
   failedRoutePlanStops?: number;
   grouping?: RouteGroupingDetailDto;
+  logger?: { warn(bindings: Record<string, unknown>, message: string): void };
   routeOptimizationScheduler?: { schedule(input: { routePlanIds: Array<string | null>; shopDomain: string }): void };
   secondaryGrouping?: RouteGroupingDetailDto;
   rebindOrderIdsOnSave?: string[];
@@ -840,6 +873,7 @@ function createHarness(input: {
     prisma as never,
     routeGroupingService as unknown as RouteGroupingService,
     input.routeOptimizationScheduler,
+    input.logger,
   );
   return {
     prisma,

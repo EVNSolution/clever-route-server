@@ -14,7 +14,10 @@ import {
 import type { DriverRouteAccessScope } from '../driver/driver-token-access.repository.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { DsvAssignmentTransactionClient, DsvAssignmentTransactionPort } from './dsv-assignment-transaction-port.js';
-import type { DsvRouteOptimizationSchedulerPort } from './dsv-route-optimization.scheduler.js';
+import type {
+  DsvRouteOptimizationLogger,
+  DsvRouteOptimizationSchedulerPort,
+} from './dsv-route-optimization.scheduler.js';
 
 type DsvAssignmentPrismaClient = DsvAssignmentTransactionPort & Pick<
   PrismaClient,
@@ -151,12 +154,16 @@ type RouteOwner = RouteGroupingChildDto & { currentVersionId: string | null };
 type AffectedRouteVersion = { driverId: string | null; routePlanId: string | null; routeVersionId: string };
 
 const transactionOptions = { maxWait: 20_000, timeout: 30_000 } as const;
+const consoleLogger: DsvRouteOptimizationLogger = {
+  warn: (bindings, message) => { console.warn(message, bindings); },
+};
 
 export class DsvAssignmentCommandService {
   constructor(
     private readonly prisma: DsvAssignmentPrismaClient,
     private readonly routeGroupingService: DsvAssignmentRouteGroupingService,
     private readonly routeOptimizationScheduler?: DsvRouteOptimizationSchedulerPort,
+    private readonly logger: DsvRouteOptimizationLogger = consoleLogger,
   ) {}
 
   async reassignMany(input: DsvAdminBatchReassignInput): Promise<DsvBatchAssignmentResult> {
@@ -315,11 +322,11 @@ export class DsvAssignmentCommandService {
     });
 
     if (execution.scheduleOptimization) {
-      try {
-        this.routeOptimizationScheduler?.schedule({ routePlanIds: execution.routePlanIds, shopDomain: input.shopDomain });
-      } catch {
-        // Assignment success must not depend on background route optimization scheduling.
-      }
+      this.scheduleOptimization({
+        commandId: input.items[0]?.commandId ?? null,
+        routePlanIds: execution.routePlanIds,
+        shopDomain: input.shopDomain,
+      });
     }
     return {
       assignmentResults: execution.assignmentResults,
@@ -472,11 +479,11 @@ export class DsvAssignmentCommandService {
     });
 
     if (execution.scheduleOptimization) {
-      try {
-        this.routeOptimizationScheduler?.schedule({ routePlanIds: execution.routePlanIds, shopDomain: input.shopDomain });
-      } catch {
-        // Assignment success must not depend on background route optimization scheduling.
-      }
+      this.scheduleOptimization({
+        commandId: input.items[0]?.commandId ?? null,
+        routePlanIds: execution.routePlanIds,
+        shopDomain: input.shopDomain,
+      });
     }
     return {
       assignmentResults: execution.assignmentResults,
@@ -642,11 +649,11 @@ export class DsvAssignmentCommandService {
     });
 
     if (execution.scheduleOptimization) {
-      try {
-        this.routeOptimizationScheduler?.schedule({ routePlanIds: execution.routePlanIds, shopDomain: input.shopDomain });
-      } catch {
-        // Deletion success must not depend on background route optimization scheduling.
-      }
+      this.scheduleOptimization({
+        commandId: input.commandId,
+        routePlanIds: execution.routePlanIds,
+        shopDomain: input.shopDomain,
+      });
     }
     return execution.result;
   }
@@ -847,16 +854,39 @@ export class DsvAssignmentCommandService {
       throw error;
     });
     if (execution.scheduleOptimization) {
-      try {
-        this.routeOptimizationScheduler?.schedule({
-          routePlanIds: execution.routePlanIds,
-          shopDomain: input.input.shopDomain,
-        });
-      } catch {
-        // Assignment success must not depend on background route optimization scheduling.
-      }
+      this.scheduleOptimization({
+        commandId: input.input.commandId,
+        routePlanIds: execution.routePlanIds,
+        shopDomain: input.input.shopDomain,
+      });
     }
     return execution.result;
+  }
+
+  private scheduleOptimization(input: {
+    commandId: string | null;
+    routePlanIds: Array<string | null>;
+    shopDomain: string;
+  }): void {
+    if (this.routeOptimizationScheduler === undefined) return;
+    try {
+      this.routeOptimizationScheduler.schedule({
+        routePlanIds: input.routePlanIds,
+        shopDomain: input.shopDomain,
+      });
+    } catch (error) {
+      try {
+        this.logger.warn({
+          commandId: input.commandId,
+          errorType: error instanceof Error ? error.name : 'UnknownError',
+          event: 'dsv_assignment_route_optimization_schedule_failed',
+          routePlanIds: input.routePlanIds,
+          shopDomain: input.shopDomain,
+        }, 'DSV assignment route optimization scheduling failed');
+      } catch {
+        // Logging must not change the persisted assignment outcome.
+      }
+    }
   }
 
   private async claimCommand(

@@ -224,6 +224,7 @@ describe('loadDriverApiDependencies', () => {
   });
 
   test('wires driver seller order assignment commands through the DSV kernel', async () => {
+    const routeOptimizationScheduler = { schedule: vi.fn() };
     const saveDraft = vi.fn(() => {
       throw new Error('legacy direct assignment path should not be used');
     });
@@ -275,7 +276,8 @@ describe('loadDriverApiDependencies', () => {
     const dependencies = loadDriverApiDependencies({
       env: { JWT_SECRET: 'driver-secret' },
       prisma,
-      routeGroupingService
+      routeGroupingService,
+      routeOptimizationScheduler
     });
 
     await expect(dependencies?.driverSellerOrderAssignmentService?.acquire({
@@ -299,6 +301,10 @@ describe('loadDriverApiDependencies', () => {
       sellerOrderId: 'order-1',
       shopDomain: 'example.myshopify.com'
     }));
+    const assignmentCommands = (dependencies?.driverDeliverySpaceService as unknown as {
+      assignmentCommands: { routeOptimizationScheduler?: unknown };
+    } | undefined)?.assignmentCommands;
+    expect(assignmentCommands?.routeOptimizationScheduler).toBe(routeOptimizationScheduler);
     expect(saveDraft).not.toHaveBeenCalled();
   });
 });

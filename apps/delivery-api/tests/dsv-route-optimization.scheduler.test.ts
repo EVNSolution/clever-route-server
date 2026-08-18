@@ -65,6 +65,37 @@ describe('DsvRouteOptimizationScheduler', () => {
       shopDomain: 'dsv-demo.local',
     }));
   });
+
+  test('logs a structured warning when an optimization job cannot be created', async () => {
+    vi.useFakeTimers();
+    const logger = { warn: vi.fn() };
+    const scheduler = new DsvRouteOptimizationScheduler({
+      routeOptimizationJobService: {
+        createJob: vi.fn().mockRejectedValue(new Error('database unavailable')),
+        findLatestJob: vi.fn(),
+        markApplyingResult: vi.fn(),
+        markRunning: vi.fn(),
+        recordEngineOutcome: vi.fn(),
+      },
+      routeOptimizationService: {
+        optimizeStopOrder: vi.fn(),
+      },
+      routePlanService: {
+        getRoutePlanDetail: vi.fn().mockResolvedValue(routeDetail()),
+        updateRoutePlanStops: vi.fn(),
+      },
+    }, { debounceMs: 0, logger });
+
+    scheduler.schedule({ routePlanIds: ['route-1'], shopDomain: 'dsv-demo.local' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(logger.warn).toHaveBeenCalledWith({
+      errorType: 'Error',
+      event: 'dsv_route_optimization_schedule_failed',
+      routePlanId: 'route-1',
+      shopDomain: 'dsv-demo.local',
+    }, 'DSV route optimization scheduling failed');
+  });
 });
 
 function routeDetail(): RoutePlanDetail {

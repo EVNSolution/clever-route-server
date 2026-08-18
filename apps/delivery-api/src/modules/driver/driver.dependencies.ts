@@ -124,7 +124,11 @@ export function loadDriverApiDependencies(
   const driverSellerOrderContextRepository = new PrismaDriverSellerOrderContextRepository(input.prisma);
   const dsvAssignmentCommandService = input.routeGroupingService === undefined
     ? undefined
-    : new DsvAssignmentCommandService(input.prisma, input.routeGroupingService);
+    : new DsvAssignmentCommandService(
+        input.prisma,
+        input.routeGroupingService,
+        input.routeOptimizationScheduler,
+      );
   const driverRouteMapPreview = loadDriverRouteMapPreviewService({
     assignedRouteService: driverAssignedRouteService,
     env: input.env,
