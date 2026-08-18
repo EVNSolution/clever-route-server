@@ -20,9 +20,15 @@ export type DriverDeliveryBundle = {
   orderCount: number;
 };
 
+export type DriverDeliveryRecipient = {
+  driverId: string;
+  driverName: string;
+};
+
 export type DriverDeliverySpace = {
   available: DriverDeliveryBundle[];
   mine: DriverDeliveryBundle[];
+  recipients: DriverDeliveryRecipient[];
   version: string;
 };
 
@@ -37,10 +43,15 @@ export type DriverDeliverySpaceCommandResult = {
   version: string;
 };
 
+export type DriverDeliverySpaceTransferCommand = DriverDeliverySpaceCommand & {
+  targetDriverId: string;
+};
+
 export type DriverDeliverySpaceServiceContract = {
   acquire(input: DriverDeliverySpaceCommand): Promise<DriverDeliverySpaceCommandResult>;
   getSpace(input: DriverRouteAccessScope): Promise<DriverDeliverySpace>;
   release(input: DriverDeliverySpaceCommand): Promise<DriverDeliverySpaceCommandResult>;
+  transfer(input: DriverDeliverySpaceTransferCommand): Promise<DriverDeliverySpaceCommandResult>;
 };
 
 type BundleOrder = {
@@ -56,6 +67,7 @@ type BundleOrder = {
 };
 
 type InternalBundle = DriverDeliveryBundle & { orders: BundleOrder[] };
+type InternalRecipient = DriverDeliveryRecipient & { routePlanId: string };
 
 export type DriverDeliverySpaceRepositoryContract = {
   findRouteContext(input: Pick<DriverRouteAccessScope, 'driverId' | 'routePlanId' | 'shopId'>): Promise<{
@@ -171,6 +183,9 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
     return {
       available: visibleBundles.filter(isAvailable).map(expose),
       mine: visibleBundles.filter((bundle) => isMine(bundle, input)).map(expose),
+      recipients: isToday(grouping.planDate, this.now())
+        ? deliveryRecipients(grouping.children, input.driverId).map(({ driverId, driverName }) => ({ driverId, driverName }))
+        : [],
       version: grouping.updatedAt
     };
   }
@@ -222,6 +237,36 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
       shopDomain: input.shopDomain,
       targetDriverId: input.driverId,
       targetRoutePlanId: input.routePlanId
+    }));
+    const version = await this.latestVersion(input);
+    return { bundle: expose(bundle), routePlanId: result.routePlanId, version };
+  }
+
+  async transfer(input: DriverDeliverySpaceTransferCommand): Promise<DriverDeliverySpaceCommandResult> {
+    const { bundles, grouping } = await this.context(input);
+    assertToday(grouping.planDate, this.now());
+    assertVersion(grouping.updatedAt, input.expectedVersion);
+    const bundle = requireBundle(bundles, input.destinationId);
+    if (!isMine(bundle, input)) {
+      throw error('DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED', '내 배송지만 전달할 수 있습니다.');
+    }
+    const recipient = deliveryRecipients(grouping.children, input.driverId)
+      .find((candidate) => candidate.driverId === input.targetDriverId);
+    if (recipient === undefined) {
+      throw error('DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED', '현재 배차의 다른 배송원에게만 전달할 수 있습니다.');
+    }
+
+    const result = await this.runCommand(() => this.assignmentCommands.reassignMany({
+      actor: { actorId: input.driverId, actorType: 'DRIVER', principalType: 'DRIVER' },
+      items: bundle.orders.map((order) => ({
+        commandId: `driver-delivery-space:transfer:${input.destinationId}:${order.orderId}:${input.targetDriverId}:${input.expectedVersion}`,
+        expectedVersion: order.currentRouteVersionId,
+        sellerOrderId: order.orderId
+      })),
+      reason: 'DRIVER_DESTINATION_BUNDLE_TRANSFER',
+      shopDomain: input.shopDomain,
+      targetDriverId: recipient.driverId,
+      targetRoutePlanId: recipient.routePlanId
     }));
     const version = await this.latestVersion(input);
     return { bundle: expose(bundle), routePlanId: result.routePlanId, version };
@@ -279,6 +324,18 @@ function groupOrders(rows: BundleOrder[]): InternalBundle[] {
       orders
     };
   });
+}
+
+function deliveryRecipients(
+  children: Array<{ displayStatus: string; driverId: string | null; driverName: string | null; routePlanId: string | null }>,
+  currentDriverId: string
+): InternalRecipient[] {
+  return children.flatMap((child) => child.displayStatus === 'READY'
+    && child.driverId !== null
+    && child.driverId !== currentDriverId
+    && child.routePlanId !== null
+    ? [{ driverId: child.driverId, driverName: child.driverName ?? '이름 없는 배송원', routePlanId: child.routePlanId }]
+    : []).sort((left, right) => left.driverName.localeCompare(right.driverName, 'ko'));
 }
 
 function isMine(bundle: InternalBundle, input: Pick<DriverRouteAccessScope, 'driverId' | 'routePlanId'>): boolean {
