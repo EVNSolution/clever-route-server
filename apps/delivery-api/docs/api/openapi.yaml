@@ -2795,11 +2795,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
-  /driver/delivery-space/{destinationId}/transfer:
+  /driver/delivery-space/{destinationId}/handoff-requests:
     post:
       tags: [Driver Mobile]
-      summary: Atomically transfer every order at one owned destination to another driver in the current grouping
-      operationId: transferDriverDeliveryBundle
+      summary: Request a whole-destination handoff to another driver in the current grouping
+      operationId: proposeDriverDeliveryBundleHandoff
       x-source-file: src/routes/driver-events.routes.ts
       security:
         - DriverAccessToken: []
@@ -2814,11 +2814,11 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/DriverDeliverySpaceTransferCommand' }
       responses:
-        '200':
-          description: The complete destination bundle moved to the selected driver's current route.
+        '201':
+          description: The handoff request was created; assignment is unchanged until the target driver accepts.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/DriverDeliverySpaceCommandEnvelope' }
+              schema: { $ref: '#/components/schemas/DriverDeliveryHandoffEnvelope' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2835,6 +2835,90 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '503':
           description: Route recalculation is not configured in this runtime.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /driver/delivery-space/handoff-requests/{requestId}/accept:
+    post:
+      tags: [Driver Mobile]
+      summary: Accept a proposed handoff and move the whole destination bundle
+      operationId: acceptDriverDeliveryBundleHandoff
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The complete destination bundle moved to the accepting driver's current route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverDeliverySpaceCommandEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The request was already handled, expired, invalidated, or the assignment changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /driver/delivery-space/handoff-requests/{requestId}/reject:
+    post:
+      tags: [Driver Mobile]
+      summary: Reject a proposed handoff as the target driver
+      operationId: rejectDriverDeliveryBundleHandoff
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The handoff request was rejected.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverDeliveryHandoffEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The request was already handled, expired, or invalidated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /driver/delivery-space/handoff-requests/{requestId}/cancel:
+    post:
+      tags: [Driver Mobile]
+      summary: Cancel a proposed handoff as the source driver
+      operationId: cancelDriverDeliveryBundleHandoff
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The handoff request was cancelled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverDeliveryHandoffEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The request was already handled, expired, or invalidated.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -6278,6 +6362,31 @@ components:
         expectedVersion: { type: string, minLength: 1 }
         targetDriverId: { type: string, format: uuid }
       additionalProperties: false
+    DriverDeliveryHandoffStatus:
+      type: string
+      enum: [PROPOSED, APPLIED, REJECTED, CANCELLED, INVALIDATED]
+    DriverDeliveryIncomingHandoff:
+      type: object
+      required: [bundle, destinationId, expiresAt, requestId, senderDriverName, status]
+      properties:
+        bundle: { $ref: '#/components/schemas/DriverDeliveryBundle' }
+        destinationId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+        requestId: { type: string, format: uuid }
+        senderDriverName: { type: string }
+        status: { $ref: '#/components/schemas/DriverDeliveryHandoffStatus' }
+      additionalProperties: false
+    DriverDeliveryOutgoingHandoff:
+      type: object
+      required: [bundle, destinationId, expiresAt, requestId, status, targetDriverName]
+      properties:
+        bundle: { $ref: '#/components/schemas/DriverDeliveryBundle' }
+        destinationId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+        requestId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/DriverDeliveryHandoffStatus' }
+        targetDriverName: { type: string }
+      additionalProperties: false
     DriverDeliveryRecipient:
       type: object
       required: [driverId, driverName]
@@ -6291,18 +6400,33 @@ components:
       properties:
         data:
           type: object
-          required: [available, mine, recipients, version]
+          required: [available, incomingHandoffs, mine, outgoingHandoffs, recipients, version]
           properties:
             available:
               type: array
               items: { $ref: '#/components/schemas/DriverDeliveryBundle' }
+            incomingHandoffs:
+              type: array
+              items: { $ref: '#/components/schemas/DriverDeliveryIncomingHandoff' }
             mine:
               type: array
               items: { $ref: '#/components/schemas/DriverDeliveryBundle' }
+            outgoingHandoffs:
+              type: array
+              items: { $ref: '#/components/schemas/DriverDeliveryOutgoingHandoff' }
             recipients:
               type: array
               items: { $ref: '#/components/schemas/DriverDeliveryRecipient' }
             version: { type: string }
+        error: { type: 'null' }
+    DriverDeliveryHandoffEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          anyOf:
+            - $ref: '#/components/schemas/DriverDeliveryIncomingHandoff'
+            - $ref: '#/components/schemas/DriverDeliveryOutgoingHandoff'
         error: { type: 'null' }
     DriverDeliverySpaceCommandEnvelope:
       type: object

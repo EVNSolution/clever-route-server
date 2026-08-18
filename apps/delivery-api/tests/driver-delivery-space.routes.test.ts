@@ -13,7 +13,7 @@ const context = {
   shopDomain: 'example.myshopify.com',
   shopId: 'shop-id'
 };
-const emptySpace = { available: [], mine: [], recipients: [], version: 'route-version-1' };
+const emptySpace = { available: [], incomingHandoffs: [], mine: [], outgoingHandoffs: [], recipients: [], version: 'route-version-1' };
 
 describe('driver delivery space routes', () => {
   test('returns destination bundles only inside the bearer route scope', async () => {
@@ -59,24 +59,45 @@ describe('driver delivery space routes', () => {
     }
   });
 
-  test('delegates a destination-wide transfer to a selected in-group driver', async () => {
-    const transfer = vi.fn(() => Promise.resolve({ bundle: {}, routePlanId: 'recipient-route', version: 'route-version-2' }));
-    const app = await createApp({ transfer });
+  test('creates a handoff request without applying the assignment', async () => {
+    const proposeHandoff = vi.fn(() => Promise.resolve({ requestId: 'handoff-1', status: 'PROPOSED' }));
+    const app = await createApp({ proposeHandoff });
 
     try {
       const response = await app.inject({
         headers: { authorization: `Bearer ${driverToken()}` },
         method: 'POST',
         payload: { expectedVersion: 'route-version-1', targetDriverId: 'recipient-driver' },
-        url: '/driver/delivery-space/destination-1/transfer'
+        url: '/driver/delivery-space/destination-1/handoff-requests'
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(transfer).toHaveBeenCalledWith({
+      expect(response.statusCode).toBe(201);
+      expect(proposeHandoff).toHaveBeenCalledWith({
         ...context,
         destinationId: 'destination-1',
         expectedVersion: 'route-version-1',
         targetDriverId: 'recipient-driver'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('accepts a handoff request through bearer recipient scope', async () => {
+    const acceptHandoff = vi.fn(() => Promise.resolve({ bundle: {}, routePlanId: 'recipient-route', version: 'route-version-2' }));
+    const app = await createApp({ acceptHandoff });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        url: '/driver/delivery-space/handoff-requests/handoff-1/accept'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(acceptHandoff).toHaveBeenCalledWith({
+        ...context,
+        requestId: 'handoff-1'
       });
     } finally {
       await app.close();
@@ -136,9 +157,12 @@ async function createApp(overrides: Record<string, unknown>) {
     driverApi: {
       driverDeliverySpaceService: {
         acquire: vi.fn(() => Promise.resolve({})),
+        acceptHandoff: vi.fn(() => Promise.resolve({})),
+        cancelHandoff: vi.fn(() => Promise.resolve({})),
         getSpace: vi.fn(() => Promise.resolve(emptySpace)),
+        proposeHandoff: vi.fn(() => Promise.resolve({})),
+        rejectHandoff: vi.fn(() => Promise.resolve({})),
         release: vi.fn(() => Promise.resolve({})),
-        transfer: vi.fn(() => Promise.resolve({})),
         ...overrides
       } as never,
       driverEventService: {

@@ -84,6 +84,9 @@ const adminCommerceConnectionsUi = loadAdminCommerceConnectionsUiDependencies({
 });
 const driverApi = loadDriverApiDependencies({
   adminNotificationService,
+  ...(dsvV1Read?.driverNotificationRuntime?.dispatcher === undefined
+    ? {}
+    : { driverNotificationDispatcher: dsvV1Read.driverNotificationRuntime.dispatcher }),
   env: process.env,
   ...(dsvV1Read?.orderMessageService === undefined ? {} : { orderMessageService: dsvV1Read.orderMessageService }),
   prisma,
