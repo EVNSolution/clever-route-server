@@ -1112,26 +1112,34 @@ model DeliveryStop {
 }
 
 model DeliveryCustomerProfile {
-  id                    String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId                String                             @db.Uuid
-  shop                  Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  canonicalName         String?                            @db.Text
-  canonicalPhone        String?                            @db.Text
-  canonicalEmail        String?                            @db.Text
-  addressFingerprint    String                             @db.Text
-  normalizedAddress     Json
-  normalizedNameKey     String?                            @db.Text
-  adminMemo             String?                            @db.Text
-  mergedIntoProfileId   String?                            @db.Uuid
-  mergedIntoProfile     DeliveryCustomerProfile?           @relation("DeliveryCustomerProfileMerge", fields: [mergedIntoProfileId], references: [id], onDelete: SetNull)
-  mergedProfiles        DeliveryCustomerProfile[]          @relation("DeliveryCustomerProfileMerge")
-  orderLinks            DeliveryCustomerProfileOrderLink[]
-  destinationTips       DestinationTip[]
-  currentOrders         Order[]                            @relation("OrderCurrentDestination")
-  dsvAuditEvents        DsvAuditEvent[]
-  dsvDispatchImportRows DsvDispatchImportRow[]
-  createdAt             DateTime                           @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime                           @default(now()) @updatedAt @db.Timestamptz(6)
+  id                                 String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                             String                             @db.Uuid
+  shop                               Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  canonicalName                      String?                            @db.Text
+  canonicalPhone                     String?                            @db.Text
+  canonicalEmail                     String?                            @db.Text
+  addressFingerprint                 String                             @db.Text
+  normalizedAddress                  Json
+  normalizedNameKey                  String?                            @db.Text
+  adminMemo                          String?                            @db.Text
+  driverMemo                         String?                            @db.Text
+  driverMemoUpdatedAt                DateTime?                          @db.Timestamptz(6)
+  driverLunchTimeRange               String?                            @db.VarChar(11)
+  driverLunchTimeRangeUpdatedAt      DateTime?                          @db.Timestamptz(6)
+  driverLunchEntryStatus             String?                            @db.VarChar(16)
+  driverLunchEntryStatusUpdatedAt    DateTime?                          @db.Timestamptz(6)
+  driverRequiredArrivalTime          String?                            @db.VarChar(5)
+  driverRequiredArrivalTimeUpdatedAt DateTime?                          @db.Timestamptz(6)
+  mergedIntoProfileId                String?                            @db.Uuid
+  mergedIntoProfile                  DeliveryCustomerProfile?           @relation("DeliveryCustomerProfileMerge", fields: [mergedIntoProfileId], references: [id], onDelete: SetNull)
+  mergedProfiles                     DeliveryCustomerProfile[]          @relation("DeliveryCustomerProfileMerge")
+  orderLinks                         DeliveryCustomerProfileOrderLink[]
+  destinationTips                    DestinationTip[]
+  currentOrders                      Order[]                            @relation("OrderCurrentDestination")
+  dsvAuditEvents                     DsvAuditEvent[]
+  dsvDispatchImportRows              DsvDispatchImportRow[]
+  createdAt                          DateTime                           @default(now()) @db.Timestamptz(6)
+  updatedAt                          DateTime                           @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([id, shopId])
   @@index([shopId, addressFingerprint])

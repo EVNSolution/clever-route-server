@@ -37,6 +37,16 @@ const routePlanRecord = {
           },
           currentRouteVersionId: 'route-version-id',
           currencyCode: 'CAD',
+          destination: {
+            driverLunchEntryStatus: 'AVAILABLE',
+            driverLunchEntryStatusUpdatedAt: new Date('2026-08-17T04:00:00.000Z'),
+            driverLunchTimeRange: '12:00~13:00',
+            driverLunchTimeRangeUpdatedAt: new Date('2026-08-17T03:00:00.000Z'),
+            driverMemo: '후문으로 입장',
+            driverMemoUpdatedAt: new Date('2026-08-17T02:00:00.000Z'),
+            driverRequiredArrivalTime: '10:30',
+            driverRequiredArrivalTimeUpdatedAt: new Date('2026-08-17T05:00:00.000Z')
+          },
           destinationId: 'canonical-destination-id',
           dsvAuditEvents: [
             {
@@ -198,6 +208,16 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
             currencyCode: 'CAD',
           customerNote: 'Leave the box beside the loading entrance.',
+          destinationNotes: {
+            lunchEntryStatus: 'AVAILABLE',
+            lunchEntryStatusUpdatedAt: '2026-08-17T04:00:00.000Z',
+            lunchTimeRange: '12:00~13:00',
+            lunchTimeRangeUpdatedAt: '2026-08-17T03:00:00.000Z',
+            memo: '후문으로 입장',
+            memoUpdatedAt: '2026-08-17T02:00:00.000Z',
+            requiredArrivalTime: '10:30',
+            requiredArrivalTimeUpdatedAt: '2026-08-17T05:00:00.000Z'
+          },
           deliverySession: 'PICKUP',
           deliveryStopId: 'stop-id',
           destinationId: 'canonical-destination-id',

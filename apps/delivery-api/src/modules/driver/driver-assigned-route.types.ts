@@ -5,6 +5,7 @@ import type {
 import type { OrderItemDto } from '../order-items/order-items.js';
 import type { NormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import type { DriverRouteEtaSnapshot } from './driver-route-eta.js';
+import type { DriverDestinationNotes } from './driver-destination-notes.repository.js';
 
 export type DriverAssignedRouteInput = {
   driverId: string;
@@ -31,6 +32,7 @@ export type DriverAssignedRouteStop = {
   deliverySession?: string | null;
   deliveryStopId: string;
   destinationId: string | null;
+  destinationNotes?: DriverDestinationNotes;
   distanceFromPreviousMeters?: number | null;
   durationFromPreviousSeconds?: number | null;
   driverMessages: Array<{

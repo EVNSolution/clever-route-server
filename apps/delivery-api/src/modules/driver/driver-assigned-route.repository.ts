@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
+import { driverDestinationNotesSelect, toDriverDestinationNotes } from './driver-destination-notes.repository.js';
 
 import type {
   DriverAssignedRouteInput,
@@ -96,6 +97,7 @@ type AssignedRoutePlanStopRecord = {
       } | null;
       currentRouteVersionId: string | null;
       currencyCode: string | null;
+      destination: (Parameters<typeof toDriverDestinationNotes>[0]) | null;
       destinationId: string | null;
       dsvAuditEvents: Array<{
         actorId: string | null;
@@ -163,6 +165,9 @@ const assignedRouteInclude = {
             include: {
               currentRouteVersion: {
                 select: { createdAt: true }
+              },
+              destination: {
+                select: driverDestinationNotesSelect
               },
               dsvAuditEvents: {
                 orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
@@ -409,6 +414,7 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
       ?? readString(dsvNormalized?.destinationId)
       ?? readString(rawPayload?.destinationId)
       ?? readString(rawPayload?.destination_id),
+    destinationNotes: toDriverDestinationNotes(deliveryStop.order.destination),
     distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
     driverMessages: deliveryStop.order.orderMessages.map((message) => ({
