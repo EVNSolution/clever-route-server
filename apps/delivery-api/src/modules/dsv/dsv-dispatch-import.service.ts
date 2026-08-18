@@ -1203,21 +1203,19 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       shopDomain,
     });
     if (saved === null) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
-    const assignedRoutes = routes.filter((route): route is RouteGroupingDraftRouteInput & { driverId: string } =>
-      route.driverId !== null && route.driverId !== undefined);
     const currentChildren = await tx.routeGroupingChildVersion.findMany({
       select: { driverId: true, id: true, routePlan: { select: { vehicleId: true } } },
       where: {
         groupingId: grouping.id,
-        routePlanId: { not: null },
         shopId,
         status: 'CURRENT',
         supersededAt: null,
       },
     });
-    for (const route of assignedRoutes) {
+    for (const route of routes) {
       const child = currentChildren.find((candidate) =>
-        candidate.driverId === route.driverId && candidate.routePlan?.vehicleId === (route.vehicleId ?? null));
+        candidate.driverId === (route.driverId ?? null)
+        && (candidate.routePlan?.vehicleId ?? null) === (route.vehicleId ?? null));
       if (child === undefined) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
       const [orders, assignments] = await Promise.all([
         tx.order.updateMany({
@@ -1225,7 +1223,10 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           where: { id: { in: route.orderIds }, shopId },
         }),
         tx.routeGroupingOrder.updateMany({
-          data: { assignedDriverId: route.driverId, assignmentStatus: 'ASSIGNED' },
+          data: {
+            assignedDriverId: route.driverId ?? null,
+            assignmentStatus: route.driverId === null ? 'UNASSIGNED' : 'ASSIGNED',
+          },
           where: { groupingId: grouping.id, orderId: { in: route.orderIds }, shopId },
         }),
       ]);
