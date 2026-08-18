@@ -262,6 +262,25 @@ describe('PrismaOrderQueryRepository page query', () => {
     expect(whereJson).toContain('2026-08-04T00:00:00.000Z');
   });
 
+  test('treats legacy Shopify open and restocked statuses as unfulfilled', async () => {
+    const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>(() => Promise.resolve([]));
+    const repository = new PrismaOrderQueryRepository(
+      prismaHarness({ findMany, missingSequence: null }),
+      'test-secret'
+    );
+
+    await repository.listPage({
+      filters: { deliveryState: 'unfulfilled' },
+      shopDomain: 'example.myshopify.com'
+    });
+
+    const query = firstCallArg(findMany) as { where?: unknown };
+    const whereJson = JSON.stringify(query.where);
+    expect(whereJson).toContain('UNFULFILLED');
+    expect(whereJson).toContain('OPEN');
+    expect(whereJson).toContain('RESTOCKED');
+  });
+
   test('persists only keyed hashes and canonical ids for a PII-bearing selection filter', async () => {
     const snapshotCreate = vi.fn<(input: { data: unknown }) => Promise<{
       expiresAt: Date;

@@ -28,6 +28,8 @@ import { parseOrderDisplaySequence } from "./order-display-sequence.js";
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
 
+const SHOPIFY_UNFULFILLED_STATUSES = ["UNFULFILLED", "OPEN", "RESTOCKED"];
+
 export type OrderSyncReason = "orders_page_open" | "manual_refresh" | "route_create_preflight";
 
 export class OrderSyncRouteLockedError extends Error {
@@ -1539,7 +1541,7 @@ export function toCanonicalOrderWhere(
     if (to !== null) AND.push({ processedAt: { lt: new Date(to.getTime() + 86_400_000) } });
   }
   if (filters.deliveryState === 'fulfilled') AND.push({ fulfillmentStatus: { equals: 'FULFILLED', mode: 'insensitive' } });
-  if (filters.deliveryState === 'unfulfilled') AND.push({ fulfillmentStatus: { equals: 'UNFULFILLED', mode: 'insensitive' } });
+  if (filters.deliveryState === 'unfulfilled') AND.push({ fulfillmentStatus: { in: SHOPIFY_UNFULFILLED_STATUSES, mode: 'insensitive' } });
   if (filters.deliveryState === 'delivered') AND.push({ deliveryStops: { some: { status: 'DELIVERED' } } });
   if (filters.deliveryState === 'assigned_undelivered') AND.push({ deliveryStops: { some: { status: { in: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } } });
   if (filters.deliveryState === 'planned') AND.push({ deliveryStops: { some: { routePlanStops: { some: {} }, status: { not: 'DELIVERED' } } } });
