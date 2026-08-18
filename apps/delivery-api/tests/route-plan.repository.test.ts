@@ -161,6 +161,119 @@ describe('PrismaRoutePlanRepository', () => {
     }));
   });
 
+  test('persists planned ETA from refreshed route leg timing for the current route version', async () => {
+    const generatedAt = new Date('2026-08-18T08:14:40.000Z');
+    const { prisma } = createPrismaHarness({
+      routePlanProjection: {
+        constraints: {
+          routeScope: { serviceType: 'DSV_DISPATCH' }
+        },
+        driverId: 'driver-id',
+        planDate: new Date('2026-08-18T00:00:00.000Z'),
+        routeGroupingChildVersions: [{ id: 'route-version-id' }],
+        routeStops: [
+          { deliveryStop: { serviceMinutes: 5 }, deliveryStopId: 'stop-1', sequence: 1 },
+          { deliveryStop: { serviceMinutes: 5 }, deliveryStopId: 'stop-2', sequence: 2 }
+        ],
+        shop: {
+          commerceConnections: [],
+          routeOpsUiSettings: { plannedDepartureTime: '08:30', version: 1 }
+        },
+        status: 'READY'
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.upsertRouteGeometryCache({
+      generatedAt,
+      geometry: null,
+      metrics: { distanceMeters: 3000, durationSeconds: 1800 },
+      provider: 'osrm',
+      routePlanId: 'route-plan-id',
+      shapeSignature: 'shape-signature',
+      source: 'OPTIMIZATION_APPLY',
+      stopPoints: [
+        {
+          deliveryStopId: 'stop-1',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          inputCoordinates: [126.9, 37.3],
+          name: 'Stop 1',
+          sequence: 1,
+          shopifyOrderGid: 'order-1',
+          snapDistanceMeters: 0,
+          snappedCoordinates: [126.9, 37.3]
+        },
+        {
+          deliveryStopId: 'stop-2',
+          distanceFromPreviousMeters: 2000,
+          durationFromPreviousSeconds: 1200,
+          inputCoordinates: [127, 37.4],
+          name: 'Stop 2',
+          sequence: 2,
+          shopifyOrderGid: 'order-2',
+          snapDistanceMeters: 0,
+          snappedCoordinates: [127, 37.4]
+        }
+      ]
+    });
+
+    expect(prisma.routePlanStop.updateMany).toHaveBeenNthCalledWith(1, {
+      data: {
+        distanceFromPreviousMeters: 1000,
+        durationFromPreviousSeconds: 600,
+        estimatedArrivalAt: new Date('2026-08-17T23:40:00.000Z'),
+        etaCalculatedAt: generatedAt,
+        etaFailureCode: null,
+        etaFailureMessage: null,
+        etaInputRouteVersionId: 'route-version-id',
+        etaSource: 'PLANNED_DEPARTURE',
+        etaStatus: 'READY'
+      },
+      where: { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 }
+    });
+    const secondEtaDataMatcher: unknown = expect.objectContaining({
+      estimatedArrivalAt: new Date('2026-08-18T00:05:00.000Z'),
+      etaInputRouteVersionId: 'route-version-id',
+      etaStatus: 'READY'
+    });
+    expect(prisma.routePlanStop.updateMany).toHaveBeenNthCalledWith(2, {
+      data: secondEtaDataMatcher,
+      where: { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2 }
+    });
+  });
+
+  test('does not replace live driver ETA after route execution starts', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanProjection: {
+        constraints: {},
+        driverId: 'driver-id',
+        planDate: new Date('2026-08-18T00:00:00.000Z'),
+        routeGroupingChildVersions: [{ id: 'route-version-id' }],
+        routeStops: [{ deliveryStop: { serviceMinutes: 5 }, deliveryStopId: 'stop-1', sequence: 1 }],
+        shop: { commerceConnections: [], routeOpsUiSettings: null },
+        status: 'IN_PROGRESS'
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.upsertRouteGeometryCache({
+      geometry: null,
+      metrics: null,
+      provider: 'osrm',
+      routePlanId: 'route-plan-id',
+      shapeSignature: 'shape-signature',
+      source: 'EXPLICIT_REFRESH',
+      stopPoints: []
+    });
+
+    expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
+  });
+
   test('projects Shopify shipping price from raw payload onto route detail stops', async () => {
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: routePlanRecord({
@@ -1909,6 +2022,7 @@ function createPrismaHarness(input: {
   routeGeometryCacheFindFirst?: Record<string, unknown> | null;
   routeGeometryCacheFindUnique?: Record<string, unknown> | null;
   routePlanFindFirst?: Record<string, unknown> | null;
+  routePlanProjection?: Record<string, unknown> | null;
   routePlanStopFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string } | null;
   routeGroupingChildVersionCount?: number;
@@ -1959,6 +2073,7 @@ function createPrismaHarness(input: {
     routePlan: {
       create: ReturnType<typeof vi.fn>;
       findFirst: ReturnType<typeof vi.fn>;
+      findUnique: ReturnType<typeof vi.fn>;
       findMany: ReturnType<typeof vi.fn>;
       delete: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
@@ -2110,6 +2225,7 @@ function createPrismaHarness(input: {
               updatedAt: new Date('2026-05-07T12:30:00.000Z')
             })
       ),
+      findUnique: vi.fn(() => Promise.resolve(input.routePlanProjection ?? null)),
       findMany: vi.fn(() => Promise.resolve([])),
       update: vi.fn(() => Promise.resolve({ id: 'route-plan-id' })),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 })),

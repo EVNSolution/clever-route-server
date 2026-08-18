@@ -50,6 +50,8 @@ import type { RoutePlanRepository } from './route-plan.service.js';
 import { resolveNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 import { recordInventorySourceItemDeltas } from '../inventory/inventory.service.js';
+import { isIanaTimezone, localDateTimeInTimeZoneToUtc } from '../driver/driver-route-timezone.js';
+import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 
 const DEFAULT_API_VERSION = '2026-04';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
@@ -1201,7 +1203,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
   }
 
   async upsertRouteGeometryCache(input: RouteGeometryCacheWrite): Promise<void> {
-    await this.prisma.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
+    await this.prisma.$transaction(async (tx) => {
+      await tx.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
+      await persistPlannedRouteEta(tx, input);
+    });
   }
 
   async commitOrderDataRouteGeometryCache(input: RouteGeometryCacheWrite & {
@@ -1233,6 +1238,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           if (activeOptimizationJob !== null) return false;
 
           await tx.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
+          await persistPlannedRouteEta(tx, input);
           return true;
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
       } catch (error) {
@@ -1692,6 +1698,157 @@ async function applyRouteGeometryCache(
     where: { routePlanId: detail.routePlan.id }
   });
   return applyCachedRouteGeometry(detail, toStaleRouteGeometryCacheRead(latest));
+}
+
+async function persistPlannedRouteEta(
+  tx: Prisma.TransactionClient,
+  input: RouteGeometryCacheWrite
+): Promise<void> {
+  const routePlan = await tx.routePlan.findUnique({
+    select: {
+      constraints: true,
+      driverId: true,
+      planDate: true,
+      routeGroupingChildVersions: {
+        orderBy: { updatedAt: 'desc' },
+        select: { id: true },
+        take: 1,
+        where: { status: 'CURRENT', supersededAt: null }
+      },
+      routeStops: {
+        orderBy: { sequence: 'asc' },
+        select: {
+          deliveryStop: { select: { serviceMinutes: true } },
+          deliveryStopId: true,
+          sequence: true
+        }
+      },
+      shop: {
+        select: {
+          commerceConnections: {
+            select: { timezone: true },
+            where: { status: 'ACTIVE' }
+          },
+          routeOpsUiSettings: true
+        }
+      },
+      status: true
+    },
+    where: { id: input.routePlanId }
+  });
+  if (routePlan === null || !isRouteReadyStatus(routePlan.status) || routePlan.routeStops.length === 0) return;
+
+  const calculatedAt = input.generatedAt ?? new Date();
+  const routeVersionId = routePlan.routeGroupingChildVersions[0]?.id ?? null;
+  const pointByStopId = new Map(input.stopPoints.map((point) => [point.deliveryStopId, point]));
+  const start = plannedRouteEtaStart(routePlan);
+  let cursorMs: number | null = routePlan.driverId === null ? null : start?.getTime() ?? null;
+  let failureCode: string | null = routePlan.driverId !== null && start === null
+    ? 'ETA_INPUT_START_UNAVAILABLE'
+    : null;
+  const updates = routePlan.routeStops.map((stop) => {
+    const point = pointByStopId.get(stop.deliveryStopId);
+    const distanceFromPreviousMeters = nonNegativeInteger(point?.distanceFromPreviousMeters);
+    const durationFromPreviousSeconds = nonNegativeInteger(point?.durationFromPreviousSeconds);
+    cursorMs = addRouteDuration(cursorMs, durationFromPreviousSeconds);
+    const estimatedArrivalAt = cursorMs === null ? null : new Date(cursorMs);
+    if (estimatedArrivalAt === null && routePlan.driverId !== null) {
+      failureCode ??= 'ETA_INPUT_DURATION_UNAVAILABLE';
+    }
+    cursorMs = addRouteServiceTime(cursorMs, stop.deliveryStop.serviceMinutes);
+    return {
+      deliveryStopId: stop.deliveryStopId,
+      distanceFromPreviousMeters,
+      durationFromPreviousSeconds,
+      estimatedArrivalAt,
+      sequence: stop.sequence
+    };
+  });
+  const etaStatus = routePlan.driverId === null ? 'NOT_REQUIRED' : failureCode === null ? 'READY' : 'FAILED';
+  const etaFailureMessage = failureCode === 'ETA_INPUT_START_UNAVAILABLE'
+    ? 'ETA could not be calculated because the planned route start is unavailable.'
+    : failureCode === 'ETA_INPUT_DURATION_UNAVAILABLE'
+      ? 'ETA could not be calculated because route leg durations are unavailable.'
+      : null;
+
+  for (const update of updates) {
+    await tx.routePlanStop.updateMany({
+      data: {
+        distanceFromPreviousMeters: update.distanceFromPreviousMeters,
+        durationFromPreviousSeconds: update.durationFromPreviousSeconds,
+        estimatedArrivalAt: etaStatus === 'READY' ? update.estimatedArrivalAt : null,
+        etaCalculatedAt: routePlan.driverId === null ? null : calculatedAt,
+        etaFailureCode: failureCode,
+        etaFailureMessage,
+        etaInputRouteVersionId: routeVersionId,
+        etaSource: routePlan.driverId === null ? null : 'PLANNED_DEPARTURE',
+        etaStatus
+      },
+      where: {
+        deliveryStopId: update.deliveryStopId,
+        routePlanId: input.routePlanId,
+        sequence: update.sequence
+      }
+    });
+  }
+}
+
+function plannedRouteEtaStart(input: {
+  constraints: unknown;
+  planDate: Date;
+  shop: {
+    commerceConnections: Array<{ timezone: string | null }>;
+    routeOpsUiSettings: unknown;
+  };
+}): Date | null {
+  const scheduledStartAt = readScheduledStartAt(input.constraints);
+  if (scheduledStartAt !== null) return new Date(scheduledStartAt);
+  const constraints = objectOrNull(input.constraints);
+  const routeScope = objectOrNull(constraints?.routeScope);
+  const routeTimezone = [
+    readString(constraints?.timezone),
+    readString(routeScope?.timezone),
+    readString(constraints?.scheduledStartTimeZone)
+  ].find((value): value is string => value !== null && isIanaTimezone(value));
+  const connectionTimezones = [...new Set(input.shop.commerceConnections
+    .map((connection) => connection.timezone?.trim() ?? '')
+    .filter((value) => value !== '' && isIanaTimezone(value)))];
+  const serviceType = readString(routeScope?.serviceType);
+  const timezone = routeTimezone
+    ?? (connectionTimezones.length === 1 ? connectionTimezones[0] : null)
+    ?? (serviceType === 'DSV_DISPATCH' ? 'Asia/Seoul' : 'UTC');
+  const departureTime = readDepartureTime(input.constraints)
+    ?? plannedDepartureTime(input.shop.routeOpsUiSettings);
+  try {
+    return localDateTimeInTimeZoneToUtc(formatDateOnly(input.planDate), departureTime, timezone);
+  } catch {
+    return null;
+  }
+}
+
+function plannedDepartureTime(value: unknown): string {
+  try {
+    return normalizeRouteOpsUiSettings(value).plannedDepartureTime;
+  } catch {
+    return '08:30';
+  }
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
+}
+
+function addRouteDuration(cursorMs: number | null, durationSeconds: number | null): number | null {
+  return cursorMs === null || durationSeconds === null ? null : cursorMs + durationSeconds * 1000;
+}
+
+function addRouteServiceTime(cursorMs: number | null, serviceMinutes: number | null): number | null {
+  if (cursorMs === null) return null;
+  const minutes = serviceMinutes === null || !Number.isFinite(serviceMinutes) || serviceMinutes < 0
+    ? 5
+    : serviceMinutes;
+  return cursorMs + minutes * 60_000;
 }
 
 function routeGeometryCacheSummarySelect() {
