@@ -14,6 +14,7 @@ import {
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
+  type CustomRouteGroupingStopFields,
   type RouteGroupingService
 } from '../modules/route-grouping/route-grouping.types.js';
 
@@ -81,6 +82,76 @@ export function registerAdminRouteGroupRoutes(
     });
     if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
     return reply.code(200).send({ data: { routeGroup }, error: null });
+  });
+
+  app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/stops/custom', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readCustomStopPayload(request.body, true);
+      const routeGroup = await dependencies.routeGroupingService.createCustomStop({
+        appId: authenticated.appId,
+        actor: authenticated.subject,
+        groupingId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...payload,
+        stopName: payload.stopName ?? ''
+      });
+      if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
+      return reply.code(201).send({ data: { routeGroup }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
+  app.patch<{ Body: unknown; Params: { deliveryStopId: string; routeGroupId: string } }>('/admin/route-groups/:routeGroupId/stops/:deliveryStopId/custom', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readCustomStopPayload(request.body, false);
+      const routeGroup = await dependencies.routeGroupingService.updateCustomStop({
+        appId: authenticated.appId,
+        deliveryStopId: request.params.deliveryStopId,
+        groupingId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group or custom stop not found'));
+      return reply.code(200).send({ data: { routeGroup }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
+  app.delete<{ Params: { deliveryStopId: string; routeGroupId: string }; Querystring: unknown }>('/admin/route-groups/:routeGroupId/stops/:deliveryStopId/custom', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const query = objectOrEmpty(request.query);
+      const routeGroup = await dependencies.routeGroupingService.deleteCustomStop({
+        appId: authenticated.appId,
+        deliveryStopId: request.params.deliveryStopId,
+        groupingId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...optionalRevisionField(query, 'expectedUpdatedAt')
+      });
+      if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group or custom stop not found'));
+      return reply.code(200).send({ data: { routeGroup }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
   });
 
   app.get<{ Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/next-route-idx', async (request, reply) => {
@@ -482,6 +553,45 @@ function readUpdateGroupingOrdersPayload(value: unknown): { addOrderIds?: string
   };
 }
 
+function readCustomStopPayload(value: unknown, create: boolean): CustomRouteGroupingStopFields & {
+  expectedUpdatedAt?: string;
+  targetRoutePlanId?: string;
+} {
+  const object = requireObject(value);
+  const payload: CustomRouteGroupingStopFields & { expectedUpdatedAt?: string; targetRoutePlanId?: string } = {
+    ...(object.address1 === undefined ? {} : { address1: readNullableString(object.address1) }),
+    ...(object.address2 === undefined ? {} : { address2: readNullableString(object.address2) }),
+    ...(object.city === undefined ? {} : { city: readNullableString(object.city) }),
+    ...(object.countryCode === undefined ? {} : { countryCode: readCountryCode(object.countryCode) }),
+    ...(object.email === undefined ? {} : { email: readNullableString(object.email) }),
+    ...(object.expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt: readRevisionTimestamp(object.expectedUpdatedAt, 'expectedUpdatedAt') }),
+    ...(object.instructions === undefined ? {} : { instructions: readNullableString(object.instructions) }),
+    ...(object.latitude === undefined ? {} : { latitude: readNullableNumber(object.latitude) }),
+    ...(object.longitude === undefined ? {} : { longitude: readNullableNumber(object.longitude) }),
+    ...(object.phone === undefined ? {} : { phone: readNullableString(object.phone) }),
+    ...(object.postalCode === undefined ? {} : { postalCode: readNullableString(object.postalCode) }),
+    ...(object.priority === undefined ? {} : { priority: readBoundedInteger(object.priority, 'priority', 0, 100) }),
+    ...(object.province === undefined ? {} : { province: readNullableString(object.province) }),
+    ...(object.recipientName === undefined ? {} : { recipientName: readNullableString(object.recipientName) }),
+    ...(object.serviceMinutes === undefined ? {} : { serviceMinutes: readBoundedInteger(object.serviceMinutes, 'serviceMinutes', 0, 1_440) }),
+    ...(object.stopName === undefined ? {} : { stopName: requireNonEmptyString(object.stopName) }),
+    ...(object.targetRoutePlanId === undefined ? {} : { targetRoutePlanId: requireNonEmptyString(object.targetRoutePlanId) }),
+    ...(object.timeWindowEnd === undefined ? {} : { timeWindowEnd: readNullableInstant(object.timeWindowEnd, 'timeWindowEnd') }),
+    ...(object.timeWindowStart === undefined ? {} : { timeWindowStart: readNullableInstant(object.timeWindowStart, 'timeWindowStart') })
+  };
+  if (create && payload.stopName === undefined) throw new BadRouteGroupPayloadError('stopName required');
+  if (!create && Object.keys(payload).every((key) => key === 'expectedUpdatedAt')) {
+    throw new BadRouteGroupPayloadError('at least one custom stop field is required');
+  }
+  if ((payload.latitude === null) !== (payload.longitude === null) && payload.latitude !== undefined && payload.longitude !== undefined) {
+    throw new BadRouteGroupPayloadError('latitude and longitude must be provided together');
+  }
+  if (payload.timeWindowStart !== undefined && payload.timeWindowStart !== null && payload.timeWindowEnd !== undefined && payload.timeWindowEnd !== null) {
+    if (Date.parse(payload.timeWindowStart) >= Date.parse(payload.timeWindowEnd)) throw new BadRouteGroupPayloadError('invalid time window');
+  }
+  return payload;
+}
+
 function readCreateBranchPayload(value: unknown): { color?: string | null; driverId?: string | null; label?: string | null; orderIds?: string[]; sortOrder?: number } {
   const object = requireObject(value);
   return {
@@ -747,9 +857,33 @@ function readNonNegativeInteger(value: unknown): number {
   return value;
 }
 
+function readBoundedInteger(value: unknown, field: string, minimum: number, maximum: number): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new BadRouteGroupPayloadError(`${field} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function readCountryCode(value: unknown): string | null {
+  const countryCode = readNullableString(value)?.toUpperCase() ?? null;
+  if (countryCode !== null && !/^[A-Z]{2}$/u.test(countryCode)) throw new BadRouteGroupPayloadError('countryCode must be two letters');
+  return countryCode;
+}
+
+function readNullableInstant(value: unknown, field: string): string | null {
+  if (value === null || value === '') return null;
+  const instant = readRevisionTimestamp(value, field);
+  return instant;
+}
+
 function optionalStringField<T extends string>(object: Record<string, unknown>, key: T): Partial<Record<T, string>> {
   if (object[key] === undefined || object[key] === null || object[key] === '') return {};
   return { [key]: requireNonEmptyString(object[key]) } as Partial<Record<T, string>>;
+}
+
+function optionalRevisionField<T extends string>(object: Record<string, unknown>, key: T): Partial<Record<T, string>> {
+  if (object[key] === undefined || object[key] === null || object[key] === '') return {};
+  return { [key]: readRevisionTimestamp(object[key], key) } as Partial<Record<T, string>>;
 }
 
 function optionalDateField<T extends string>(object: Record<string, unknown>, key: T): Partial<Record<T, string>> {

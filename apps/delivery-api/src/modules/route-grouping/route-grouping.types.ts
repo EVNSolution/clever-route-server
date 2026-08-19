@@ -33,11 +33,24 @@ export type RouteGroupingAssignmentDto = {
   orderName: string;
   recipientName: string | null;
   addressLabel: string;
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  countryCode?: string | null;
   phone: string | null;
   email: string | null;
+  instructions?: string | null;
+  isCustomStop?: boolean;
   itemCount: number;
+  postalCode?: string | null;
+  priority?: number;
+  province?: string | null;
+  serviceMinutes?: number;
   sourceOrderId: string;
+  sourcePlatform?: 'SHOPIFY' | 'WOOCOMMERCE' | 'CUSTOM';
   sourceSequence: number;
+  timeWindowEnd?: string | null;
+  timeWindowStart?: string | null;
 };
 
 export type RouteGroupingPolygonDto = {
@@ -168,6 +181,44 @@ export type UpdateRouteGroupingOrdersInput = {
   targetRoutePlanId?: string;
 };
 
+export type CustomRouteGroupingStopFields = {
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  countryCode?: string | null;
+  email?: string | null;
+  instructions?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  phone?: string | null;
+  postalCode?: string | null;
+  priority?: number;
+  province?: string | null;
+  recipientName?: string | null;
+  serviceMinutes?: number;
+  stopName?: string;
+  timeWindowEnd?: string | null;
+  timeWindowStart?: string | null;
+};
+
+export type CreateCustomRouteGroupingStopInput = CustomRouteGroupingStopFields & {
+  actor: string;
+  appId?: string | undefined;
+  expectedUpdatedAt?: string;
+  groupingId: string;
+  shopDomain: string;
+  stopName: string;
+  targetRoutePlanId?: string;
+};
+
+export type UpdateCustomRouteGroupingStopInput = CustomRouteGroupingStopFields & {
+  appId?: string | undefined;
+  deliveryStopId: string;
+  expectedUpdatedAt?: string;
+  groupingId: string;
+  shopDomain: string;
+};
+
 export type CreateRouteGroupingBranchInput = {
   actor: string;
   appId?: string | undefined;
@@ -264,14 +315,17 @@ export type DeleteRouteGroupingResult = { deleted: boolean; deletedChildRoutePla
 
 export type RouteGroupingService = {
   createBranch(input: CreateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
+  createCustomStop(input: CreateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null>;
   createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto>;
   deleteBranch(input: { appId?: string | undefined; branchId: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
+  deleteCustomStop(input: { appId?: string | undefined; deliveryStopId: string; expectedUpdatedAt?: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;
   getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]>;
   nextRouteIdx(input: NextRouteGroupingRouteIdxInput): Promise<number | null>;
   updateBranch(input: UpdateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null>;
+  updateCustomStop(input: UpdateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null>;
   updateGroupingOrders(input: UpdateRouteGroupingOrdersInput): Promise<RouteGroupingDetailDto | null>;
   previewOptimization(input: RouteGroupingOptimizationPreviewInput): Promise<RouteGroupingOptimizationPreviewResult | null>;
   saveDraft(input: SaveRouteGroupingDraftInput): Promise<RouteGroupingDetailDto | null>;

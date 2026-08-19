@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import {
+  PrismaRouteGroupingService,
   newChildRouteName,
   rebindCurrentOrdersToRouteVersion,
   resolveNewChildRouteIdx,
@@ -16,6 +17,162 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('route grouping contracts', () => {
+  test('creates an unassigned local custom order and stop without a commerce client', async () => {
+    const orderCreate = vi.fn<(input: { data: {
+      name: string;
+      rawPayload: unknown;
+      shopId: string;
+      shopifyOrderGid: string;
+      sourceOrderId: string;
+      sourcePlatform: string;
+    } }) => Promise<{ deliveryStops: Array<{ id: string }>; id: string; orderItems: [] }>>()
+      .mockResolvedValue({ deliveryStops: [{ id: 'stop-custom' }], id: 'order-custom', orderItems: [] });
+    const groupingOrderCreate = vi.fn().mockResolvedValue({ id: 'group-order-custom' });
+    const tx = {
+      inventory: {
+        findUnique: vi.fn().mockResolvedValue({ id: 'inventory-1' }),
+        update: vi.fn().mockResolvedValue({ id: 'inventory-1' })
+      },
+      inventoryEvent: { createMany: vi.fn() },
+      inventoryOrder: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findMany: vi.fn().mockResolvedValue([])
+      },
+      order: {
+        create: orderCreate,
+        findMany: vi.fn().mockResolvedValue([{ id: 'order-custom', orderItems: [] }])
+      },
+      routeGrouping: {
+        findFirst: vi.fn().mockResolvedValue({
+          dateRangeEnd: null,
+          dateRangeStart: null,
+          id: 'group-1',
+          name: 'Group 1',
+          planDate: new Date('2026-08-19T00:00:00.000Z'),
+          shopId: 'shop-1',
+          updatedAt: new Date('2026-08-19T12:00:00.000Z')
+        }),
+        update: vi.fn().mockResolvedValue({ id: 'group-1' })
+      },
+      routeGroupingOrder: {
+        aggregate: vi.fn().mockResolvedValue({ _max: { sourceSequence: 3 } }),
+        create: groupingOrderCreate
+      },
+      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+    };
+    const prisma = { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) };
+    const service = new PrismaRouteGroupingService(prisma as never, new FakeDriverPushProvider());
+    vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-1' } as never);
+
+    await service.createCustomStop({
+      actor: 'admin-user',
+      groupingId: 'group-1',
+      latitude: 43.7,
+      longitude: -79.4,
+      shopDomain: 'tenant.example',
+      stopName: 'Warehouse pickup'
+    });
+
+    const createdOrder = orderCreate.mock.calls[0]?.[0].data;
+    expect(createdOrder?.name).toBe('Warehouse pickup');
+    expect(createdOrder?.rawPayload).toMatchObject({ kind: 'CLEVER_CUSTOM_ROUTE_STOP' });
+    expect(createdOrder?.shopId).toBe('shop-1');
+    expect(createdOrder?.shopifyOrderGid).toMatch(/^gid:\/\/clever\/CustomRouteStop\//u);
+    expect(createdOrder?.sourceOrderId).toMatch(/^custom-stop:/u);
+    expect(createdOrder?.sourcePlatform).toBe('CUSTOM');
+    expect(groupingOrderCreate).toHaveBeenCalledWith({
+      data: {
+        assignmentStatus: 'UNASSIGNED',
+        deliveryStopId: 'stop-custom',
+        groupingId: 'group-1',
+        orderId: 'order-custom',
+        shopId: 'shop-1',
+        sourceSequence: 4
+      }
+    });
+  });
+
+  test('denies cross-tenant custom stop creation and rejects commerce stop edits', async () => {
+    const crossTenantTx = { shop: { findUnique: vi.fn().mockResolvedValue(null) } };
+    const crossTenantPrisma = { $transaction: vi.fn((operation: (client: typeof crossTenantTx) => unknown) => operation(crossTenantTx)) };
+    const crossTenantService = new PrismaRouteGroupingService(crossTenantPrisma as never, new FakeDriverPushProvider());
+    expect(await crossTenantService.createCustomStop({ actor: 'admin', groupingId: 'other-group', shopDomain: 'tenant.example', stopName: 'Denied' })).toBeNull();
+
+    const editTx = {
+      routeGrouping: { findFirst: vi.fn().mockResolvedValue({ id: 'group-1', shopId: 'shop-1' }) },
+      routeGroupingOrder: {
+        findFirst: vi.fn().mockResolvedValue({
+          deliveryStop: { latitude: null, longitude: null, priority: 0, serviceMinutes: 5, timeWindowEnd: null, timeWindowStart: null },
+          order: { sourcePlatform: 'SHOPIFY' }
+        })
+      },
+      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+    };
+    const editPrisma = { $transaction: vi.fn((operation: (client: typeof editTx) => unknown) => operation(editTx)) };
+    const editService = new PrismaRouteGroupingService(editPrisma as never, new FakeDriverPushProvider());
+    await expect(editService.updateCustomStop({
+      deliveryStopId: 'shopify-stop',
+      groupingId: 'group-1',
+      instructions: 'do not allow',
+      shopDomain: 'tenant.example'
+    })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+  });
+
+  test('deletes only the tenant group custom order graph', async () => {
+    const orderDelete = vi.fn().mockResolvedValue({ id: 'order-custom' });
+    const tx = {
+      inventory: {
+        findUnique: vi.fn().mockResolvedValue({ id: 'inventory-1' }),
+        update: vi.fn().mockResolvedValue({ id: 'inventory-1' })
+      },
+      inventoryEvent: { createMany: vi.fn() },
+      inventoryOrder: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findMany: vi.fn().mockResolvedValue([{ orderId: 'order-custom' }])
+      },
+      order: {
+        delete: orderDelete,
+        findMany: vi.fn().mockResolvedValue([{ id: 'order-custom', orderItems: [] }])
+      },
+      routeGrouping: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: 'group-1',
+          name: 'Group 1',
+          shopId: 'shop-1',
+          updatedAt: new Date('2026-08-19T12:00:00.000Z')
+        }),
+        findUnique: vi.fn().mockResolvedValue({
+          childVersions: [],
+          id: 'group-1',
+          orders: [{ deliveryStopId: 'stop-custom', order: { sourcePlatform: 'CUSTOM' }, orderId: 'order-custom' }]
+        }),
+        update: vi.fn().mockResolvedValue({ id: 'group-1' })
+      },
+      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+    };
+    const prisma = { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) };
+    const service = new PrismaRouteGroupingService(prisma as never, new FakeDriverPushProvider());
+    vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-1' } as never);
+
+    await service.deleteCustomStop({ deliveryStopId: 'stop-custom', groupingId: 'group-1', shopDomain: 'tenant.example' });
+
+    expect(orderDelete).toHaveBeenCalledWith({ where: { id: 'order-custom' } });
+    expect(tx.inventoryOrder.deleteMany).toHaveBeenCalledWith({
+      where: { inventoryId: 'inventory-1', orderId: { in: ['order-custom'] }, shopId: 'shop-1' }
+    });
+  });
+
+  test('marks local route stops explicitly and excludes them from commerce order lists', () => {
+    const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
+    const service = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const orderRepository = readFileSync(join(process.cwd(), 'src/modules/shopify/order-sync.repository.ts'), 'utf8');
+
+    expect(schema).toMatch(/enum CommerceSourcePlatform \{[\s\S]*?CUSTOM[\s\S]*?\}/u);
+    expect(service).toContain("sourcePlatform: 'CUSTOM'");
+    expect(service).toContain('isCustomStop: order.order.sourcePlatform ===');
+    expect(orderRepository).toContain("sourcePlatform: { not: 'CUSTOM' }");
+  });
+
   test('moves retained route stops to temporary sequences before compacting them', async () => {
     const updateMany = vi.fn<(input: { data: { sequence: number }; where: Record<string, unknown> }) => Promise<{ count: number }>>()
       .mockResolvedValueOnce({ count: 1 })

@@ -1457,7 +1457,7 @@ export function toCanonicalOrderWhere(
   shopId: string,
   filters: ListCanonicalOrdersFilters,
 ): Prisma.OrderWhereInput {
-  const AND: Prisma.OrderWhereInput[] = [];
+  const AND: Prisma.OrderWhereInput[] = [{ sourcePlatform: { not: 'CUSTOM' } }];
   if (filters.search !== undefined && filters.search.trim() !== "") {
     const search = filters.search.trim();
     const textFields = [

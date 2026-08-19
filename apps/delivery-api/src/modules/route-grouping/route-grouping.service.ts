@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DriverEventType, type Prisma, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type {
@@ -23,6 +24,7 @@ import {
   RouteGroupingStopMembershipConflictError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
+  type CreateCustomRouteGroupingStopInput,
   type CreateRouteGroupingBranchInput,
   type CreateRouteGroupingInput,
   type DeleteRouteGroupingResult,
@@ -48,6 +50,7 @@ import {
   type SaveRouteGroupingPolygonsInput,
   type UpdateRouteGroupingBranchInput,
   type UpdateRouteGroupingBranchOrdersInput,
+  type UpdateCustomRouteGroupingStopInput,
   type UpdateRouteGroupingOrdersInput
 } from './route-grouping.types.js';
 import { hashPushToken } from './driver-push-token.service.js';
@@ -372,7 +375,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               supersededAt: true,
               version: true
             }
-          }
+          },
+          orders: { select: { order: { select: { id: true, sourcePlatform: true } } } }
         },
         where: { id: input.groupingId, shop: { appId: normalizeShopifyAppId(input.appId), shopDomain } }
       });
@@ -408,6 +412,12 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       }
       await tx.inventory.deleteMany({ where: { routeGroupingId: group.id, shopId: group.shopId } });
       await tx.routeGrouping.delete({ where: { id: group.id } });
+      const customOrderIds = group.orders
+        .filter(({ order }) => order.sourcePlatform === 'CUSTOM')
+        .map(({ order }) => order.id);
+      if (customOrderIds.length > 0) {
+        await tx.order.deleteMany({ where: { id: { in: customOrderIds }, shopId: group.shopId, sourcePlatform: 'CUSTOM' } });
+      }
       return {
         notificationTargets,
         result: { deleted: true, deletedChildRoutePlanCount: childRoutePlanIds.length, groupingId: input.groupingId }
@@ -501,6 +511,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       }
 
       if (removeOrderIds.length > 0) {
+        await assertNoCustomStopsRemovedAsOrders(tx, group, removeOrderIds);
         await deleteBranchOrderLocks(tx, group, undefined, removeOrderIds);
         await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removeOrderIds } } });
       }
@@ -551,6 +562,214 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds);
       }
       await recomputeAssignments(tx, group.id);
+      return group.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
+  async createCustomStop(input: CreateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null> {
+    validateCustomStopValues(input);
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      await updateGroupingRevision(tx, group, input.expectedUpdatedAt);
+
+      const localId = randomUUID();
+      const internalSourceId = `custom-stop:${localId}`;
+      const created = await tx.order.create({
+        data: {
+          email: normalizeOptionalText(input.email),
+          name: input.stopName.trim(),
+          phone: normalizeOptionalText(input.phone),
+          processedAt: new Date(),
+          rawPayload: {
+            createdBy: input.actor,
+            kind: 'CLEVER_CUSTOM_ROUTE_STOP',
+            schemaVersion: 1
+          },
+          shippingAddress: customStopShippingAddress(input),
+          shopId: group.shopId,
+          shopifyOrderGid: `gid://clever/CustomRouteStop/${localId}`,
+          sourceOrderId: internalSourceId,
+          sourcePlatform: 'CUSTOM',
+          sourceUpdatedAt: new Date(),
+          deliveryStops: {
+            create: {
+              address1: normalizeOptionalText(input.address1),
+              address2: normalizeOptionalText(input.address2),
+              city: normalizeOptionalText(input.city),
+              countryCode: normalizeCountryCode(input.countryCode),
+              deliveryDate: group.planDate,
+              geocodeStatus: hasCustomStopCoordinates(input) ? 'RESOLVED' : 'PENDING',
+              instructions: normalizeOptionalText(input.instructions),
+              latitude: input.latitude ?? null,
+              longitude: input.longitude ?? null,
+              phone: normalizeOptionalText(input.phone),
+              postalCode: normalizeOptionalText(input.postalCode),
+              priority: input.priority ?? 0,
+              province: normalizeOptionalText(input.province),
+              recipientName: normalizeOptionalText(input.recipientName),
+              serviceMinutes: input.serviceMinutes ?? 5,
+              shopId: group.shopId,
+              timeWindowEnd: parseCustomStopInstant(input.timeWindowEnd),
+              timeWindowStart: parseCustomStopInstant(input.timeWindowStart)
+            }
+          }
+        },
+        include: { deliveryStops: { select: { id: true }, take: 1 } }
+      });
+      const deliveryStopId = created.deliveryStops[0]?.id;
+      if (deliveryStopId === undefined) throw new Error('Custom stop creation did not create a delivery stop');
+      const maxSequence = await tx.routeGroupingOrder.aggregate({ _max: { sourceSequence: true }, where: { groupingId: group.id } });
+      await tx.routeGroupingOrder.create({
+        data: {
+          assignmentStatus: 'UNASSIGNED',
+          deliveryStopId,
+          groupingId: group.id,
+          orderId: created.id,
+          shopId: group.shopId,
+          sourceSequence: (maxSequence._max.sourceSequence ?? 0) + 1
+        }
+      });
+      await syncRouteGroupingInventoryOrders(tx, {
+        actor: ROUTE_GROUPING_INVENTORY_ACTOR,
+        addOrderIds: [created.id],
+        groupingId: group.id,
+        name: group.name,
+        removeOrderIds: [],
+        shopId: group.shopId
+      });
+      if (input.targetRoutePlanId !== undefined) {
+        const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
+        if (loaded === null) return null;
+        await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, [created.id]);
+      }
+      return group.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
+  async updateCustomStop(input: UpdateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null> {
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      const assignment = await tx.routeGroupingOrder.findFirst({
+        include: { deliveryStop: { include: { routePlanStops: true } }, order: true },
+        where: { deliveryStopId: input.deliveryStopId, groupingId: group.id, shopId: group.shopId }
+      });
+      if (assignment === null) return null;
+      assertCustomStop(assignment.order.sourcePlatform);
+      const merged = {
+        latitude: input.latitude === undefined ? decimalNumber(assignment.deliveryStop.latitude) : input.latitude,
+        longitude: input.longitude === undefined ? decimalNumber(assignment.deliveryStop.longitude) : input.longitude,
+        priority: input.priority ?? assignment.deliveryStop.priority,
+        serviceMinutes: input.serviceMinutes ?? assignment.deliveryStop.serviceMinutes,
+        timeWindowEnd: input.timeWindowEnd === undefined ? assignment.deliveryStop.timeWindowEnd?.toISOString() ?? null : input.timeWindowEnd,
+        timeWindowStart: input.timeWindowStart === undefined ? assignment.deliveryStop.timeWindowStart?.toISOString() ?? null : input.timeWindowStart
+      };
+      const mergedAddress = {
+        address1: input.address1 === undefined ? assignment.deliveryStop.address1 : input.address1,
+        address2: input.address2 === undefined ? assignment.deliveryStop.address2 : input.address2,
+        city: input.city === undefined ? assignment.deliveryStop.city : input.city,
+        countryCode: input.countryCode === undefined ? assignment.deliveryStop.countryCode : input.countryCode,
+        phone: input.phone === undefined ? assignment.deliveryStop.phone ?? assignment.order.phone : input.phone,
+        postalCode: input.postalCode === undefined ? assignment.deliveryStop.postalCode : input.postalCode,
+        province: input.province === undefined ? assignment.deliveryStop.province : input.province,
+        recipientName: input.recipientName === undefined ? assignment.deliveryStop.recipientName : input.recipientName
+      };
+      validateCustomStopValues(merged);
+      await updateGroupingRevision(tx, group, input.expectedUpdatedAt);
+
+      if (hasCustomStopOrderFields(input)) {
+        await tx.order.update({
+          data: {
+            ...(input.stopName === undefined ? {} : { name: input.stopName.trim() }),
+            ...(input.email === undefined ? {} : { email: normalizeOptionalText(input.email) }),
+            ...(input.phone === undefined ? {} : { phone: normalizeOptionalText(input.phone) }),
+            shippingAddress: customStopShippingAddress(mergedAddress),
+            sourceUpdatedAt: new Date()
+          },
+          where: { id: assignment.orderId }
+        });
+      }
+      await tx.deliveryStop.update({
+        data: {
+          ...(input.address1 === undefined ? {} : { address1: normalizeOptionalText(input.address1) }),
+          ...(input.address2 === undefined ? {} : { address2: normalizeOptionalText(input.address2) }),
+          ...(input.city === undefined ? {} : { city: normalizeOptionalText(input.city) }),
+          ...(input.countryCode === undefined ? {} : { countryCode: normalizeCountryCode(input.countryCode) }),
+          ...(input.instructions === undefined ? {} : { instructions: normalizeOptionalText(input.instructions) }),
+          ...(input.latitude === undefined ? {} : { latitude: input.latitude }),
+          ...(input.longitude === undefined ? {} : { longitude: input.longitude }),
+          ...(input.phone === undefined ? {} : { phone: normalizeOptionalText(input.phone) }),
+          ...(input.postalCode === undefined ? {} : { postalCode: normalizeOptionalText(input.postalCode) }),
+          ...(input.priority === undefined ? {} : { priority: input.priority }),
+          ...(input.province === undefined ? {} : { province: normalizeOptionalText(input.province) }),
+          ...(input.recipientName === undefined ? {} : { recipientName: normalizeOptionalText(input.recipientName) }),
+          ...(input.serviceMinutes === undefined ? {} : { serviceMinutes: input.serviceMinutes }),
+          ...(input.timeWindowEnd === undefined ? {} : { timeWindowEnd: parseCustomStopInstant(input.timeWindowEnd) }),
+          ...(input.timeWindowStart === undefined ? {} : { timeWindowStart: parseCustomStopInstant(input.timeWindowStart) }),
+          ...(input.latitude === undefined && input.longitude === undefined ? {} : { geocodeStatus: hasCustomStopCoordinates(merged) ? 'RESOLVED' : 'PENDING' })
+        },
+        where: { id: assignment.deliveryStopId }
+      });
+      await invalidateCustomStopChildRoutes(tx, group.id, assignment.deliveryStopId);
+      return group.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
+  async deleteCustomStop(input: { appId?: string | undefined; deliveryStopId: string; expectedUpdatedAt?: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null> {
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
+      if (loaded === null) return null;
+      const assignment = loaded.orders.find((row) => row.deliveryStopId === input.deliveryStopId);
+      if (assignment === undefined) return null;
+      assertCustomStop(assignment.order.sourcePlatform);
+      await updateGroupingRevision(tx, group, input.expectedUpdatedAt);
+
+      for (const child of loaded.childVersions.filter((row) => isOperationalCurrentChild(row))) {
+        const currentAssignments = currentChildAssignments(loaded, child);
+        if (!currentAssignments.some((row) => row.deliveryStopId === assignment.deliveryStopId)) continue;
+        if (deriveChildDisplayStatus(child) !== 'READY') {
+          throw new RouteGroupingValidationError(['custom stops cannot be deleted from an in-progress or completed child route']);
+        }
+        if (child.routePlanId === null) continue;
+        const remaining = currentAssignments.filter((row) => row.deliveryStopId !== assignment.deliveryStopId);
+        await syncRoutePlanStopsPreservingRows(tx, group.shopId, child.routePlanId, remaining);
+        await tx.routePlan.update({ data: { metrics: routeMetrics(remaining) }, where: { id: child.routePlanId } });
+        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
+        const snapshot = readChildSnapshot(child.snapshot);
+        await tx.routeGroupingChildVersion.update({
+          data: {
+            snapshot: createChildSnapshot(
+              loaded,
+              remaining,
+              child.routePlan?.driverId ?? child.driverId,
+              childRouteSlotName(child),
+              loaded.currentVersion,
+              snapshot.color,
+              snapshot.sortOrder,
+              snapshot.routeIdx
+            )
+          },
+          where: { id: child.id }
+        });
+      }
+      await syncRouteGroupingInventoryOrders(tx, {
+        actor: ROUTE_GROUPING_INVENTORY_ACTOR,
+        addOrderIds: [],
+        groupingId: group.id,
+        name: group.name,
+        removeOrderIds: [assignment.orderId],
+        shopId: group.shopId
+      });
+      await tx.order.delete({ where: { id: assignment.orderId } });
       return group.id;
     });
     if (groupingId === null) return null;
@@ -638,6 +857,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
 
       if (removedOrderIds.length > 0) {
+        await assertNoCustomStopsRemovedAsOrders(tx, group, removedOrderIds);
         await deleteBranchOrderLocks(tx, group, undefined, removedOrderIds);
         await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removedOrderIds } } });
         await syncRouteGroupingInventoryOrders(tx, {
@@ -801,6 +1021,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
 
     if (removedOrderIds.length > 0) {
+      await assertNoCustomStopsRemovedAsOrders(tx, group, removedOrderIds);
       await deleteBranchOrderLocks(tx, group, undefined, removedOrderIds);
       await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removedOrderIds } } });
       await syncRouteGroupingInventoryOrders(tx, {
@@ -1992,6 +2213,162 @@ function logRouteGeometryRefreshFailure(routePlanId: string, reason: unknown): v
   });
 }
 
+async function updateGroupingRevision(
+  tx: Tx,
+  group: GroupingForUpdate,
+  expectedUpdatedAt: string | undefined
+): Promise<void> {
+  if (expectedUpdatedAt === undefined) {
+    await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
+    return;
+  }
+  const guarded = await tx.routeGrouping.updateMany({
+    data: { status: 'READY' },
+    where: { id: group.id, shopId: group.shopId, updatedAt: parseExpectedUpdatedAt(expectedUpdatedAt) }
+  });
+  if (guarded.count !== 1) throw new RouteGroupingConflictError();
+}
+
+async function assertNoCustomStopsRemovedAsOrders(
+  tx: Tx,
+  group: GroupingForUpdate,
+  orderIds: string[]
+): Promise<void> {
+  const customStop = await tx.routeGroupingOrder.findFirst({
+    select: { orderId: true },
+    where: {
+      groupingId: group.id,
+      order: { sourcePlatform: 'CUSTOM' },
+      orderId: { in: orderIds },
+      shopId: group.shopId
+    }
+  });
+  if (customStop !== null) {
+    throw new RouteGroupingValidationError(['custom stops must be deleted through the custom stop API']);
+  }
+}
+
+function validateCustomStopValues(input: {
+  latitude?: number | null;
+  longitude?: number | null;
+  priority?: number;
+  serviceMinutes?: number;
+  timeWindowEnd?: string | null;
+  timeWindowStart?: string | null;
+}): void {
+  const latitude = input.latitude ?? null;
+  const longitude = input.longitude ?? null;
+  if ((latitude === null) !== (longitude === null)) {
+    throw new RouteGroupingValidationError(['latitude and longitude must be provided together']);
+  }
+  if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90)) {
+    throw new RouteGroupingValidationError(['latitude must be between -90 and 90']);
+  }
+  if (longitude !== null && (!Number.isFinite(longitude) || longitude < -180 || longitude > 180)) {
+    throw new RouteGroupingValidationError(['longitude must be between -180 and 180']);
+  }
+  if (input.serviceMinutes !== undefined && (!Number.isInteger(input.serviceMinutes) || input.serviceMinutes < 0 || input.serviceMinutes > 1_440)) {
+    throw new RouteGroupingValidationError(['serviceMinutes must be an integer between 0 and 1440']);
+  }
+  if (input.priority !== undefined && (!Number.isInteger(input.priority) || input.priority < 0 || input.priority > 100)) {
+    throw new RouteGroupingValidationError(['priority must be an integer between 0 and 100']);
+  }
+  const start = parseCustomStopInstant(input.timeWindowStart);
+  const end = parseCustomStopInstant(input.timeWindowEnd);
+  if (start !== null && end !== null && start.getTime() >= end.getTime()) {
+    throw new RouteGroupingValidationError(['timeWindowStart must be earlier than timeWindowEnd']);
+  }
+}
+
+function parseCustomStopInstant(value: string | null | undefined): Date | null {
+  if (value === undefined || value === null) return null;
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) throw new RouteGroupingValidationError(['custom stop time windows must be valid timestamps']);
+  return instant;
+}
+
+function hasCustomStopCoordinates(input: { latitude?: number | null; longitude?: number | null }): boolean {
+  return input.latitude !== undefined && input.latitude !== null && input.longitude !== undefined && input.longitude !== null;
+}
+
+function normalizeCountryCode(value: string | null | undefined): string | null {
+  const normalized = normalizeOptionalText(value)?.toUpperCase() ?? null;
+  if (normalized !== null && !/^[A-Z]{2}$/u.test(normalized)) {
+    throw new RouteGroupingValidationError(['countryCode must be a two-letter ISO country code']);
+  }
+  return normalized;
+}
+
+function customStopShippingAddress(input: {
+  address1?: string | null;
+  address2?: string | null;
+  city?: string | null;
+  countryCode?: string | null;
+  phone?: string | null;
+  postalCode?: string | null;
+  province?: string | null;
+  recipientName?: string | null;
+}): Prisma.InputJsonObject {
+  return toJson({
+    address1: normalizeOptionalText(input.address1),
+    address2: normalizeOptionalText(input.address2),
+    city: normalizeOptionalText(input.city),
+    countryCode: normalizeCountryCode(input.countryCode),
+    name: normalizeOptionalText(input.recipientName),
+    phone: normalizeOptionalText(input.phone),
+    postalCode: normalizeOptionalText(input.postalCode),
+    province: normalizeOptionalText(input.province)
+  }) as Prisma.InputJsonObject;
+}
+
+function hasCustomStopOrderFields(input: UpdateCustomRouteGroupingStopInput): boolean {
+  return [
+    input.address1,
+    input.address2,
+    input.city,
+    input.countryCode,
+    input.email,
+    input.phone,
+    input.postalCode,
+    input.province,
+    input.recipientName,
+    input.stopName
+  ].some((value) => value !== undefined);
+}
+
+function assertCustomStop(sourcePlatform: string): void {
+  if (sourcePlatform !== 'CUSTOM') {
+    throw new RouteGroupingValidationError(['only custom stops can be changed through the custom stop API']);
+  }
+}
+
+async function invalidateCustomStopChildRoutes(tx: Tx, groupingId: string, deliveryStopId: string): Promise<void> {
+  const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: groupingId } });
+  if (loaded === null) return;
+  for (const child of loaded.childVersions.filter((row) => isOperationalCurrentChild(row))) {
+    const assignments = currentChildAssignments(loaded, child);
+    if (!assignments.some((row) => row.deliveryStopId === deliveryStopId) || child.routePlanId === null) continue;
+    await tx.routePlan.update({ data: { metrics: routeMetrics(assignments) }, where: { id: child.routePlanId } });
+    await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
+    const snapshot = readChildSnapshot(child.snapshot);
+    await tx.routeGroupingChildVersion.update({
+      data: {
+        snapshot: createChildSnapshot(
+          loaded,
+          assignments,
+          child.routePlan?.driverId ?? child.driverId,
+          childRouteSlotName(child),
+          loaded.currentVersion,
+          snapshot.color,
+          snapshot.sortOrder,
+          snapshot.routeIdx
+        )
+      },
+      where: { id: child.id }
+    });
+  }
+}
+
 function groupingInclude() {
   return {
     branches: {
@@ -2990,11 +3367,26 @@ function toAssignmentDto(order: LoadedAssignment): RouteGroupingAssignmentDto {
     orderName: order.order.name,
     recipientName: order.deliveryStop.recipientName,
     addressLabel: formatDeliveryStopAddress(order.deliveryStop),
+    address1: order.deliveryStop.address1,
+    address2: order.deliveryStop.address2,
+    city: order.deliveryStop.city,
+    countryCode: order.deliveryStop.countryCode,
     phone: order.deliveryStop.phone ?? order.order.phone ?? null,
     email: order.order.email ?? null,
+    instructions: order.deliveryStop.instructions,
+    isCustomStop: order.order.sourcePlatform === 'CUSTOM',
     itemCount: assignmentItemCount(order),
-    sourceOrderId: order.order.shopifyOrderGid,
-    sourceSequence: order.sourceSequence
+    postalCode: order.deliveryStop.postalCode,
+    priority: order.deliveryStop.priority,
+    province: order.deliveryStop.province,
+    serviceMinutes: order.deliveryStop.serviceMinutes,
+    sourceOrderId: order.order.sourcePlatform === 'CUSTOM'
+      ? order.order.sourceOrderId ?? order.order.shopifyOrderGid
+      : order.order.shopifyOrderGid,
+    sourcePlatform: order.order.sourcePlatform,
+    sourceSequence: order.sourceSequence,
+    timeWindowEnd: order.deliveryStop.timeWindowEnd?.toISOString() ?? null,
+    timeWindowStart: order.deliveryStop.timeWindowStart?.toISOString() ?? null
   };
 }
 

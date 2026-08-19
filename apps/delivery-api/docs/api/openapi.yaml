@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-08-06
+  x-contract-revision: 2026-08-19
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -2444,6 +2444,96 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/stops/custom:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Create a CLEVER-local custom stop in a route group or child route
+      description: Creates only tenant-scoped CLEVER database rows. It never creates or mutates Shopify data.
+      operationId: createAdminRouteGroupCustomStop
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomRouteStopCreateInput' }
+      responses:
+        '201':
+          description: Updated route group envelope containing the custom stop.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/route-groups/{routeGroupId}/stops/{deliveryStopId}/custom:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: deliveryStopId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update a CLEVER-local custom stop
+      description: Rejects commerce-sourced stops and scopes the stop through the authenticated tenant and route group.
+      operationId: updateAdminRouteGroupCustomStop
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomRouteStopUpdateInput' }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Shopify Embedded Admin]
+      summary: Delete a CLEVER-local custom stop
+      operationId: deleteAdminRouteGroupCustomStop
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      parameters:
+        - name: expectedUpdatedAt
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Updated route group envelope after removing the custom stop graph.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /admin/route-groups/{routeGroupId}/branches:
     parameters:
       - name: routeGroupId
@@ -4904,6 +4994,40 @@ components:
           schema:
             $ref: '#/components/schemas/DsvV1ErrorEnvelope'
   schemas:
+    CustomRouteStopFields:
+      type: object
+      properties:
+        address1: { type: [string, 'null'] }
+        address2: { type: [string, 'null'] }
+        city: { type: [string, 'null'] }
+        countryCode: { type: [string, 'null'], pattern: '^[A-Za-z]{2}$' }
+        email: { type: [string, 'null'] }
+        expectedUpdatedAt: { type: string, format: date-time }
+        instructions: { type: [string, 'null'] }
+        latitude: { type: [number, 'null'], minimum: -90, maximum: 90 }
+        longitude: { type: [number, 'null'], minimum: -180, maximum: 180 }
+        phone: { type: [string, 'null'] }
+        postalCode: { type: [string, 'null'] }
+        priority: { type: integer, minimum: 0, maximum: 100 }
+        province: { type: [string, 'null'] }
+        recipientName: { type: [string, 'null'] }
+        serviceMinutes: { type: integer, minimum: 0, maximum: 1440, default: 5 }
+        stopName: { type: string, minLength: 1 }
+        timeWindowEnd: { type: [string, 'null'], format: date-time }
+        timeWindowStart: { type: [string, 'null'], format: date-time }
+    CustomRouteStopCreateInput:
+      allOf:
+        - $ref: '#/components/schemas/CustomRouteStopFields'
+        - type: object
+          required: [stopName]
+          properties:
+            targetRoutePlanId:
+              type: string
+              format: uuid
+              description: Omit to keep the stop unassigned at group level; provide a current child route plan ID to append it atomically.
+    CustomRouteStopUpdateInput:
+      allOf:
+        - $ref: '#/components/schemas/CustomRouteStopFields'
     Error:
       type: object
       required: [code, message]
