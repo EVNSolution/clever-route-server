@@ -25,6 +25,13 @@ write_idx = command.index('cat "$candidate" > "$CADDYFILE"')
 container_validate_idx = command.index('if ! docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" exec -T caddy caddy validate --config /etc/caddy/Caddyfile')
 container_reload_idx = command.index('if ! docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" exec -T caddy caddy reload --config /etc/caddy/Caddyfile')
 checks = {
+    'runtime_log_query_redaction': all(value in caddyfile for value in [
+        'log default',
+        'request>uri query',
+        'replace id_token REDACTED',
+        'replace hmac REDACTED',
+        'replace session REDACTED',
+    ]),
     'uses_run_shell_command': command.startswith('bash -lc '),
     'caddyfile_rendered': 'CADDYFILE_B64=' in command and 'base64 -d > "$candidate"' in command,
     'validates_candidate_before_dry_run': 'docker run --rm -v "$candidate_abs:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile' in command and command.index('docker run --rm -v "$candidate_abs:/etc/caddy/Caddyfile:ro"') < dry_run_idx,

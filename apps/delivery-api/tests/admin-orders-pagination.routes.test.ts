@@ -23,7 +23,10 @@ describe('admin orders pagination resources', () => {
       expect(response.statusCode).toBe(200);
       expect(JSON.parse(response.body)).toEqual({
         data: {
-          freshness: {},
+          freshness: {
+            resultGeneratedAt: expect.any(String) as string,
+            syncStatus: 'query_complete'
+          },
           pageInfo: {
             endCursor: null,
             hasNextPage: false,
@@ -85,7 +88,10 @@ describe('admin orders pagination resources', () => {
       expect(response.statusCode).toBe(200);
       expect(JSON.parse(response.body)).toEqual({
         data: {
-          freshness: {},
+          freshness: {
+            resultGeneratedAt: expect.any(String) as string,
+            syncStatus: 'query_complete'
+          },
           pageInfo: {
             currentPage: 3,
             endCursor: 'end-cursor',

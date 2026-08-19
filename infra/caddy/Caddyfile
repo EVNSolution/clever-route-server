@@ -10,6 +10,17 @@
 # - clever-admin.cleversystem.ai          -> Legacy Shopify production alias during host migration
 # - clever-kfood-app.cleversystem.ai      -> Shopify K-food app on external compose network
 # Remove legacy host blocks only after the staged migration and smoke evidence complete.
+{
+	log default {
+		format filter {
+			request>uri query {
+				replace id_token REDACTED
+				replace hmac REDACTED
+				replace session REDACTED
+			}
+		}
+	}
+}
 
 clever-route-api.cleversystem.ai {
 	encode zstd gzip

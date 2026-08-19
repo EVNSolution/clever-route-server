@@ -294,7 +294,10 @@ export function registerAdminOrdersRoutes(
         });
         return reply.code(200).send({
           data: {
-            freshness: {},
+            freshness: {
+              resultGeneratedAt: new Date().toISOString(),
+              syncStatus: 'query_complete'
+            },
             pageInfo: {
               ...result.pageInfo,
               pageSize: ORDERS_PAGE_SIZE,
