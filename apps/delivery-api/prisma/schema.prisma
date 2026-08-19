@@ -36,6 +36,7 @@ enum ShopifyOrderReconciliationJobMode {
 enum CommerceSourcePlatform {
   SHOPIFY
   WOOCOMMERCE
+  CUSTOM
 }
 
 enum CommerceConnectionStatus {

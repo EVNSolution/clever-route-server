@@ -1,0 +1,1 @@
+ALTER TYPE "CommerceSourcePlatform" ADD VALUE IF NOT EXISTS 'CUSTOM';

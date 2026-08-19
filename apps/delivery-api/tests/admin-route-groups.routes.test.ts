@@ -25,6 +25,97 @@ const routeGroup = {
 };
 
 describe('Admin route group routes', () => {
+  test('creates a tenant-scoped custom stop without a Shopify operation', async () => {
+    const { createCustomStop, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+        method: 'POST',
+        payload: {
+          address1: '123 Main St',
+          city: 'Toronto',
+          countryCode: 'CA',
+          expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
+          latitude: 43.7,
+          longitude: -79.4,
+          priority: 10,
+          recipientName: 'Receiving desk',
+          serviceMinutes: 15,
+          stopName: 'Warehouse pickup',
+          targetRoutePlanId: 'route-plan-2',
+          timeWindowEnd: '2026-06-25T15:00:00.000Z',
+          timeWindowStart: '2026-06-25T13:00:00.000Z'
+        },
+        url: '/admin/route-groups/route-group-id/stops/custom'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { routeGroup }, error: null });
+      expect(createCustomStop).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        address1: '123 Main St',
+        appId: 'clever-route-dev',
+        city: 'Toronto',
+        countryCode: 'CA',
+        expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
+        groupingId: 'route-group-id',
+        latitude: 43.7,
+        longitude: -79.4,
+        priority: 10,
+        recipientName: 'Receiving desk',
+        serviceMinutes: 15,
+        shopDomain: 'example.myshopify.com',
+        stopName: 'Warehouse pickup',
+        targetRoutePlanId: 'route-plan-2',
+        timeWindowEnd: '2026-06-25T15:00:00.000Z',
+        timeWindowStart: '2026-06-25T13:00:00.000Z'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('updates and deletes only a custom stop in the authenticated tenant group', async () => {
+    const { deleteCustomStop, dependencies, updateCustomStop } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const updated = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { expectedUpdatedAt: '2026-06-24T12:00:00.000Z', instructions: 'Use loading dock 2', stopName: 'Warehouse return' },
+        url: '/admin/route-groups/route-group-id/stops/stop-id/custom'
+      });
+      const deleted = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'DELETE',
+        url: '/admin/route-groups/route-group-id/stops/stop-id/custom'
+      });
+
+      expect(updated.statusCode).toBe(200);
+      expect(deleted.statusCode).toBe(200);
+      expect(updateCustomStop).toHaveBeenCalledWith({
+        appId: 'clever',
+        deliveryStopId: 'stop-id',
+        expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
+        groupingId: 'route-group-id',
+        instructions: 'Use loading dock 2',
+        shopDomain: 'example.myshopify.com',
+        stopName: 'Warehouse return'
+      });
+      expect(deleteCustomStop).toHaveBeenCalledWith({
+        appId: 'clever',
+        deliveryStopId: 'stop-id',
+        groupingId: 'route-group-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects route group creation without a Shopify session token', async () => {
     const { createGrouping, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -471,8 +562,10 @@ describe('Admin route group routes', () => {
 
 function createDependencyHarness(): {
   createBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createBranch']>>;
+  createCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>>;
   createGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>>;
   deleteBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>>;
+  deleteCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteCustomStop']>>;
   dependencies: AdminRouteGroupDependencies;
   generateChildRoutes: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['generateChildRoutes']>>;
   nextRouteIdx: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['nextRouteIdx']>>;
@@ -482,6 +575,7 @@ function createDependencyHarness(): {
   listGroupings: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['listGroupings']>>;
   updateBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateBranch']>>;
   updateBranchOrders: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateBranchOrders']>>;
+  updateCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateCustomStop']>>;
   updateGroupingOrders: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateGroupingOrders']>>;
 } {
   const verify = vi.fn((_token: string, options?: object) => ({
@@ -490,13 +584,16 @@ function createDependencyHarness(): {
     subject: 'shopify-user-id'
   }));
   const createBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createBranch']>(() => Promise.resolve(routeGroup));
+  const createCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>(() => Promise.resolve(routeGroup));
   const createGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>(() => Promise.resolve(routeGroup));
   const deleteBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>(() => Promise.resolve(routeGroup));
+  const deleteCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteCustomStop']>(() => Promise.resolve(routeGroup));
   const listGroupings = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['listGroupings']>(() => Promise.resolve([routeGroup]));
   const getGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['getGrouping']>(() => Promise.resolve(routeGroup));
   const updateBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateBranch']>(() => Promise.resolve(routeGroup));
   const updateBranchOrders = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateBranchOrders']>(() => Promise.resolve(routeGroup));
   const updateGroupingOrders = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateGroupingOrders']>(() => Promise.resolve(routeGroup));
+  const updateCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateCustomStop']>(() => Promise.resolve(routeGroup));
   const savePolygons = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['savePolygons']>(() => Promise.resolve(routeGroup));
   const resolveAssignments = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['resolveAssignments']>(() => Promise.resolve(routeGroup));
   const generateChildRoutes = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['generateChildRoutes']>(() => Promise.resolve(routeGroup));
@@ -510,13 +607,17 @@ function createDependencyHarness(): {
 
   return {
     createBranch,
+    createCustomStop,
     createGrouping,
     deleteBranch,
+    deleteCustomStop,
     dependencies: {
       routeGroupingService: {
         createBranch,
+        createCustomStop,
         createGrouping,
         deleteBranch,
+        deleteCustomStop,
         deleteGrouping,
         generateChildRoutes,
         getGrouping,
@@ -531,6 +632,7 @@ function createDependencyHarness(): {
         savePolygons,
         updateBranch,
         updateBranchOrders,
+        updateCustomStop,
         updateGroupingOrders
       },
       sessionTokenVerifier: { verify }
@@ -543,6 +645,7 @@ function createDependencyHarness(): {
     listGroupings,
     updateBranch,
     updateBranchOrders,
+    updateCustomStop,
     updateGroupingOrders
   };
 }

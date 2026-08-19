@@ -85,7 +85,7 @@ export type CanonicalOrderReadiness =
   | "READY_TO_PLAN"
   | "NEEDS_REVIEW"
   | "SKIPPED";
-export type CommerceSourcePlatform = "SHOPIFY" | "WOOCOMMERCE";
+export type CommerceSourcePlatform = "SHOPIFY" | "WOOCOMMERCE" | "CUSTOM";
 export type DeliveryDayParseStatus =
   | "NOT_PROVIDED"
   | "PARSED"

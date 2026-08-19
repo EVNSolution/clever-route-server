@@ -163,7 +163,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(81);
+    expect(migrations).toHaveLength(82);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -366,7 +366,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(driverBundleHandoffRequestsMigrationName)).toBeLessThan(
       migrations.indexOf('20260819020000_align_shopify_api_version_default')
     );
-    expect(migrations.at(-1)).toBe('20260819020000_align_shopify_api_version_default');
+    expect(migrations.indexOf('20260819020000_align_shopify_api_version_default')).toBeLessThan(
+      migrations.indexOf('20260819223000_add_custom_route_stop_source')
+    );
+    expect(migrations.at(-1)).toBe('20260819223000_add_custom_route_stop_source');
   });
 
   test('adds driver destination notes without rewriting existing customer profiles', async () => {
