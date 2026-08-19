@@ -181,6 +181,23 @@ describe('PrismaShopifyWebhookEventRepository order webhook lifecycle', () => {
       })
     ).resolves.toMatchObject({ action: 'process', event: { webhookId: 'webhook-id' } });
 
+    const dueQuery = prisma.shopifyWebhookEvent.findFirst.mock.calls[0]?.[0];
+    expect(dueQuery).toEqual(expect.objectContaining({
+      where: expect.objectContaining({
+        OR: expect.arrayContaining([
+          { status: 'PROCESSING', leaseExpiresAt: null }
+        ]) as unknown
+      }) as unknown
+    }));
+    const claimUpdate = prisma.shopifyWebhookEvent.updateMany.mock.calls[0]?.[0];
+    expect(claimUpdate).toEqual(expect.objectContaining({
+      where: expect.objectContaining({
+        OR: expect.arrayContaining([
+          { status: 'PROCESSING', leaseExpiresAt: null }
+        ]) as unknown
+      }) as unknown
+    }));
+
     const claimedEvent = {
       appId: 'clever',
       id: 'event-row-id',

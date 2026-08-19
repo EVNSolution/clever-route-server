@@ -104,7 +104,8 @@ export class PrismaShopifyWebhookEventRepository {
         topic: { in: ORDER_TOPICS },
         OR: [
           { status: { in: ['RECEIVED', 'QUEUED', 'RETRY_WAIT', 'FAILED'] }, nextRunAt: { lte: now } },
-          { status: 'PROCESSING', leaseExpiresAt: { lt: now } }
+          { status: 'PROCESSING', leaseExpiresAt: { lt: now } },
+          { status: 'PROCESSING', leaseExpiresAt: null }
         ]
       }
     });
@@ -128,7 +129,8 @@ export class PrismaShopifyWebhookEventRepository {
         id: due.id,
         OR: [
           { status: { in: ['RECEIVED', 'QUEUED', 'RETRY_WAIT', 'FAILED'] }, nextRunAt: { lte: now } },
-          { status: 'PROCESSING', leaseExpiresAt: { lt: now } }
+          { status: 'PROCESSING', leaseExpiresAt: { lt: now } },
+          { status: 'PROCESSING', leaseExpiresAt: null }
         ]
       }
     });
