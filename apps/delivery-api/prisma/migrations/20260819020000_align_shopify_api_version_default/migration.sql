@@ -1,0 +1,2 @@
+ALTER TABLE "shops"
+ALTER COLUMN "apiVersion" SET DEFAULT '2026-07';

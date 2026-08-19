@@ -1,8 +1,15 @@
 import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { describe, expect, test } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 
+const adminCustomerEmailRouteSourceUrl = new URL('../src/routes/admin-customer-email.routes.ts', import.meta.url);
+const adminDriversRouteSourceUrl = new URL('../src/routes/admin-drivers.routes.ts', import.meta.url);
+const adminInventoryRouteSourceUrl = new URL('../src/routes/admin-inventories.routes.ts', import.meta.url);
+const adminOrdersRouteSourceUrl = new URL('../src/routes/admin-orders.routes.ts', import.meta.url);
+const adminRouteGroupsRouteSourceUrl = new URL('../src/routes/admin-route-groups.routes.ts', import.meta.url);
+const adminRoutePlansRouteSourceUrl = new URL('../src/routes/admin-route-plans.routes.ts', import.meta.url);
 const dsvControlRouteSourceUrl = new URL('../src/routes/dsv-control.routes.ts', import.meta.url);
 const dsvV1ReadRouteSourceUrl = new URL('../src/routes/dsv-v1-read.routes.ts', import.meta.url);
 
@@ -78,6 +85,54 @@ describe('API documentation routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toContain('yaml');
       expect(response.body).toBe(expected);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml serves parseable OpenAPI YAML', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(() => parseOpenApiYaml(response.body)).not.toThrow();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml documents the embedded app-facing admin contract', async () => {
+    const app = await buildApp();
+    const [ordersSource, routeGroupsSource, inventoriesSource, customerEmailSource, driversSource, routePlansSource] = await Promise.all([
+      readFile(adminOrdersRouteSourceUrl, 'utf8'),
+      readFile(adminRouteGroupsRouteSourceUrl, 'utf8'),
+      readFile(adminInventoryRouteSourceUrl, 'utf8'),
+      readFile(adminCustomerEmailRouteSourceUrl, 'utf8'),
+      readFile(adminDriversRouteSourceUrl, 'utf8'),
+      readFile(adminRoutePlansRouteSourceUrl, 'utf8'),
+    ]);
+    const implementedRoutes = implementedAdminAppFacingRoutes(
+      ordersSource,
+      routeGroupsSource,
+      inventoriesSource,
+      customerEmailSource,
+      driversSource,
+      routePlansSource
+    );
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const documentedRoutes = openApiRoutes(response.body);
+
+      expect(response.statusCode).toBe(200);
+      expect(implementedRoutes).toEqual(expectedAdminAppFacingRoutes());
+      expect(missingDocumentedRoutes(implementedRoutes, documentedRoutes)).toEqual([]);
+      expect(response.body).toContain('x-clever-audience: shopify-embedded-admin');
+      expect(response.body).toContain('x-side-effect: external-email-send');
+      expect(response.body).toContain('x-side-effect: write-clever-db');
+      expect(response.body).toContain('x-side-effect: read');
     } finally {
       await app.close();
     }
@@ -382,6 +437,116 @@ function implementedDsvV1Routes(readRouteSource: string, controlRouteSource: str
   }
 
   return [...routes].sort(compareRouteMethodPair);
+}
+
+function implementedAdminAppFacingRoutes(
+  ordersSource: string,
+  routeGroupsSource: string,
+  inventoriesSource: string,
+  customerEmailSource: string,
+  driversSource: string,
+  routePlansSource: string
+): RouteMethodPair[] {
+  const routes = [
+    ...implementedLiteralRoutes(ordersSource, '/admin/orders'),
+    ...implementedLiteralRoutes(routeGroupsSource, '/admin/route-groups'),
+    ...implementedLiteralRoutes(inventoriesSource, '/admin/inventories'),
+    ...implementedLiteralRoutes(customerEmailSource, '/admin/customer-email'),
+    ...implementedLiteralRoutes(customerEmailSource, '/admin/route-plans'),
+    ...implementedLiteralRoutes(customerEmailSource, '/customer-email/assets'),
+    ...implementedLiteralRoutes(driversSource, '/admin/drivers'),
+    ...implementedLiteralRoutes(routePlansSource, '/admin/route-plans')
+  ];
+  return [...new Map(routes.map((route) => [`${route.method} ${route.path}`, route])).values()].sort(compareRouteMethodPair);
+}
+
+function implementedLiteralRoutes(source: string, prefix: string): RouteMethodPair[] {
+  const routes: RouteMethodPair[] = [];
+  for (const match of source.matchAll(/app\.(get|post|put|patch|delete)[\s\S]{0,240}?\(\s*['"`]([^'"`]+)['"`]/gu)) {
+    const path = match[2] ?? '';
+    if (path.startsWith(prefix)) routes.push({ method: toRouteMethod(match[1]), path });
+  }
+  return [...new Map(routes.map((route) => [`${route.method} ${route.path}`, route])).values()];
+}
+
+function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
+  const routes: RouteMethodPair[] = [
+    { method: 'get', path: '/admin/customer-email/settings' },
+    { method: 'patch', path: '/admin/customer-email/settings' },
+    { method: 'patch', path: '/admin/customer-email/settings/global' },
+    { method: 'patch', path: '/admin/customer-email/settings/templates/:signal' },
+    { method: 'post', path: '/admin/customer-email/logo' },
+    { method: 'post', path: '/admin/customer-email/test' },
+    { method: 'get', path: '/admin/drivers' },
+    { method: 'post', path: '/admin/drivers' },
+    { method: 'delete', path: '/admin/drivers/:id' },
+    { method: 'patch', path: '/admin/drivers/:id' },
+    { method: 'post', path: '/admin/drivers/:id/regenerate-invite-code' },
+    { method: 'get', path: '/admin/inventories' },
+    { method: 'post', path: '/admin/inventories' },
+    { method: 'delete', path: '/admin/inventories/:inventoryId' },
+    { method: 'get', path: '/admin/inventories/:inventoryId' },
+    { method: 'get', path: '/admin/inventories/:inventoryId/order-view' },
+    { method: 'patch', path: '/admin/inventories/:inventoryId/orders' },
+    { method: 'get', path: '/admin/orders' },
+    { method: 'patch', path: '/admin/orders/:orderId/metadata' },
+    { method: 'patch', path: '/admin/orders/bulk-update' },
+    { method: 'get', path: '/admin/orders/facets' },
+    { method: 'get', path: '/admin/orders/map-points' },
+    { method: 'get', path: '/admin/orders/page' },
+    { method: 'get', path: '/admin/orders/reconciliations/:jobId' },
+    { method: 'post', path: '/admin/orders/reconciliations' },
+    { method: 'patch', path: '/admin/orders/selection-snapshots' },
+    { method: 'post', path: '/admin/orders/selection-snapshots' },
+    { method: 'patch', path: '/admin/orders/sync' },
+    { method: 'get', path: '/admin/route-groups' },
+    { method: 'post', path: '/admin/route-groups' },
+    { method: 'delete', path: '/admin/route-groups/:routeGroupId' },
+    { method: 'get', path: '/admin/route-groups/:routeGroupId' },
+    { method: 'patch', path: '/admin/route-groups/:routeGroupId/assignments' },
+    { method: 'post', path: '/admin/route-groups/:routeGroupId/branches' },
+    { method: 'delete', path: '/admin/route-groups/:routeGroupId/branches/:branchId' },
+    { method: 'patch', path: '/admin/route-groups/:routeGroupId/branches/:branchId' },
+    { method: 'patch', path: '/admin/route-groups/:routeGroupId/branches/:branchId/orders' },
+    { method: 'patch', path: '/admin/route-groups/:routeGroupId/draft' },
+    { method: 'post', path: '/admin/route-groups/:routeGroupId/generate-child-routes' },
+    { method: 'get', path: '/admin/route-groups/:routeGroupId/next-route-idx' },
+    { method: 'post', path: '/admin/route-groups/:routeGroupId/optimize-preview' },
+    { method: 'patch', path: '/admin/route-groups/:routeGroupId/orders' },
+    { method: 'patch', path: '/admin/route-groups/:routeGroupId/polygons' },
+    { method: 'post', path: '/admin/route-groups/:routeGroupId/re-optimize' },
+    { method: 'get', path: '/admin/route-plans' },
+    { method: 'post', path: '/admin/route-plans' },
+    { method: 'delete', path: '/admin/route-plans/:routePlanId' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/preview' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/send' },
+    { method: 'patch', path: '/admin/route-plans/:routePlanId/departure-time' },
+    { method: 'patch', path: '/admin/route-plans/:routePlanId/driver' },
+    { method: 'patch', path: '/admin/route-plans/:routePlanId/options' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/refresh-order-data' },
+    { method: 'patch', path: '/admin/route-plans/:routePlanId/start-time' },
+    { method: 'patch', path: '/admin/route-plans/:routePlanId/stops' },
+    { method: 'patch', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/override' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/transition' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/tracking' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/tracking/stream' },
+    { method: 'get', path: '/customer-email/assets/:fileName' }
+  ];
+  return routes.sort(compareRouteMethodPair);
+}
+
+function parseOpenApiYaml(openApiYaml: string): void {
+  execFileSync('ruby', [
+    '-e',
+    [
+      'require "yaml"',
+      'doc = YAML.load(STDIN.read)',
+      'raise "expected OpenAPI 3.1.0" unless doc["openapi"] == "3.1.0"',
+      'raise "expected paths" unless doc["paths"].is_a?(Hash)',
+      'raise "expected schemas" unless doc.dig("components", "schemas").is_a?(Hash)'
+    ].join('; ')
+  ], { input: openApiYaml });
 }
 
 function openApiRoutes(openApiYaml: string): Map<string, Set<RouteMethod>> {

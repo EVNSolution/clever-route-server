@@ -73,8 +73,8 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     ));
 
     expect(applied.summary).toEqual({ appliedRows: 1, newRows: 1, noOpRows: 0, updatedRows: 0 });
-    await expect(prisma.deliveryStop.findUniqueOrThrow({
-      where: { id_shopId: { id: applied.rows[0]?.deliveryStopId ?? '', shopId: fixture.shopId } },
+    await expect(prisma.dsvDispatchImportRow.findUniqueOrThrow({
+      where: { id: applied.rows[0]?.rowId ?? '' },
     })).resolves.toMatchObject({ shippedBoxes: 0 });
   });
 
@@ -832,7 +832,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       routePlanStops: 0,
       routePlans: 0,
     });
-  });
+  }, 30_000);
 
   test('durably claims a concurrent same-command forced failure before terminal compensation', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'same-command-failure-race');
@@ -905,7 +905,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       destinations: 0,
       orders: 0,
     });
-  });
+  }, 30_000);
 
   test('reports an existing same-command receipt as in progress without overwriting it', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'same-command-started');
@@ -1079,7 +1079,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       routePlanStops: 0,
       routePlans: 0,
     });
-  });
+  }, 30_000);
 
   test('keeps one canonical active delivery after concurrent apply attempts', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'concurrent');

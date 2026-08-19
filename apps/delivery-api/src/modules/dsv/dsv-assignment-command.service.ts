@@ -811,7 +811,14 @@ export class DsvAssignmentCommandService {
       if (newRouteVersionId === null) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
       await tx.order.updateMany({
         data: { currentRouteVersionId: newRouteVersionId },
-        where: { currentRouteVersionId: order.currentRouteVersionId, id: input.input.sellerOrderId, shopId: shop.id },
+        where: {
+          id: input.input.sellerOrderId,
+          OR: [
+            { currentRouteVersionId: order.currentRouteVersionId },
+            { currentRouteVersionId: newRouteVersionId },
+          ],
+          shopId: shop.id,
+        },
       }).then((updated) => {
         if (updated.count !== 1) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
       });

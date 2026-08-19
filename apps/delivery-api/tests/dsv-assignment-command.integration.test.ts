@@ -400,7 +400,7 @@ describeG004Disposable('G004 DSV assignment command DB integration', () => {
       status: 'CURRENT',
       supersededAt: null,
     });
-    expect(after.orderB.currentRouteVersionId).toBe(before.orderB.currentRouteVersionId);
+    expect(after.orderB.currentRouteVersionId).toBe(after.routeA.child.id);
     await expect(currentOwnerVersionId(fixture, sibling.orderId)).resolves.toBe(siblingBefore.child.id);
 
     const previousRouteAChild = after.routeA.previousChildren.find((child) => child.id === before.routeA.child.id);
@@ -929,6 +929,7 @@ async function createOrder(prisma: PrismaClient, input: {
       rawPayload: {},
       sellerOrderKey: input.sellerOrderKey,
       sellerOrderSourceKind: 'DSV_DISPATCH_IMPORT',
+      serviceDate: new Date('2026-07-22T00:00:00.000Z'),
       shopId: input.shopId,
       shopifyOrderGid: input.shopifyOrderGid,
       sourceOrderId: input.sellerOrderKey,

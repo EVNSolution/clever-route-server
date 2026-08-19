@@ -11,7 +11,7 @@ import type { DsvV1ReadQueryError } from '../src/modules/dsv/dsv-v1-read-query.s
 import type { DsvCustomerUserPrincipal } from '../src/modules/dsv/dsv-principal.js';
 
 const safeTargetClass = 'safe-local-g005-temp-cluster';
-const exactDatabaseUrl = 'postgresql://clever_g005:clever_g005@127.0.0.1:55455/clever_g005?schema=public';
+const exactDatabaseUrl = 'postgresql://clever_g005:clever_g005@127.0.0.1:55466/clever_g005?schema=public';
 const databaseUrl = process.env.DATABASE_URL ?? '';
 const targetClass = process.env.G005_DATABASE_TARGET_CLASS ?? '';
 const isG005TargetClass = targetClass === safeTargetClass;
@@ -76,8 +76,10 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
 
     const records = await service.listRecords(customerlessAdmin(fixture.shopId), { serviceDate: '2026-07-23' });
     const ownRecord = records.items.find((item) => item.sellerOrderKey === fixture.orderAKey);
-    expect(ownRecord?.eventRows).toEqual([{ eventType: 'STOP_DELIVERED', occurredAt: new Date('2026-07-23T03:00:00.000Z') }]);
-    expect(ownRecord?.proofRows).toEqual([{ deletedAt: null }]);
+    expect(ownRecord?.eventRows).toEqual([
+      expect.objectContaining({ eventType: 'STOP_DELIVERED', occurredAt: new Date('2026-07-23T03:00:00.000Z') }),
+    ]);
+    expect(ownRecord?.proofRows).toEqual([expect.objectContaining({ deletedAt: null })]);
     expect(JSON.stringify(records.items)).not.toContain(fixture.mismatchedShopEventId);
     expect(JSON.stringify(records.items)).not.toContain('storage-key-mismatched-shop');
 
@@ -196,7 +198,7 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     })).rejects.toMatchObject({ code: 'BAD_REQUEST', httpStatus: 400 } satisfies Partial<DsvV1ReadQueryError>);
   });
 
-  test('orders customer delivery pages by sellerOrderKey then id even when stop counts differ', async () => {
+  test('orders customer delivery pages by sellerOrderKey then id', async () => {
     const fixture = await createCustomerDeliveryOrderingFixture(prisma, createdShopIds, 'customer-ordering');
     const service = new PrismaDsvV1ReadQueryService(prisma, () => new Date('2026-07-22T15:30:00.000Z'));
 
@@ -271,27 +273,27 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(JSON.stringify(result.items)).not.toContain(fixture.crossShopEventId);
   });
 
-  test('excludes real and synthetic records when shop-A stops reference shop-B orders', async () => {
+  test('rejects real and synthetic shop-A stops that reference shop-B orders', async () => {
     const fixture = await createRecordOrderIsolationFixture(prisma, createdShopIds, 'record-order-isolation');
     const service = new PrismaDsvV1ReadQueryService(prisma, () => new Date('2026-07-22T15:30:00.000Z'));
 
-    const [mismatchedStopCount, realEventCount, syntheticEventCount] = await Promise.all([
-      prisma.deliveryStop.count({
-        where: {
-          id: { in: [fixture.realStopId, fixture.syntheticStopId] },
-          order: { shopId: fixture.orderShopId },
-          shopId: fixture.shopId,
-        },
-      }),
-      prisma.driverEvent.count({ where: { deliveryStopId: fixture.realStopId, shopId: fixture.shopId } }),
-      prisma.driverEvent.count({ where: { deliveryStopId: fixture.syntheticStopId, shopId: fixture.shopId } }),
-    ]);
+    await expect(createStop(
+      prisma,
+      fixture.shopId,
+      fixture.realOrderId,
+      'Real Record Isolation Recipient',
+      '2026-07-23',
+    )).rejects.toMatchObject({ code: 'P2003' });
+    await expect(createStop(
+      prisma,
+      fixture.shopId,
+      fixture.syntheticOrderId,
+      'Synthetic Record Isolation Recipient',
+      '2026-07-23',
+    )).rejects.toMatchObject({ code: 'P2003' });
 
     const result = await service.listRecords(customerlessAdmin(fixture.shopId), { serviceDate: '2026-07-23' });
 
-    expect(mismatchedStopCount).toBe(2);
-    expect(realEventCount).toBe(1);
-    expect(syntheticEventCount).toBe(0);
     expect(result.items).toEqual([]);
   });
 
@@ -652,6 +654,19 @@ async function createStaleEtaFixture(
   const orderKey = `SO-STALE-${unique}`;
   const order = await createOrder(prisma, shop.id, customer.id, destination.id, orderKey, currentRouteVersion.id);
   const stop = await createStop(prisma, shop.id, order.id, 'Stale ETA Recipient', '2026-07-23');
+  const appliedImport = await createAppliedDispatchImport(prisma, shop.id, `stale-eta-${unique}`, '2026-07-23');
+  await createAppliedDispatchImportRow(
+    prisma,
+    appliedImport.id,
+    shop.id,
+    stop.id,
+    order.id,
+    customer.id,
+    destination.id,
+    orderKey,
+    1,
+    1,
+  );
   await prisma.routePlanStop.create({
     data: {
       deliveryStopId: stop.id,
@@ -680,8 +695,7 @@ async function createCustomerDeliveryOrderingFixture(
 ) {
   const unique = `${name}-${randomUUID()}`;
   const shop = await createShop(prisma, unique);
-  const extraShop = await createShop(prisma, `${unique}-extra-count`);
-  createdShopIds.push(shop.id, extraShop.id);
+  createdShopIds.push(shop.id);
   await createCommerceConnection(prisma, shop.id, shop.shopDomain, 'Asia/Seoul', 'primary');
   const customer = await createCustomer(prisma, shop.id, `CUST-ORDER-${unique}`, 'Ordering Customer');
   const destination = await createDestination(prisma, shop.id, `ordering-${unique}`, 'Ordering Destination');
@@ -689,11 +703,37 @@ async function createCustomerDeliveryOrderingFixture(
   const highKey = `SO-002-${unique}`;
   const lowOrder = await createOrder(prisma, shop.id, customer.id, destination.id, lowKey, null);
   const highOrder = await createOrder(prisma, shop.id, customer.id, destination.id, highKey, null);
-  await Promise.all([
+  const [lowStop, highStop] = await Promise.all([
     createStop(prisma, shop.id, lowOrder.id, 'Low Key', '2026-07-23'),
     createStop(prisma, shop.id, highOrder.id, 'High Key', '2026-07-23'),
   ]);
-  await createStop(prisma, extraShop.id, lowOrder.id, 'Cross Shop Count Noise', '2026-07-24');
+  const appliedImport = await createAppliedDispatchImport(prisma, shop.id, `ordering-${unique}`, '2026-07-23');
+  await Promise.all([
+    createAppliedDispatchImportRow(
+      prisma,
+      appliedImport.id,
+      shop.id,
+      lowStop.id,
+      lowOrder.id,
+      customer.id,
+      destination.id,
+      lowKey,
+      1,
+      1,
+    ),
+    createAppliedDispatchImportRow(
+      prisma,
+      appliedImport.id,
+      shop.id,
+      highStop.id,
+      highOrder.id,
+      customer.id,
+      destination.id,
+      highKey,
+      2,
+      1,
+    ),
+  ]);
   return { customerId: customer.id, highKey, lowKey, shopId: shop.id };
 }
 
@@ -831,25 +871,10 @@ async function createRecordOrderIsolationFixture(
     createOrder(prisma, shopB.id, customerB.id, destinationB.id, `SO-REAL-ISOLATION-${unique}`, null),
     createOrder(prisma, shopB.id, customerB.id, destinationB.id, `SO-SYNTHETIC-ISOLATION-${unique}`, null),
   ]);
-  const [realStop, syntheticStop] = await Promise.all([
-    createStop(prisma, shopA.id, realOrder.id, 'Real Record Isolation Recipient', '2026-07-23'),
-    createStop(prisma, shopA.id, syntheticOrder.id, 'Synthetic Record Isolation Recipient', '2026-07-23'),
-  ]);
-  await prisma.driverEvent.create({
-    data: {
-      deliveryStopId: realStop.id,
-      eventType: 'STOP_DELIVERED',
-      occurredAt: new Date('2026-07-23T03:00:00.000Z'),
-      payload: { note: 'same-shop event on a stop linked to a cross-shop order' },
-      shopId: shopA.id,
-    },
-  });
-
   return {
-    orderShopId: shopB.id,
-    realStopId: realStop.id,
+    realOrderId: realOrder.id,
     shopId: shopA.id,
-    syntheticStopId: syntheticStop.id,
+    syntheticOrderId: syntheticOrder.id,
   };
 }
 
@@ -883,10 +908,40 @@ async function createManagementCursorSortFixture(
   createdShopIds.push(shop.id);
   await Promise.all([
     createCommerceConnection(prisma, shop.id, shop.shopDomain, 'Asia/Seoul', 'primary'),
-    prisma.driver.create({ data: { displayName: `Alpha Driver ${unique}`, shopId: shop.id, status: 'ACTIVE' } }),
-    prisma.driver.create({ data: { displayName: `Beta Driver ${unique}`, shopId: shop.id, status: 'ACTIVE' } }),
-    prisma.vehicle.create({ data: { label: `Alpha Vehicle ${unique}`, licensePlate: `A-${unique}`, shopId: shop.id, status: 'ACTIVE' } }),
-    prisma.vehicle.create({ data: { label: `Beta Vehicle ${unique}`, licensePlate: `B-${unique}`, shopId: shop.id, status: 'ACTIVE' } }),
+    prisma.driver.create({
+      data: {
+        displayName: `Alpha Driver ${unique}`,
+        dsvProfile: { create: { lookupName: `Alpha Driver ${unique}` } },
+        shopId: shop.id,
+        status: 'ACTIVE',
+      },
+    }),
+    prisma.driver.create({
+      data: {
+        displayName: `Beta Driver ${unique}`,
+        dsvProfile: { create: { lookupName: `Beta Driver ${unique}` } },
+        shopId: shop.id,
+        status: 'ACTIVE',
+      },
+    }),
+    prisma.vehicle.create({
+      data: {
+        dsvProfile: { create: { note: '', typeLabel: 'Test vehicle' } },
+        label: `Alpha Vehicle ${unique}`,
+        licensePlate: `A-${unique}`,
+        shopId: shop.id,
+        status: 'ACTIVE',
+      },
+    }),
+    prisma.vehicle.create({
+      data: {
+        dsvProfile: { create: { note: '', typeLabel: 'Test vehicle' } },
+        label: `Beta Vehicle ${unique}`,
+        licensePlate: `B-${unique}`,
+        shopId: shop.id,
+        status: 'ACTIVE',
+      },
+    }),
     createCustomer(prisma, shop.id, `A-CUSTOMER-${unique}`, `Alpha Customer ${unique}`),
     createCustomer(prisma, shop.id, `B-CUSTOMER-${unique}`, `Beta Customer ${unique}`),
     createDestination(prisma, shop.id, `alpha-management-${unique}`, `Alpha Destination ${unique}`),

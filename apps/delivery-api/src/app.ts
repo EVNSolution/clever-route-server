@@ -80,11 +80,13 @@ export type BuildAppOptions = {
 
 type AppLoggerOption = Exclude<FastifyServerOptions['logger'], undefined>;
 type DsvApiSurfaceCategory = 'v1_read' | 'canonical_assignment_command_alias' | 'legacy_read' | 'legacy_write';
+type ShopifyAdminApiSurface = 'customer_email' | 'drivers' | 'inventories' | 'orders' | 'route_groups' | 'route_plans';
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: withSafeRequestLogging(options.logger ?? false) });
   app.addHook('onResponse', (request, reply, done) => {
     logDsvApiSurfaceRequest(request, reply);
+    logShopifyAdminApiSurfaceRequest(request, reply);
     done();
   });
   app.setErrorHandler((error, request, reply) => {
@@ -318,6 +320,45 @@ function logDsvApiSurfaceRequest(
   }, 'DSV API surface request classified');
 }
 
+function logShopifyAdminApiSurfaceRequest(
+  request: FastifyRequest,
+  reply: { elapsedTime: number; statusCode: number },
+): void {
+  const classification = classifyShopifyAdminApiSurfaceRequest(request.url, request.routeOptions.url);
+  if (classification === null) return;
+
+  request.log.info({
+    appId: readSafeTelemetryHeader(request, 'x-clever-app-id'),
+    correlationId: readSafeTelemetryHeader(request, 'x-clever-client-request-id'),
+    durationMs: Math.round(reply.elapsedTime),
+    event: 'shopify_admin_api_surface_request',
+    method: request.method,
+    requestId: request.id,
+    route: classification.route,
+    statusCode: reply.statusCode,
+    surface: classification.surface,
+  }, 'Shopify admin API surface request classified');
+}
+
+function classifyShopifyAdminApiSurfaceRequest(
+  url: string,
+  matchedRoute: string | undefined,
+): { route: string; surface: ShopifyAdminApiSurface } | null {
+  const path = pathname(url);
+  const surfaces: Array<[prefix: string, surface: ShopifyAdminApiSurface]> = [
+    ['/admin/customer-email', 'customer_email'],
+    ['/admin/route-groups', 'route_groups'],
+    ['/admin/route-plans', 'route_plans'],
+    ['/admin/inventories', 'inventories'],
+    ['/admin/drivers', 'drivers'],
+    ['/admin/orders', 'orders'],
+  ];
+
+  const match = surfaces.find(([prefix]) => path === prefix || path.startsWith(`${prefix}/`));
+  if (match === undefined) return null;
+  return { route: matchedRoute ?? path, surface: match[1] };
+}
+
 function classifyDsvApiSurfaceRequest(
   method: string,
   url: string,
@@ -354,7 +395,11 @@ function assignmentCommandAliasRoute(method: string, path: string): string | nul
 }
 
 function readCallerSurface(request: FastifyRequest): string {
-  const value = request.headers['x-caller-surface'];
+  return readSafeTelemetryHeader(request, 'x-caller-surface');
+}
+
+function readSafeTelemetryHeader(request: FastifyRequest, header: string): string {
+  const value = request.headers[header];
   if (typeof value !== 'string') return 'unknown';
   const trimmed = value.trim();
   if (trimmed.length === 0 || trimmed.length > 120) return 'unknown';
