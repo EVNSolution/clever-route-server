@@ -52,8 +52,7 @@ import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-ap
 import { recordInventorySourceItemDeltas } from '../inventory/inventory.service.js';
 import { isIanaTimezone, localDateTimeInTimeZoneToUtc } from '../driver/driver-route-timezone.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
-
-const DEFAULT_API_VERSION = '2026-04';
+import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from '../shopify/shopify-api-version.js';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
 const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
@@ -934,7 +933,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     return this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.upsert({
         create: {
-          apiVersion: DEFAULT_API_VERSION,
+          apiVersion: DEFAULT_SHOPIFY_ADMIN_API_VERSION,
           appId: normalizeShopifyAppId(input.appId),
           shopDomain
         },

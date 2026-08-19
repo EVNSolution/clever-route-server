@@ -1939,6 +1939,8 @@ paths:
       tags: [Shopify Embedded Admin]
       summary: Sync an embedded-admin Shopify order snapshot into canonical orders
       operationId: syncAdminOrders
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
       x-source-file: src/routes/admin-orders.routes.ts
       security:
         - ShopifySessionToken: []
@@ -1975,6 +1977,8 @@ paths:
       tags: [Shopify Embedded Admin]
       summary: List canonical orders for the authenticated shop
       operationId: listAdminOrders
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
       x-source-file: src/routes/admin-orders.routes.ts
       security:
         - ShopifySessionToken: []
@@ -2044,11 +2048,918 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /admin/orders/page:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Page canonical orders with cursor and numbered-page metadata
+      operationId: pageAdminOrders
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      parameters:
+        - name: pageSize
+          in: query
+          required: true
+          schema: { type: integer, const: 50 }
+        - name: sort
+          in: query
+          required: true
+          schema: { type: string, const: id_desc }
+        - name: after
+          in: query
+          schema: { type: string }
+        - name: before
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: readWatermark
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Paged order rows, result counts, freshness, and cursor/page metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/orders/facets:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read aggregate filter facets for the orders page
+      operationId: listAdminOrderFacets
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Orders facet counts and filter hash.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/orders/map-points:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read map point projection for filtered orders
+      operationId: listAdminOrderMapPoints
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
+      responses:
+        '200':
+          description: Filter hash and map points for the authenticated shop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/orders/selection-snapshots:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Create an opaque snapshot for bulk order selection
+      operationId: createAdminOrderSelectionSnapshot
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '201':
+          description: Selection token and selected/skipped counts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Replace exclusions for an existing order selection snapshot
+      operationId: replaceAdminOrderSelectionSnapshotExclusions
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [selectionToken]
+              additionalProperties: true
+      responses:
+        '200':
+          description: Updated selection snapshot summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/orders/reconciliations:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Enqueue a Shopify order reconciliation job
+      operationId: enqueueAdminOrderReconciliation
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: external-shopify-read-job
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Reconciliation job envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/orders/reconciliations/{jobId}:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read a Shopify order reconciliation job status
+      operationId: getAdminOrderReconciliation
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Reconciliation job status envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/orders/{orderId}/metadata:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Patch CLEVER-owned canonical order metadata
+      operationId: patchAdminOrderMetadata
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Patched canonical order envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/orders/bulk-update:
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Bulk patch CLEVER-owned order status fields
+      operationId: bulkUpdateAdminOrders
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [field, value]
+              additionalProperties: true
+      responses:
+        '200':
+          description: Updated order rows or snapshot bulk summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/route-groups:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: List route groups for the authenticated shop
+      operationId: listAdminRouteGroups
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route group list envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Create a route group
+      operationId: createAdminRouteGroup
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '201':
+          description: Created route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/route-groups/{routeGroupId}:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read a route group
+      operationId: getAdminRouteGroup
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Shopify Embedded Admin]
+      summary: Delete a route group
+      operationId: deleteAdminRouteGroup
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Delete result envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/route-groups/{routeGroupId}/next-route-idx:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read the next child route index for a route group
+      operationId: getAdminRouteGroupNextRouteIdx
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Next route index envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/branches:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Create a branch inside a route group
+      operationId: createAdminRouteGroupBranch
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '201':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/branches/{branchId}:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+      - name: branchId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update a route group branch
+      operationId: updateAdminRouteGroupBranch
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Shopify Embedded Admin]
+      summary: Delete a route group branch
+      operationId: deleteAdminRouteGroupBranch
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/branches/{branchId}/orders:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+      - name: branchId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update orders assigned to a route group branch
+      operationId: updateAdminRouteGroupBranchOrders
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/orders:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update orders assigned directly to a route group
+      operationId: updateAdminRouteGroupOrders
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/draft:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Save route group draft routes
+      operationId: saveAdminRouteGroupDraft
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/polygons:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Save route group planning polygons
+      operationId: saveAdminRouteGroupPolygons
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/assignments:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Resolve route group assignments
+      operationId: resolveAdminRouteGroupAssignments
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/generate-child-routes:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Generate child routes for a route group
+      operationId: generateAdminRouteGroupChildRoutes
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/optimize-preview:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Preview route group optimization without saving
+      operationId: previewAdminRouteGroupOptimization
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Optimization preview envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-groups/{routeGroupId}/re-optimize:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Re-optimize and save route group routes
+      operationId: reOptimizeAdminRouteGroup
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Updated route group envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/inventories:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: List inventories for the authenticated shop
+      operationId: listAdminInventories
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-inventories.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Inventory list envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Create an inventory
+      operationId: createAdminInventory
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-inventories.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '201':
+          description: Inventory envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/inventories/{inventoryId}:
+    parameters:
+      - name: inventoryId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read an inventory
+      operationId: getAdminInventory
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-inventories.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Inventory envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Shopify Embedded Admin]
+      summary: Delete an inventory
+      operationId: deleteAdminInventory
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-inventories.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Delete result envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/inventories/{inventoryId}/order-view:
+    parameters:
+      - name: inventoryId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read an inventory with its order-view projection
+      operationId: getAdminInventoryOrderView
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-inventories.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Inventory order-view envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/inventories/{inventoryId}/orders:
+    parameters:
+      - name: inventoryId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Add or remove orders from an inventory
+      operationId: updateAdminInventoryOrders
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-inventories.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Inventory envelope after order membership update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /admin/drivers:
     get:
       tags: [Shopify Embedded Admin]
       summary: List drivers for the authenticated shop
       operationId: listAdminDrivers
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
       x-source-file: src/routes/admin-drivers.routes.ts
       security:
         - ShopifySessionToken: []
@@ -2061,9 +2972,35 @@ paths:
                 $ref: '#/components/schemas/AdminDriversListEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
-  /admin/drivers/{driverId}:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Create a pending driver for the authenticated shop
+      operationId: createAdminDriver
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-drivers.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminDriverCreateRequest'
+      responses:
+        '201':
+          description: Driver was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDriverEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/drivers/{id}:
     parameters:
-      - name: driverId
+      - name: id
         in: path
         required: true
         schema:
@@ -2072,6 +3009,8 @@ paths:
       tags: [Shopify Embedded Admin]
       summary: Update a driver name for the authenticated shop
       operationId: updateAdminDriverName
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
       x-source-file: src/routes/admin-drivers.routes.ts
       security:
         - ShopifySessionToken: []
@@ -2094,30 +3033,53 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
-    post:
+    delete:
       tags: [Shopify Embedded Admin]
-      summary: Create a pending driver for the authenticated shop
-      operationId: createAdminDriver
+      summary: Delete a driver for the authenticated shop
+      operationId: deleteAdminDriver
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
       x-source-file: src/routes/admin-drivers.routes.ts
       security:
         - ShopifySessionToken: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AdminDriverCreateRequest'
       responses:
-        '201':
-          description: Driver was created.
+        '200':
+          description: Driver was deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/drivers/{id}/regenerate-invite-code:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Regenerate a pending driver's invite code
+      operationId: regenerateAdminDriverInviteCode
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-drivers.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Driver invite code was regenerated.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminDriverEnvelope'
-        '400':
-          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /admin/ui/app/api/routes/{routePlanId}/optimize:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -2196,6 +3158,8 @@ paths:
       tags: [Shopify Embedded Admin]
       summary: Read manual customer delivery email settings for the authenticated shop
       operationId: getAdminCustomerEmailSettings
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
       x-source-file: src/routes/admin-customer-email.routes.ts
       security:
         - ShopifySessionToken: []
@@ -2213,8 +3177,12 @@ paths:
     patch:
       tags: [Shopify Embedded Admin]
       summary: Save versioned manual customer delivery email settings
-      description: Payload must include `version: 1`, `nearbyStopsThreshold`, sender fields, and all five templates with `enabled`, `subject`, and `body`.
+      description: >-
+        Payload must include `version: 1`, `nearbyStopsThreshold`, sender
+        fields, and all five templates with `enabled`, `subject`, and `body`.
       operationId: saveAdminCustomerEmailSettings
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
       x-source-file: src/routes/admin-customer-email.routes.ts
       security:
         - ShopifySessionToken: []
@@ -2239,12 +3207,77 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/customer-email/settings/global:
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Patch global manual customer delivery email settings
+      operationId: patchAdminCustomerEmailGlobalSettings
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Saved settings envelope with `data.customerEmailSettings`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/customer-email/settings/templates/{signal}:
+    parameters:
+      - name: signal
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [DELIVERY_SCHEDULED, OUT_FOR_DELIVERY, DELIVERED, MISSED_DELIVERY, DRIVER_NEARBY]
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Patch one manual customer delivery email template
+      operationId: patchAdminCustomerEmailTemplateSettings
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Saved settings envelope with `data.customerEmailSettings`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /admin/customer-email/test:
     post:
       tags: [Shopify Embedded Admin]
       summary: Send an administrator-triggered test customer email
       description: Sends only to the arbitrary test recipient in the request. The Brevo API key remains server-side.
       operationId: sendAdminCustomerEmailTest
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: external-email-send
       x-source-file: src/routes/admin-customer-email.routes.ts
       security:
         - ShopifySessionToken: []
@@ -2275,6 +3308,58 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /admin/customer-email/logo:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Upload a manual customer email logo asset
+      operationId: uploadAdminCustomerEmailLogo
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-filesystem
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '201':
+          description: Content-addressed public logo URL envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+  /customer-email/assets/{fileName}:
+    parameters:
+      - name: fileName
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Serve a content-addressed manual customer email asset
+      operationId: getCustomerEmailAsset
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Image asset bytes.
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/NotFound'
   /admin/route-plans/{routePlanId}:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -2312,6 +3397,213 @@ paths:
                 $ref: '#/components/schemas/GenericDataEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /admin/route-plans/{routePlanId}/refresh-order-data:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Refresh route geometry and order-derived route data
+      operationId: refreshAdminRoutePlanOrderData
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Refreshed route plan detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanDetailEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          description: Route geometry refresh failed for the current order data.
+        '501':
+          description: Route order-data refresh is unavailable in this runtime.
+  /admin/route-plans/{routePlanId}/tracking:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read the current route tracking snapshot
+      operationId: getAdminRoutePlanTracking
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route tracking snapshot envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          description: Route tracking is unavailable in this runtime.
+  /admin/route-plans/{routePlanId}/tracking/stream:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Stream route tracking updates with server-sent events
+      operationId: streamAdminRoutePlanTracking
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Server-sent route tracking snapshot and update events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          description: Route tracking stream is unavailable in this runtime.
+  /admin/route-plans/{routePlanId}/driver:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Assign or clear a driver for a route plan
+      operationId: updateAdminRoutePlanDriver
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Route plan detail after driver assignment update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanDetailEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-plans/{routePlanId}/departure-time:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update route plan departure time
+      operationId: updateAdminRoutePlanDepartureTime
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Route plan detail after departure time update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanDetailEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          description: Route departure time updates are unavailable in this runtime.
+  /admin/route-plans/{routePlanId}/start-time:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update route plan scheduled start time
+      operationId: updateAdminRoutePlanStartTime
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Route plan detail after scheduled start update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanDetailEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          description: Route start date and time updates are unavailable in this runtime.
+  /admin/route-plans/{routePlanId}/options:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update route plan execution options
+      operationId: updateAdminRoutePlanOptions
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Route plan detail after options update.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanDetailEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /admin/route-plans/{routePlanId}/customer-email/preview:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -2320,6 +3612,8 @@ paths:
       summary: Preview manual customer delivery email recipients for a route
       description: Does not send email or enqueue automatic notification facts. Response is `data.preview`.
       operationId: previewAdminRoutePlanCustomerEmail
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
       x-source-file: src/routes/admin-customer-email.routes.ts
       security:
         - ShopifySessionToken: []
@@ -2348,8 +3642,13 @@ paths:
     post:
       tags: [Shopify Embedded Admin]
       summary: Explicitly send manual customer delivery email for a route context
-      description: Requires `confirmed: true` and `commandId`. Uses a separate manual dispatch audit model; it never claims existing queued `CustomerRouteNotificationFact` rows.
+      description: >-
+        Requires `confirmed: true` and `commandId`. Uses a separate manual
+        dispatch audit model; it never claims existing queued
+        `CustomerRouteNotificationFact` rows.
       operationId: sendAdminRoutePlanCustomerEmail
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: external-email-send
       x-source-file: src/routes/admin-customer-email.routes.ts
       security:
         - ShopifySessionToken: []
@@ -3505,7 +4804,7 @@ components:
       required: false
       schema:
         type: string
-      example: 2026-04
+      example: 2026-07
     ShopifyEventIdHeader:
       name: X-Shopify-Event-Id
       in: header

@@ -9,6 +9,7 @@ the CLEVER route server delivery API.
 | --- | --- |
 | `docs/api/openapi.yaml` | Machine-readable OpenAPI contract served at `/docs/openapi.yaml`. |
 | `docs/api/*.md` | Human-readable behavior notes, examples, persistence model, and rollout caveats. |
+| `docs/api/api-audit-runbook.md` | Repeatable contract, correlation-log, and disposable-DB verification. |
 | package `README.md` | Quick-start and high-level readiness summary only. |
 
 Generated HTML, copied Swagger UI bundles, Postman collections, and SDK stubs are
@@ -55,3 +56,4 @@ Do not treat raw EIP or `sslip.io` hostnames as the normal integration contract.
 - [ ] Keep routes-app consumed responses backward-compatible or document the
       mobile migration.
 - [ ] Run lint/typecheck/tests/build before completion.
+- [ ] Run the guarded disposable-DB lane when a DB-backed integration contract changes.

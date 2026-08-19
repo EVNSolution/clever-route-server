@@ -4,6 +4,14 @@ Purpose: document the server endpoints used by the Shopify embedded/admin app
 and Shopify HTTPS webhooks. Driver mobile endpoints are documented separately in
 `driver-*.md`; all endpoints are indexed in `openapi.yaml`.
 
+## Shopify Admin API version authority
+
+The runtime default is `2026-07`, matching the embedded app and webhook
+configuration. `SHOPIFY_API_VERSION` can override that default for a controlled
+rollout, but auth token metadata, reconciliation queries, webhook processing,
+and newly created shop records otherwise use the shared runtime constant. Review
+the target version before Shopify's quarterly support window expires.
+
 ## Authentication boundaries
 
 ### Shopify embedded/admin app calls
@@ -98,7 +106,7 @@ X-Shopify-Topic: orders/create
 X-Shopify-Shop-Domain: example.myshopify.com
 X-Shopify-Webhook-Id: 11111111-1111-4111-8111-111111111111
 X-Shopify-Event-Id: 22222222-2222-4222-8222-222222222222
-X-Shopify-API-Version: 2026-04
+X-Shopify-API-Version: 2026-07
 X-Shopify-Triggered-At: 2026-05-14T00:00:00.000Z
 Content-Type: application/json
 ```

@@ -363,7 +363,7 @@ model Shop {
   appId                             String                                 @default("clever") @db.Text
   shopDomain                        String                                 @db.Text
   shopifyShopGid                    String?                                @db.Text
-  apiVersion                        String                                 @default("2026-04") @db.Text
+  apiVersion                        String                                 @default("2026-07") @db.Text
   adminAccessTokenCiphertext        String?                                @db.Text
   adminAccessTokenExpiresAt         DateTime?                              @db.Timestamptz(6)
   adminRefreshTokenCiphertext       String?                                @db.Text

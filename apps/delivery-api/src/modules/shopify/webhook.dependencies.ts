@@ -13,8 +13,7 @@ import { PrismaShopTokenRepository } from './shop-token.repository.js';
 import { ShopTokenService } from './shop-token.service.js';
 import { ShopifyTokenExchangeClient } from './token-exchange.client.js';
 import { PrismaShopifyWebhookEventRepository } from './webhook-event.repository.js';
-
-const DEFAULT_SHOPIFY_API_VERSION = '2026-04';
+import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from './shopify-api-version.js';
 
 export type ShopifyWebhookRuntimeEnv = ShopifyAppCredentialsEnv &
   Partial<Record<'CLEVER_SHOPIFY_ORDER_WEBHOOK_WORKER' | 'SHOPIFY_API_VERSION' | 'SHOPIFY_TOKEN_ENCRYPTION_KEY' | 'SHOPIFY_WEBHOOK_SECRET', string>>;
@@ -60,7 +59,7 @@ export function loadShopifyWebhookRuntime(
   }
 
   const processor = new ShopifyOrderWebhookProcessor({
-    defaultApiVersion: readOptional(input.env.SHOPIFY_API_VERSION) ?? DEFAULT_SHOPIFY_API_VERSION,
+    defaultApiVersion: readOptional(input.env.SHOPIFY_API_VERSION) ?? DEFAULT_SHOPIFY_ADMIN_API_VERSION,
     eventStore: webhookService,
     graphqlClientFactory: ({ accessToken, apiVersion, shopDomain }) =>
       new ShopifyAdminGraphqlClient({ accessToken, apiVersion, shopDomain }),

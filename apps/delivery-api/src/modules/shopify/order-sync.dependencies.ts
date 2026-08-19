@@ -16,8 +16,7 @@ import type { AdminOrdersDependencies } from '../../routes/admin-orders.routes.j
 import { PrismaShopTokenRepository } from './shop-token.repository.js';
 import { ShopTokenService } from './shop-token.service.js';
 import { ShopifyTokenExchangeClient } from './token-exchange.client.js';
-
-const DEFAULT_SHOPIFY_API_VERSION = '2026-04';
+import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from './shopify-api-version.js';
 
 export type AdminOrdersRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<
   | 'CLEVER_ORDERS_MAP_PROJECTION'
@@ -53,7 +52,7 @@ export function loadAdminOrdersRuntime(input: {
     return undefined;
   }
 
-  const apiVersion = readOptional(input.env.SHOPIFY_API_VERSION) ?? DEFAULT_SHOPIFY_API_VERSION;
+  const apiVersion = readOptional(input.env.SHOPIFY_API_VERSION) ?? DEFAULT_SHOPIFY_ADMIN_API_VERSION;
   const repository = new PrismaOrderSyncRepository(
     input.prisma,
     input.adminNotificationService === undefined
