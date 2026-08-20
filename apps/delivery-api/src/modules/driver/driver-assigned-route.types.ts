@@ -27,6 +27,7 @@ export type DriverAssignedRouteStop = {
     latitude: number | null;
     longitude: number | null;
   };
+  navigationTarget: 'ADDRESS' | 'COORDINATES';
   currencyCode: string | null;
   customerNote: string | null;
   deliverySession?: string | null;

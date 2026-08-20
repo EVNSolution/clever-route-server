@@ -18,6 +18,8 @@ describe('buildOrdersUpdatedSinceQuery', () => {
     });
     expect(payload.query).toContain('orders(first: $first, after: $after, query: $query');
     expect(payload.query).toContain('shippingAddress');
+    expect(payload.query).toContain('coordinatesValidated');
+    expect(payload.query).toContain('validationResultSummary');
     expect(payload.query).toContain('currentShippingPriceSet');
     expect(payload.query).toContain('paymentGatewayNames');
     expect(payload.query).toContain('tags');
@@ -52,12 +54,14 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
         address1: '1 Main St',
         address2: 'Unit 2',
         city: 'New York',
+        coordinatesValidated: false,
         countryCodeV2: 'US',
         latitude: 40.7128,
         longitude: -74.006,
         name: 'Ada Lovelace',
         phone: '+15557654321',
         province: 'NY',
+        validationResultSummary: 'ERROR',
         zip: '10001'
       },
       updatedAt: '2026-05-07T05:00:00Z'
@@ -71,6 +75,14 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       }
     });
     expect(mapped.order.rawPayload.paymentGatewayNames).toEqual(['Cash on Delivery (COD)']);
+    expect(mapped.order.rawPayload.shippingAddress).toEqual(
+      expect.objectContaining({
+        coordinatesValidated: false,
+        latitude: 40.7128,
+        longitude: -74.006,
+        validationResultSummary: 'ERROR'
+      })
+    );
     expect(mapped.deliveryStop).toEqual(
       expect.objectContaining({
         address1: '1 Main St',

@@ -66,6 +66,7 @@ const route: DriverAssignedRoute = {
         province: 'ON'
       },
       coordinates: { latitude: 43.6487, longitude: -79.3817 },
+      navigationTarget: 'COORDINATES',
       currencyCode: null,
       customerNote: null,
       deliveryStopId: 'stop-id-1',
@@ -99,6 +100,7 @@ const route: DriverAssignedRoute = {
         province: 'ON'
       },
       coordinates: { latitude: 43.6509, longitude: -79.3909 },
+      navigationTarget: 'COORDINATES',
       currencyCode: null,
       customerNote: null,
       deliveryStopId: 'stop-id-2',

@@ -206,6 +206,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
               province: 'ON'
             },
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
+            navigationTarget: 'COORDINATES',
             currencyCode: 'CAD',
           customerNote: 'Leave the box beside the loading entrance.',
           destinationNotes: {
@@ -261,6 +262,110 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         timezone: 'America/Toronto'
       }
     });
+  });
+
+  test.each([
+    [{ coordinatesValidated: false, latitude: '43.64870004', longitude: '-79.38169996', validationResultSummary: 'NO_ISSUES' }, 'ADDRESS'],
+    [{ coordinatesValidated: true, latitude: 43.6487, longitude: -79.3817, validationResultSummary: 'ERROR' }, 'COORDINATES'],
+    [{ coordinatesValidated: true, latitude: 43.6487, longitude: -79.3817, validationResultSummary: 'WARNING' }, 'COORDINATES'],
+    [{ coordinatesValidated: true, latitude: 43.6487, longitude: -79.3817, validationResultSummary: 'NO_ISSUES' }, 'COORDINATES']
+  ] as const)('returns the Shopify navigation trust decision for %o', async (shippingAddress, expected) => {
+    const record = structuredClone(routePlanRecord);
+    (record.routeStops[0]!.deliveryStop.order as { rawPayload: unknown }).rawPayload = {
+      ...routePlanRecord.routeStops[0]!.deliveryStop.order.rawPayload,
+      shippingAddress
+    };
+    const { prisma } = createPrismaHarness({ routePlan: record });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') {
+      expect(result.route.stops[0]?.navigationTarget).toBe(expected);
+      expect(result.route.stops[0]?.coordinates).toEqual({ latitude: 43.6487, longitude: -79.3817 });
+    }
+  });
+
+  test('uses corrected current coordinates when they differ from Shopify coordinates rejected at sync time', async () => {
+    const record = structuredClone(routePlanRecord);
+    (record.routeStops[0]!.deliveryStop.order as { rawPayload: unknown }).rawPayload = {
+      ...routePlanRecord.routeStops[0]!.deliveryStop.order.rawPayload,
+      shippingAddress: {
+        coordinatesValidated: false,
+        latitude: 43.6,
+        longitude: -79.3,
+        validationResultSummary: 'ERROR'
+      }
+    };
+    const { prisma } = createPrismaHarness({ routePlan: record });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') {
+      expect(result.route.stops[0]?.navigationTarget).toBe('COORDINATES');
+      expect(result.route.stops[0]?.coordinates).toEqual({ latitude: 43.6487, longitude: -79.3817 });
+    }
+  });
+
+  test('returns an address target while preserving the coordinate object when coordinates are missing', async () => {
+    const record = structuredClone(routePlanRecord);
+    const stop = record.routeStops[0]!.deliveryStop as unknown as { latitude: unknown; longitude: unknown };
+    stop.latitude = null;
+    stop.longitude = null;
+    const { prisma } = createPrismaHarness({ routePlan: record });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') {
+      expect(result.route.stops[0]?.navigationTarget).toBe('ADDRESS');
+      expect(result.route.stops[0]?.coordinates).toEqual({ latitude: null, longitude: null });
+    }
+  });
+
+  test.each([
+    [91, -79.3817],
+    [43.6487, -181],
+    [0, 0]
+  ])('returns an address target for unusable coordinates (%s, %s)', async (latitude, longitude) => {
+    const record = structuredClone(routePlanRecord);
+    const stop = record.routeStops[0]!.deliveryStop as unknown as { latitude: unknown; longitude: unknown };
+    stop.latitude = latitude;
+    stop.longitude = longitude;
+    const { prisma } = createPrismaHarness({ routePlan: record });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') {
+      expect(result.route.stops[0]?.navigationTarget).toBe('ADDRESS');
+      expect(result.route.stops[0]?.coordinates).toEqual({ latitude, longitude });
+    }
   });
 
   test.each([

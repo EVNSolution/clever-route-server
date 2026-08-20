@@ -77,6 +77,8 @@ const ORDER_FIELDS = `#graphql
           countryCodeV2
           latitude
           longitude
+          coordinatesValidated
+          validationResultSummary
         }
 `;
 

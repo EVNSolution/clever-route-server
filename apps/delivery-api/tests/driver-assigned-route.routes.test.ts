@@ -39,6 +39,7 @@ const assignedRoute = {
           province: 'ON'
         },
         coordinates: { latitude: 43.6487, longitude: -79.3817 },
+        navigationTarget: 'COORDINATES' as const,
         currencyCode: 'CAD',
         customerNote: 'Leave the box beside the loading entrance.',
         deliveryStopId: 'stop-id',

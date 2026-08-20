@@ -380,6 +380,8 @@ function toRoutePlanDetailForCache(routePlan: AssignedRoutePlanRecord): RoutePla
 function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: AssignedRoutePlanRecord): DriverAssignedRouteStop {
   const deliveryStop = routeStop.deliveryStop;
   const rawPayload = objectOrNull(deliveryStop.order.rawPayload);
+  const latitude = decimalNumber(deliveryStop.latitude);
+  const longitude = decimalNumber(deliveryStop.longitude);
   const dsvNormalized = readDsvNormalizedPayload(rawPayload);
   const timeConstraintState = deriveDsvTimeConstraintState({
     audits: deliveryStop.order.dsvAuditEvents,
@@ -402,8 +404,8 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
       province: deliveryStop.province
     },
     coordinates: {
-      latitude: decimalNumber(deliveryStop.latitude),
-      longitude: decimalNumber(deliveryStop.longitude)
+      latitude,
+      longitude
     },
     currencyCode: readCurrencyCode(deliveryStop.order.currencyCode),
     customerNote: readCustomerNote(rawPayload),
@@ -426,6 +428,7 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
     estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
     conditionCode: readConditionComparisonKey(dsvNormalized, rawPayload),
     items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
+    navigationTarget: shopifyNavigationTarget(rawPayload, latitude, longitude),
     normalizedPaymentStatus: resolveNormalizedPaymentStatus({
       financialStatus: deliveryStop.order.financialStatus,
       normalizedPaymentStatus: rawPayload?.normalizedPaymentStatus
@@ -463,6 +466,34 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
     timeWindowStart: deliveryStop.timeWindowStart?.toISOString() ?? null,
     totalPriceAmount: decimalString(deliveryStop.order.totalPriceAmount)
   };
+}
+
+function shopifyNavigationTarget(
+  rawPayload: Record<string, unknown> | null,
+  latitude: number | null,
+  longitude: number | null,
+): DriverAssignedRouteStop['navigationTarget'] {
+  if (
+    latitude === null ||
+    longitude === null ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180 ||
+    (latitude === 0 && longitude === 0)
+  ) return 'ADDRESS';
+
+  const shippingAddress = objectOrNull(rawPayload?.shippingAddress);
+  const shopifyLatitude = decimalNumber(shippingAddress?.latitude);
+  const shopifyLongitude = decimalNumber(shippingAddress?.longitude);
+  if (
+    shippingAddress?.coordinatesValidated === false &&
+    shopifyLatitude !== null &&
+    shopifyLongitude !== null &&
+    Math.abs(latitude - shopifyLatitude) <= 0.0000001 &&
+    Math.abs(longitude - shopifyLongitude) <= 0.0000001
+  ) return 'ADDRESS';
+  return 'COORDINATES';
 }
 
 function optionalPendingTimeConstraintChange(

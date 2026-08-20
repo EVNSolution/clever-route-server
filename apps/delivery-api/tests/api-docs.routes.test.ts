@@ -363,6 +363,23 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('GET /docs/openapi.yaml documents the assigned-route navigation decision', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const assignedRouteStop = schemaBlock(response.body, 'DriverAssignedRouteStop');
+
+      expect(response.statusCode).toBe(200);
+      expect(assignedRouteStop).toContain('navigationTarget:');
+      expect(assignedRouteStop).toContain('enum: [ADDRESS, COORDINATES]');
+      expect(assignedRouteStop).toContain("latitude:\n              type: [number, 'null']");
+      expect(assignedRouteStop).toContain("longitude:\n              type: [number, 'null']");
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml documents the G002 driver time-constraint contract', async () => {
     const app = await buildApp();
 
