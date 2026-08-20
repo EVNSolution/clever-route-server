@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import { RouteGroupingBranchLockConflictError } from '../src/modules/route-grouping/route-grouping.types.js';
+import { CustomOrderReferenceCopyNotAllowedError, RouteGroupingBranchLockConflictError, RouteGroupingCopyLockedError, RouteGroupingDeleteBlockedError } from '../src/modules/route-grouping/route-grouping.types.js';
 import type { AdminRouteGroupDependencies } from '../src/routes/admin-route-groups.routes.js';
 
 const routeGroup = {
@@ -25,6 +25,123 @@ const routeGroup = {
 };
 
 describe('Admin route group routes', () => {
+  test('copies a route group only after an explicit provider-neutral mode selection', async () => {
+    const { copyGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+        method: 'POST',
+        payload: { expectedUpdatedAt: '2026-06-24T12:00:00.000Z', mode: 'VIRTUAL' },
+        url: '/admin/route-groups/route-group-id/copies'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { routeGroup }, error: null });
+      expect(copyGrouping).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever-route-dev',
+        expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
+        groupingId: 'route-group-id',
+        mode: 'VIRTUAL',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects missing and invalid copy modes without calling the service', async () => {
+    const { copyGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      for (const mode of [undefined, 'CLONE']) {
+        const response = await app.inject({
+          headers: { authorization: 'Bearer session-token' },
+          method: 'POST',
+          payload: { expectedUpdatedAt: '2026-06-24T12:00:00.000Z', ...(mode === undefined ? {} : { mode }) },
+          url: '/admin/route-groups/route-group-id/copies'
+        });
+        expect(response.statusCode).toBe(400);
+      }
+      expect(copyGrouping).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns locked source order ids when REFERENCE copy cannot proceed', async () => {
+    const { copyGrouping, dependencies } = createDependencyHarness();
+    copyGrouping.mockRejectedValueOnce(new RouteGroupingCopyLockedError(['order-1']));
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { expectedUpdatedAt: '2026-06-24T12:00:00.000Z', mode: 'REFERENCE' },
+        url: '/admin/route-groups/route-group-id/copies'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: { orderIds: ['order-1'] },
+        error: { code: 'ROUTE_GROUPING_COPY_LOCKED', message: 'One or more source orders are locked by a started or completed route.' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns a stable code when REFERENCE copy contains a CUSTOM order', async () => {
+    const { copyGrouping, dependencies } = createDependencyHarness();
+    copyGrouping.mockRejectedValueOnce(new CustomOrderReferenceCopyNotAllowedError());
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { expectedUpdatedAt: '2026-06-24T12:00:00.000Z', mode: 'REFERENCE' },
+        url: '/admin/route-groups/route-group-id/copies'
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'CUSTOM_ORDER_REFERENCE_COPY_NOT_ALLOWED',
+          message: 'REFERENCE copy cannot include CUSTOM orders; choose VIRTUAL mode.'
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns 409 when foreign CUSTOM associations block route-group deletion', async () => {
+    const { deleteGrouping, dependencies } = createDependencyHarness();
+    deleteGrouping.mockRejectedValueOnce(new RouteGroupingDeleteBlockedError([
+      'owned CUSTOM orders are linked to another route group',
+      'owned CUSTOM stops are linked to another route plan'
+    ]));
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'DELETE',
+        url: '/admin/route-groups/route-group-id'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_GROUPING_DELETE_BLOCKED',
+          message: 'owned CUSTOM orders are linked to another route group; owned CUSTOM stops are linked to another route plan'
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('creates a tenant-scoped custom stop without a Shopify operation', async () => {
     const { createCustomStop, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -561,11 +678,13 @@ describe('Admin route group routes', () => {
 });
 
 function createDependencyHarness(): {
+  copyGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyGrouping']>>;
   createBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createBranch']>>;
   createCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>>;
   createGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>>;
   deleteBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>>;
   deleteCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteCustomStop']>>;
+  deleteGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteGrouping']>>;
   dependencies: AdminRouteGroupDependencies;
   generateChildRoutes: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['generateChildRoutes']>>;
   nextRouteIdx: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['nextRouteIdx']>>;
@@ -584,6 +703,7 @@ function createDependencyHarness(): {
     subject: 'shopify-user-id'
   }));
   const createBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createBranch']>(() => Promise.resolve(routeGroup));
+  const copyGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyGrouping']>(() => Promise.resolve(routeGroup));
   const createCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>(() => Promise.resolve(routeGroup));
   const createGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>(() => Promise.resolve(routeGroup));
   const deleteBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>(() => Promise.resolve(routeGroup));
@@ -607,12 +727,15 @@ function createDependencyHarness(): {
 
   return {
     createBranch,
+    copyGrouping,
     createCustomStop,
     createGrouping,
     deleteBranch,
     deleteCustomStop,
+    deleteGrouping,
     dependencies: {
       routeGroupingService: {
+        copyGrouping,
         createBranch,
         createCustomStop,
         createGrouping,

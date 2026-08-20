@@ -132,6 +132,17 @@ export type CreateRouteGroupingInput = {
   shopDomain: string;
 };
 
+export type RouteGroupingCopyMode = 'REFERENCE' | 'VIRTUAL';
+
+export type CopyRouteGroupingInput = {
+  actor: string;
+  appId?: string | undefined;
+  expectedUpdatedAt: string;
+  groupingId: string;
+  mode: RouteGroupingCopyMode;
+  shopDomain: string;
+};
+
 export type SaveRouteGroupingPolygonsInput = {
   appId?: string | undefined;
   groupingId: string;
@@ -314,6 +325,7 @@ export type NextRouteGroupingRouteIdxInput = {
 export type DeleteRouteGroupingResult = { deleted: boolean; deletedChildRoutePlanCount: number; groupingId: string };
 
 export type RouteGroupingService = {
+  copyGrouping(input: CopyRouteGroupingInput): Promise<RouteGroupingDetailDto | null>;
   createBranch(input: CreateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   createCustomStop(input: CreateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null>;
   createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto>;
@@ -342,6 +354,22 @@ export class RouteGroupingConflictError extends Error {
   constructor(message = 'Route grouping was changed by another save. Refresh and try again.') {
     super(message);
     this.name = 'RouteGroupingConflictError';
+  }
+}
+
+export class RouteGroupingCopyLockedError extends RouteGroupingConflictError {
+  readonly code = 'ROUTE_GROUPING_COPY_LOCKED';
+  constructor(readonly orderIds: string[]) {
+    super('One or more source orders are locked by a started or completed route.');
+    this.name = 'RouteGroupingCopyLockedError';
+  }
+}
+
+export class CustomOrderReferenceCopyNotAllowedError extends Error {
+  readonly code = 'CUSTOM_ORDER_REFERENCE_COPY_NOT_ALLOWED';
+  constructor() {
+    super('REFERENCE copy cannot include CUSTOM orders; choose VIRTUAL mode.');
+    this.name = 'CustomOrderReferenceCopyNotAllowedError';
   }
 }
 

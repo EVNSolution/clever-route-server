@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-08-19
+  x-contract-revision: 2026-08-20
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -2418,6 +2418,53 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /admin/route-groups/{routeGroupId}/copies:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Copy a route group using shared references or independent virtual orders
+      description: >-
+        REFERENCE preserves existing commerce order and delivery-stop IDs and rejects
+        CUSTOM sources or locked orders. VIRTUAL snapshots normalized routing fields into
+        new CLEVER-owned CUSTOM orders and stops. Both modes copy group membership only.
+      operationId: copyAdminRouteGroup
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RouteGroupingCopyRequest' }
+      responses:
+        '201':
+          description: Newly copied route group detail envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400':
+          description: >-
+            Invalid copy request. REFERENCE requests containing a CUSTOM order return
+            error code CUSTOM_ORDER_REFERENCE_COPY_NOT_ALLOWED.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              examples:
+                customOrderReferenceCopyNotAllowed:
+                  value:
+                    data: null
+                    error:
+                      code: CUSTOM_ORDER_REFERENCE_COPY_NOT_ALLOWED
+                      message: REFERENCE copy cannot include CUSTOM orders; choose VIRTUAL mode.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /admin/route-groups/{routeGroupId}/next-route-idx:
     parameters:
       - name: routeGroupId
@@ -7304,6 +7351,17 @@ components:
         idempotencyKey:
           type: string
           minLength: 1
+      additionalProperties: false
+    RouteGroupingCopyRequest:
+      type: object
+      required: [mode, expectedUpdatedAt]
+      properties:
+        mode:
+          type: string
+          enum: [REFERENCE, VIRTUAL]
+        expectedUpdatedAt:
+          type: string
+          format: date-time
       additionalProperties: false
     AdminRouteStopOverrideRequest:
       type: object
