@@ -74,7 +74,8 @@ Success with an assigned route:
           "coordinates": {
             "latitude": 43.6487,
             "longitude": -79.3817
-          }
+          },
+          "navigationTarget": "COORDINATES"
         }
       ]
     }
@@ -120,6 +121,8 @@ The query is scoped by all of the following:
   `ROUTE_COMPLETED` event are excluded from operational assigned-route reads
 
 The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. The route's persisted `depot` coordinate is returned for the driver's map start marker. Stop address, recipient, phone, customer note, order items, coordinates, delivery time window, and persisted DSV order fields (`sellerOrderKey`, `destinationId`, normalized `conditionCode`, `shippedBoxes`) are intentionally returned only after the driver boundary is verified. `timeWindowStart` and `timeWindowEnd` are server timestamps and remain `null` when the order has no required arrival window. The DSV fields are nullable for legacy or non-DSV source orders.
+
+`navigationTarget` is the server decision for external navigation only. `COORDINATES` is returned for usable coordinates on legacy orders, Shopify `NO_ISSUES`/`WARNING`/`ERROR` results, and coordinates corrected after Shopify sync. `ADDRESS` is returned when current coordinates are missing or unusable, or when `coordinatesValidated` is `false` and the current coordinates still match Shopify's rejected source coordinates. Coordinates remain in the response when `navigationTarget` is `ADDRESS` because route optimization and navigation trust are separate concerns. The address object and coordinate object are always present; individual coordinate values remain `null` when unavailable.
 
 ## Server-authoritative ETA lifecycle
 

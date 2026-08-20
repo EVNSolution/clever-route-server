@@ -62,6 +62,7 @@ type ShopifyShippingAddress = {
   address1: string | null;
   address2: string | null;
   city: string | null;
+  coordinatesValidated?: boolean | null;
   countryCodeV2: string | null;
   latitude: number | null;
   longitude: number | null;
@@ -69,6 +70,7 @@ type ShopifyShippingAddress = {
   phone: string | null;
   province: string | null;
   provinceCode?: string | null;
+  validationResultSummary?: "ERROR" | "NO_ISSUES" | "WARNING" | null;
   zip: string | null;
 };
 

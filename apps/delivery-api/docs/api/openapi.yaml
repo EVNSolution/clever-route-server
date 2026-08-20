@@ -7925,7 +7925,7 @@ components:
             $ref: '#/components/schemas/DriverAssignedRouteStop'
     DriverAssignedRouteStop:
       type: object
-      required: [address, coordinates, deliveryStopId, distanceFromPreviousMeters, durationFromPreviousSeconds, estimatedArrivalAt, orderName, phone, recipientName, sequence, specialInstructionNote, status, timeConstraintAcknowledgement, timeWindow, timeWindowEnd, timeWindowStart]
+      required: [address, coordinates, deliveryStopId, distanceFromPreviousMeters, durationFromPreviousSeconds, estimatedArrivalAt, navigationTarget, orderName, phone, recipientName, sequence, specialInstructionNote, status, timeConstraintAcknowledgement, timeWindow, timeWindowEnd, timeWindowStart]
       properties:
         deliveryStopId:
           type: string
@@ -8001,15 +8001,17 @@ components:
         address:
           $ref: '#/components/schemas/ShippingAddress'
         coordinates:
-          type:
-            - object
-            - 'null'
+          type: object
           required: [latitude, longitude]
           properties:
             latitude:
-              type: number
+              type: [number, 'null']
             longitude:
-              type: number
+              type: [number, 'null']
+        navigationTarget:
+          description: Server navigation decision. ADDRESS rejects missing, unusable, or still-unvalidated Shopify source coordinates without removing them from route optimization data; corrected coordinates and Shopify address-review summaries remain eligible.
+          enum: [ADDRESS, COORDINATES]
+          type: string
     DriverRoutesHistoryEnvelope:
       type: object
       required: [data, error]
