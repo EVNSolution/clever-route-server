@@ -160,8 +160,10 @@ assert repo_expected.count('20260813140000_require_dsv_admin_password_change') =
 assert repo_expected.count('20260818100000_add_driver_destination_notes') == 1, repo_expected
 assert repo_expected.count('20260818170000_add_driver_bundle_handoff_requests') == 1, repo_expected
 assert repo_expected.count('20260819020000_align_shopify_api_version_default') == 1, repo_expected
-assert len(repo_expected) == 81, repo_expected
-assert repo_expected[-1] == '20260819020000_align_shopify_api_version_default', repo_expected[-1]
+assert repo_expected.count('20260819223000_add_custom_route_stop_source') == 1, repo_expected
+assert repo_expected.count('20260820093000_own_virtual_route_group_orders') == 1, repo_expected
+assert len(repo_expected) == 83, repo_expected
+assert repo_expected[-1] == '20260820093000_own_virtual_route_group_orders', repo_expected[-1]
 assert repo_expected.count('20260722233000_align_migration_history_to_schema') == 1, repo_expected
 
 empty = status_from_history([], expected)
