@@ -150,12 +150,14 @@ type OrderRecord = {
   fulfillmentStatus: string | null;
   id: string;
   name: string;
+  ownedRouteGroupingId: string | null;
   orderItems?: OrderItemRecordLike[];
   deliveryCustomerProfileLinks?: Array<{ matchReasons: unknown; matchStatus: string; profile: { adminMemo: string | null; id: string } }>;
   phone?: string | null;
   rawPayload: unknown;
   shippingAddress: unknown;
   shopifyOrderGid: string;
+  sourcePlatform: string;
   totalPriceAmount?: unknown;
 };
 
@@ -224,7 +226,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
       const routeStop = await tx.routePlanStop.findFirst({
         select: {
-          deliveryStop: { select: { order: { select: { email: true } }, orderId: true, status: true } },
+          deliveryStop: { select: { order: { select: { email: true, sourcePlatform: true } }, orderId: true, status: true } },
           deliveryStopId: true,
           routePlan: { select: { status: true } }
         },
@@ -263,7 +265,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             factId: existingNotification?.id ?? null,
             orderId: existingNotification?.orderId ?? routeStop.deliveryStop.orderId,
             recipientEmail: routeStop.deliveryStop.order?.email ?? null,
-            status: existingNotification?.status ?? 'QUEUED'
+            status: routeStop.deliveryStop.order?.sourcePlatform === 'CUSTOM'
+              ? 'SKIPPED' as const
+              : existingNotification?.status ?? 'QUEUED'
           },
           trackingEvent: null
         };
@@ -277,7 +281,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             factId: null,
             orderId: routeStop.deliveryStop.orderId,
             recipientEmail: routeStop.deliveryStop.order?.email ?? null,
-            status: 'QUEUED' as const
+            status: routeStop.deliveryStop.order?.sourcePlatform === 'CUSTOM' ? 'SKIPPED' as const : 'QUEUED' as const
           },
           trackingEvent: null
         };
@@ -315,7 +319,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         driverEvent = event;
       }
 
-      const notificationFact = await tx.customerRouteNotificationFact.upsert({
+      const notificationFact = routeStop.deliveryStop.order?.sourcePlatform === 'CUSTOM' ? null : await tx.customerRouteNotificationFact.upsert({
         create: {
           deliveryStopId: input.deliveryStopId,
           idempotencyKey: notificationIdempotencyKey,
@@ -375,7 +379,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             routeStatus: routeStop.routePlan.status,
             runtimeSender: 'unwired'
           },
-          notificationFactId: notificationFact.id,
+          notificationFactId: notificationFact?.id ?? null,
           requestedUiStatus: input.payload.status,
           routePlanId: input.routePlanId,
           shopId: shop.id,
@@ -387,10 +391,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         duplicate: false as const,
         found: true as const,
         notification: {
-          factId: notificationFact.id,
+          factId: notificationFact?.id ?? null,
           orderId: routeStop.deliveryStop.orderId,
           recipientEmail: routeStop.deliveryStop.order?.email ?? null,
-          status: 'QUEUED' as const
+          status: notificationFact === null ? 'SKIPPED' as const : 'QUEUED' as const
         },
         trackingEvent: driverEvent === null ? null : {
           deliveryStopId: input.deliveryStopId,
@@ -1425,6 +1429,28 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const missingOrderGids = orderGids.filter((gid) => !ordersByGid.has(gid));
       if (missingOrderGids.length > 0) {
         throw new RoutePlanStopUpdateInvalidError('Route stops can only include orders from the current shop.');
+      }
+
+      const customOrders = orders.filter((order) => order.sourcePlatform === 'CUSTOM');
+      if (customOrders.length > 0) {
+        const ownerGroupingIds = [...new Set(customOrders
+          .map((order) => order.ownedRouteGroupingId)
+          .filter((groupingId): groupingId is string => groupingId !== null))];
+        if (ownerGroupingIds.length === 0 || customOrders.some((order) => order.ownedRouteGroupingId === null)) {
+          throw new RoutePlanStopUpdateInvalidError('CUSTOM route stops require an owning route group.');
+        }
+        const owningChildren = await tx.routeGroupingChildVersion.findMany({
+          select: { groupingId: true },
+          where: {
+            groupingId: { in: ownerGroupingIds },
+            routePlanId: input.routePlanId,
+            shopId: shop.id
+          }
+        });
+        const routeOwnerIds = new Set(owningChildren.map((child) => child.groupingId));
+        if (customOrders.some((order) => !routeOwnerIds.has(order.ownedRouteGroupingId!))) {
+          throw new RoutePlanStopUpdateInvalidError('CUSTOM route stops can only be changed on a child route owned by their route group.');
+        }
       }
 
       const wrongDateOrders = normalizedStops.filter((stop) => {

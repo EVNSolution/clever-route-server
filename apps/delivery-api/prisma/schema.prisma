@@ -837,6 +837,8 @@ model Order {
   destination                   DeliveryCustomerProfile?           @relation("OrderCurrentDestination", fields: [destinationId, shopId], references: [id, shopId], onDelete: NoAction)
   currentRouteVersionId         String?                            @db.Uuid
   currentRouteVersion           RouteGroupingChildVersion?         @relation("OrderCurrentRouteVersion", fields: [currentRouteVersionId, shopId], references: [id, shopId], onDelete: NoAction)
+  ownedRouteGroupingId          String?                            @db.Uuid
+  ownedRouteGrouping            RouteGrouping?                     @relation("RouteGroupingOwnedCustomOrders", fields: [ownedRouteGroupingId, shopId], references: [id, shopId], onDelete: Restrict)
   createdAt                     DateTime                           @default(now()) @db.Timestamptz(6)
   updatedAt                     DateTime                           @updatedAt @db.Timestamptz(6)
   orderItems                    OrderItem[]
@@ -867,6 +869,7 @@ model Order {
   @@index([shopId, customerId, deliveryStatus])
   @@index([shopId, destinationId])
   @@index([shopId, currentRouteVersionId])
+  @@index([shopId, ownedRouteGroupingId])
   @@map("orders")
 }
 
@@ -1738,7 +1741,9 @@ model RouteGrouping {
   branchOrderLocks     RouteGroupingBranchOrderLock[]
   notificationAttempts DriverRouteNotificationAttempt[]
   inventory            Inventory?
+  ownedCustomOrders    Order[]                          @relation("RouteGroupingOwnedCustomOrders")
 
+  @@unique([id, shopId])
   @@index([shopId, planDate, status])
   @@index([shopId, dateRangeStart, dateRangeEnd, status])
   @@map("route_groupings")

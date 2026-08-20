@@ -974,6 +974,28 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
   });
 
+  test('rejects a CUSTOM stop update when the route plan is not owned by its route group', async () => {
+    const customOrder = {
+      ...orderRecord({ id: 'order-custom', gid: 'gid://clever/VirtualRouteOrder/123', stopId: 'stop-custom', deliveryDate: '2026-05-08' }),
+      ownedRouteGroupingId: 'group-owner',
+      sourcePlatform: 'CUSTOM'
+    };
+    const { prisma } = createPrismaHarness({ orders: [customOrder], routeGroupingOwnerChildren: [] });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.updateRoutePlanStops({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { stops: [{ deliveryStopId: 'stop-custom', shopifyOrderGid: 'gid://clever/VirtualRouteOrder/123', sequence: 1 }] }
+    })).rejects.toMatchObject({
+      code: 'ROUTE_STOP_UPDATE_INVALID',
+      message: 'CUSTOM route stops can only be changed on a child route owned by their route group.'
+    });
+    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
+  });
+
   test('rejects wrong-date stop update orders', async () => {
     const { prisma } = createPrismaHarness({ orderDeliveryDate: '2026-05-09' });
     const repository = new PrismaRoutePlanRepository(
@@ -1126,6 +1148,33 @@ describe('PrismaRoutePlanRepository', () => {
       shopId: 'shop-id',
       source: 'ADMIN'
     });
+  });
+
+  test('does not enqueue customer notifications for CLEVER-local CUSTOM orders', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: {
+        deliveryStop: { order: { email: 'local@example.test', sourcePlatform: 'CUSTOM' }, orderId: 'order-virtual' },
+        deliveryStopId: 'stop-virtual',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-virtual',
+      payload: { idempotencyKey: 'virtual-stop-completed', status: 'COMPLETED' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.notification).toMatchObject({ factId: null, orderId: 'order-virtual', status: 'SKIPPED' });
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
+    const auditCreateArg = prisma.adminRouteStopActionAudit.create.mock.calls[0]?.[0] as unknown as { data: Record<string, unknown> } | undefined;
+    expect(auditCreateArg?.data.notificationFactId).toBeNull();
   });
 
   test('duplicate admin stop transition returns current route without duplicate side effects', async () => {
@@ -2027,6 +2076,7 @@ function createPrismaHarness(input: {
   routePlanToDelete?: { id: string } | null;
   routeGroupingChildVersionCount?: number;
   routeGroupingCurrentChildrenAfterDelete?: Array<{ routePlanId: string | null }>;
+  routeGroupingOwnerChildren?: Array<{ groupingId: string }>;
   shop?: Record<string, unknown> | null;
 } = {}): {
   prisma: {
@@ -2173,7 +2223,7 @@ function createPrismaHarness(input: {
     },
     routeGroupingChildVersion: {
       count: vi.fn(() => Promise.resolve(input.routeGroupingChildVersionCount ?? 0)),
-      findMany: vi.fn(() => Promise.resolve(input.routeGroupingCurrentChildrenAfterDelete ?? [])),
+      findMany: vi.fn(() => Promise.resolve(input.routeGroupingOwnerChildren ?? input.routeGroupingCurrentChildrenAfterDelete ?? [])),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
     },
     routePlan: {

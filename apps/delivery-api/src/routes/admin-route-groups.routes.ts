@@ -8,7 +8,9 @@ import {
 import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint } from '../modules/route-plans/route-plan.types.js';
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import {
+  CustomOrderReferenceCopyNotAllowedError,
   RouteGroupingBranchLockConflictError,
+  RouteGroupingCopyLockedError,
   RouteGroupingConflictError,
   RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
@@ -62,6 +64,29 @@ export function registerAdminRouteGroupRoutes(
         shopDomain: authenticated.shopDomain,
         ...payload
       });
+      return reply.code(201).send({ data: { routeGroup }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
+  app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/copies', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readCopyGroupingPayload(request.body);
+      const routeGroup = await dependencies.routeGroupingService.copyGrouping({
+        actor: authenticated.subject,
+        appId: authenticated.appId,
+        groupingId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
       return reply.code(201).send({ data: { routeGroup }, error: null });
     } catch (error) {
       return sendRouteGroupingError(reply, error);
@@ -534,6 +559,17 @@ function readCreateGroupingPayload(value: unknown): {
   };
 }
 
+function readCopyGroupingPayload(value: unknown): { expectedUpdatedAt: string; mode: 'REFERENCE' | 'VIRTUAL' } {
+  const object = requireObject(value);
+  if (object.mode !== 'REFERENCE' && object.mode !== 'VIRTUAL') {
+    throw new BadRouteGroupPayloadError('copy mode must be REFERENCE or VIRTUAL');
+  }
+  return {
+    expectedUpdatedAt: readRevisionTimestamp(object.expectedUpdatedAt, 'expectedUpdatedAt'),
+    mode: object.mode
+  };
+}
+
 function readDepot(value: unknown): RoutePlanDepotInput {
   const object = requireObject(value);
   return {
@@ -786,7 +822,9 @@ function readGenerateChildRoutesPayload(value: unknown): { confirmRisk?: boolean
 }
 
 function sendRouteGroupingError(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof CustomOrderReferenceCopyNotAllowedError) return reply.code(400).send(errorResponse(error.code, error.message));
   if (error instanceof RouteGroupingBranchLockConflictError) return reply.code(409).send({ data: { orderIds: error.orderIds }, error: { code: error.code, message: error.message } });
+  if (error instanceof RouteGroupingCopyLockedError) return reply.code(409).send({ data: { orderIds: error.orderIds }, error: { code: error.code, message: error.message } });
   if (error instanceof RouteGroupingConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
   if (error instanceof RouteGroupingDeleteBlockedError) return reply.code(409).send(errorResponse(error.code, error.blockers.join('; ')));
   if (error instanceof RouteGroupingRiskConfirmationRequiredError) {
@@ -799,7 +837,9 @@ function sendRouteGroupingError(reply: FastifyReply, error: unknown): FastifyRep
 }
 
 function getRouteGroupingErrorLogCode(error: unknown): string {
+  if (error instanceof CustomOrderReferenceCopyNotAllowedError) return error.code;
   if (error instanceof RouteGroupingBranchLockConflictError) return error.code;
+  if (error instanceof RouteGroupingCopyLockedError) return error.code;
   if (error instanceof RouteGroupingConflictError) return error.code;
   if (error instanceof RouteGroupingDeleteBlockedError) return error.code;
   if (error instanceof RouteGroupingRiskConfirmationRequiredError) return error.code;

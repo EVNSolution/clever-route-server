@@ -17,9 +17,207 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('route grouping contracts', () => {
+  test('REFERENCE copy reuses SHOPIFY order and stop ids without cloning route execution state', async () => {
+    const source = copySourceFixture('SHOPIFY');
+    const tx = copyTransactionHarness(source);
+    const prisma = { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) };
+    const service = new PrismaRouteGroupingService(prisma as never, new FakeDriverPushProvider());
+    vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-copy' } as never);
+
+    await service.copyGrouping({
+      actor: 'admin',
+      expectedUpdatedAt: source.updatedAt.toISOString(),
+      groupingId: source.id,
+      mode: 'REFERENCE',
+      shopDomain: 'tenant.example'
+    });
+
+    expect(tx.routeGroupingOrder.createMany).toHaveBeenCalledWith({
+      data: [{ deliveryStopId: 'stop-source', groupingId: 'group-copy', orderId: 'order-source', shopId: 'shop-1', sourceSequence: 1 }]
+    });
+    expect(tx.order.create).not.toHaveBeenCalled();
+    expect(tx.routeGroupingVersion.create).toHaveBeenCalledOnce();
+    expect(tx.routePlan.create).not.toHaveBeenCalled();
+  });
+
+  test('REFERENCE copy rejects CUSTOM membership and started route locks before creating a group', async () => {
+    const customSource = copySourceFixture('CUSTOM');
+    const customTx = copyTransactionHarness(customSource);
+    const customService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof customTx) => unknown) => operation(customTx)) } as never, new FakeDriverPushProvider());
+    await expect(customService.copyGrouping({ actor: 'admin', expectedUpdatedAt: customSource.updatedAt.toISOString(), groupingId: customSource.id, mode: 'REFERENCE', shopDomain: 'tenant.example' }))
+      .rejects.toMatchObject({ code: 'CUSTOM_ORDER_REFERENCE_COPY_NOT_ALLOWED' });
+    expect(customTx.routeGrouping.create).not.toHaveBeenCalled();
+
+    const lockedSource = copySourceFixture('SHOPIFY');
+    const lockedTx = copyTransactionHarness(lockedSource);
+    lockedTx.routePlanStop.findMany.mockResolvedValue([{ deliveryStopId: 'stop-source', routePlan: { driverEvents: [], status: 'IN_PROGRESS' } }]);
+    const lockedService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof lockedTx) => unknown) => operation(lockedTx)) } as never, new FakeDriverPushProvider());
+    await expect(lockedService.copyGrouping({ actor: 'admin', expectedUpdatedAt: lockedSource.updatedAt.toISOString(), groupingId: lockedSource.id, mode: 'REFERENCE', shopDomain: 'tenant.example' }))
+      .rejects.toMatchObject({ code: 'ROUTE_GROUPING_COPY_LOCKED', orderIds: ['order-source'] });
+    expect(lockedTx.routeGrouping.create).not.toHaveBeenCalled();
+  });
+
+  test('VIRTUAL copy creates independent CUSTOM ids with normalized navigation fields only', async () => {
+    const source = copySourceFixture('SHOPIFY');
+    const tx = copyTransactionHarness(source);
+    tx.order.create.mockResolvedValue({ deliveryStops: [{ id: 'stop-virtual' }], id: 'order-virtual' });
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+    vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-copy' } as never);
+
+    await service.copyGrouping({ actor: 'admin', expectedUpdatedAt: source.updatedAt.toISOString(), groupingId: source.id, mode: 'VIRTUAL', shopDomain: 'tenant.example' });
+
+    const createArg = tx.order.create.mock.calls[0]?.[0] as unknown as { data: Record<string, unknown> } | undefined;
+    const data = createArg?.data;
+    expect(data).toMatchObject({
+      email: 'recipient@example.test',
+      name: '#1001',
+      ownedRouteGroupingId: 'group-copy',
+      phone: '+14165550100',
+      rawPayload: { kind: 'CLEVER_VIRTUAL_ROUTE_COPY', schemaVersion: 1, sourceDeliveryStopId: 'stop-source', sourceOrderId: 'order-source' },
+      shopId: 'shop-1',
+      sourcePlatform: 'CUSTOM'
+    });
+    expect(data).not.toHaveProperty('financialStatus');
+    expect(data).not.toHaveProperty('fulfillmentStatus');
+    expect(data).not.toHaveProperty('shopifyOrderLegacyId');
+    expect(data).not.toHaveProperty('shippingAddress');
+    const deliveryStops = data?.deliveryStops as { create: unknown } | undefined;
+    expect(deliveryStops?.create).toMatchObject({
+      address1: '100 King St', address2: 'Dock 2', city: 'Toronto', countryCode: 'CA', latitude: 43.65,
+      longitude: -79.38, postalCode: 'M5H 1J9', priority: 7, province: 'ON', serviceMinutes: 12
+    });
+    expect(tx.routeGroupingOrder.createMany).toHaveBeenCalledWith({
+      data: [{ deliveryStopId: 'stop-virtual', groupingId: 'group-copy', orderId: 'order-virtual', shopId: 'shop-1', sourceSequence: 1 }]
+    });
+  });
+
+  test('stale copy revision and a failed virtual item prevent membership and inventory writes', async () => {
+    const source = copySourceFixture('SHOPIFY');
+    const staleTx = copyTransactionHarness(source);
+    const staleService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof staleTx) => unknown) => operation(staleTx)) } as never, new FakeDriverPushProvider());
+    await expect(staleService.copyGrouping({ actor: 'admin', expectedUpdatedAt: '2026-08-19T13:00:00.000Z', groupingId: source.id, mode: 'VIRTUAL', shopDomain: 'tenant.example' }))
+      .rejects.toBeInstanceOf(RouteGroupingConflictError);
+    expect(staleTx.routeGrouping.create).not.toHaveBeenCalled();
+
+    const failedTx = copyTransactionHarness(source);
+    failedTx.order.create.mockRejectedValue(new Error('injected virtual copy failure'));
+    const failedService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof failedTx) => unknown) => operation(failedTx)) } as never, new FakeDriverPushProvider());
+    await expect(failedService.copyGrouping({ actor: 'admin', expectedUpdatedAt: source.updatedAt.toISOString(), groupingId: source.id, mode: 'VIRTUAL', shopDomain: 'tenant.example' }))
+      .rejects.toThrow('injected virtual copy failure');
+    expect(failedTx.routeGroupingOrder.createMany).not.toHaveBeenCalled();
+    expect(failedTx.inventory.upsert).not.toHaveBeenCalled();
+  });
+
+  test('cross-tenant copy is not found and performs no source read or write', async () => {
+    const source = copySourceFixture('SHOPIFY');
+    const tx = copyTransactionHarness(source);
+    tx.shop.findUnique.mockResolvedValue(null);
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+
+    await expect(service.copyGrouping({
+      actor: 'admin',
+      expectedUpdatedAt: source.updatedAt.toISOString(),
+      groupingId: source.id,
+      mode: 'VIRTUAL',
+      shopDomain: 'other-tenant.example'
+    })).resolves.toBeNull();
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(tx.routeGrouping.findFirst).not.toHaveBeenCalled();
+    expect(tx.routeGrouping.create).not.toHaveBeenCalled();
+  });
+
+  test('does not reproduce the legacy shared CUSTOM cascade when deleting another group', async () => {
+    const tx = deleteGroupingTransactionHarness({ ownedRouteGroupingId: 'group-owner' });
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+    await service.deleteGrouping({ groupingId: 'group-copy', shopDomain: 'tenant.example' });
+    expect(tx.order.deleteMany).toHaveBeenCalledWith({
+      where: { ownedRouteGroupingId: 'group-copy', shopId: 'shop-1', sourcePlatform: 'CUSTOM' }
+    });
+    expect(tx.routeGrouping.delete).toHaveBeenCalledWith({ where: { id: 'group-copy' } });
+  });
+
+  test('two VIRTUAL copies receive distinct local identities and deleting one targets only its owned graph', async () => {
+    const source = copySourceFixture('SHOPIFY');
+    const firstTx = copyTransactionHarness(source);
+    firstTx.order.create.mockResolvedValue({ deliveryStops: [{ id: 'stop-virtual-1' }], id: 'order-virtual-1' });
+    const secondTx = copyTransactionHarness(source);
+    secondTx.routeGrouping.create.mockResolvedValue({ id: 'group-copy-2' });
+    secondTx.order.create.mockResolvedValue({ deliveryStops: [{ id: 'stop-virtual-2' }], id: 'order-virtual-2' });
+    const transactions = [firstTx, secondTx];
+    const service = new PrismaRouteGroupingService({
+      $transaction: vi.fn((operation: (client: typeof firstTx) => unknown) => operation(transactions.shift() ?? firstTx))
+    } as never, new FakeDriverPushProvider());
+    vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'copied' } as never);
+
+    await service.copyGrouping({ actor: 'admin', expectedUpdatedAt: source.updatedAt.toISOString(), groupingId: source.id, mode: 'VIRTUAL', shopDomain: 'tenant.example' });
+    await service.copyGrouping({ actor: 'admin', expectedUpdatedAt: source.updatedAt.toISOString(), groupingId: source.id, mode: 'VIRTUAL', shopDomain: 'tenant.example' });
+
+    type VirtualOrderCreateData = { rawPayload: unknown; shopifyOrderGid: string; sourceOrderId: string };
+    const firstData = (firstTx.order.create.mock.calls[0]?.[0] as unknown as { data: VirtualOrderCreateData }).data;
+    const secondData = (secondTx.order.create.mock.calls[0]?.[0] as unknown as { data: VirtualOrderCreateData }).data;
+    expect(firstData.shopifyOrderGid).not.toBe(secondData.shopifyOrderGid);
+    expect(firstData.sourceOrderId).not.toBe(secondData.sourceOrderId);
+    expect(firstData.rawPayload).toEqual(secondData.rawPayload);
+
+    const deleteTx = deleteGroupingTransactionHarness({ ownedRouteGroupingId: 'group-copy' });
+    const deleteService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof deleteTx) => unknown) => operation(deleteTx)) } as never, new FakeDriverPushProvider());
+    await deleteService.deleteGrouping({ groupingId: 'group-copy', shopDomain: 'tenant.example' });
+    expect(deleteTx.order.deleteMany).toHaveBeenCalledWith({
+      where: { ownedRouteGroupingId: 'group-copy', shopId: 'shop-1', sourcePlatform: 'CUSTOM' }
+    });
+  });
+
+  test('owned graph deletion failures roll back before inventory or group deletion', async () => {
+    const tx = deleteGroupingTransactionHarness({ ownedRouteGroupingId: 'group-copy' });
+    tx.order.deleteMany.mockRejectedValue(new Error('owned graph blocked'));
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+    await expect(service.deleteGrouping({ groupingId: 'group-copy', shopDomain: 'tenant.example' })).rejects.toThrow('owned graph blocked');
+    expect(tx.inventory.deleteMany).not.toHaveBeenCalled();
+    expect(tx.routeGrouping.delete).not.toHaveBeenCalled();
+  });
+
+  test('foreign CUSTOM group or route-plan associations block group deletion before mutation', async () => {
+    const tx = deleteGroupingTransactionHarness({ ownedRouteGroupingId: 'group-copy' });
+    tx.routeGroupingOrder.findMany.mockResolvedValue([{ groupingId: 'group-foreign', orderId: 'order-custom' }]);
+    tx.routePlanStop.findMany.mockResolvedValue([{ deliveryStopId: 'stop-custom', routePlanId: 'plan-foreign' }]);
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+
+    await expect(service.deleteGrouping({ groupingId: 'group-copy', shopDomain: 'tenant.example' })).rejects.toMatchObject({
+      blockers: [
+        'owned CUSTOM orders are linked to another route group',
+        'owned CUSTOM stops are linked to another route plan'
+      ],
+      code: 'ROUTE_GROUPING_DELETE_BLOCKED'
+    });
+    expect(tx.routePlanStop.deleteMany).not.toHaveBeenCalled();
+    expect(tx.order.deleteMany).not.toHaveBeenCalled();
+    expect(tx.inventory.deleteMany).not.toHaveBeenCalled();
+    expect(tx.routeGrouping.delete).not.toHaveBeenCalled();
+  });
+
+  test('a group without child plans treats every owned CUSTOM route-plan stop as a delete blocker', async () => {
+    const tx = deleteGroupingTransactionHarness({ ownedRouteGroupingId: 'group-copy' });
+    tx.routePlanStop.findMany.mockResolvedValue([{ deliveryStopId: 'stop-custom', routePlanId: 'plan-standalone' }]);
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+
+    await expect(service.deleteGrouping({ groupingId: 'group-copy', shopDomain: 'tenant.example' })).rejects.toMatchObject({
+      blockers: ['owned CUSTOM stops are linked to another route plan'],
+      code: 'ROUTE_GROUPING_DELETE_BLOCKED'
+    });
+    expect(tx.routePlanStop.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        deliveryStop: { order: { ownedRouteGroupingId: 'group-copy', sourcePlatform: 'CUSTOM' } },
+        shopId: 'shop-1'
+      }
+    }));
+    expect(tx.order.deleteMany).not.toHaveBeenCalled();
+    expect(tx.routeGrouping.delete).not.toHaveBeenCalled();
+  });
+
   test('creates an unassigned local custom order and stop without a commerce client', async () => {
     const orderCreate = vi.fn<(input: { data: {
       name: string;
+      ownedRouteGroupingId: string;
       rawPayload: unknown;
       shopId: string;
       shopifyOrderGid: string;
@@ -78,6 +276,7 @@ describe('route grouping contracts', () => {
     expect(createdOrder?.rawPayload).toMatchObject({ kind: 'CLEVER_CUSTOM_ROUTE_STOP' });
     expect(createdOrder?.shopId).toBe('shop-1');
     expect(createdOrder?.shopifyOrderGid).toMatch(/^gid:\/\/clever\/CustomRouteStop\//u);
+    expect(createdOrder?.ownedRouteGroupingId).toBe('group-1');
     expect(createdOrder?.sourceOrderId).toMatch(/^custom-stop:/u);
     expect(createdOrder?.sourcePlatform).toBe('CUSTOM');
     expect(groupingOrderCreate).toHaveBeenCalledWith({
@@ -144,7 +343,7 @@ describe('route grouping contracts', () => {
         findUnique: vi.fn().mockResolvedValue({
           childVersions: [],
           id: 'group-1',
-          orders: [{ deliveryStopId: 'stop-custom', order: { sourcePlatform: 'CUSTOM' }, orderId: 'order-custom' }]
+          orders: [{ deliveryStopId: 'stop-custom', order: { ownedRouteGroupingId: 'group-1', sourcePlatform: 'CUSTOM' }, orderId: 'order-custom' }]
         }),
         update: vi.fn().mockResolvedValue({ id: 'group-1' })
       },
@@ -800,3 +999,130 @@ describe('route grouping contracts', () => {
     expect(provider.sentMessages[0]?.metadata).toEqual({ changeRequestId: 'change-request-id', orderMessageId: 'message-id' });
   });
 });
+
+function copySourceFixture(sourcePlatform: 'SHOPIFY' | 'CUSTOM') {
+  return {
+    branches: [],
+    childVersions: [],
+    createdAt: new Date('2026-08-19T11:00:00.000Z'),
+    createdBy: 'source-admin',
+    currentVersion: 1,
+    dateRangeEnd: new Date('2026-08-20T00:00:00.000Z'),
+    dateRangeStart: new Date('2026-08-19T00:00:00.000Z'),
+    deliverySession: 'DAY',
+    id: 'group-source',
+    inventory: null,
+    name: 'Source Group',
+    orders: [{
+      assignedDriver: null,
+      assignedDriverId: null,
+      assignedPolygon: null,
+      assignedPolygonId: null,
+      assignmentStatus: 'UNASSIGNED',
+      createdAt: new Date('2026-08-19T11:00:00.000Z'),
+      deliveryStop: {
+        address1: '100 King St',
+        address2: 'Dock 2',
+        city: 'Toronto',
+        countryCode: 'CA',
+        deliveryDate: new Date('2026-08-19T00:00:00.000Z'),
+        geocodeStatus: 'RESOLVED',
+        id: 'stop-source',
+        instructions: 'Use loading dock',
+        latitude: 43.65,
+        longitude: -79.38,
+        order: {},
+        orderId: 'order-source',
+        phone: '+14165550100',
+        postalCode: 'M5H 1J9',
+        priority: 7,
+        province: 'ON',
+        recipientName: 'Receiving',
+        routePlanStops: [],
+        serviceMinutes: 12,
+        shopId: 'shop-1',
+        status: 'PENDING',
+        timeWindowEnd: new Date('2026-08-19T16:00:00.000Z'),
+        timeWindowStart: new Date('2026-08-19T14:00:00.000Z')
+      },
+      deliveryStopId: 'stop-source',
+      groupingId: 'group-source',
+      id: 'membership-source',
+      order: {
+        customerRouteNotifications: [],
+        email: 'recipient@example.test',
+        id: 'order-source',
+        name: '#1001',
+        orderItems: [],
+        ownedRouteGroupingId: sourcePlatform === 'CUSTOM' ? 'group-source' : null,
+        phone: '+14165550100',
+        shopifyOrderGid: sourcePlatform === 'CUSTOM' ? 'gid://clever/CustomRouteStop/source' : 'gid://shopify/Order/1001',
+        sourcePlatform
+      },
+      orderId: 'order-source',
+      shopId: 'shop-1',
+      sourceSequence: 1,
+      updatedAt: new Date('2026-08-19T11:00:00.000Z')
+    }],
+    planDate: new Date('2026-08-19T00:00:00.000Z'),
+    polygons: [],
+    routeScopeKey: 'scope-1',
+    serviceType: 'DELIVERY',
+    shop: {},
+    shopId: 'shop-1',
+    status: 'READY',
+    updatedAt: new Date('2026-08-19T12:00:00.000Z'),
+    versions: []
+  };
+}
+
+function copyTransactionHarness(source: ReturnType<typeof copySourceFixture>) {
+  return {
+    $queryRaw: vi.fn().mockResolvedValue([{ id: source.id }]),
+    inventory: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      update: vi.fn().mockResolvedValue({ id: 'inventory-copy' }),
+      upsert: vi.fn().mockResolvedValue({ id: 'inventory-copy' })
+    },
+    inventoryEvent: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    inventoryOrder: {
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    order: {
+      create: vi.fn().mockResolvedValue({ deliveryStops: [{ id: 'stop-virtual' }], id: 'order-virtual' }),
+      findMany: vi.fn((input: { where: { id: { in: string[] } } }) => Promise.resolve(
+        input.where.id.in.map((id) => ({ id, orderItems: [] }))
+      ))
+    },
+    routeGrouping: {
+      create: vi.fn().mockResolvedValue({ id: 'group-copy' }),
+      findFirst: vi.fn().mockResolvedValue(source)
+    },
+    routeGroupingOrder: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    routeGroupingVersion: { create: vi.fn().mockResolvedValue({ id: 'version-copy' }) },
+    routePlan: { create: vi.fn() },
+    routePlanStop: { findMany: vi.fn().mockResolvedValue([]) },
+    shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+  };
+}
+
+function deleteGroupingTransactionHarness(input: { ownedRouteGroupingId: string }) {
+  return {
+    inventory: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    order: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    routeGrouping: {
+      delete: vi.fn().mockResolvedValue({ id: 'group-copy' }),
+      findFirst: vi.fn().mockResolvedValue({
+        childVersions: [],
+        id: 'group-copy',
+        orders: [{ order: { id: 'order-custom', ownedRouteGroupingId: input.ownedRouteGroupingId, sourcePlatform: 'CUSTOM' } }],
+        shopId: 'shop-1'
+      })
+    },
+    routeGroupingChildVersion: { updateMany: vi.fn() },
+    routeGroupingOrder: { findMany: vi.fn().mockResolvedValue([]) },
+    routePlan: { deleteMany: vi.fn() },
+    routePlanStop: { deleteMany: vi.fn(), findMany: vi.fn().mockResolvedValue([]) }
+  };
+}

@@ -18,12 +18,16 @@ import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js
 import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
 import { aggregateOrderItems, toOrderItemDto } from '../order-items/order-items.js';
 import {
+  CustomOrderReferenceCopyNotAllowedError,
   RouteGroupingBranchLockConflictError,
+  RouteGroupingCopyLockedError,
   RouteGroupingConflictError,
+  RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingStopMembershipConflictError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
+  type CopyRouteGroupingInput,
   type CreateCustomRouteGroupingStopInput,
   type CreateRouteGroupingBranchInput,
   type CreateRouteGroupingInput,
@@ -344,6 +348,74 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     return detail;
   }
 
+  async copyGrouping(input: CopyRouteGroupingInput): Promise<RouteGroupingDetailDto | null> {
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+      });
+      if (shop === null) return null;
+      await lockRouteGroupingCopySource(tx, input.groupingId, shop.id);
+      const source = await tx.routeGrouping.findFirst({
+        include: groupingInclude(),
+        where: { id: input.groupingId, shopId: shop.id }
+      });
+      if (source === null) return null;
+      if (source.updatedAt.getTime() !== parseExpectedUpdatedAt(input.expectedUpdatedAt).getTime()) {
+        throw new RouteGroupingConflictError();
+      }
+      if (input.mode === 'REFERENCE') {
+        const customOrderIds = source.orders
+          .filter((assignment) => assignment.order.sourcePlatform === 'CUSTOM')
+          .map((assignment) => assignment.orderId);
+        if (customOrderIds.length > 0) {
+          throw new CustomOrderReferenceCopyNotAllowedError();
+        }
+        await assertReferenceCopyOrdersUnlocked(tx, source);
+      }
+
+      const copy = await tx.routeGrouping.create({
+        data: {
+          createdBy: input.actor,
+          dateRangeEnd: source.dateRangeEnd,
+          dateRangeStart: source.dateRangeStart,
+          deliverySession: source.deliverySession,
+          name: `${source.name} Copy`,
+          planDate: source.planDate,
+          routeScopeKey: source.routeScopeKey,
+          serviceType: source.serviceType,
+          shopId: source.shopId,
+          status: 'READY'
+        },
+        select: { id: true }
+      });
+      await tx.routeGroupingVersion.create({
+        data: { actor: input.actor, groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 }
+      });
+
+      const copiedMemberships = input.mode === 'REFERENCE'
+        ? source.orders.map((assignment) => ({
+            deliveryStopId: assignment.deliveryStopId,
+            groupingId: copy.id,
+            orderId: assignment.orderId,
+            shopId: source.shopId,
+            sourceSequence: assignment.sourceSequence
+          }))
+        : await createVirtualCopyMemberships(tx, source, copy.id);
+      await tx.routeGroupingOrder.createMany({ data: copiedMemberships });
+      await createRouteGroupingInventory(tx, {
+        actor: input.actor,
+        groupingId: copy.id,
+        name: `${source.name} Copy`,
+        orderIds: copiedMemberships.map((membership) => membership.orderId),
+        shopId: source.shopId
+      });
+      return copy.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
   async getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null> {
     const loaded = await this.loadGrouping(input);
     if (loaded === null) return null;
@@ -376,7 +448,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               version: true
             }
           },
-          orders: { select: { order: { select: { id: true, sourcePlatform: true } } } }
+          orders: { select: { orderId: true } }
         },
         where: { id: input.groupingId, shop: { appId: normalizeShopifyAppId(input.appId), shopDomain } }
       });
@@ -402,6 +474,34 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               routePlanId: child.routePlanId
             }];
       }));
+      const foreignGroupMemberships = await tx.routeGroupingOrder.findMany({
+        select: { groupingId: true, orderId: true },
+        take: 1,
+        where: {
+          groupingId: { not: group.id },
+          order: { ownedRouteGroupingId: group.id, sourcePlatform: 'CUSTOM' },
+          shopId: group.shopId
+        }
+      });
+      const foreignRoutePlanStops = await tx.routePlanStop.findMany({
+        select: { deliveryStopId: true, routePlanId: true },
+        take: 1,
+        where: {
+          deliveryStop: { order: { ownedRouteGroupingId: group.id, sourcePlatform: 'CUSTOM' } },
+          ...(childRoutePlanIds.length === 0 ? {} : {
+            OR: [
+              { routePlanId: { notIn: childRoutePlanIds } },
+              { routePlan: { routeGroupingChildVersions: { some: { groupingId: { not: group.id } } } } }
+            ]
+          }),
+          shopId: group.shopId
+        }
+      });
+      const blockers = [
+        ...(foreignGroupMemberships.length === 0 ? [] : ['owned CUSTOM orders are linked to another route group']),
+        ...(foreignRoutePlanStops.length === 0 ? [] : ['owned CUSTOM stops are linked to another route plan'])
+      ];
+      if (blockers.length > 0) throw new RouteGroupingDeleteBlockedError(blockers);
       if (childRoutePlanIds.length > 0) {
         await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: childRoutePlanIds } } });
         await clearRouteGroupingChildVersionRoutePlanRefs(tx, {
@@ -410,14 +510,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         });
         await tx.routePlan.deleteMany({ where: { id: { in: childRoutePlanIds }, shopId: group.shopId } });
       }
+      await tx.order.deleteMany({
+        where: { ownedRouteGroupingId: group.id, shopId: group.shopId, sourcePlatform: 'CUSTOM' }
+      });
       await tx.inventory.deleteMany({ where: { routeGroupingId: group.id, shopId: group.shopId } });
       await tx.routeGrouping.delete({ where: { id: group.id } });
-      const customOrderIds = group.orders
-        .filter(({ order }) => order.sourcePlatform === 'CUSTOM')
-        .map(({ order }) => order.id);
-      if (customOrderIds.length > 0) {
-        await tx.order.deleteMany({ where: { id: { in: customOrderIds }, shopId: group.shopId, sourcePlatform: 'CUSTOM' } });
-      }
       return {
         notificationTargets,
         result: { deleted: true, deletedChildRoutePlanCount: childRoutePlanIds.length, groupingId: input.groupingId }
@@ -591,6 +688,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           shippingAddress: customStopShippingAddress(input),
           shopId: group.shopId,
           shopifyOrderGid: `gid://clever/CustomRouteStop/${localId}`,
+          ownedRouteGroupingId: group.id,
           sourceOrderId: internalSourceId,
           sourcePlatform: 'CUSTOM',
           sourceUpdatedAt: new Date(),
@@ -611,7 +709,6 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               province: normalizeOptionalText(input.province),
               recipientName: normalizeOptionalText(input.recipientName),
               serviceMinutes: input.serviceMinutes ?? 5,
-              shopId: group.shopId,
               timeWindowEnd: parseCustomStopInstant(input.timeWindowEnd),
               timeWindowStart: parseCustomStopInstant(input.timeWindowStart)
             }
@@ -661,6 +758,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       });
       if (assignment === null) return null;
       assertCustomStop(assignment.order.sourcePlatform);
+      assertOwnedCustomStop(assignment.order.ownedRouteGroupingId, group.id);
       const merged = {
         latitude: input.latitude === undefined ? decimalNumber(assignment.deliveryStop.latitude) : input.latitude,
         longitude: input.longitude === undefined ? decimalNumber(assignment.deliveryStop.longitude) : input.longitude,
@@ -731,6 +829,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const assignment = loaded.orders.find((row) => row.deliveryStopId === input.deliveryStopId);
       if (assignment === undefined) return null;
       assertCustomStop(assignment.order.sourcePlatform);
+      assertOwnedCustomStop(assignment.order.ownedRouteGroupingId, group.id);
       await updateGroupingRevision(tx, group, input.expectedUpdatedAt);
 
       for (const child of loaded.childVersions.filter((row) => isOperationalCurrentChild(row))) {
@@ -2342,6 +2441,12 @@ function assertCustomStop(sourcePlatform: string): void {
   }
 }
 
+function assertOwnedCustomStop(ownedRouteGroupingId: string | null, groupingId: string): void {
+  if (ownedRouteGroupingId !== groupingId) {
+    throw new RouteGroupingValidationError(['custom stop ownership does not match the route group']);
+  }
+}
+
 async function invalidateCustomStopChildRoutes(tx: Tx, groupingId: string, deliveryStopId: string): Promise<void> {
   const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: groupingId } });
   if (loaded === null) return;
@@ -2418,6 +2523,109 @@ function groupingInclude() {
     shop: true,
     versions: { orderBy: { version: 'desc' as const } }
   } satisfies Prisma.RouteGroupingInclude;
+}
+
+async function lockRouteGroupingCopySource(tx: Tx, groupingId: string, shopId: string): Promise<void> {
+  await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+    FROM "route_groupings"
+    WHERE "id" = ${groupingId}::UUID AND "shopId" = ${shopId}::UUID
+    FOR UPDATE
+  `;
+}
+
+async function assertReferenceCopyOrdersUnlocked(tx: Tx, source: LoadedGrouping): Promise<void> {
+  const deliveryStopIds = source.orders.map((assignment) => assignment.deliveryStopId);
+  if (deliveryStopIds.length === 0) return;
+  const memberships = await tx.routePlanStop.findMany({
+    select: {
+      deliveryStopId: true,
+      routePlan: {
+        select: {
+          driverEvents: {
+            orderBy: { occurredAt: 'desc' },
+            select: { eventType: true },
+            take: 1
+          },
+          status: true
+        }
+      }
+    },
+    where: { deliveryStopId: { in: deliveryStopIds }, shopId: source.shopId }
+  });
+  const lockedStopIds = new Set(memberships
+    .filter(({ routePlan }) => {
+      const status = toRouteExecutionStatus(routePlan.status, routePlan.driverEvents);
+      return status === 'IN_PROGRESS' || status === 'COMPLETED';
+    })
+    .map(({ deliveryStopId }) => deliveryStopId));
+  const orderIds = source.orders
+    .filter((assignment) => lockedStopIds.has(assignment.deliveryStopId))
+    .map((assignment) => assignment.orderId);
+  if (orderIds.length > 0) throw new RouteGroupingCopyLockedError(orderIds);
+}
+
+async function createVirtualCopyMemberships(
+  tx: Tx,
+  source: LoadedGrouping,
+  groupingId: string
+): Promise<Prisma.RouteGroupingOrderCreateManyInput[]> {
+  const memberships: Prisma.RouteGroupingOrderCreateManyInput[] = [];
+  for (const assignment of source.orders) {
+    const localId = randomUUID();
+    const sourceStop = assignment.deliveryStop;
+    const created = await tx.order.create({
+      data: {
+        email: assignment.order.email,
+        name: assignment.order.name,
+        ownedRouteGroupingId: groupingId,
+        phone: assignment.order.phone ?? sourceStop.phone,
+        rawPayload: {
+          kind: 'CLEVER_VIRTUAL_ROUTE_COPY',
+          schemaVersion: 1,
+          sourceDeliveryStopId: assignment.deliveryStopId,
+          sourceOrderId: assignment.orderId
+        },
+        shopId: source.shopId,
+        shopifyOrderGid: `gid://clever/VirtualRouteOrder/${localId}`,
+        sourceOrderId: `virtual-route-order:${localId}`,
+        sourcePlatform: 'CUSTOM',
+        sourceUpdatedAt: new Date(),
+        deliveryStops: {
+          create: {
+            address1: sourceStop.address1,
+            address2: sourceStop.address2,
+            city: sourceStop.city,
+            countryCode: sourceStop.countryCode,
+            deliveryDate: sourceStop.deliveryDate,
+            geocodeStatus: sourceStop.latitude === null || sourceStop.longitude === null ? 'PENDING' : 'RESOLVED',
+            instructions: sourceStop.instructions,
+            latitude: sourceStop.latitude,
+            longitude: sourceStop.longitude,
+            phone: sourceStop.phone ?? assignment.order.phone,
+            postalCode: sourceStop.postalCode,
+            priority: sourceStop.priority,
+            province: sourceStop.province,
+            recipientName: sourceStop.recipientName,
+            serviceMinutes: sourceStop.serviceMinutes,
+            timeWindowEnd: sourceStop.timeWindowEnd,
+            timeWindowStart: sourceStop.timeWindowStart
+          }
+        }
+      },
+      include: { deliveryStops: { select: { id: true }, take: 1 } }
+    });
+    const deliveryStopId = created.deliveryStops[0]?.id;
+    if (deliveryStopId === undefined) throw new Error('Virtual route copy did not create a delivery stop');
+    memberships.push({
+      deliveryStopId,
+      groupingId,
+      orderId: created.id,
+      shopId: source.shopId,
+      sourceSequence: assignment.sourceSequence
+    });
+  }
+  return memberships;
 }
 
 function routeGeometryCacheSummarySelect() {

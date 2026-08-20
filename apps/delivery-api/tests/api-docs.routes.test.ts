@@ -508,6 +508,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'delete', path: '/admin/route-groups/:routeGroupId/branches/:branchId' },
     { method: 'patch', path: '/admin/route-groups/:routeGroupId/branches/:branchId' },
     { method: 'patch', path: '/admin/route-groups/:routeGroupId/branches/:branchId/orders' },
+    { method: 'post', path: '/admin/route-groups/:routeGroupId/copies' },
     { method: 'patch', path: '/admin/route-groups/:routeGroupId/draft' },
     { method: 'post', path: '/admin/route-groups/:routeGroupId/generate-child-routes' },
     { method: 'get', path: '/admin/route-groups/:routeGroupId/next-route-idx' },
