@@ -41,8 +41,8 @@ Simple Route Ops SSM deploy lane: no S3 deploy-control bundle, no EC2 build,
 no separate migrate image, no prod-prev image retagging, and no ingress/Caddy
 mutation. GitHub Actions should publish digest-addressable images first, then
 pass ROUTE_OPS_RUNTIME_IMAGE and ROUTE_OPS_WEB_STATIC_IMAGE as repo@sha256 refs.
-The SSM command only pulls, runs migration, stages static assets, recreates
-clever-route-api, and healthchecks.
+The SSM command only pulls, audits custom-order ownership, runs migration,
+stages static assets, recreates clever-route-api, and healthchecks.
 
 Env:
   ROUTE_OPS_SIMPLE_CHANNEL_TAG   default: prod
@@ -383,6 +383,7 @@ docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.e
 if [ "$static_stage_reason" != "unchanged" ]; then
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull route-ops-web-static
 fi
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm clever-route-api-migrate
 if [ "$static_stage_reason" = "unchanged" ]; then
   printf 'simple deploy static stage skipped: candidate static digest matches current (%s)\n' "$ROUTE_OPS_WEB_STATIC_IMAGE"

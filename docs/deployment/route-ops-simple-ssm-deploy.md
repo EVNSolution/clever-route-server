@@ -107,12 +107,13 @@ The EC2 host does not build. A real deploy does this in order:
 7. Bootstraps proof-media directory owner/mode.
 8. Logs into GHCR using SSM parameters only on the host.
 9. Runs `docker compose --profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea`; pulls `route-ops-web-static` only when static staging is required.
-10. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume. The migration service must use the G007 migrate-deploy entrypoint and its target guard.
-11. Compares candidate and current `ROUTE_OPS_WEB_STATIC_IMAGE` digest refs.
-12. Stages the static volume via `route-ops-web-static` when the static digest changed, the current ref is missing, either ref is a mutable tag/non-digest ref, or `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` is set.
-13. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
-14. Verifies public `/healthz`.
-15. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
+10. Runs the candidate API image's PII-free custom-order ownership audit with `docker compose run --rm --no-deps delivery-api node dist/scripts/audit-custom-route-order-ownership.js`. Any shared, orphaned, owner-mismatched, or foreign-route association exits nonzero and stops the deploy before migration.
+11. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume. The migration service must use the G007 migrate-deploy entrypoint and its target guard.
+12. Compares candidate and current `ROUTE_OPS_WEB_STATIC_IMAGE` digest refs.
+13. Stages the static volume via `route-ops-web-static` when the static digest changed, the current ref is missing, either ref is a mutable tag/non-digest ref, or `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` is set.
+14. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
+15. Verifies public `/healthz`.
+16. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
 
 ### UVIS server-only runtime secret
 
@@ -226,8 +227,9 @@ delivery-api-migrate:
   command: ["sh", "scripts/dsv-g007-migrate-deploy.sh"]
 ```
 
-The runtime image includes the migration script and Prisma schema, so this removes the
-second `delivery-api-migrate` image build/push from the deploy path. Production mode must
+The runtime image includes the compiled custom-order ownership audit, migration script,
+and Prisma schema, so this removes the second `delivery-api-migrate` image build/push from
+the deploy path. Production mode must
 provide `DSV_MIGRATION_APPROVED=1`, `DSV_MIGRATION_MANIFEST_SHA256`, and
 `DSV_RESTORE_REHEARSAL_SHA256`; rehearsals must use disposable `clever_g007_*` targets.
 
@@ -239,7 +241,8 @@ can run.
 ## Availability expectation
 
 Build/push happens in GitHub Actions and does not stop production. The SSM phase only pulls,
-runs migration, stages static assets, and recreates `delivery-api`. Caddy is neither
+audits custom-order ownership, runs migration, stages static assets, and recreates
+`delivery-api`. Caddy is neither
 rewritten nor reloaded by this lane. The edge lane must already have the
 `lb_try_duration 30s` / `lb_try_interval 500ms` retry policy in place so brief connection
 failures during the single-container `delivery-api` swap are retried instead of returned

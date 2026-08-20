@@ -24,6 +24,7 @@ dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
     '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea',
     '--profile osrm --profile vroom --profile korea pull route-ops-web-static',
+    'run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js',
     'run --rm clever-route-api-migrate',
     'up --no-build --force-recreate route-ops-web-static',
     'up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api',
@@ -58,6 +59,8 @@ checks = {
     'uvis_not_in_static_image_workflow': 'ROUTE_OPS_UVIS_ENV_PARAM: ${{ vars.ROUTE_OPS_UVIS_ENV_PARAM }}' in workflow and 'secrets.UVIS' not in workflow,
     'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
     'migrate_uses_compose_service': 'run --rm clever-route-api-migrate' in command,
+    'custom_ownership_audit_uses_candidate_runtime': 'run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js' in command,
+    'custom_ownership_audit_before_migrate': command.index('run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js') < command.index('run --rm clever-route-api-migrate'),
     'migrate_before_static_stage': command.index('run --rm clever-route-api-migrate') < command.index('simple deploy static stage required', command.index('run --rm clever-route-api-migrate')),
     'api_up_no_deps': 'up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api' in command,
     'does_not_recreate_caddy': '--force-recreate --remove-orphans clever-route-api caddy' not in command and '--force-recreate clever-route-api caddy' not in command,
