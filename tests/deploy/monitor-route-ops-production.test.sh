@@ -66,6 +66,7 @@ case "$rendered" in
   *) echo "default monitor must render G007 JSON status as disabled" >&2; exit 1 ;;
 esac
 case "$g007_status" in *"legacyUsage"*) ;; *) echo "G007 JSON status must include legacy usage output" >&2; exit 1 ;; esac
+case "$g007_status" in *"customerEmailOutbox"*) ;; *) echo "G007 JSON status must include central customer-email outbox output" >&2; exit 1 ;; esac
 case "$g007_status" in *"invariantFailures"*) ;; *) echo "G007 JSON status must include invariant output" >&2; exit 1 ;; esac
 case "$g007_status" in *"latestMigration"*) ;; *) echo "G007 JSON status must include migration output" >&2; exit 1 ;; esac
 case "$g007_status" in *"validated_migration_manifest"*) ;; *) echo "G007 JSON status must validate the deployed migration manifest" >&2; exit 1 ;; esac
@@ -89,6 +90,7 @@ esac
 
 python3 - <<'PY'
 import re
+import json
 import tempfile
 from pathlib import Path
 
@@ -118,6 +120,127 @@ assert unready['sample'] == '{"ready":false}', unready
 failed_probe = status_from_http_fixture(error='connection refused')
 assert failed_probe == {'status': 'critical', 'error': 'connection refused'}, failed_probe
 
+email_policy_match = re.search(r"# BEGIN G007_EMAIL_SCOPE_POLICY\n(?P<body>.*?)\n# END G007_EMAIL_SCOPE_POLICY", script, re.S)
+if not email_policy_match:
+    raise SystemExit('missing G007 customer-email scope policy block')
+
+email_namespace = {}
+exec(email_policy_match.group('body'), email_namespace)
+email_scope_status_from_fixture = email_namespace['email_scope_status_from_fixture']
+
+disabled_with_hidden_non_default_overdue = email_scope_status_from_fixture(
+    {'senderConfigured': False, 'workerEnabled': False},
+    [
+        {
+            'defaultApp': True,
+            'pending': 0,
+            'overduePending': 0,
+            'processing': 0,
+            'staleProcessing': 0,
+            'retryWait': 0,
+            'overdueRetryWait': 0,
+            'deadLetter': 0,
+        },
+        {
+            'defaultApp': False,
+            'pending': 1,
+            'overduePending': 1,
+            'processing': 0,
+            'staleProcessing': 0,
+            'retryWait': 0,
+            'overdueRetryWait': 0,
+            'deadLetter': 0,
+            'appId': 'forbidden-app-identifier',
+            'shopId': 'forbidden-shop-identifier',
+            'recipientEmail': 'forbidden-recipient@example.invalid',
+            'subject': 'forbidden subject',
+            'body': 'forbidden body',
+            'orderId': 'forbidden-order-identifier',
+            'customerId': 'forbidden-customer-identifier',
+        },
+    ],
+)
+assert disabled_with_hidden_non_default_overdue['status'] == 'warning', disabled_with_hidden_non_default_overdue
+assert disabled_with_hidden_non_default_overdue['runtime'] == {
+    'senderConfigured': False,
+    'workerEnabled': False,
+}, disabled_with_hidden_non_default_overdue
+assert disabled_with_hidden_non_default_overdue['scopeCount'] == 2, disabled_with_hidden_non_default_overdue
+assert disabled_with_hidden_non_default_overdue['defaultScopeCount'] == 1, disabled_with_hidden_non_default_overdue
+assert disabled_with_hidden_non_default_overdue['nonDefaultScopeCount'] == 1, disabled_with_hidden_non_default_overdue
+assert disabled_with_hidden_non_default_overdue['totals']['pending'] == 1, disabled_with_hidden_non_default_overdue
+assert disabled_with_hidden_non_default_overdue['totals']['overduePending'] == 1, disabled_with_hidden_non_default_overdue
+assert disabled_with_hidden_non_default_overdue['scopes'] == [
+    {
+        'scopeOrdinal': 1,
+        'defaultApp': True,
+        'pending': 0,
+        'overduePending': 0,
+        'processing': 0,
+        'staleProcessing': 0,
+        'retryWait': 0,
+        'overdueRetryWait': 0,
+        'deadLetter': 0,
+    },
+    {
+        'scopeOrdinal': 2,
+        'defaultApp': False,
+        'pending': 1,
+        'overduePending': 1,
+        'processing': 0,
+        'staleProcessing': 0,
+        'retryWait': 0,
+        'overdueRetryWait': 0,
+        'deadLetter': 0,
+    },
+], disabled_with_hidden_non_default_overdue
+serialized_email_status = json.dumps(disabled_with_hidden_non_default_overdue, sort_keys=True)
+for forbidden in (
+    'appId', 'shopId', 'recipientEmail', 'subject', 'body', 'orderId', 'customerId',
+    'forbidden-app-identifier', 'forbidden-shop-identifier', 'forbidden-recipient@example.invalid',
+):
+    assert forbidden not in serialized_email_status, (forbidden, serialized_email_status)
+
+enabled_with_overdue = email_scope_status_from_fixture(
+    {'senderConfigured': True, 'workerEnabled': True},
+    [{
+        'defaultApp': False,
+        'pending': 1,
+        'overduePending': 1,
+        'processing': 0,
+        'staleProcessing': 0,
+        'retryWait': 0,
+        'overdueRetryWait': 0,
+        'deadLetter': 0,
+    }],
+)
+assert enabled_with_overdue['status'] == 'critical', enabled_with_overdue
+
+healthy_empty = email_scope_status_from_fixture(
+    {'senderConfigured': False, 'workerEnabled': False},
+    [{
+        'defaultApp': True,
+        'pending': 0,
+        'overduePending': 0,
+        'processing': 0,
+        'staleProcessing': 0,
+        'retryWait': 0,
+        'overdueRetryWait': 0,
+        'deadLetter': 0,
+    }],
+)
+assert healthy_empty['status'] == 'ok', healthy_empty
+
+email_sql_match = re.search(r"# BEGIN G007_EMAIL_SCOPE_SQL\n(?P<body>.*?)\n# END G007_EMAIL_SCOPE_SQL", script, re.S)
+if not email_sql_match:
+    raise SystemExit('missing G007 customer-email scope SQL block')
+email_sql = email_sql_match.group('body')
+assert re.search(r'\bSELECT\b', email_sql), email_sql
+assert not re.search(r'\b(INSERT|UPDATE|DELETE|ALTER|DROP|TRUNCATE)\b', email_sql, re.I), email_sql
+assert 'customer_delivery_notification_attempts' not in email_sql, email_sql
+for forbidden_column in ('recipientEmailSnapshot', 'providerMessageId', 'errorMessage', 'orderId', 'customerId'):
+    assert forbidden_column not in email_sql, (forbidden_column, email_sql)
+
 match = re.search(r"# BEGIN G007_MIGRATION_POLICY\n(?P<body>.*?)\n# END G007_MIGRATION_POLICY", script, re.S)
 if not match:
     raise SystemExit('missing G007 migration policy block')
@@ -132,6 +255,21 @@ expected_migration_names = namespace['expected_migration_names']
 validated_migration_manifest = namespace['validated_migration_manifest']
 validated_migration_checksums = namespace['validated_migration_checksums']
 monitor_status_from_checks = namespace['monitor_status_from_checks']
+assert monitor_status_from_checks({
+    'healthz': {'status': 'ok'},
+    'readyz': {'status': 'ok'},
+    'customerEmailOutbox': {'status': 'warning'},
+}) == ('warning', 0)
+assert monitor_status_from_checks({
+    'healthz': {'status': 'critical'},
+    'readyz': {'status': 'ok'},
+    'customerEmailOutbox': {'status': 'warning'},
+}) == ('critical', 2)
+assert monitor_status_from_checks({
+    'healthz': {'status': 'ok'},
+    'readyz': {'status': 'unknown'},
+    'customerEmailOutbox': {'status': 'warning'},
+}) == ('unknown', 1)
 expected = [
     '20260722203000_dsv_import_stage_apply',
     '20260722213000_dsv_assignment_eta_state',

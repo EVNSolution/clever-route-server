@@ -223,6 +223,145 @@ def psql_json(sql):
     return {'status': 'ok', 'value': payload}
 
 
+def customer_email_runtime_config():
+    proc = run([
+        'docker', 'exec', api_container, 'node', '-e',
+        "const senderConfigured=Boolean((process.env.CUSTOMER_DELIVERY_NOTIFICATION_URL||'').trim());"
+        "const raw=(process.env.CUSTOMER_DELIVERY_NOTIFICATION_WORKER_ENABLED||'').trim().toLowerCase();"
+        "const workerFlag=raw===''||raw==='true'||raw==='1';"
+        "console.log(JSON.stringify({senderConfigured,workerEnabled:senderConfigured&&workerFlag}));",
+    ])
+    if proc.returncode != 0:
+        return {'status': 'unknown', 'error': 'customer email runtime configuration could not be read'}
+    try:
+        payload = json.loads(proc.stdout.strip())
+    except json.JSONDecodeError:
+        return {'status': 'unknown', 'error': 'customer email runtime configuration returned non-json output'}
+    if not isinstance(payload, dict):
+        return {'status': 'unknown', 'error': 'customer email runtime configuration returned an invalid result'}
+    return payload
+
+
+# BEGIN G007_EMAIL_SCOPE_POLICY
+def email_scope_status_from_fixture(runtime, rows):
+    if not isinstance(runtime, dict) or not isinstance(rows, list):
+        return {'status': 'unknown', 'error': 'customer email scope evidence is unavailable'}
+    sender_configured = runtime.get('senderConfigured')
+    worker_enabled = runtime.get('workerEnabled')
+    if not isinstance(sender_configured, bool) or not isinstance(worker_enabled, bool):
+        return {'status': 'unknown', 'error': 'customer email runtime evidence is invalid'}
+
+    count_keys = (
+        'pending',
+        'overduePending',
+        'processing',
+        'staleProcessing',
+        'retryWait',
+        'overdueRetryWait',
+        'deadLetter',
+    )
+    totals = {key: 0 for key in count_keys}
+    scopes = []
+    default_scope_count = 0
+    for ordinal, row in enumerate(rows, start=1):
+        if not isinstance(row, dict) or not isinstance(row.get('defaultApp'), bool):
+            return {'status': 'unknown', 'error': 'customer email scope evidence is invalid'}
+        scope = {'scopeOrdinal': ordinal, 'defaultApp': row['defaultApp']}
+        if row['defaultApp']:
+            default_scope_count += 1
+        for key in count_keys:
+            value = row.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return {'status': 'unknown', 'error': 'customer email scope evidence is invalid'}
+            scope[key] = value
+            totals[key] += value
+        scopes.append(scope)
+
+    configured = sender_configured and worker_enabled
+    stranded = totals['deadLetter'] > 0 or totals['staleProcessing'] > 0
+    overdue_while_enabled = configured and (
+        totals['overduePending'] > 0 or totals['overdueRetryWait'] > 0
+    )
+    disabled_with_outstanding = not configured and (
+        totals['pending'] > 0 or totals['processing'] > 0 or totals['retryWait'] > 0
+    )
+    status = 'critical' if stranded or overdue_while_enabled else 'warning' if disabled_with_outstanding else 'ok'
+    return {
+        'status': status,
+        'runtime': {
+            'senderConfigured': sender_configured,
+            'workerEnabled': worker_enabled,
+        },
+        'scopeCount': len(scopes),
+        'defaultScopeCount': default_scope_count,
+        'nonDefaultScopeCount': len(scopes) - default_scope_count,
+        'totals': totals,
+        'scopes': scopes,
+    }
+# END G007_EMAIL_SCOPE_POLICY
+
+
+# BEGIN G007_EMAIL_SCOPE_SQL
+email_scope_sql = """
+WITH scope_counts AS (
+  SELECT
+    s.id AS "scopeSort",
+    s."appId" = 'clever' AS "defaultApp",
+    COUNT(fact.id) FILTER (
+      WHERE fact.status = 'QUEUED' AND fact."attemptCount" = 0
+    ) AS pending,
+    COUNT(fact.id) FILTER (
+      WHERE fact.status = 'QUEUED'
+        AND fact."attemptCount" = 0
+        AND fact."occurredAt" < CURRENT_TIMESTAMP - INTERVAL '15 minutes'
+    ) AS "overduePending",
+    COUNT(fact.id) FILTER (
+      WHERE fact.status = 'PROCESSING'
+    ) AS processing,
+    COUNT(fact.id) FILTER (
+      WHERE fact.status = 'PROCESSING'
+        AND fact."updatedAt" < CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+    ) AS "staleProcessing",
+    COUNT(fact.id) FILTER (
+      WHERE fact.status = 'QUEUED' AND fact."attemptCount" > 0
+    ) AS "retryWait",
+    COUNT(fact.id) FILTER (
+      WHERE fact.status = 'QUEUED'
+        AND fact."attemptCount" > 0
+        AND fact."occurredAt" < CURRENT_TIMESTAMP - INTERVAL '30 minutes'
+    ) AS "overdueRetryWait",
+    COUNT(fact.id) FILTER (
+      WHERE fact.status = 'DEAD'
+    ) AS "deadLetter"
+  FROM shops AS s
+  LEFT JOIN customer_route_notification_facts AS fact ON fact."shopId" = s.id
+  GROUP BY s.id, s."appId"
+)
+SELECT COALESCE(json_agg(json_build_object(
+  'defaultApp', "defaultApp",
+  'pending', pending,
+  'overduePending', "overduePending",
+  'processing', processing,
+  'staleProcessing', "staleProcessing",
+  'retryWait', "retryWait",
+  'overdueRetryWait', "overdueRetryWait",
+  'deadLetter', "deadLetter"
+) ORDER BY "defaultApp" DESC, "scopeSort"), '[]'::json)
+FROM scope_counts;
+"""
+# END G007_EMAIL_SCOPE_SQL
+
+
+def customer_email_scope_status():
+    runtime = customer_email_runtime_config()
+    if runtime.get('status') == 'unknown':
+        return runtime
+    evidence = psql_json(email_scope_sql)
+    if evidence.get('status') == 'unknown':
+        return evidence
+    return email_scope_status_from_fixture(runtime, evidence.get('value'))
+
+
 def deployed_migration_names():
     proc = run([
         'docker', 'exec', api_container,
@@ -288,6 +427,8 @@ def monitor_status_from_checks(checks):
         return 'critical', 2
     if 'unknown' in statuses:
         return 'unknown', 1
+    if 'warning' in statuses:
+        return 'warning', 0
     return 'ok', 0
 
 
@@ -463,8 +604,9 @@ if legacy.get('status') != 'unknown':
     )
     legacy['status'] = 'critical' if has_legacy else 'ok'
 
+
 report = {
-    'schemaVersion': 1,
+    'schemaVersion': 2,
     'generatedAt': datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
     'checks': {
         'healthz': http_status('/healthz'),
@@ -472,6 +614,7 @@ report = {
         'migrations': migration_status(),
         'invariants': psql_json(invariant_sql),
         'legacyUsage': legacy,
+        'customerEmailOutbox': customer_email_scope_status(),
     },
 }
 report['status'], exit_code = monitor_status_from_checks(report['checks'])
