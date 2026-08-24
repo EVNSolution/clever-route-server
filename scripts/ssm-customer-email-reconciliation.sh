@@ -7,12 +7,15 @@ IMAGE="${CUSTOMER_EMAIL_RECONCILIATION_IMAGE:-}"
 MANIFEST_PATH="${CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_PATH:-}"
 CLI_ARGS_B64="${CUSTOMER_EMAIL_RECONCILIATION_ARGS_B64:-}"
 RENDER_HOST_SCRIPT=false
+SMOKE_COMPILED_CLI=false
 
 usage() {
   cat <<'USAGE'
 Usage: CUSTOMER_EMAIL_RECONCILIATION_IMAGE=<image@sha256:digest> \
        CUSTOMER_EMAIL_RECONCILIATION_ARGS_B64=<base64-json-array> \
        scripts/ssm-customer-email-reconciliation.sh [--render-host-script]
+
+       scripts/ssm-customer-email-reconciliation.sh --smoke-compiled-cli
 
 Apply additionally requires CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_PATH to be an
 absolute host path under /srv/clever-route-server/operator/reconciliation. The
@@ -21,11 +24,27 @@ manual dispatch reconciliation is unsupported.
 USAGE
 }
 
-if [ "${1:-}" = "--render-host-script" ]; then
-  RENDER_HOST_SCRIPT=true
-  shift
-fi
+case "${1:-}" in
+  --render-host-script) RENDER_HOST_SCRIPT=true; shift ;;
+  --smoke-compiled-cli) SMOKE_COMPILED_CLI=true; shift ;;
+esac
 [ "$#" -eq 0 ] || { usage >&2; exit 64; }
+
+if [ "$SMOKE_COMPILED_CLI" = true ]; then
+  compiled_cli="$(cd "$(dirname "$0")/.." && pwd)/apps/delivery-api/dist/scripts/reconcile-customer-email.js"
+  [ -f "$compiled_cli" ] || { echo "customer-email-reconciliation: compiled CLI is missing" >&2; exit 66; }
+  set +e
+  smoke_output="$(node "$compiled_cli" --apply --fact-id wrapper-contract-smoke 2>&1)"
+  smoke_status=$?
+  set -e
+  [ "$smoke_status" -eq 2 ] || { echo "customer-email-reconciliation: compiled CLI refusal smoke failed" >&2; exit 1; }
+  [ "$smoke_output" = '{"errorCode":"CUSTOMER_EMAIL_RECONCILIATION_FAILED"}' ] || {
+    echo "customer-email-reconciliation: compiled CLI emitted unexpected smoke output" >&2
+    exit 1
+  }
+  echo 'compiled customer email reconciliation CLI smoke passed'
+  exit 0
+fi
 
 [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || {
   echo "customer-email-reconciliation: a digest-pinned image is required" >&2
@@ -54,8 +73,15 @@ import base64, json, sys
 args = json.loads(base64.b64decode(sys.argv[1], validate=True))
 if not isinstance(args, list) or not args or not all(isinstance(v, str) for v in args):
     raise SystemExit('invalid argument array')
-if '--dispatch-id' in args or not any(v == '--fact-id' for v in args):
-    raise SystemExit('FACT IDs are required and dispatch IDs are forbidden')
+is_apply = '--apply' in args
+has_fact = '--fact-id' in args
+has_manifest = '--manifest' in args
+if '--dispatch-id' in args:
+    raise SystemExit('dispatch IDs are forbidden')
+if is_apply and (has_fact or not has_manifest):
+    raise SystemExit('apply requires a manifest and forbids FACT IDs')
+if not is_apply and (not has_fact or has_manifest):
+    raise SystemExit('dry-run requires FACT IDs and forbids a manifest')
 for value in args:
     if '\0' in value or '\n' in value or '\r' in value:
         raise SystemExit('invalid control character in argument')
