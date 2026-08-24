@@ -38,6 +38,7 @@ on:
         default: false
 
 permissions:
+  actions: read
   contents: read
   packages: write
   id-token: write
@@ -93,6 +94,22 @@ jobs:
       - name: Capture source SHA
         id: source
         run: echo "sha=$(git rev-parse --short=40 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful main CI for exact source SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          count="$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f branch=main \
+            -f event=push \
+            -f status=success \
+            -f head_sha="$SOURCE_SHA" \
+            -f per_page=1 \
+            --jq '.total_count')"
+          test "$count" -gt 0
 
       - name: Resolve DSV migration approval evidence
         id: migration

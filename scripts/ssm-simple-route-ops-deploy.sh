@@ -540,9 +540,10 @@ RETENTION_RUNNER_B64="$(base64 < scripts/run-driver-event-attempt-retention.sh |
 RETENTION_INSTALLER_B64="$(base64 < scripts/install-driver-event-attempt-retention.sh | tr -d '\n')"
 RETENTION_SERVICE_B64="$(base64 < infra/systemd/clever-driver-event-attempt-retention.service | tr -d '\n')"
 RETENTION_TIMER_B64="$(base64 < infra/systemd/clever-driver-event-attempt-retention.timer | tr -d '\n')"
-if ! (cd apps/delivery-api && npm test -- driver-proof-media-read-inventory.test.ts dsv-v1-read-query.service.test.ts >/dev/null); then
-  fail 'proof media READY-filter compatibility contract failed'
-fi
+test -f apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts \
+  || fail 'missing proof media READY-filter inventory contract'
+test -f apps/delivery-api/tests/dsv-v1-read-query.service.test.ts \
+  || fail 'missing DSV READY-filter contract'
 PROOF_READY_FILTER_CONTRACT_SHA="$(shasum -a 256 apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts apps/delivery-api/tests/dsv-v1-read-query.service.test.ts | shasum -a 256 | awk '{print $1}')"
 export AWS_REGION APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA PROOF_READY_FILTER_CONTRACT_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 FIREBASE_CREDENTIALS_PARAM UVIS_ENV_PARAM COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64 RETENTION_RUNNER_B64 RETENTION_INSTALLER_B64 RETENTION_SERVICE_B64 RETENTION_TIMER_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"

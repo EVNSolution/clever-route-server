@@ -223,6 +223,7 @@ jobs:
           tests/driver-route-access.repository.test.ts
           tests/driver-route-access.routes.test.ts
           tests/driver-proof-media.repository.test.ts
+          tests/driver-proof-media-read-inventory.test.ts
           tests/driver-self-service.repository.test.ts
           tests/geocoding.service.test.ts
           tests/osrm-route-geometry.client.test.ts
@@ -231,6 +232,7 @@ jobs:
           tests/route-plan.service.test.ts
           tests/route-scope-config.test.ts
           tests/prisma-schema.test.ts
+          tests/dsv-v1-read-query.service.test.ts
       - name: Build delivery API
         run: npm --prefix apps/delivery-api run build
       - name: Compose config validation with image placeholders
