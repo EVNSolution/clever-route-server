@@ -5,19 +5,22 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 params_path="$(DSV_MIGRATION_APPROVED=1 DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333 DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444 DSV_PRODUCTION_BASELINE_APPROVED=1 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555 ROUTE_OPS_UVIS_ENV_PARAM=/clever/route-ops/uvis/runtime-env ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
+proof_ready_contract_sha="$(shasum -a 256 apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts apps/delivery-api/tests/dsv-v1-read-query.service.test.ts | shasum -a 256 | awk '{print $1}')"
 cleanup() { rm -f "$params_path"; }
 trap cleanup EXIT
 
-python3 - "$params_path" <<'PY'
+python3 - "$params_path" "$proof_ready_contract_sha" <<'PY'
 import json
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
+proof_ready_contract_sha = sys.argv[2]
 payload = json.loads(path.read_text())
 command = payload['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
 workflow = pathlib.Path('.github/workflows/route-ops-simple-deploy.yml').read_text()
+ci_workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
 web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 compose = pathlib.Path('infra/compose/docker-compose.prod.yml').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
@@ -69,6 +72,12 @@ checks = {
     'retention_install_failure_restores_previous_runtime': 'if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=' in command and '.deploy/install-driver-event-attempt-retention.sh; then' in command and 'cp .deploy/simple-rollback-image.env .deploy/current-image.env' in command and 'rollback_retention_runtime || true' in command and command.index('rollback_retention_runtime || true', command.index('if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=')) < command.index('rollback_delivery_api || true', command.index('if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=')),
     'retention_rollback_restores_or_removes_candidate_units': 'retention-rollback/service.present' in command and 'rm -f /etc/systemd/system/clever-driver-event-attempt-retention.service' in command and 'systemctl disable --now clever-driver-event-attempt-retention.timer' in command,
     'proof_reservation_rollout_requires_compatible_rollback': 'DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE=$([ -n "$PROOF_READY_FILTER_CONTRACT_SHA" ] && echo true || echo false)' in command and 'DRIVER_PROOF_MEDIA_READY_FILTER_CONTRACT_SHA=$PROOF_READY_FILTER_CONTRACT_SHA' in command and 'proof media reservation rollout blocked: rollback image does not advertise READY-only reads' in command,
+    'proof_ready_contract_sha_rendered': f'PROOF_READY_FILTER_CONTRACT_SHA={proof_ready_contract_sha}' in command,
+    'proof_ready_contract_hash_needs_no_node_dependencies': 'shasum -a 256 apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts apps/delivery-api/tests/dsv-v1-read-query.service.test.ts' in wrapper and 'npm test -- driver-proof-media-read-inventory.test.ts' not in wrapper,
+    'main_ci_runs_proof_ready_contracts': 'tests/driver-proof-media-read-inventory.test.ts' in ci_workflow and 'tests/dsv-v1-read-query.service.test.ts' in ci_workflow,
+    'workflow_requires_exact_successful_main_ci': 'actions: read' in workflow and 'actions/workflows/ci.yml/runs' in workflow and '-f branch=main' in workflow and '-f event=push' in workflow and '-f status=success' in workflow and '-f head_sha="$SOURCE_SHA"' in workflow and 'GH_TOKEN: ${{ github.token }}' in workflow and 'test "$count" -gt 0' in workflow,
+    'workflow_ci_gate_precedes_aws': workflow.index('Require successful main CI for exact source SHA') < workflow.index('Configure AWS credentials through OIDC'),
+    'workflow_does_not_reinstall_for_deploy': 'npm ci' not in workflow and 'npm install' not in workflow,
     'retention_candidate_is_staged_until_post_health_install': '.deploy/candidate-retention/run-driver-event-attempt-retention.sh' in command and 'CLEVER_ROUTE_RETENTION_RUNNER_SOURCE="$APP_DIR/.deploy/candidate-retention/run-driver-event-attempt-retention.sh"' in command and command.index('up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api') < command.index('CLEVER_ROUTE_RETENTION_RUNNER_SOURCE='),
     'static_missing_current_guard': 'HAD_CURRENT_IMAGE_ENV=0' in wrapper and "CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE=''" in wrapper and "echo 'missing-current'" in wrapper,
     'static_non_digest_is_conservative': 'is_digest_ref()' in wrapper and "echo 'non-digest-ref'" in wrapper,

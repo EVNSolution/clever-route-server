@@ -10,6 +10,11 @@ function check(name, files, expected) {
   }
 }
 
+function deliveryApiJobRunsOnMainPush(files) {
+  const result = classifyRouteOpsChanges(files);
+  return (result.api_changed && result.critical_changed) || result.full_required;
+}
+
 check('web-only UI change', ['apps/route-ops-web/src/pages/RoutesPage.tsx', 'apps/route-ops-web/src/styles.css'], {
   web_changed: true,
   api_changed: false,
@@ -195,6 +200,26 @@ check('driver proof media scripts are critical with broad API web artifact', ['a
   web_artifact_required: true,
   api_test_profile: 'route_ops',
 });
+
+for (const contractPath of [
+  'apps/delivery-api/src/modules/driver/driver-proof-media.repository.ts',
+  'apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts',
+  'apps/delivery-api/src/modules/dsv/dsv-v1-read-query.service.ts',
+  'apps/delivery-api/tests/dsv-v1-read-query.service.test.ts',
+]) {
+  check(`proof READY contract path is critical: ${contractPath}`, [contractPath], {
+    api_changed: true,
+    critical_changed: true,
+    full_required: false,
+    web_artifact_required: true,
+    api_test_profile: 'route_ops',
+  });
+  assert.equal(
+    deliveryApiJobRunsOnMainPush([contractPath]),
+    true,
+    `Delivery API CI job must run when ${contractPath} changes`,
+  );
+}
 
 check('shopify auth/session verifier is critical', ['apps/delivery-api/src/modules/shopify/session-token-verifier.ts', 'apps/delivery-api/tests/shopify-session-token-verifier.test.ts'], {
   api_changed: true,
