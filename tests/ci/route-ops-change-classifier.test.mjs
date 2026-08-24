@@ -243,12 +243,16 @@ for (const contractPath of [
 for (const contractPath of [
   'apps/delivery-api/package.json',
   'apps/delivery-api/Dockerfile',
+  'apps/delivery-api/tsconfig.build.json',
   'apps/delivery-api/src/scripts/cleanup-driver-event-attempts.ts',
   'apps/delivery-api/src/scripts/cleanup-shopify-webhook-events.ts',
   'apps/delivery-api/src/scripts/cleanup-driver-proof-media.ts',
   'apps/delivery-api/tests/package-scripts.test.ts',
   'apps/delivery-api/tests/deploy/driver-event-attempt-retention-schedule.test.sh',
   'scripts/run-driver-event-attempt-retention.sh',
+  'scripts/install-driver-event-attempt-retention.sh',
+  'infra/systemd/clever-driver-event-attempt-retention.service',
+  'infra/systemd/clever-driver-event-attempt-retention.timer',
   'tests/deploy/route-ops-retention-runtime.test.sh',
 ]) {
   check(`retention runtime contract triggers image and release checks: ${contractPath}`, [contractPath], {
