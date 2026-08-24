@@ -235,6 +235,15 @@ jobs:
           tests/route-scope-config.test.ts
           tests/prisma-schema.test.ts
           tests/dsv-v1-read-query.service.test.ts
+      - name: Retention runtime tests
+        run: >
+          npm --prefix apps/delivery-api run test --
+          tests/driver-event-attempt-retention.test.ts
+          tests/route-operational-evidence-retention.test.ts
+          tests/shopify-webhook-retention.test.ts
+          tests/driver-proof-media.cleanup.test.ts
+          tests/package-scripts.test.ts
+          tests/driver-event-attempt-retention-script.test.ts
       - name: Build delivery API
         run: npm --prefix apps/delivery-api run build
       - name: Compose config validation with image placeholders

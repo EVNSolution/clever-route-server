@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { classifyRouteOpsChanges } from '../../scripts/ci/route-ops-change-classifier.mjs';
 
 function check(name, files, expected) {
@@ -248,6 +249,11 @@ for (const contractPath of [
   'apps/delivery-api/src/scripts/cleanup-shopify-webhook-events.ts',
   'apps/delivery-api/src/scripts/cleanup-driver-proof-media.ts',
   'apps/delivery-api/tests/package-scripts.test.ts',
+  'apps/delivery-api/tests/driver-event-attempt-retention-script.test.ts',
+  'apps/delivery-api/tests/driver-event-attempt-retention.test.ts',
+  'apps/delivery-api/tests/route-operational-evidence-retention.test.ts',
+  'apps/delivery-api/tests/shopify-webhook-retention.test.ts',
+  'apps/delivery-api/tests/driver-proof-media.cleanup.test.ts',
   'apps/delivery-api/tests/deploy/driver-event-attempt-retention-schedule.test.sh',
   'scripts/run-driver-event-attempt-retention.sh',
   'scripts/install-driver-event-attempt-retention.sh',
@@ -271,6 +277,26 @@ for (const contractPath of [
       `Delivery API build and tests must run when ${contractPath} changes`,
     );
   }
+}
+
+const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+const retentionStep = ciWorkflow.match(
+  /- name: Retention runtime tests\n(?<body>[\s\S]*?)(?=\n\s+- name: Build delivery API)/u,
+);
+assert.ok(retentionStep?.groups?.body, 'CI must define a dedicated retention runtime test step');
+const retentionStepTokens = retentionStep.groups.body.trim().split(/\s+/u);
+for (const testPath of [
+  'tests/driver-event-attempt-retention.test.ts',
+  'tests/route-operational-evidence-retention.test.ts',
+  'tests/shopify-webhook-retention.test.ts',
+  'tests/driver-proof-media.cleanup.test.ts',
+  'tests/package-scripts.test.ts',
+  'tests/driver-event-attempt-retention-script.test.ts',
+]) {
+  assert.ok(
+    retentionStepTokens.includes(testPath),
+    `Retention runtime CI step must run ${testPath}`,
+  );
 }
 
 check('shopify auth/session verifier is critical', ['apps/delivery-api/src/modules/shopify/session-token-verifier.ts', 'apps/delivery-api/tests/shopify-session-token-verifier.test.ts'], {
