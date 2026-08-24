@@ -10,8 +10,12 @@ describe('shop privacy database invariant migration', () => {
   test('serializes canonical Shop and tombstone identities across migration and writes', async () => {
     const sql = await readFile(migrationPath, 'utf8');
 
+    expect(sql).toContain("SET LOCAL lock_timeout = '10s'");
     expect(sql).toContain('LOCK TABLE "shops" IN SHARE ROW EXCLUSIVE MODE');
     expect(sql).toContain('LOCK TABLE "shopify_shop_redaction_tombstones" IN SHARE ROW EXCLUSIVE MODE');
+    expect(sql.indexOf('LOCK TABLE "shopify_shop_redaction_tombstones"')).toBeLessThan(
+      sql.indexOf('LOCK TABLE "shops"')
+    );
     expect(sql).toContain('CREATE OR REPLACE FUNCTION "canonical_shop_privacy_domain"');
     expect(sql).toContain('CREATE OR REPLACE FUNCTION "lock_shop_privacy_identity"');
     expect(sql).toContain('pg_advisory_xact_lock');

@@ -301,6 +301,42 @@ describeDatabase('Shopify order webhook PostgreSQL durability', () => {
       .rejects.toThrow('Shop write blocked by active privacy tombstone');
   });
 
+  test('keeps unchanged Release 1 token repository paths compatible after the trigger migration', async () => {
+    const prisma = createClient();
+    const tokens = new PrismaShopTokenRepository(prisma);
+    const webhooks = new PrismaShopifyWebhookEventRepository(prisma);
+    const normalDomain = uniqueShopDomain('release1-normal-install');
+    const reinstallDomain = uniqueShopDomain('release1-verified-reinstall');
+    const reinstallAt = new Date('2030-01-01T02:00:00.000Z');
+
+    await expect(tokens.upsertShopToken({
+      ...tokenInput(normalDomain),
+      installedAt: new Date('2026-08-25T01:00:00.000Z')
+    })).resolves.toMatchObject({ shopDomain: normalDomain });
+
+    await prisma.shopifyShopRedactionTombstone.create({
+      data: {
+        appId: 'clever',
+        complianceWebhookId: randomUUID(),
+        redactedAt: new Date('2029-01-01T00:00:00.000Z'),
+        shopDomain: reinstallDomain
+      }
+    });
+    await expect(tokens.upsertShopToken({
+      ...tokenInput(reinstallDomain),
+      installedAt: reinstallAt
+    })).resolves.toMatchObject({ shopDomain: reinstallDomain });
+    expect(await prisma.shopifyShopRedactionTombstone.findUniqueOrThrow({
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: reinstallDomain } }
+    })).toMatchObject({ reinstalledAt: reinstallAt });
+
+    const delayedWebhookId = randomUUID();
+    await expect(webhooks.recordWebhook({
+      ...webhookInput({ shopDomain: reinstallDomain, webhookId: delayedWebhookId, payload: { id: 6199 } }),
+      triggeredAt: new Date('2029-12-31T23:59:00.000Z')
+    })).resolves.toEqual({ duplicate: true, status: 'IGNORED', webhookId: delayedWebhookId });
+  });
+
   test('preserves redaction receipts across reinstall and fences stale refresh and prior-install webhooks', async () => {
     const prisma = createClient();
     const webhooks = new PrismaShopifyWebhookEventRepository(prisma);

@@ -1,5 +1,7 @@
-LOCK TABLE "shops" IN SHARE ROW EXCLUSIVE MODE;
+SET LOCAL lock_timeout = '10s';
+
 LOCK TABLE "shopify_shop_redaction_tombstones" IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE "shops" IN SHARE ROW EXCLUSIVE MODE;
 
 CREATE OR REPLACE FUNCTION "canonical_shop_privacy_domain"(value TEXT)
 RETURNS TEXT

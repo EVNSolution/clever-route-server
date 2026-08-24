@@ -102,7 +102,7 @@ describeDatabase('shop privacy database invariant', () => {
     expect(overlap.rows[0]?.count).toBe(0);
   });
 
-  test('locks both tables while installing the migration so queued writes cannot cross the gap', async () => {
+  test('fails migration closed when a raw write crosses before both installation locks are held', async () => {
     const schema = await createIsolatedSchema();
     const blocker = await connect(schema);
     const migrator = await connect(schema);
@@ -119,15 +119,48 @@ describeDatabase('shop privacy database invariant', () => {
     await waitForLock(observer, migratorPid);
 
     await writer.query('BEGIN');
-    const writerPid = Number((await writer.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid);
-    const queuedWrite = writer.query(`INSERT INTO shops (id, "appId", "shopDomain")
+    await writer.query(`INSERT INTO shops (id, "appId", "shopDomain")
       VALUES ($1, 'clever', 'INSTALL-GAP.myshopify.com/')`, [randomUUID()]);
-    await waitForLock(observer, writerPid);
+    await writer.query('COMMIT');
 
     await blocker.query('COMMIT');
+    await expect(migration)
+      .rejects.toThrow('Cannot enforce Shop privacy invariant while an active tombstone has a Shop row');
+  });
+
+  test('takes migration table locks in Release 1 tombstone-then-Shop order without deadlock', async () => {
+    const schema = await createIsolatedSchema();
+    const writer = await connect(schema);
+    const migrator = await connect(schema);
+    const observer = await connect(schema);
+    const shopDomain = 'migration-lock-order.myshopify.com';
+
+    await writer.query(`INSERT INTO shops (id, "appId", "shopDomain")
+      VALUES ($1, 'clever', $2)`, [randomUUID(), shopDomain]);
+    await writer.query(`INSERT INTO shopify_shop_redaction_tombstones
+      (id, "appId", "shopDomain", "reinstalledAt") VALUES ($1, 'clever', $2, now())`,
+    [randomUUID(), shopDomain]);
+
+    await writer.query('BEGIN');
+    await writer.query(`UPDATE shopify_shop_redaction_tombstones SET "reinstalledAt" = NULL
+      WHERE "shopDomain" = $1`, [shopDomain]);
+
+    const migratorPid = Number((await migrator.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]?.pid);
+    const migration = installMigration(migrator);
+    await waitForLock(observer, migratorPid);
+
+    await writer.query("SET LOCAL statement_timeout = '750ms'");
+    let deleteError: unknown;
+    try {
+      await writer.query(`DELETE FROM shops WHERE "shopDomain" = $1`, [shopDomain]);
+      await writer.query('COMMIT');
+    } catch (error) {
+      deleteError = error;
+      await writer.query('ROLLBACK');
+    }
     await migration;
-    await queuedWrite;
-    await expect(writer.query('COMMIT')).rejects.toThrow('Shop write blocked by active privacy tombstone');
+
+    expect(deleteError).toBeUndefined();
   });
 
   test('fails populated migration closed on a canonical pre-existing overlap', async () => {
