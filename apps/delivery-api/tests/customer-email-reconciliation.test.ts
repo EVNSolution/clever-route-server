@@ -15,11 +15,13 @@ import {
 
 const now = new Date('2026-08-25T08:00:00.000Z');
 const scope = { appId: 'clever', shopId: '81000000-0000-4000-8000-000000000001' };
+const decision = { changeControlRef: 'EVNSolution/clever-change-control#265', reasonCode: 'HISTORICAL_DO_NOT_SEND' };
 
 describe('customer email reconciliation', () => {
   test('creates a seven-row PII-free dry-run manifest without mutation', async () => {
     const store = new InMemoryReconciliationStore(scope, sevenFacts());
     const result = await service(store).dryRun({
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       scope,
       selections: sevenFacts().map(({ id, kind }) => ({ id, kind }))
@@ -34,6 +36,7 @@ describe('customer email reconciliation', () => {
   test('refuses a manifest when a selected row changed after review', async () => {
     const store = new InMemoryReconciliationStore(scope, sevenFacts().slice(0, 1));
     const dryRun = await service(store).dryRun({
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       scope,
       selections: [{ id: factId(1), kind: 'FACT' }]
@@ -42,6 +45,7 @@ describe('customer email reconciliation', () => {
 
     await expect(service(store).apply({
       actor: 'ops-cc265',
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: scope,
       manifest: dryRun.manifest,
@@ -64,6 +68,7 @@ describe('customer email reconciliation', () => {
     }]);
 
     await expect(service(store).dryRun({
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       scope,
       selections: [{ id: factId(1), kind: 'FACT' }]
@@ -74,12 +79,14 @@ describe('customer email reconciliation', () => {
     const store = new InMemoryReconciliationStore(scope, sevenFacts().slice(0, 1));
     const reconciliation = service(store);
     const dryRun = await reconciliation.dryRun({
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       scope,
       selections: [{ id: factId(1), kind: 'FACT' }]
     });
     const input: Parameters<CustomerEmailReconciliationService['apply']>[0] = {
       actor: 'ops-cc265',
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: scope,
       manifest: dryRun.manifest,
@@ -98,12 +105,14 @@ describe('customer email reconciliation', () => {
     const store = new InMemoryReconciliationStore(scope, sevenFacts().slice(0, 1));
     const reconciliation = service(store);
     const dryRun = await reconciliation.dryRun({
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       scope,
       selections: [{ id: factId(1), kind: 'FACT' }]
     });
     await expect(reconciliation.apply({
       actor: 'operator@example.com',
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: scope,
       manifest: dryRun.manifest,
@@ -111,6 +120,7 @@ describe('customer email reconciliation', () => {
     })).rejects.toMatchObject({ code: 'ACTOR_INVALID' });
     await expect(reconciliation.apply({
       actor: 'ops-cc265',
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: { ...scope, shopId: '81000000-0000-4000-8000-000000000002' },
       manifest: dryRun.manifest,
@@ -118,11 +128,22 @@ describe('customer email reconciliation', () => {
     })).rejects.toMatchObject({ code: 'WRONG_SCOPE' });
     await expect(reconciliation.apply({
       actor: 'ops-cc265',
+      ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: scope,
       manifest: dryRun.manifest,
       reviewedManifestSha256: '0'.repeat(64)
     })).rejects.toMatchObject({ code: 'REVIEWED_MANIFEST_SHA256_MISMATCH' });
+  });
+
+  test('refuses batches above the guarded fact-only limit before querying storage', async () => {
+    const store = new InMemoryReconciliationStore(scope, []);
+    await expect(service(store).dryRun({
+      ...decision,
+      disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
+      scope,
+      selections: Array.from({ length: 101 }, (_, index) => ({ id: factId(index + 1), kind: 'FACT' }))
+    })).rejects.toMatchObject({ code: 'BATCH_LIMIT_EXCEEDED' });
   });
 });
 

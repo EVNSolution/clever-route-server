@@ -436,6 +436,8 @@ model Shop {
   orderMessages                        OrderMessage[]
   customerEmailManualDispatches        CustomerEmailManualDispatch[]
   customerEmailManualRecipients        CustomerEmailManualDispatchRecipient[]
+  customerEmailOperatorReconciliations CustomerEmailOperatorReconciliation[]
+  customerEmailReconciliationTombstones CustomerEmailReconciliationTombstone[]
   adminRouteStopActionAudits           AdminRouteStopActionAudit[]
   dsvTransportConditions               DsvTransportCondition[]
   dsvDispatchImports                   DsvDispatchImport[]

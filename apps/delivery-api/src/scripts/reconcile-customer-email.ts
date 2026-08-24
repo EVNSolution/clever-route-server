@@ -21,22 +21,25 @@ try {
     const manifest = parseCustomerEmailReconciliationManifest(readManifestPayload(manifestDocument));
     const result = await service.apply({
       actor: required(flags.actor, 'actor'),
+      changeControlRef: required(flags.changeControlRef, 'change-control-ref'),
       disposition: readDisposition(required(flags.disposition, 'disposition')),
       expectedScope: {
         appId: required(flags.appId, 'app-id'),
         shopId: required(flags.shopId, 'shop-id')
       },
       manifest,
+      reasonCode: required(flags.reasonCode, 'reason-code'),
       reviewedManifestSha256: required(flags.reviewedManifestSha256, 'reviewed-manifest-sha256')
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     const selections: CustomerEmailReconciliationSelection[] = [
-      ...flags.factIds.map((id) => ({ id, kind: 'FACT' as const })),
-      ...flags.dispatchIds.map((id) => ({ id, kind: 'DISPATCH' as const }))
+      ...flags.factIds.map((id) => ({ id, kind: 'FACT' as const }))
     ];
     const result = await service.dryRun({
+      changeControlRef: required(flags.changeControlRef, 'change-control-ref'),
       disposition: readDisposition(required(flags.disposition, 'disposition')),
+      reasonCode: required(flags.reasonCode, 'reason-code'),
       scope: {
         appId: required(flags.appId, 'app-id'),
         shopId: required(flags.shopId, 'shop-id')
@@ -59,16 +62,17 @@ type ParsedFlags = {
   actor?: string;
   appId?: string;
   apply: boolean;
-  dispatchIds: string[];
+  changeControlRef?: string;
   disposition?: string;
   factIds: string[];
   manifestPath?: string;
+  reasonCode?: string;
   reviewedManifestSha256?: string;
   shopId?: string;
 };
 
 function parseFlags(args: string[]): ParsedFlags {
-  const flags: ParsedFlags = { apply: false, dispatchIds: [], factIds: [] };
+  const flags: ParsedFlags = { apply: false, factIds: [] };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     if (flag === '--apply') {
@@ -81,16 +85,17 @@ function parseFlags(args: string[]): ParsedFlags {
     switch (flag) {
       case '--actor': flags.actor = value; break;
       case '--app-id': flags.appId = value; break;
-      case '--dispatch-id': flags.dispatchIds.push(value); break;
+      case '--change-control-ref': flags.changeControlRef = value; break;
       case '--disposition': flags.disposition = value; break;
       case '--fact-id': flags.factIds.push(value); break;
       case '--manifest': flags.manifestPath = value; break;
+      case '--reason-code': flags.reasonCode = value; break;
       case '--reviewed-manifest-sha256': flags.reviewedManifestSha256 = value; break;
       case '--shop-id': flags.shopId = value; break;
       default: throw new Error(`Unknown flag: ${flag ?? ''}`);
     }
   }
-  if (flags.apply && (flags.factIds.length > 0 || flags.dispatchIds.length > 0)) {
+  if (flags.apply && flags.factIds.length > 0) {
     throw new Error('Apply selections must come from the reviewed manifest only.');
   }
   if (!flags.apply && (flags.actor !== undefined || flags.manifestPath !== undefined || flags.reviewedManifestSha256 !== undefined)) {

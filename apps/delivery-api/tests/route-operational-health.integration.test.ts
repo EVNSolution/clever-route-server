@@ -219,7 +219,7 @@ describe('route operational health PostgreSQL contract', () => {
       await attempts.settle({ attemptId: automatic.attemptId, completedAt: new Date(), errorCode: 'TEMPORARY_PROVIDER_FAILURE', outcome: 'RETRYABLE_FAILURE' });
       const automaticStarted = await attempts.startAutomatic({ attemptNumber: 2, factId: fact.id, provider: 'fixture', startedAt: new Date() });
       await Promise.all(recipients.map(({ id }) => attempts.startManual({ manualDispatchRecipientId: id, provider: 'brevo', shopId: fixture.shopId, startedAt: new Date() })));
-      expect(await prisma.customerDeliveryNotificationAttempt.count()).toBe(4);
+      expect(await prisma.customerDeliveryNotificationAttempt.count({ where: { shopId: fixture.shopId } })).toBe(4);
       const other = await seed(prisma, '04');
       const otherOrder = await prisma.order.create({ data: { name: '#OTHER', rawPayload: {}, shopId: other.shopId, shopifyOrderGid: `gid://shopify/Order/${other.shopId}`, sourceOrderId: 'other-order', sourcePlatform: 'SHOPIFY' } });
       await prisma.customerRouteNotificationFact.create({ data: { orderId: otherOrder.id, shopId: other.shopId, source: 'TEST', status: 'DEAD' } });

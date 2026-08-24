@@ -6,12 +6,15 @@ import {
   CustomerEmailReconciliationService,
   PrismaCustomerEmailReconciliationStore
 } from '../src/modules/customer-email/customer-email-reconciliation.js';
+import { PrismaEmailRuntimeHealthService } from '../src/modules/customer-email/email-runtime-health.service.js';
+import { cleanupRouteOperationalEvidence } from '../src/modules/operations/route-operational-evidence-retention.js';
 
 const databaseUrl = process.env.EMAIL_RECONCILIATION_DATABASE_URL ?? '';
 const live = databaseUrl === '' ? test.skip : test;
 const now = new Date('2026-08-25T08:00:00.000Z');
 const shopId = '91000000-0000-4000-8000-000000000070';
 const otherShopId = '91000000-0000-4000-8000-000000000071';
+const decision = { changeControlRef: 'EVNSolution/clever-change-control#265', reasonCode: 'HISTORICAL_DO_NOT_SEND' };
 
 describe('customer email reconciliation PostgreSQL contract', () => {
   live('keeps dry-run mutation-free, refuses unsafe rows, and applies one PII-free cancellation idempotently', async () => {
@@ -26,6 +29,7 @@ describe('customer email reconciliation PostgreSQL contract', () => {
         where: { id: { in: fixture.eligibleFactIds } }
       });
       const dryRun = await service.dryRun({
+        ...decision,
         disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
         scope: { appId: 'clever', shopId },
         selections: sevenSelections
@@ -42,6 +46,7 @@ describe('customer email reconciliation PostgreSQL contract', () => {
       expect(JSON.stringify(dryRun)).not.toMatch(/customer-70@invalid\.test|private delivery note|recipient|subject|body/iu);
 
       const oneItemManifest = await service.dryRun({
+        ...decision,
         disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
         scope: { appId: 'clever', shopId },
         selections: [sevenSelections[0]!]
@@ -49,62 +54,33 @@ describe('customer email reconciliation PostgreSQL contract', () => {
       const firstEligibleFactId = fixture.eligibleFactIds[0]!;
       const applyInput: Parameters<CustomerEmailReconciliationService['apply']>[0] = {
         actor: 'ops-cc265',
+        ...decision,
         disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
         expectedScope: { appId: 'clever', shopId },
         manifest: oneItemManifest.manifest,
         reviewedManifestSha256: oneItemManifest.manifestSha256
       };
       await expect(service.apply(applyInput)).resolves.toMatchObject({ appliedItems: 1, alreadyAppliedItems: 0, auditRows: 1 });
-      const auditAfterFirstApply = await prisma.customerDeliveryNotificationAttempt.findFirstOrThrow({
-        where: { factId: firstEligibleFactId }
-      });
+      const auditAfterFirstApply = await prisma.customerEmailOperatorReconciliation.findFirstOrThrow({ where: { targetId: firstEligibleFactId } });
       await expect(service.apply(applyInput)).resolves.toMatchObject({ appliedItems: 0, alreadyAppliedItems: 1, auditRows: 0 });
-      expect(await prisma.customerDeliveryNotificationAttempt.findMany({ where: { factId: firstEligibleFactId } }))
-        .toEqual([auditAfterFirstApply]);
+      expect(await prisma.customerEmailOperatorReconciliation.findMany({ where: { targetId: firstEligibleFactId } })).toEqual([auditAfterFirstApply]);
+      expect(await prisma.customerDeliveryNotificationAttempt.count({ where: { factId: firstEligibleFactId } })).toBe(0);
       expect(await prisma.customerRouteNotificationFact.findUniqueOrThrow({ where: { id: firstEligibleFactId } }))
-        .toMatchObject({ errorCode: 'OPERATOR_DO_NOT_SEND', recipientEmailSnapshot: null, status: 'DEAD' });
+        .toMatchObject({ errorCode: 'OPERATOR_DO_NOT_SEND', metadata: null, provider: null, recipientEmailSnapshot: null, status: 'DEAD' });
       expect(auditAfterFirstApply).toMatchObject({
-        attemptNumber: 1,
-        errorCode: 'OPERATOR_DO_NOT_SEND',
-        outcome: 'TERMINAL_FAILURE',
-        provider: 'operator-reconciliation/ops-cc265'
+        actor: 'ops-cc265',
+        disposition: 'DO_NOT_SEND',
+        targetKind: 'FACT'
       });
-      expect(JSON.stringify({
-        correlationId: auditAfterFirstApply.correlationId,
-        errorCode: auditAfterFirstApply.errorCode,
-        outcome: auditAfterFirstApply.outcome,
-        provider: auditAfterFirstApply.provider
-      })).not.toMatch(/customer-70@invalid\.test|private delivery note|recipient|subject|body/iu);
-
-      const dispatchManifest = await service.dryRun({
-        disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
-        scope: { appId: 'clever', shopId },
-        selections: [{ id: fixture.dispatchId, kind: 'DISPATCH' }]
-      });
-      const dispatchApplyInput: Parameters<CustomerEmailReconciliationService['apply']>[0] = {
-        ...applyInput,
-        manifest: dispatchManifest.manifest,
-        reviewedManifestSha256: dispatchManifest.manifestSha256
-      };
-      await expect(service.apply(dispatchApplyInput)).resolves.toMatchObject({ appliedItems: 1, alreadyAppliedItems: 0, auditRows: 2 });
-      await expect(service.apply(dispatchApplyInput)).resolves.toMatchObject({ appliedItems: 0, alreadyAppliedItems: 1, auditRows: 0 });
-      const reconciledRecipients = await prisma.customerEmailManualDispatchRecipient.findMany({
-        orderBy: { id: 'asc' },
-        where: { dispatchId: fixture.dispatchId }
-      });
-      expect(reconciledRecipients).toMatchObject(fixture.dispatchRecipientIds.sort().map((id) => ({
-        errorCode: 'OPERATOR_DO_NOT_SEND',
-        id,
-        recipientEmail: null,
-        renderedBody: null,
-        renderedSubject: null,
-        status: 'SKIPPED'
-      })));
-      expect(await prisma.customerDeliveryNotificationAttempt.count({
-        where: { manualDispatchRecipientId: { in: fixture.dispatchRecipientIds } }
-      })).toBe(2);
+      expect(JSON.stringify(auditAfterFirstApply)).not.toMatch(/customer-70@invalid\.test|private delivery note|recipient|subject|body/iu);
+      const runtimeHealth = await new PrismaEmailRuntimeHealthService(prisma, {
+        automaticSenderConfigured: true, automaticWorkerEnabled: true, manualBrevoConfigured: true
+      }, undefined, () => now).get({ shopDomain: 'email-reconciliation-70.invalid' });
+      expect(runtimeHealth.email.outbox).toMatchObject({ deadLetter: 0, lastErrorCode: null });
+      expect(runtimeHealth.email.state, JSON.stringify(runtimeHealth.email)).toBe('HEALTHY');
 
       const stale = await service.dryRun({
+        ...decision,
         disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
         scope: { appId: 'clever', shopId },
         selections: [sevenSelections[1]!]
@@ -116,9 +92,37 @@ describe('customer email reconciliation PostgreSQL contract', () => {
         reviewedManifestSha256: stale.manifestSha256
       })).rejects.toMatchObject({ code: 'CHANGED_SINCE_MANIFEST' });
 
+      const rollbackManifest = await service.dryRun({
+        ...decision,
+        disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
+        scope: { appId: 'clever', shopId },
+        selections: [sevenSelections[3]!]
+      });
+      await prisma.$executeRawUnsafe(`
+        CREATE FUNCTION reject_reconciliation_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'fixture audit failure'; END $$;
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE TRIGGER reject_reconciliation_audit
+        BEFORE INSERT ON customer_email_operator_reconciliations
+        FOR EACH ROW EXECUTE FUNCTION reject_reconciliation_audit();
+      `);
+      await expect(service.apply({
+        ...applyInput,
+        manifest: rollbackManifest.manifest,
+        reviewedManifestSha256: rollbackManifest.manifestSha256
+      })).rejects.toBeDefined();
+      await prisma.$executeRawUnsafe('DROP TRIGGER reject_reconciliation_audit ON customer_email_operator_reconciliations');
+      await prisma.$executeRawUnsafe('DROP FUNCTION reject_reconciliation_audit()');
+      expect(await prisma.customerRouteNotificationFact.findUniqueOrThrow({ where: { id: fixture.eligibleFactIds[3]! } }))
+        .toMatchObject({ metadata: { internalNote: 'private delivery note' }, status: 'QUEUED' });
+      expect(await prisma.customerEmailReconciliationTombstone.count({ where: { targetId: fixture.eligibleFactIds[3]! } })).toBe(0);
+
       await expect(service.dryRun(inputFor(fixture.succeededFactId))).rejects.toMatchObject({ code: 'ALREADY_SUCCEEDED' });
       await expect(service.dryRun(inputFor(fixture.leasedFactId))).rejects.toMatchObject({ code: 'ACTIVELY_LEASED' });
       await expect(service.dryRun(inputFor(fixture.attemptedFactId))).rejects.toMatchObject({ code: 'ALREADY_ATTEMPTED' });
+      await expect(service.dryRun(inputFor(fixture.providerEvidenceFactId))).rejects.toMatchObject({ code: 'ALREADY_ATTEMPTED' });
+      await expect(service.dryRun(inputFor(fixture.processingEvidenceFactId))).rejects.toMatchObject({ code: 'CLAIM_EVIDENCE_PRESENT' });
       await expect(service.dryRun({
         ...inputFor(fixture.eligibleFactIds[2]!),
         scope: { appId: 'clever', shopId: otherShopId }
@@ -134,6 +138,15 @@ describe('customer email reconciliation PostgreSQL contract', () => {
       `;
       expect(attemptColumns.map(({ column_name }) => column_name))
         .not.toEqual(expect.arrayContaining(['recipient', 'recipientEmail', 'subject', 'body', 'errorMessage']));
+
+      await prisma.customerEmailOperatorReconciliation.update({
+        data: { retainedUntil: new Date('2026-08-24T00:00:00.000Z') },
+        where: { id: auditAfterFirstApply.id }
+      });
+      await expect(cleanupRouteOperationalEvidence(prisma, now)).resolves.toMatchObject({ emailReconciliationAudits: 1 });
+      expect(await prisma.customerEmailOperatorReconciliation.count({ where: { targetId: firstEligibleFactId } })).toBe(0);
+      expect(await prisma.customerEmailReconciliationTombstone.count({ where: { targetId: firstEligibleFactId } })).toBe(1);
+      await expect(service.apply(applyInput)).resolves.toMatchObject({ appliedItems: 0, alreadyAppliedItems: 1, auditRows: 0 });
     } finally {
       await prisma.$disconnect();
     }
@@ -142,6 +155,7 @@ describe('customer email reconciliation PostgreSQL contract', () => {
 
 function inputFor(id: string): Parameters<CustomerEmailReconciliationService['dryRun']>[0] {
   return {
+    ...decision,
     disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
     scope: { appId: 'clever', shopId },
     selections: [{ id, kind: 'FACT' as const }]
@@ -169,6 +183,7 @@ async function seed(prisma: PrismaClient) {
     data: eligibleFactIds.map((id) => ({
       id,
       metadata: { internalNote: 'private delivery note' },
+      occurredAt: now,
       orderId: order.id,
       recipientEmailSnapshot: 'customer-70@invalid.test',
       shopId,
@@ -179,10 +194,14 @@ async function seed(prisma: PrismaClient) {
   const succeededFactId = '92000000-0000-4000-8000-000000000020';
   const leasedFactId = '92000000-0000-4000-8000-000000000021';
   const attemptedFactId = '92000000-0000-4000-8000-000000000022';
+  const providerEvidenceFactId = '92000000-0000-4000-8000-000000000023';
+  const processingEvidenceFactId = '92000000-0000-4000-8000-000000000024';
   await prisma.customerRouteNotificationFact.createMany({ data: [
-    { id: succeededFactId, orderId: order.id, sentAt: now, shopId, source: 'TEST_RECONCILIATION', status: 'SENT' },
-    { id: leasedFactId, leaseExpiresAt: new Date(now.getTime() + 60_000), leaseToken: 'active-lease', orderId: order.id, shopId, source: 'TEST_RECONCILIATION', status: 'QUEUED' },
-    { attemptCount: 1, id: attemptedFactId, orderId: order.id, shopId, source: 'TEST_RECONCILIATION', status: 'QUEUED' }
+    { id: succeededFactId, occurredAt: now, orderId: order.id, sentAt: now, shopId, source: 'TEST_RECONCILIATION', status: 'SENT' },
+    { id: leasedFactId, leaseExpiresAt: new Date(now.getTime() + 60_000), leaseToken: 'active-lease', occurredAt: now, orderId: order.id, shopId, source: 'TEST_RECONCILIATION', status: 'QUEUED' },
+    { attemptCount: 1, id: attemptedFactId, occurredAt: now, orderId: order.id, shopId, source: 'TEST_RECONCILIATION', status: 'QUEUED' },
+    { id: providerEvidenceFactId, occurredAt: now, orderId: order.id, provider: 'historical-provider', providerMessageId: 'provider-result', shopId, source: 'TEST_RECONCILIATION', status: 'QUEUED' },
+    { id: processingEvidenceFactId, occurredAt: now, orderId: order.id, processingStartedAt: new Date('2026-08-24T08:00:00.000Z'), shopId, source: 'TEST_RECONCILIATION', status: 'QUEUED' }
   ] });
   const preexistingAttempt = await prisma.customerDeliveryNotificationAttempt.create({
     data: {
@@ -197,38 +216,14 @@ async function seed(prisma: PrismaClient) {
       startedAt: new Date('2026-08-24T08:00:00.000Z')
     }
   });
-  const dispatch = await prisma.customerEmailManualDispatch.create({
-    data: {
-      actor: 'fixture',
-      commandId: 'email-reconciliation-dispatch',
-      counts: {},
-      request: {},
-      routePlanId: '93000000-0000-4000-8000-000000000070',
-      shopId,
-      signal: 'READY',
-      template: {}
-    }
-  });
-  const dispatchRecipients = await Promise.all([1, 2].map((sequence) =>
-    prisma.customerEmailManualDispatchRecipient.create({
-      data: {
-        dispatchId: dispatch.id,
-        recipientEmail: `dispatch-${sequence}@invalid.test`,
-        renderedBody: 'private dispatch body',
-        renderedSubject: 'private dispatch subject',
-        routePlanId: '93000000-0000-4000-8000-000000000070',
-        shopId,
-        status: 'PENDING'
-      }
-    })));
   return {
     attemptedFactId,
-    dispatchId: dispatch.id,
-    dispatchRecipientIds: dispatchRecipients.map(({ id }) => id),
     eligibleFactIds,
     leasedFactId,
     preexistingAttempt,
     preexistingAttemptId: preexistingAttempt.id,
+    processingEvidenceFactId,
+    providerEvidenceFactId,
     succeededFactId
   };
 }

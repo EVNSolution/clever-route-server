@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 
 export const CUSTOMER_EMAIL_RECONCILIATION_SCHEMA = 'customer_email_reconciliation_manifest_v1';
 export const CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION = 'DO_NOT_SEND';
 
 export type CustomerEmailReconciliationDisposition = typeof CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION;
-export type CustomerEmailReconciliationItemKind = 'DISPATCH' | 'FACT';
+export type CustomerEmailReconciliationItemKind = 'FACT';
+export const CUSTOMER_EMAIL_RECONCILIATION_MAX_BATCH = 100;
 
 export type CustomerEmailReconciliationScope = {
   appId: string;
@@ -25,12 +26,14 @@ export type CustomerEmailReconciliationInspection = CustomerEmailReconciliationS
 };
 
 export type CustomerEmailReconciliationManifest = {
+  changeControlRef: string;
   disposition: CustomerEmailReconciliationDisposition;
   generatedAt: string;
   items: Array<CustomerEmailReconciliationSelection & {
     stateSha256: string;
     updatedAt: string;
   }>;
+  reasonCode: string;
   schema: typeof CUSTOMER_EMAIL_RECONCILIATION_SCHEMA;
   scope: CustomerEmailReconciliationScope;
 };
@@ -75,7 +78,9 @@ export class CustomerEmailReconciliationService {
   ) {}
 
   async dryRun(input: {
+    changeControlRef: string;
     disposition: CustomerEmailReconciliationDisposition;
+    reasonCode: string;
     scope: CustomerEmailReconciliationScope;
     selections: CustomerEmailReconciliationSelection[];
   }): Promise<{
@@ -85,6 +90,7 @@ export class CustomerEmailReconciliationService {
     mutationCount: 0;
   }> {
     assertDisposition(input.disposition);
+    assertDecisionBinding(input.changeControlRef, input.reasonCode);
     assertScope(input.scope);
     const selections = normalizeSelections(input.selections);
     const generatedAt = this.now();
@@ -96,9 +102,11 @@ export class CustomerEmailReconciliationService {
       }
     }
     const manifest: CustomerEmailReconciliationManifest = {
+      changeControlRef: input.changeControlRef,
       disposition: input.disposition,
       generatedAt: generatedAt.toISOString(),
       items: inspected.map(({ id, kind, stateSha256, updatedAt }) => ({ id, kind, stateSha256, updatedAt })),
+      reasonCode: input.reasonCode,
       schema: CUSTOMER_EMAIL_RECONCILIATION_SCHEMA,
       scope: input.scope
     };
@@ -112,17 +120,23 @@ export class CustomerEmailReconciliationService {
 
   async apply(input: {
     actor: string;
+    changeControlRef: string;
     disposition: CustomerEmailReconciliationDisposition;
     expectedScope: CustomerEmailReconciliationScope;
     manifest: CustomerEmailReconciliationManifest;
+    reasonCode: string;
     reviewedManifestSha256: string;
   }): Promise<CustomerEmailReconciliationApplyResult> {
     assertActor(input.actor);
+    assertDecisionBinding(input.changeControlRef, input.reasonCode);
     assertDisposition(input.disposition);
     assertScope(input.expectedScope);
     assertManifest(input.manifest);
     if (input.manifest.disposition !== input.disposition) {
       throw new CustomerEmailReconciliationRefusalError('DISPOSITION_MISMATCH');
+    }
+    if (input.manifest.changeControlRef !== input.changeControlRef || input.manifest.reasonCode !== input.reasonCode) {
+      throw new CustomerEmailReconciliationRefusalError('DECISION_BINDING_MISMATCH');
     }
     if (input.manifest.scope.appId !== input.expectedScope.appId || input.manifest.scope.shopId !== input.expectedScope.shopId) {
       throw new CustomerEmailReconciliationRefusalError('WRONG_SCOPE');
@@ -196,20 +210,14 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
           alreadyAppliedItems += 1;
           continue;
         }
-        if (item.manifestItem.kind === 'FACT') {
-          auditRows += await this.cancelFact(tx, item.manifestItem, {
-            actor: input.actor,
-            manifestSha256: input.manifestSha256,
-            now: input.now,
-            shopId: input.manifest.scope.shopId
-          });
-        } else {
-          auditRows += await this.cancelDispatch(tx, item.manifestItem, {
-            actor: input.actor,
-            manifestSha256: input.manifestSha256,
-            now: input.now
-          });
-        }
+        auditRows += await this.cancelFact(tx, item.manifestItem, {
+          actor: input.actor,
+          changeControlRef: input.manifest.changeControlRef,
+          manifestSha256: input.manifestSha256,
+          now: input.now,
+          reasonCode: input.manifest.reasonCode,
+          shopId: input.manifest.scope.shopId
+        });
         appliedItems += 1;
       }
       return {
@@ -229,9 +237,7 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
     scope: CustomerEmailReconciliationScope,
     now: Date
   ): Promise<CustomerEmailReconciliationInspection> {
-    return selection.kind === 'FACT'
-      ? this.inspectFact(prisma, selection, scope, now)
-      : this.inspectDispatch(prisma, selection, scope);
+    return this.inspectFact(prisma, selection, scope, now);
   }
 
   private async inspectFact(
@@ -244,9 +250,15 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
       select: {
         attemptCount: true,
         attempts: { select: { outcome: true } },
+        deadAt: true,
+        errorCode: true,
+        errorMessage: true,
         id: true,
         leaseExpiresAt: true,
         leaseToken: true,
+        processingStartedAt: true,
+        provider: true,
+        providerMessageId: true,
         sentAt: true,
         shop: { select: { appId: true } },
         shopId: true,
@@ -259,12 +271,20 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
     const wrongScope = fact.shopId !== scope.shopId || fact.shop.appId !== scope.appId;
     const succeeded = fact.status === 'SENT' || fact.sentAt !== null || fact.attempts.some(({ outcome }) => outcome === 'SENT');
     const activeLease = fact.leaseToken !== null && fact.leaseExpiresAt !== null && fact.leaseExpiresAt > now;
-    const attempted = fact.attemptCount > 0 || fact.attempts.length > 0;
+    const claimEvidence = fact.leaseToken !== null || fact.leaseExpiresAt !== null || fact.processingStartedAt !== null;
+    const attempted = fact.attemptCount > 0 || fact.attempts.length > 0 || fact.provider !== null
+      || fact.providerMessageId !== null || fact.errorCode !== null || fact.errorMessage !== null || fact.deadAt !== null;
     const state = {
       attemptCount: fact.attemptCount,
       attemptOutcomes: fact.attempts.map(({ outcome }) => outcome).sort(),
+      dead: fact.deadAt !== null,
+      errorCodePresent: fact.errorCode !== null,
+      errorMessagePresent: fact.errorMessage !== null,
       leaseExpiresAt: fact.leaseExpiresAt?.toISOString() ?? null,
       leasePresent: fact.leaseToken !== null,
+      processingStarted: fact.processingStartedAt !== null,
+      providerPresent: fact.provider !== null,
+      providerResultPresent: fact.providerMessageId !== null,
       sent: fact.sentAt !== null,
       status: fact.status,
       updatedAt: fact.updatedAt.toISOString()
@@ -277,83 +297,22 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
           ? 'ALREADY_SUCCEEDED'
           : activeLease
             ? 'ACTIVELY_LEASED'
-            : attempted
-              ? 'ALREADY_ATTEMPTED'
-              : fact.status !== 'QUEUED'
-                ? 'NOT_PENDING'
-                : null,
+            : claimEvidence
+              ? 'CLAIM_EVIDENCE_PRESENT'
+              : attempted
+                ? 'ALREADY_ATTEMPTED'
+                : fact.status !== 'QUEUED'
+                  ? 'NOT_PENDING'
+                  : null,
       stateSha256: sha256CanonicalJson(state),
       updatedAt: fact.updatedAt.toISOString()
-    };
-  }
-
-  private async inspectDispatch(
-    prisma: ReconciliationPrisma,
-    selection: CustomerEmailReconciliationSelection,
-    scope: CustomerEmailReconciliationScope
-  ): Promise<CustomerEmailReconciliationInspection> {
-    const dispatch = await prisma.customerEmailManualDispatch.findUnique({
-      select: {
-        id: true,
-        recipients: {
-          orderBy: { id: 'asc' },
-          select: {
-            attempts: { select: { outcome: true } },
-            errorCode: true,
-            id: true,
-            provider: true,
-            providerMessageId: true,
-            sentAt: true,
-            status: true,
-            updatedAt: true
-          }
-        },
-        shop: { select: { appId: true } },
-        shopId: true,
-        updatedAt: true
-      },
-      where: { id: selection.id }
-    });
-    if (dispatch === null) throw new CustomerEmailReconciliationRefusalError('NOT_FOUND', selection);
-    const wrongScope = dispatch.shopId !== scope.shopId || dispatch.shop.appId !== scope.appId;
-    const succeeded = dispatch.recipients.some((recipient) =>
-      recipient.status === 'SENT' || recipient.sentAt !== null || recipient.providerMessageId !== null
-      || recipient.attempts.some(({ outcome }) => outcome === 'SENT'));
-    const attempted = dispatch.recipients.some((recipient) =>
-      recipient.status === 'FAILED' || recipient.provider !== null || recipient.attempts.length > 0);
-    const pending = dispatch.recipients.length > 0 && dispatch.recipients.every(({ status }) => status === 'PENDING');
-    const state = {
-      recipients: dispatch.recipients.map((recipient) => ({
-        attemptOutcomes: recipient.attempts.map(({ outcome }) => outcome).sort(),
-        id: recipient.id,
-        providerPresent: recipient.provider !== null,
-        providerResultPresent: recipient.providerMessageId !== null,
-        sent: recipient.sentAt !== null,
-        status: recipient.status,
-        updatedAt: recipient.updatedAt.toISOString()
-      })),
-      updatedAt: dispatch.updatedAt.toISOString()
-    };
-    return {
-      ...selection,
-      eligibilityCode: wrongScope
-        ? 'WRONG_SCOPE'
-        : succeeded
-          ? 'ALREADY_SUCCEEDED'
-          : attempted
-            ? 'ALREADY_ATTEMPTED'
-            : !pending
-              ? 'NOT_PENDING'
-              : null,
-      stateSha256: sha256CanonicalJson(state),
-      updatedAt: dispatch.updatedAt.toISOString()
     };
   }
 
   private async cancelFact(
     tx: Prisma.TransactionClient,
     item: CustomerEmailReconciliationManifest['items'][number],
-    input: { actor: string; manifestSha256: string; now: Date; shopId: string }
+    input: { actor: string; changeControlRef: string; manifestSha256: string; now: Date; reasonCode: string; shopId: string }
   ): Promise<number> {
     const updated = await tx.customerRouteNotificationFact.updateMany({
       data: {
@@ -362,17 +321,25 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
         errorMessage: null,
         leaseExpiresAt: null,
         leaseToken: null,
+        metadata: Prisma.DbNull,
         nextAttemptAt: null,
         processingStartedAt: null,
-        provider: 'operator-reconciliation',
+        provider: null,
         providerMessageId: null,
         recipientEmailSnapshot: null,
         status: 'DEAD'
       },
       where: {
         attemptCount: 0,
+        deadAt: null,
+        errorCode: null,
+        errorMessage: null,
         id: item.id,
+        leaseExpiresAt: null,
         leaseToken: null,
+        processingStartedAt: null,
+        provider: null,
+        providerMessageId: null,
         sentAt: null,
         shopId: input.shopId,
         status: 'QUEUED',
@@ -380,69 +347,27 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
       }
     });
     if (updated.count !== 1) throw new CustomerEmailReconciliationRefusalError('CHANGED_SINCE_MANIFEST', item);
-    await tx.customerDeliveryNotificationAttempt.create({
+    await tx.customerEmailOperatorReconciliation.create({
       data: reconciliationAuditData({
         actor: input.actor,
-        factId: item.id,
+        changeControlRef: input.changeControlRef,
         item,
         manifestSha256: input.manifestSha256,
         now: input.now,
+        reasonCode: input.reasonCode,
+        shopId: input.shopId
+      })
+    });
+    await tx.customerEmailReconciliationTombstone.create({
+      data: reconciliationTombstoneData({
+        item,
+        changeControlRef: input.changeControlRef,
+        manifestSha256: input.manifestSha256,
+        reasonCode: input.reasonCode,
         shopId: input.shopId
       })
     });
     return 1;
-  }
-
-  private async cancelDispatch(
-    tx: Prisma.TransactionClient,
-    item: CustomerEmailReconciliationManifest['items'][number],
-    input: { actor: string; manifestSha256: string; now: Date }
-  ): Promise<number> {
-    const dispatch = await tx.customerEmailManualDispatch.findUnique({
-      select: {
-        recipients: { orderBy: { id: 'asc' }, select: { id: true, updatedAt: true } },
-        shopId: true
-      },
-      where: { id: item.id }
-    });
-    if (dispatch === null) throw new CustomerEmailReconciliationRefusalError('NOT_FOUND', item);
-    let auditRows = 0;
-    for (const recipient of dispatch.recipients) {
-      const updated = await tx.customerEmailManualDispatchRecipient.updateMany({
-        data: {
-          errorCode: 'OPERATOR_DO_NOT_SEND',
-          errorMessage: null,
-          provider: null,
-          providerMessageId: null,
-          recipientEmail: null,
-          renderedBody: null,
-          renderedSubject: null,
-          status: 'SKIPPED'
-        },
-        where: {
-          dispatchId: item.id,
-          id: recipient.id,
-          providerMessageId: null,
-          sentAt: null,
-          shopId: dispatch.shopId,
-          status: 'PENDING',
-          updatedAt: recipient.updatedAt
-        }
-      });
-      if (updated.count !== 1) throw new CustomerEmailReconciliationRefusalError('CHANGED_SINCE_MANIFEST', item);
-      await tx.customerDeliveryNotificationAttempt.create({
-        data: reconciliationAuditData({
-          actor: input.actor,
-          item,
-          manifestSha256: input.manifestSha256,
-          manualDispatchRecipientId: recipient.id,
-          now: input.now,
-          shopId: dispatch.shopId
-        })
-      });
-      auditRows += 1;
-    }
-    return auditRows;
   }
 
   private async wasAlreadyApplied(
@@ -451,57 +376,56 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
     manifestSha256: string
   ): Promise<boolean> {
     const correlationId = reconciliationCorrelationId(manifestSha256, selection);
-    if (selection.kind === 'FACT') {
-      const [fact, audit] = await Promise.all([
-        tx.customerRouteNotificationFact.findUnique({
-          select: { errorCode: true, status: true },
-          where: { id: selection.id }
-        }),
-        tx.customerDeliveryNotificationAttempt.findFirst({
-          select: { id: true },
-          where: { correlationId, errorCode: 'OPERATOR_DO_NOT_SEND', factId: selection.id, outcome: 'TERMINAL_FAILURE' }
-        })
-      ]);
-      return fact?.status === 'DEAD' && fact.errorCode === 'OPERATOR_DO_NOT_SEND' && audit !== null;
-    }
-    const dispatch = await tx.customerEmailManualDispatch.findUnique({
-      select: {
-        recipients: {
-          select: {
-            attempts: { select: { id: true }, where: { correlationId, errorCode: 'OPERATOR_DO_NOT_SEND', outcome: 'TERMINAL_FAILURE' } },
-            errorCode: true,
-            status: true
-          }
-        }
-      },
+    const tombstone = await tx.customerEmailReconciliationTombstone.findUnique({
+      select: { id: true },
+      where: { correlationId }
+    });
+    const fact = await tx.customerRouteNotificationFact.findUnique({
+      select: { errorCode: true, status: true },
       where: { id: selection.id }
     });
-    return dispatch !== null && dispatch.recipients.length > 0 && dispatch.recipients.every((recipient) =>
-      recipient.status === 'SKIPPED' && recipient.errorCode === 'OPERATOR_DO_NOT_SEND' && recipient.attempts.length === 1);
+    return fact?.status === 'DEAD' && fact.errorCode === 'OPERATOR_DO_NOT_SEND' && tombstone !== null;
   }
 }
 
 function reconciliationAuditData(input: {
   actor: string;
-  factId?: string;
+  changeControlRef: string;
   item: CustomerEmailReconciliationSelection;
   manifestSha256: string;
-  manualDispatchRecipientId?: string;
   now: Date;
+  reasonCode: string;
   shopId: string;
-}): Prisma.CustomerDeliveryNotificationAttemptUncheckedCreateInput {
+}): Prisma.CustomerEmailOperatorReconciliationUncheckedCreateInput {
   return {
-    attemptNumber: 1,
-    completedAt: input.now,
+    actor: input.actor,
+    changeControlRef: input.changeControlRef,
     correlationId: reconciliationCorrelationId(input.manifestSha256, input.item),
-    errorCode: 'OPERATOR_DO_NOT_SEND',
-    ...(input.factId === undefined ? {} : { factId: input.factId }),
-    ...(input.manualDispatchRecipientId === undefined ? {} : { manualDispatchRecipientId: input.manualDispatchRecipientId }),
-    outcome: 'TERMINAL_FAILURE',
-    provider: `operator-reconciliation/${input.actor}`,
+    disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
+    manifestSha256: input.manifestSha256,
+    reasonCode: input.reasonCode,
     retainedUntil: new Date(input.now.getTime() + 180 * 24 * 60 * 60 * 1000),
     shopId: input.shopId,
-    startedAt: input.now
+    targetId: input.item.id,
+    targetKind: input.item.kind
+  };
+}
+
+function reconciliationTombstoneData(input: {
+  changeControlRef: string;
+  item: CustomerEmailReconciliationSelection;
+  manifestSha256: string;
+  reasonCode: string;
+  shopId: string;
+}): Prisma.CustomerEmailReconciliationTombstoneUncheckedCreateInput {
+  return {
+    changeControlRef: input.changeControlRef,
+    correlationId: reconciliationCorrelationId(input.manifestSha256, input.item),
+    disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
+    manifestSha256: input.manifestSha256,
+    reasonCode: input.reasonCode,
+    shopId: input.shopId,
+    targetId: input.item.id
   };
 }
 
@@ -514,6 +438,7 @@ function reconciliationCorrelationId(
 
 export function parseCustomerEmailReconciliationManifest(value: unknown): CustomerEmailReconciliationManifest {
   if (!isRecord(value) || value.schema !== CUSTOMER_EMAIL_RECONCILIATION_SCHEMA
+    || typeof value.changeControlRef !== 'string' || typeof value.reasonCode !== 'string'
     || value.disposition !== CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION
     || typeof value.generatedAt !== 'string' || Number.isNaN(Date.parse(value.generatedAt))
     || !isRecord(value.scope) || typeof value.scope.appId !== 'string' || typeof value.scope.shopId !== 'string'
@@ -521,7 +446,7 @@ export function parseCustomerEmailReconciliationManifest(value: unknown): Custom
     throw new CustomerEmailReconciliationRefusalError('MANIFEST_INVALID');
   }
   const items = value.items.map((item) => {
-    if (!isRecord(item) || (item.kind !== 'FACT' && item.kind !== 'DISPATCH')
+    if (!isRecord(item) || item.kind !== 'FACT'
       || typeof item.id !== 'string' || !isUuid(item.id)
       || typeof item.stateSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(item.stateSha256)
       || typeof item.updatedAt !== 'string' || Number.isNaN(Date.parse(item.updatedAt))) {
@@ -531,9 +456,11 @@ export function parseCustomerEmailReconciliationManifest(value: unknown): Custom
     return { id: item.id, kind, stateSha256: item.stateSha256, updatedAt: item.updatedAt };
   });
   const manifest: CustomerEmailReconciliationManifest = {
+    changeControlRef: value.changeControlRef,
     disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
     generatedAt: value.generatedAt,
     items,
+    reasonCode: value.reasonCode,
     schema: CUSTOMER_EMAIL_RECONCILIATION_SCHEMA,
     scope: { appId: value.scope.appId, shopId: value.scope.shopId }
   };
@@ -546,6 +473,7 @@ export function sha256CanonicalJson(value: unknown): string {
 }
 
 function assertManifest(manifest: CustomerEmailReconciliationManifest): void {
+  assertDecisionBinding(manifest.changeControlRef, manifest.reasonCode);
   assertScope(manifest.scope);
   assertDisposition(manifest.disposition);
   normalizeSelections(manifest.items);
@@ -565,6 +493,15 @@ function assertActor(actor: string): void {
   }
 }
 
+function assertDecisionBinding(changeControlRef: string, reasonCode: string): void {
+  if (!/^EVNSolution\/clever-change-control#[1-9][0-9]*$/u.test(changeControlRef)) {
+    throw new CustomerEmailReconciliationRefusalError('CHANGE_CONTROL_REF_INVALID');
+  }
+  if (!/^[A-Z][A-Z0-9_]{2,63}$/u.test(reasonCode)) {
+    throw new CustomerEmailReconciliationRefusalError('REASON_CODE_INVALID');
+  }
+}
+
 function assertDisposition(disposition: string): asserts disposition is CustomerEmailReconciliationDisposition {
   if (disposition !== CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION) {
     throw new CustomerEmailReconciliationRefusalError('DISPOSITION_UNSUPPORTED');
@@ -579,8 +516,11 @@ function assertScope(scope: CustomerEmailReconciliationScope): void {
 
 function normalizeSelections(selections: CustomerEmailReconciliationSelection[]): CustomerEmailReconciliationSelection[] {
   if (selections.length === 0) throw new CustomerEmailReconciliationRefusalError('EXPLICIT_SELECTION_REQUIRED');
+  if (selections.length > CUSTOMER_EMAIL_RECONCILIATION_MAX_BATCH) {
+    throw new CustomerEmailReconciliationRefusalError('BATCH_LIMIT_EXCEEDED');
+  }
   const canonical = selections.map((selection) => {
-    if ((selection.kind !== 'FACT' && selection.kind !== 'DISPATCH') || !isUuid(selection.id)) {
+    if (selection.kind !== 'FACT' || !isUuid(selection.id)) {
       throw new CustomerEmailReconciliationRefusalError('SELECTION_INVALID');
     }
     return { id: selection.id.toLowerCase(), kind: selection.kind };

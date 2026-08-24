@@ -1,52 +1,73 @@
 # Customer email historical reconciliation runbook
 
-Status: guarded operator tooling for Server issue
+Status: guarded fact-only operator tooling for Server issue
 [`EVNSolution/clever-route-server#319`](https://github.com/EVNSolution/clever-route-server/issues/319)
-under change control
+under
 [`EVNSolution/clever-change-control#265`](https://github.com/EVNSolution/clever-change-control/issues/265).
 
 ## Current decision state
 
-The current production observation is seven overdue queued customer-email facts
-while the automatic worker and sender are disabled. Their disposition remains an
-operator decision. Monitoring and the development of this tool did not mutate
-those rows, did not create delivery attempts, and did not send or re-send email.
-Do not infer recipient consent or authorization to send from a queued historical
-fact.
+Production monitoring observed seven overdue queued customer-email facts while
+the automatic worker and sender were disabled. Their disposition remains
+pending. Investigation and development performed no production query through
+this CLI, no mutation, no apply, and no email send or re-send.
 
-This CLI has no HTTP replay endpoint and does not discover work by age, status,
-tenant, or free-form query. An operator must provide every notification fact ID
-or manual dispatch ID explicitly. Its only supported disposition is
-`do-not-send`. Requeue and send are intentionally absent because the current
-domain contract does not prove that historical recipient consent and
-idempotency remain valid.
+The CLI accepts notification fact IDs only. Manual dispatch reconciliation is
+deliberately unsupported because the existing synchronous send path cannot
+prove a safe cancellation fence against an in-flight provider call. There is no
+HTTP replay endpoint, tenant/status/age discovery query, requeue, or send mode.
+The maximum explicit batch is 100 facts.
 
 ## Safety contract
 
-- Dry-run is the default and produces `mutationCount: 0`.
-- Apply requires `--apply`, a PII-free actor token, the reviewed manifest file,
-  its exact SHA-256, the exact app/shop scope, and `--disposition do-not-send`.
-- Apply refuses missing or duplicate selections, wrong scope, succeeded rows,
-  active leases, any prior attempt, non-pending state, and rows changed since the
-  manifest was generated.
-- Apply is transactionally all-or-nothing. Repeating the same reviewed manifest
-  is idempotent and reports the already-applied items without adding audit rows.
-- Cancellation clears recipient and rendered-content snapshots, writes a
-  terminal `OPERATOR_DO_NOT_SEND` state, and appends an immutable attempt record.
-  Existing attempt history is never updated or deleted.
-- CLI output and reconciliation attempt rows contain identifiers, state hashes,
-  timestamps, disposition, and a pseudonymous actor token only. They must not
-  contain recipient addresses, subject/body content, provider payloads, or raw
-  error messages.
+- Dry-run is the default and reports `mutationCount: 0`.
+- Both dry-run and apply require a canonical change-control reference and a
+  PII-free reason code. The reviewed hash proves manifest integrity; it is not
+  approval. Apply still requires the recorded change-control decision.
+- Apply additionally requires `--apply`, a PII-free actor token, exact app/shop
+  scope, the read-only reviewed manifest, its exact SHA-256, and
+  `--disposition do-not-send`.
+- Any success, send attempt, provider result, provider/error residue, processing
+  timestamp, lease residue, non-queued status, wrong scope, or state change
+  fails closed.
+- Cancellation purges the recipient snapshot, metadata (including
+  `DSV_CUSTOMER_MESSAGE` body content), provider result, raw error payload, and
+  processing/lease data. No metadata keys are preserved.
+- Operator disposition is not written to the send-attempt ledger. A separate
+  PII-free reconciliation audit is retained for 180 days, and a PII-free
+  idempotency tombstone remains after audit cleanup so the same manifest cannot
+  mutate or create evidence twice.
+- `OPERATOR_DO_NOT_SEND` facts are excluded from runtime dead-letter and last
+  provider-error health classification. They do not make a healthy sender
+  permanently degraded.
+
+## Runtime prerequisite
+
+The production image contains Node.js and the compiled script, but not `tsx` or
+the development npm toolchain. Use an already deployed, digest-pinned
+`delivery-api` image and execute:
+
+```text
+node dist/scripts/reconcile-customer-email.js
+```
+
+Do not run from a mutable tag. Resolve the deployed digest first through the
+approved read-only deployment evidence, then use
+`scripts/ssm-customer-email-reconciliation.sh` with an explicit SSM instance,
+digest, and base64-encoded JSON argument array. Mount the reviewed manifest
+read-only through the wrapper, for example
+`/run/reconciliation/manifest.json:ro`; never copy it into the repo or image.
 
 ## Create and review a dry-run manifest
 
-Run from `apps/delivery-api` with the intended database connection supplied by
-the approved operator environment. Repeat `--fact-id` or `--dispatch-id` for
-each explicitly reviewed row:
+Within a one-off container made from the deployed digest and connected to the
+approved runtime environment, repeat `--fact-id` for every explicitly reviewed
+fact:
 
 ```bash
-npm run customer-email:reconcile -- \
+node dist/scripts/reconcile-customer-email.js \
+  --change-control-ref EVNSolution/clever-change-control#265 \
+  --reason-code HISTORICAL_DO_NOT_SEND \
   --app-id clever \
   --shop-id <shop-uuid> \
   --fact-id <fact-uuid-1> \
@@ -55,50 +76,45 @@ npm run customer-email:reconcile -- \
   > /secure/operator-path/customer-email-reconciliation.json
 ```
 
-The generated document includes `manifestSha256`. Review all identifiers, the
-scope, disposition, generated timestamp, per-row state hashes, and the
-top-level hash. Store it only in an approved restricted operator location; do
-not commit it or attach it to tickets. The manifest is PII-free, but it remains
-internal operational evidence.
-
-Any refusal exits with code `2` and emits only a stable `errorCode`. Do not work
-around a refusal by editing the manifest. Generate a new dry run after resolving
-the state or scope discrepancy.
+Review the scope, explicit IDs, disposition, change-control reference, reason,
+timestamps, state hashes, and `manifestSha256`. Store the document in an
+approved restricted location. Although PII-free, it is internal evidence.
+Refusals exit `2` with only a stable `errorCode`; never edit around a refusal.
 
 ## Apply an approved do-not-send decision
 
-Apply is a separately approved production change. Do not run this command merely
-because a dry run succeeded. After the operator has recorded the disposition and
-reviewed hash in the change-control decision, use the same app/shop scope and a
-non-personal actor token:
+Do not execute this step until the exact manifest hash and reason are approved
+in change control. Mount the manifest read-only into the digest-pinned one-off
+container, then use the same binding values:
 
 ```bash
-npm run customer-email:reconcile -- \
+node dist/scripts/reconcile-customer-email.js \
   --apply \
-  --manifest /secure/operator-path/customer-email-reconciliation.json \
+  --manifest /run/reconciliation/manifest.json \
   --reviewed-manifest-sha256 <64-character-sha256> \
   --actor <pseudonymous-operator-token> \
+  --change-control-ref EVNSolution/clever-change-control#265 \
+  --reason-code HISTORICAL_DO_NOT_SEND \
   --app-id clever \
   --shop-id <shop-uuid> \
   --disposition do-not-send
 ```
 
-Record only the PII-free JSON result and the reviewed hash in the change-control
-evidence. Never record the source row's recipient, subject, body, provider
-payload, or error text.
+Record only the PII-free result, image digest, reviewed hash, actor token,
+reason, and SSM command evidence. Never record recipient/content/provider
+payloads. The runtime environment remains the source of database credentials;
+do not put credentials on the command line or in the manifest.
 
 ## Verification and recovery
 
-After an approved apply, verify that the result reports the expected
-`appliedItems`, `alreadyAppliedItems`, and `auditRows`; the selected facts are
-`DEAD` or dispatch recipients are `SKIPPED`; recipient/rendered snapshots are
-null; and each newly applied item has append-only `TERMINAL_FAILURE` attempt
-evidence with `OPERATOR_DO_NOT_SEND`, correlated to the reviewed manifest hash.
+After an approved apply, verify the expected item counters, `DEAD` plus
+`OPERATOR_DO_NOT_SEND`, null recipient/metadata/provider/error/claim fields, one
+operator audit, one tombstone, zero new send-attempt rows, and unchanged runtime
+dead-letter health. Audit retention cleanup must leave the tombstone intact.
 
-`do-not-send` is terminal in this tool. There is no automated rollback to send
-or requeue. If the decision was wrong, preserve the audit evidence and open a
-new approved change that re-establishes recipient consent and an idempotent
-delivery contract. Do not delete or edit reconciliation attempt history.
+The disposition is terminal. There is no rollback to send/requeue. A mistaken
+decision requires a new approved consent and idempotency design; do not edit the
+fact, audit, tombstone, or send-attempt history.
 
-For the currently observed seven overdue facts, the stop condition remains:
-decision pending, production mutation count zero, and email send count zero.
+For the observed seven facts, the current stop condition is still: decision
+pending, production mutation count zero, and email send count zero.
