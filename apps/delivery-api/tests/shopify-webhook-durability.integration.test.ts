@@ -24,8 +24,13 @@ import {
 } from '../src/modules/route-tracking/route-tracking.geometry.js';
 
 const databaseUrl = process.env.SHOPIFY_WEBHOOK_DURABILITY_DATABASE_URL;
-const enabled = process.env.G006_DATABASE_TARGET_CLASS === 'safe-local-g006-disposable'
-  && databaseUrl?.includes('127.0.0.1:55490/clever_g006') === true;
+const enabled = (
+  process.env.G006_DATABASE_TARGET_CLASS === 'safe-local-g006-disposable'
+  && databaseUrl?.includes('127.0.0.1:55490/clever_g006') === true
+) || (
+  process.env.SHOP_PRIVACY_INVARIANT_DATABASE_TARGET_CLASS === 'safe-local-disposable'
+  && databaseUrl?.includes('127.0.0.1') === true
+);
 const describeDatabase = enabled ? describe : describe.skip;
 const clientSecret = 'g006-disposable-secret';
 const clients: PrismaClient[] = [];
@@ -279,6 +284,59 @@ describeDatabase('Shopify order webhook PostgreSQL durability', () => {
     expect(await prisma.shop.findUnique({ where: { appId_shopDomain: { appId: 'clever', shopDomain } } })).toBeNull();
   });
 
+  test('database guard rejects direct Shop inserts behind active privacy tombstones', async () => {
+    const prisma = createClient();
+    const insertDomain = uniqueShopDomain('privacy-db-insert');
+
+    await prisma.shopifyShopRedactionTombstone.create({
+      data: {
+        appId: 'clever',
+        complianceWebhookId: randomUUID(),
+        redactedAt: new Date('2026-08-25T00:00:00.000Z'),
+        shopDomain: insertDomain
+      }
+    });
+
+    await expect(prisma.shop.create({ data: { appId: 'clever', shopDomain: insertDomain } }))
+      .rejects.toThrow('Shop write blocked by active privacy tombstone');
+  });
+
+  test('keeps unchanged Release 1 token repository paths compatible after the trigger migration', async () => {
+    const prisma = createClient();
+    const tokens = new PrismaShopTokenRepository(prisma);
+    const webhooks = new PrismaShopifyWebhookEventRepository(prisma);
+    const normalDomain = uniqueShopDomain('release1-normal-install');
+    const reinstallDomain = uniqueShopDomain('release1-verified-reinstall');
+    const reinstallAt = new Date('2030-01-01T02:00:00.000Z');
+
+    await expect(tokens.upsertShopToken({
+      ...tokenInput(normalDomain),
+      installedAt: new Date('2026-08-25T01:00:00.000Z')
+    })).resolves.toMatchObject({ shopDomain: normalDomain });
+
+    await prisma.shopifyShopRedactionTombstone.create({
+      data: {
+        appId: 'clever',
+        complianceWebhookId: randomUUID(),
+        redactedAt: new Date('2029-01-01T00:00:00.000Z'),
+        shopDomain: reinstallDomain
+      }
+    });
+    await expect(tokens.upsertShopToken({
+      ...tokenInput(reinstallDomain),
+      installedAt: reinstallAt
+    })).resolves.toMatchObject({ shopDomain: reinstallDomain });
+    expect(await prisma.shopifyShopRedactionTombstone.findUniqueOrThrow({
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: reinstallDomain } }
+    })).toMatchObject({ reinstalledAt: reinstallAt });
+
+    const delayedWebhookId = randomUUID();
+    await expect(webhooks.recordWebhook({
+      ...webhookInput({ shopDomain: reinstallDomain, webhookId: delayedWebhookId, payload: { id: 6199 } }),
+      triggeredAt: new Date('2029-12-31T23:59:00.000Z')
+    })).resolves.toEqual({ duplicate: true, status: 'IGNORED', webhookId: delayedWebhookId });
+  });
+
   test('preserves redaction receipts across reinstall and fences stale refresh and prior-install webhooks', async () => {
     const prisma = createClient();
     const webhooks = new PrismaShopifyWebhookEventRepository(prisma);
@@ -313,9 +371,10 @@ describeDatabase('Shopify order webhook PostgreSQL durability', () => {
       await assertShopifyShopPrivacyWriteAllowed(tx, { appId: 'clever', shopDomain });
       return tx.shop.create({ data: { appId: 'clever', shopDomain } });
     })).rejects.toMatchObject({ code: 'SHOP_PRIVACY_REDACTED' });
-    // Expand migration remains compatible with a previous image during the
-    // rollout window; verified install must still reactivate an unfenced row.
-    await prisma.shop.create({ data: { appId: 'clever', shopDomain } });
+    await expect(prisma.shop.create({ data: { appId: 'clever', shopDomain } }))
+      .rejects.toThrow('Shop write blocked by active privacy tombstone');
+    // Release 1 remains rollback-compatible after the contract migration: its
+    // verified-install path reactivates the tombstone before writing Shop.
     await tokens.upsertShopToken({ ...tokenInput(shopDomain), installedAt: reinstallAt });
     await expect(tokens.updateRefreshedShopToken({
       ...tokenInput(shopDomain),

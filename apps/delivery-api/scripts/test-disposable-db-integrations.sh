@@ -239,6 +239,7 @@ DATABASE_URL="$g005_url" \
 npm test -- dsv-v1-read-query.integration.test.ts
 
 G006_DATABASE_TARGET_CLASS='safe-local-g006-disposable' \
+SHOP_PRIVACY_INVARIANT_DATABASE_TARGET_CLASS='safe-local-disposable' \
 DATABASE_URL="$g006_url" \
 SHOPIFY_WEBHOOK_DURABILITY_DATABASE_URL="$g006_url" \
-npm test -- shopify-webhook-durability.integration.test.ts
+npm test -- shopify-webhook-durability.integration.test.ts shop-privacy-db-invariant.integration.test.ts
