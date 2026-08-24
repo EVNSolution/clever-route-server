@@ -2,6 +2,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+operations_policy="$(cat docs/observability/dsv-g007-operations.md)"
+case "$operations_policy" in
+  *"historyStatus"*"recoveredCount"*"successful row"*"checksum"*"rolled-back"*) ;;
+  *) echo "G007 operations policy must document recovered migration history and checksum boundaries" >&2; exit 1 ;;
+esac
+
 rendered="$(ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=true ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED=true scripts/monitor-route-ops-production.sh --render-host-script)"
 
 case "$rendered" in
@@ -51,6 +57,10 @@ case "$g007_status" in
   *"ROUTE_OPS_G007_OBSERVATION_REPORT_B64"*"ROUTE_OPS_G007_OBSERVATION_REPORT_PATH"*"deployed_migration_names"*) ;;
   *) echo "G007 JSON status must embed legacy observation and inspect migrations from the deployed image" >&2; exit 1 ;;
 esac
+case "$g007_status" in
+  *"createHash('sha256')"*"checksumMismatchMigrations"*"'checksum', checksum"*) ;;
+  *) echo "G007 migration status must compare successful history checksums to the deployed image" >&2; exit 1 ;;
+esac
 case "$rendered" in
   *"export ROUTE_OPS_MONITOR_G007_JSON_STATUS=false"*) ;;
   *) echo "default monitor must render G007 JSON status as disabled" >&2; exit 1 ;;
@@ -67,8 +77,8 @@ case "$g007_status" in
   *"SUM(failures) FILTER (WHERE name <> 'duplicate_active_assignments') > 0"*) ;;
   *) echo "G007 duplicate assignments must remain observable without making monitor status critical" >&2; exit 1 ;;
 esac
-case "$g007_status" in *"expectedCount"*"appliedCount"*"pendingCount"*"failedCount"*"pendingMigrations"*) ;;
-  *) echo "G007 JSON status must report expected, applied, pending, failed counts and pending names" >&2; exit 1 ;;
+case "$g007_status" in *"expectedCount"*"appliedCount"*"pendingCount"*"failedCount"*"recoveredCount"*"checksumMismatchCount"*"pendingMigrations"*) ;;
+  *) echo "G007 JSON status must report expected, applied, pending, failed, recovered, and checksum counts" >&2; exit 1 ;;
 esac
 
 configured_status="$(ROUTE_OPS_G007_STATUS_BASE_URL=https://route.example.invalid scripts/monitor-route-ops-production.sh --render-host-script --status-only --g007-json-status)"
@@ -120,6 +130,8 @@ exec(match.group('body'), namespace)
 status_from_history = namespace['migration_status_from_history']
 expected_migration_names = namespace['expected_migration_names']
 validated_migration_manifest = namespace['validated_migration_manifest']
+validated_migration_checksums = namespace['validated_migration_checksums']
+monitor_status_from_checks = namespace['monitor_status_from_checks']
 expected = [
     '20260722203000_dsv_import_stage_apply',
     '20260722213000_dsv_assignment_eta_state',
@@ -166,6 +178,46 @@ assert validated_migration_manifest(['not-a-migration'], source='fixture') == {
     'status': 'unknown',
     'error': 'fixture contains invalid migration names',
 }
+malformed_manifests = [
+    (
+        validated_migration_checksums({'name': expected[0]}, source='fixture'),
+        'fixture migration manifest is not a JSON array',
+    ),
+    (
+        validated_migration_checksums([], source='fixture'),
+        'fixture contains no migrations',
+    ),
+    (
+        validated_migration_checksums([
+            {'name': 'not-a-migration', 'checksum': 'a' * 64},
+        ], source='fixture'),
+        'fixture contains invalid migration names',
+    ),
+    (
+        validated_migration_checksums([
+            {'name': expected[0], 'checksum': 'not-a-sha256'},
+        ], source='fixture'),
+        'fixture contains invalid migration checksums',
+    ),
+    (
+        validated_migration_checksums([
+            {'name': expected[0], 'checksum': 'a' * 64},
+            {'name': expected[0], 'checksum': 'a' * 64},
+        ], source='fixture'),
+        'fixture contains duplicate migration names',
+    ),
+]
+for manifest_result, expected_error in malformed_manifests:
+    assert manifest_result == {'status': 'critical', 'error': expected_error}, manifest_result
+    top_status, exit_code = monitor_status_from_checks({
+        'healthz': {'status': 'ok'},
+        'readyz': {'status': 'ok'},
+        'migrations': manifest_result,
+        'invariants': {'status': 'ok'},
+        'legacyUsage': {'status': 'ok'},
+    })
+    assert top_status == 'critical', (manifest_result, top_status)
+    assert exit_code == 2, (manifest_result, exit_code)
 
 repo_expected = expected_migration_names(Path('apps/delivery-api/prisma/migrations'))
 repo_manifest = sorted(
@@ -222,6 +274,88 @@ assert complete['failedCount'] == 0, complete
 assert complete['pendingMigrations'] == [], complete
 assert complete['actualLatestMigration'] == expected[-1], complete
 assert complete['unexpectedCount'] == 0, complete
+
+expected_checksums = {name: f'checksum-{index}' for index, name in enumerate(expected)}
+complete_with_recovered_history = status_from_history([
+    *[
+        {
+            'migrationName': name,
+            'checksum': expected_checksums[name],
+            'finishedAt': True,
+            'rolledBackAt': False,
+        }
+        for name in expected
+    ],
+    {
+        'migrationName': expected[-5],
+        'checksum': 'historical-failed-checksum',
+        'finishedAt': False,
+        'rolledBackAt': True,
+    },
+], expected_checksums)
+assert complete_with_recovered_history['status'] == 'ok', complete_with_recovered_history
+assert complete_with_recovered_history['historyStatus'] == 'recovered', complete_with_recovered_history
+assert complete_with_recovered_history['failedCount'] == 0, complete_with_recovered_history
+assert complete_with_recovered_history['recoveredCount'] == 1, complete_with_recovered_history
+assert complete_with_recovered_history['recoveredMigrations'] == [expected[-5]], complete_with_recovered_history
+assert complete_with_recovered_history['checksumMismatchCount'] == 0, complete_with_recovered_history
+
+unresolved_rolled_back = status_from_history([
+    {
+        'migrationName': expected[0],
+        'checksum': expected_checksums[expected[0]],
+        'finishedAt': False,
+        'rolledBackAt': True,
+    },
+], expected_checksums)
+assert unresolved_rolled_back['status'] == 'critical', unresolved_rolled_back
+assert unresolved_rolled_back['failedCount'] == 1, unresolved_rolled_back
+assert unresolved_rolled_back['recoveredCount'] == 0, unresolved_rolled_back
+
+incomplete_history = status_from_history([
+    {
+        'migrationName': expected[0],
+        'checksum': expected_checksums[expected[0]],
+        'finishedAt': False,
+        'rolledBackAt': False,
+    },
+], expected_checksums)
+assert incomplete_history['status'] == 'critical', incomplete_history
+assert incomplete_history['failedCount'] == 1, incomplete_history
+
+checksum_mismatch = status_from_history([
+    *[
+        {
+            'migrationName': name,
+            'checksum': expected_checksums[name],
+            'finishedAt': True,
+            'rolledBackAt': False,
+        }
+        for name in expected
+    ],
+    {
+        'migrationName': expected[-1],
+        'checksum': 'unexpected-success-checksum',
+        'finishedAt': True,
+        'rolledBackAt': False,
+    },
+], expected_checksums)
+assert checksum_mismatch['status'] == 'critical', checksum_mismatch
+assert checksum_mismatch['checksumMismatchCount'] == 1, checksum_mismatch
+assert checksum_mismatch['checksumMismatchMigrations'] == [expected[-1]], checksum_mismatch
+
+unexpected_recovery_pair = status_from_history([
+    *[
+        {'migrationName': name, 'finishedAt': True, 'rolledBackAt': False}
+        for name in expected
+    ],
+    {'migrationName': '99999999999999_unchecked_history_row', 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': '99999999999999_unchecked_history_row', 'finishedAt': False, 'rolledBackAt': True},
+], expected)
+assert unexpected_recovery_pair['status'] == 'critical', unexpected_recovery_pair
+assert unexpected_recovery_pair['failedCount'] == 1, unexpected_recovery_pair
+assert unexpected_recovery_pair['recoveredCount'] == 0, unexpected_recovery_pair
+assert unexpected_recovery_pair['unexpectedMigrations'] == ['99999999999999_unchecked_history_row'], unexpected_recovery_pair
 
 complete_with_unexpected_history_row = status_from_history([
     *[
