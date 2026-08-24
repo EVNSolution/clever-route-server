@@ -51,17 +51,30 @@ The JSON status follows this exit policy:
 | --- | ---: | --- |
 | `ok` | 0 | Health, readiness, migrations, invariants, and legacy usage are within policy. |
 | `unknown` | 1 | A check could not be read and no critical finding was observed. |
-| `critical` | 2 | Health/readiness failed, migration history has pending, missing, failed, or rolled-back rows, an invariant failed, or legacy read/write usage was observed. |
+| `critical` | 2 | Health/readiness failed, the deployed migration manifest is malformed, migration history is pending, incomplete, unresolved, unexpected, or has a current successful-row checksum mismatch, an invariant failed, or legacy read/write usage was observed. |
 
-Migration status compares successful applied migration names in `_prisma_migrations`
-to the checked-in `apps/delivery-api/prisma/migrations` directory, with that
-directory-derived chain remaining authoritative for expected/applied counts. It
-also requires latest migration
-`20260723023000_g011_production_baseline_drift_repair`, so the current expected chain is
-45 migrations. The status reports `expectedCount`, `appliedCount`,
-`pendingCount`, `failedCount`, `latestMigration`, `actualLatestMigration`,
-`pendingMigrations`, `unexpectedCount`, and `unexpectedMigrations`; any pending,
-missing, failed, or unexpected history entry is `critical`.
+Migration status reads the authoritative migration names and SHA-256 checksums
+from the deployed API image, then compares them with successful applied rows in
+`_prisma_migrations`. The expected count and latest migration therefore advance
+with the deployed image instead of a hard-coded historical checkpoint.
+
+A rolled-back history row is classified as recovered only when the same migration
+is in the deployed expected chain and also has a successful row whose checksum
+matches the deployed migration. The historical rolled-back row may retain its old
+checksum; it does not describe the currently applied SQL. Recovered history keeps
+overall `status=ok` while setting `historyStatus=recovered` and reporting
+`recoveredCount` and `recoveredMigrations`. A rolled-back row without that matching
+successful row remains unresolved and `critical`.
+
+The status also reports `expectedCount`, `appliedCount`, `pendingCount`,
+`failedCount`, `checksumMismatchCount`, `checksumMismatchMigrations`,
+`latestMigration`, `actualLatestMigration`, `pendingMigrations`,
+`unexpectedCount`, and `unexpectedMigrations`. A migration check that cannot be
+read remains `unknown`, but an empty, non-array, invalid-name, invalid-checksum,
+or duplicate-name manifest from the deployed image is an artifact integrity
+failure and therefore `critical`. Pending or incomplete rows, unexpected names,
+unresolved rolled-back rows, and successful-row checksum mismatches also remain
+`critical`.
 
 G007 does not remove legacy paths. Production removal requires a later
 operator-selected observation window with zero `legacy_read` and `legacy_write`.

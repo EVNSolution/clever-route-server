@@ -163,6 +163,16 @@ Production migration uses the G007 migration entrypoint from the deployment imag
 
 Do not run production mode from this runbook until the operator approves the production change window. Rollback planning must assume image rollback is not database rollback; recovery is a guarded restore to an approved target followed by forward verification.
 
+The production monitor does not delete or rewrite Prisma recovery history. A
+historical rolled-back row is healthy recovered evidence only when the deployed
+image still expects that migration and `_prisma_migrations` contains a successful
+row with the deployed checksum for the same name. Missing successful rows,
+incomplete rows, unexpected names, and current successful-row checksum mismatches
+remain critical and require investigation rather than `migrate resolve` or row
+deletion for convenience. A deployed-image migration manifest that is empty,
+not an array, or contains invalid names, invalid checksums, or duplicate names is
+also critical and exits 2; an unreadable runtime check remains unknown and exits 1.
+
 ## Historical Final Rehearsal Evidence
 
 Historical live evidence root before the G009/G010 latest FK repairs: `/tmp/g007-live-final-20260723_070636`.

@@ -226,13 +226,25 @@ def psql_json(sql):
 def deployed_migration_names():
     proc = run([
         'docker', 'exec', api_container,
-        'find', 'prisma/migrations', '-mindepth', '2', '-maxdepth', '2',
-        '-type', 'f', '-name', 'migration.sql', '-print',
+        'node', '-e',
+        "const crypto=require('node:crypto');"
+        "const fs=require('node:fs');"
+        "const path=require('node:path');"
+        "const root='prisma/migrations';"
+        "const rows=fs.readdirSync(root,{withFileTypes:true})"
+        ".filter(entry=>entry.isDirectory())"
+        ".map(entry=>({name:entry.name,file:path.join(root,entry.name,'migration.sql')}))"
+        ".filter(entry=>fs.existsSync(entry.file))"
+        ".map(entry=>({name:entry.name,checksum:crypto.createHash('sha256').update(fs.readFileSync(entry.file)).digest('hex')}));"
+        "console.log(JSON.stringify(rows));",
     ])
     if proc.returncode != 0:
         return {'status': 'unknown', 'error': proc.stderr.strip() or proc.stdout.strip()}
-    names = sorted({Path(line.strip()).parent.name for line in proc.stdout.splitlines() if line.strip()})
-    return validated_migration_manifest(names, source='deployed image')
+    try:
+        entries = json.loads(proc.stdout.strip())
+    except json.JSONDecodeError:
+        return {'status': 'critical', 'error': 'deployed image returned a non-json migration manifest'}
+    return validated_migration_checksums(entries, source='deployed image')
 
 
 # BEGIN G007_MIGRATION_POLICY
@@ -249,6 +261,36 @@ def validated_migration_manifest(names, source='migration directory'):
     return manifest
 
 
+def validated_migration_checksums(entries, source='migration directory'):
+    if not isinstance(entries, list):
+        return {'status': 'critical', 'error': f'{source} migration manifest is not a JSON array'}
+    if not entries:
+        return {'status': 'critical', 'error': f'{source} contains no migrations'}
+    manifest = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return {'status': 'critical', 'error': f'{source} contains an invalid migration entry'}
+        name = str(entry.get('name') or '')
+        checksum = str(entry.get('checksum') or '')
+        if not re.fullmatch(r'\d{14}_[a-z0-9_]+', name):
+            return {'status': 'critical', 'error': f'{source} contains invalid migration names'}
+        if not re.fullmatch(r'[0-9a-f]{64}', checksum):
+            return {'status': 'critical', 'error': f'{source} contains invalid migration checksums'}
+        if name in manifest:
+            return {'status': 'critical', 'error': f'{source} contains duplicate migration names'}
+        manifest[name] = checksum
+    return dict(sorted(manifest.items()))
+
+
+def monitor_status_from_checks(checks):
+    statuses = [str(check.get('status', 'unknown')) for check in checks.values()]
+    if 'critical' in statuses:
+        return 'critical', 2
+    if 'unknown' in statuses:
+        return 'unknown', 1
+    return 'ok', 0
+
+
 def expected_migration_names(path=migration_dir):
     if not path.is_dir():
         return {'status': 'unknown', 'error': 'migration directory is missing'}
@@ -262,6 +304,8 @@ def expected_migration_names(path=migration_dir):
 def migration_status_from_history(history, expected=None):
     if expected is None:
         expected = expected_migration_names()
+    if isinstance(expected, dict) and expected.get('status') in {'critical', 'unknown'}:
+        return expected
     if isinstance(history, dict) and history.get('status') == 'unknown':
         return history
     if isinstance(history, dict) and 'value' in history:
@@ -269,9 +313,16 @@ def migration_status_from_history(history, expected=None):
     if not isinstance(history, list):
         return {'status': 'unknown', 'error': 'migration history is not a JSON array'}
 
+    expected_checksums = expected if isinstance(expected, dict) else {}
+    expected_names = validated_migration_manifest(expected_checksums.keys() if expected_checksums else expected)
+    if isinstance(expected_names, dict):
+        return expected_names
+    expected = expected_names
     expected_set = set(expected)
     successful = set()
+    rolled_back = []
     failed = []
+    checksum_mismatches = set()
     for row in history:
         if not isinstance(row, dict):
             failed.append('')
@@ -281,6 +332,17 @@ def migration_status_from_history(history, expected=None):
         is_rolled_back = bool(row.get('rolledBackAt') or row.get('rolled_back_at'))
         if name and is_finished and not is_rolled_back:
             successful.add(name)
+            if name in expected_checksums and str(row.get('checksum') or '') != expected_checksums[name]:
+                checksum_mismatches.add(name)
+        elif name and is_rolled_back:
+            rolled_back.append(name)
+        else:
+            failed.append(name)
+
+    recovered = []
+    for name in rolled_back:
+        if name in expected_set and name in successful and name not in checksum_mismatches:
+            recovered.append(name)
         else:
             failed.append(name)
 
@@ -288,13 +350,19 @@ def migration_status_from_history(history, expected=None):
     pending = [name for name in expected if name not in successful]
     unexpected = sorted(name for name in successful if name not in expected_set)
     actual_latest = max(successful) if successful else ''
-    status = 'critical' if pending or failed or unexpected else 'ok'
+    status = 'critical' if pending or failed or unexpected or checksum_mismatches else 'ok'
+    history_status = 'critical' if status == 'critical' else ('recovered' if recovered else 'clean')
     return {
         'status': status,
+        'historyStatus': history_status,
         'expectedCount': len(expected),
         'appliedCount': len(expected_successful),
         'pendingCount': len(pending),
         'failedCount': len(failed),
+        'recoveredCount': len(recovered),
+        'recoveredMigrations': sorted(set(recovered)),
+        'checksumMismatchCount': len(checksum_mismatches),
+        'checksumMismatchMigrations': sorted(checksum_mismatches),
         'latestMigration': expected[-1] if expected else '',
         'actualLatestMigration': actual_latest,
         'pendingMigrations': pending,
@@ -306,7 +374,7 @@ def migration_status_from_history(history, expected=None):
 
 def migration_status():
     expected = deployed_migration_names()
-    if isinstance(expected, dict):
+    if isinstance(expected, dict) and expected.get('status') in {'critical', 'unknown'}:
         return expected
     return migration_status_from_history(psql_json(migration_history_sql), expected)
 
@@ -314,6 +382,7 @@ def migration_status():
 migration_history_sql = """
 SELECT COALESCE(json_agg(json_build_object(
   'migrationName', migration_name,
+  'checksum', checksum,
   'finishedAt', finished_at IS NOT NULL,
   'rolledBackAt', rolled_back_at IS NOT NULL
 ) ORDER BY migration_name), '[]'::json) FROM _prisma_migrations;
@@ -405,16 +474,7 @@ report = {
         'legacyUsage': legacy,
     },
 }
-statuses = [str(check.get('status', 'unknown')) for check in report['checks'].values()]
-if 'critical' in statuses:
-    report['status'] = 'critical'
-    exit_code = 2
-elif 'unknown' in statuses:
-    report['status'] = 'unknown'
-    exit_code = 1
-else:
-    report['status'] = 'ok'
-    exit_code = 0
+report['status'], exit_code = monitor_status_from_checks(report['checks'])
 print(json.dumps(report, indent=2, sort_keys=True))
 sys.exit(exit_code)
 PY
