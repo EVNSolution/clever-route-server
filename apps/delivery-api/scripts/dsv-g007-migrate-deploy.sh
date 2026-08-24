@@ -198,9 +198,14 @@ async function main() {
   await client.connect();
   try {
     await client.query("SET lock_timeout = '5s'");
-    await client.query('ALTER TABLE driver_event_attempts ADD COLUMN IF NOT EXISTS "transportRequestId" TEXT');
-    await client.query('ALTER TABLE driver_proof_media ADD COLUMN IF NOT EXISTS "idempotencyKey" VARCHAR(120)');
     await client.query(`SET statement_timeout = '${timeoutSeconds}s'`);
+    const tableExists = async (table) => {
+      const result = await client.query(
+        'SELECT to_regclass($1) IS NOT NULL AS exists',
+        [`public.${table}`],
+      );
+      return result.rows[0]?.exists === true;
+    };
     const inspectIndex = (name) => client.query(`
       SELECT i.indisready,
              i.indisvalid,
@@ -230,10 +235,15 @@ async function main() {
       && index.no_predicate
       && index.no_expressions
       && JSON.stringify(index.columns) === JSON.stringify(expectedColumns);
-    for (const [name, sql, table, expectedUnique, expectedColumns] of [
-      ['driver_event_attempts_shopId_transportRequestId_createdAt_idx', 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "driver_event_attempts_shopId_transportRequestId_createdAt_idx" ON driver_event_attempts("shopId", "transportRequestId", "createdAt")', 'driver_event_attempts', false, ['shopId', 'transportRequestId', 'createdAt']],
-      ['driver_proof_media_idempotency_scope_key', 'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "driver_proof_media_idempotency_scope_key" ON driver_proof_media("shopId", "driverId", "routePlanId", "deliveryStopId", "idempotencyKey")', 'driver_proof_media', true, ['shopId', 'driverId', 'routePlanId', 'deliveryStopId', 'idempotencyKey']],
+    for (const [name, alterSql, sql, table, expectedUnique, expectedColumns] of [
+      ['driver_event_attempts_shopId_transportRequestId_createdAt_idx', 'ALTER TABLE driver_event_attempts ADD COLUMN IF NOT EXISTS "transportRequestId" TEXT', 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "driver_event_attempts_shopId_transportRequestId_createdAt_idx" ON driver_event_attempts("shopId", "transportRequestId", "createdAt")', 'driver_event_attempts', false, ['shopId', 'transportRequestId', 'createdAt']],
+      ['driver_proof_media_idempotency_scope_key', 'ALTER TABLE driver_proof_media ADD COLUMN IF NOT EXISTS "idempotencyKey" VARCHAR(120)', 'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "driver_proof_media_idempotency_scope_key" ON driver_proof_media("shopId", "driverId", "routePlanId", "deliveryStopId", "idempotencyKey")', 'driver_proof_media', true, ['shopId', 'driverId', 'routePlanId', 'deliveryStopId', 'idempotencyKey']],
     ]) {
+      if (!(await tableExists(table))) {
+        process.stdout.write(`dsv-g007-migrate-deploy: online index ${name} deferred until table migration\n`);
+        continue;
+      }
+      await client.query(alterSql);
       const estimate = await client.query('SELECT reltuples::bigint AS rows FROM pg_class WHERE oid = $1::regclass', [table]);
       const before = await inspectIndex(name);
       if (before.rows[0] && (!before.rows[0].indisready || !before.rows[0].indisvalid)) {

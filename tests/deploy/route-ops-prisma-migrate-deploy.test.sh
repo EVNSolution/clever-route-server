@@ -301,7 +301,24 @@ class Client {
   async connect() {}
   async end() {}
   async query(sql, params = []) {
-    fs.appendFileSync(process.env.FAKE_PG_LOG, `${String(sql).replace(/\s+/g, ' ').trim()}\n`);
+    const normalizedSql = String(sql).replace(/\s+/g, ' ').trim();
+    fs.appendFileSync(process.env.FAKE_PG_LOG, `${normalizedSql}\n`);
+    if (normalizedSql.includes('to_regclass($1)')) {
+      return {
+        rows: [{
+          exists: !(
+            process.env.FAKE_PG_MISSING_DRIVER_EVENT_ATTEMPTS === '1'
+            && params[0] === 'public.driver_event_attempts'
+          ),
+        }],
+      };
+    }
+    if (
+      process.env.FAKE_PG_MISSING_DRIVER_EVENT_ATTEMPTS === '1'
+      && normalizedSql.includes('driver_event_attempts')
+    ) {
+      throw new Error('relation "driver_event_attempts" does not exist');
+    }
     if (String(sql).includes('FROM pg_index')) return { rows: indexes.has(params[0]) ? [indexes.get(params[0])] : [] };
     if (String(sql).includes('reltuples')) return { rows: [{ rows: '250000' }] };
     const drop = /DROP INDEX CONCURRENTLY IF EXISTS "([^"]+)"/.exec(String(sql));
@@ -361,6 +378,24 @@ EOF_PG
   grep -Fq 'validated production target db.example.invalid/clever_route' "$tmp/stdout"
   grep -Fq 'DROP INDEX CONCURRENTLY IF EXISTS "driver_event_attempts_shopId_transportRequestId_createdAt_idx"' "$tmp/pg.log"
   grep -Fq 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "driver_event_attempts_shopId_transportRequestId_createdAt_idx"' "$tmp/pg.log"
+  grep -Fq 'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "driver_proof_media_idempotency_scope_key"' "$tmp/pg.log"
+  grep -Fq -- "--prefix $ROOT/apps/delivery-api run prisma:migrate:deploy" "$tmp/npm.args"
+
+  : > "$tmp/pg.log"
+  : > "$tmp/npm.args"
+  env \
+    PATH="$tmp/bin:$PATH" \
+    FAKE_NPM_ARGS_FILE="$tmp/npm.args" \
+    FAKE_PG_LOG="$tmp/pg.log" \
+    FAKE_PG_MISSING_DRIVER_EVENT_ATTEMPTS='1' \
+    NODE_OPTIONS="--require=$tmp/fake-pg.cjs" \
+    DSV_MIGRATION_MODE='production' \
+    DSV_MIGRATION_APPROVED='1' \
+    DSV_MIGRATION_MANIFEST_SHA256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    DSV_RESTORE_REHEARSAL_SHA256='abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' \
+    DATABASE_URL="$online_index_database_url" \
+    bash "$WRAPPER" > "$tmp/missing-table.stdout" 2> "$tmp/missing-table.stderr"
+  grep -Fq 'online index driver_event_attempts_shopId_transportRequestId_createdAt_idx deferred until table migration' "$tmp/missing-table.stdout"
   grep -Fq 'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "driver_proof_media_idempotency_scope_key"' "$tmp/pg.log"
   grep -Fq -- "--prefix $ROOT/apps/delivery-api run prisma:migrate:deploy" "$tmp/npm.args"
 }
