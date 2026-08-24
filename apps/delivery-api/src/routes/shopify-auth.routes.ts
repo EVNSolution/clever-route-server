@@ -4,7 +4,7 @@ import {
   logRejectedAdminSessionToken,
   type AdminSessionTokenVerifier
 } from './admin-session-auth.js';
-import { redactTelemetry } from '../modules/security/safe-telemetry-redaction.js';
+import { hashTelemetryShop, redactTelemetry } from '../modules/security/safe-telemetry-redaction.js';
 
 export type ShopifyAuthDependencies = {
   apiVersion: string;
@@ -23,6 +23,7 @@ export type ShopifyAuthDependencies = {
       accessToken: string;
       accessTokenExpiresAt?: Date | null;
       apiVersion: string;
+      installedAt?: Date;
       refreshToken?: string | null;
       refreshTokenExpiresAt?: Date | null;
       shopDomain: string;
@@ -84,6 +85,7 @@ export function registerShopifyAuthRoutes(
     }
 
     try {
+      const installIntentAt = dependencies.now?.() ?? new Date();
       const exchanged = await dependencies.tokenExchangeClient.exchangeSessionTokenForOfflineToken({
         appId: verified.appId,
         sessionToken,
@@ -98,18 +100,24 @@ export function registerShopifyAuthRoutes(
         accessToken: exchanged.accessToken,
         accessTokenExpiresAt,
         apiVersion: dependencies.apiVersion,
+        installedAt: installIntentAt,
         refreshToken: exchanged.refreshToken,
         refreshTokenExpiresAt,
         shopDomain: verified.shopDomain,
         tokenIssuedAt: now,
         tokenScopes
       });
+      const requestCorrelation = readCorrelationId(request.headers['x-correlation-id']);
       request.log.info({
         appId: stored.appId,
         event: 'shopify_admin_token_persisted',
-        requestCorrelationId: readCorrelationId(request.headers['x-correlation-id']) ?? request.id,
+        requestCorrelationHash: requestCorrelation === null
+          ? null
+          : hashTelemetryShop(`shopify-auth-correlation:${requestCorrelation}`),
+        requestCorrelationProvided: requestCorrelation !== null,
+        requestId: request.id,
         scopes: stored.tokenScopes,
-        shopDomain: stored.shopDomain,
+        shopHash: hashTelemetryShop(`${stored.appId}:${stored.shopDomain}`),
         tokenAccessExpiresAt: accessTokenExpiresAt?.toISOString() ?? null,
         tokenRefreshExpiresAt: refreshTokenExpiresAt?.toISOString() ?? null
       }, 'Shopify Admin token persisted');
@@ -129,7 +137,7 @@ export function registerShopifyAuthRoutes(
           request.log.warn({
             error: redactTelemetry(error),
             event: 'shopify_order_reconciliation_enqueue_failed',
-            shopDomain: stored.shopDomain
+            shopHash: hashTelemetryShop(`${stored.appId}:${stored.shopDomain}`)
           }, 'Shopify token stored but order reconciliation could not be queued');
         }
       }
@@ -143,7 +151,30 @@ export function registerShopifyAuthRoutes(
         },
         error: null
       });
-    } catch {
+    } catch (error) {
+      const errorCode = typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code)
+        : error instanceof Error ? error.name : 'UNKNOWN';
+      request.log.warn({
+        appId: verified.appId,
+        error: redactTelemetry(error),
+        errorCode,
+        event: 'shopify_admin_token_exchange_failed',
+        shopHash: hashTelemetryShop(`${verified.appId ?? 'clever'}:${verified.shopDomain}`),
+        stage: 'exchange_or_persist'
+      }, 'Shopify Admin token exchange or persistence failed');
+      if (errorCode === 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT') {
+        return reply.code(504).send(errorResponse(
+          'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT',
+          'Shopify token exchange timed out'
+        ));
+      }
+      if (error instanceof Error && error.name === 'ShopTokenInstallSupersededError') {
+        return reply.code(409).send(errorResponse(
+          'SHOP_INSTALL_SUPERSEDED',
+          'Shopify installation was superseded'
+        ));
+      }
       return reply
         .code(502)
         .send(errorResponse('SHOPIFY_TOKEN_EXCHANGE_FAILED', 'Shopify token exchange failed'));
@@ -193,7 +224,7 @@ function splitScopes(scope: string): string[] {
 
 function readCorrelationId(value: string | string[] | undefined): string | null {
   const candidate = (Array.isArray(value) ? value[0] : value)?.trim();
-  return candidate && candidate.length <= 128 ? candidate : null;
+  return candidate && /^[A-Za-z0-9._:-]{1,120}$/u.test(candidate) ? candidate : null;
 }
 
 function errorResponse(code: string, message: string): { data: null; error: { code: string; message: string } } {

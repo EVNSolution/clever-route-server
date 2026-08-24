@@ -54,6 +54,9 @@ import { PrismaDeliveryCustomerProfileService } from '../delivery-customer/deliv
 import { loadDriverPushProvider } from '../route-grouping/driver-push.provider.js';
 import { DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS, PrismaRouteGroupingService } from '../route-grouping/route-grouping.service.js';
 import { PrismaRoutesAppReleaseRepository } from '../routes-app/routes-app-release.repository.js';
+import { PrismaEmailRuntimeHealthService } from '../customer-email/email-runtime-health.service.js';
+import { isCustomerDeliveryNotificationWorkerEnabled } from '../route-plans/customer-delivery-notification.runtime.js';
+import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
   Record<
@@ -65,6 +68,9 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
     | 'CREDENTIAL_ENCRYPTION_KEY'
     | 'DELIVERY_API_PUBLIC_URL'
+    | 'BREVO_API_KEY'
+    | 'CUSTOMER_DELIVERY_NOTIFICATION_URL'
+    | 'CUSTOMER_DELIVERY_NOTIFICATION_WORKER_ENABLED'
     | 'DRIVER_APP_ANDROID_LATEST_VERSION_CODE'
     | 'DRIVER_APP_ANDROID_LATEST_VERSION_NAME'
     | 'DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE'
@@ -142,6 +148,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
   adminOrders?: AdminOrdersDependencies | undefined;
   adminRoutePlans?: AdminRoutePlanDependencies | undefined;
   adminNotificationService?: AdminNotificationServiceApi | undefined;
+  operationalAlertRepository?: PrismaOperationalAlertRepository;
   env: AdminCommerceConnectionsRuntimeEnv;
   nodeEnv: string;
   prisma?: PrismaClient | undefined;
@@ -193,6 +200,18 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
       ? {}
       : { routesAppReleaseRepository: new PrismaRoutesAppReleaseRepository(input.prisma) }),
     ...(notificationService === undefined ? {} : { notificationService }),
+    ...(input.prisma === undefined ? {} : {
+      runtimeHealthService: new PrismaEmailRuntimeHealthService(
+        input.prisma,
+        {
+          automaticSenderConfigured: readOptional(input.env.CUSTOMER_DELIVERY_NOTIFICATION_URL) !== undefined,
+          automaticWorkerEnabled: readOptional(input.env.CUSTOMER_DELIVERY_NOTIFICATION_URL) !== undefined
+            && isCustomerDeliveryNotificationWorkerEnabled(input.env),
+          manualBrevoConfigured: readOptional(input.env.BREVO_API_KEY) !== undefined
+        },
+        input.operationalAlertRepository
+      )
+    }),
     ...readAdminUiOrderIngestAuditService(input),
     ...readAdminUiOrderSyncService(input, notificationService),
     ...readAdminUiPairingCodeService(input),
@@ -202,6 +221,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...(routesAppDownloadUrl === undefined ? {} : { routesAppDownloadUrl }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...routePlanDeps,
+    ...(input.adminRoutePlans?.operationalStateService === undefined ? {} : { operationalStateService: input.adminRoutePlans.operationalStateService }),
     ...readAdminUiRouteGroupingService(input, routeGeometryRefresher, routeOptimizationDeps.routeOptimizationService, routeGeometryProvider),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,

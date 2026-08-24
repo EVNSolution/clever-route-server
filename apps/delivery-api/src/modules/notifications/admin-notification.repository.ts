@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { normalizeShopDomain } from '../commerce/commerce-connection.repository.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import type { PrismaOperationalAlertRepository } from './operational-alert.repository.js';
 
 export const WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION =
   'WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED';
@@ -17,13 +18,18 @@ export type AdminNotificationSeverity =
   | 'warning';
 
 export type AdminNotificationDto = {
+  acknowledgedAt?: string | null;
+  alertCycleId?: string | null;
   body: string | null;
   createdAt: string;
   href: string | null;
   id: string;
+  lastObservedAt?: string;
+  openedAt?: string;
   orderId: string | null;
   payload: Prisma.JsonValue | null;
   readAt: string | null;
+  resolvedAt?: string | null;
   routePlanId: string | null;
   severity: AdminNotificationSeverity;
   title: string;
@@ -56,7 +62,7 @@ export type CreateAdminNotificationInput = {
 
 type AdminNotificationPrismaClient = Pick<
   PrismaClient,
-  'adminNotification' | 'shop'
+  '$transaction' | 'adminNotification' | 'alertCycle' | 'shop'
 >;
 
 type ListForShopDomainInput = {
@@ -72,6 +78,11 @@ type MarkReadInput = {
 };
 
 const adminNotificationSelect = {
+  alertCycles: {
+    orderBy: { openedAt: 'desc' as const },
+    select: { acknowledgedAt: true, id: true, lastObservedAt: true, openedAt: true, resolvedAt: true },
+    take: 1
+  },
   body: true,
   createdAt: true,
   href: true,
@@ -90,11 +101,35 @@ type AdminNotificationRow = Prisma.AdminNotificationGetPayload<{
 }>;
 
 export class PrismaAdminNotificationRepository {
-  constructor(private readonly prisma: AdminNotificationPrismaClient) {}
+  constructor(
+    private readonly prisma: AdminNotificationPrismaClient,
+    private readonly operationalAlerts?: PrismaOperationalAlertRepository
+  ) {}
 
   async createForShopOnceWithStatus(
     input: CreateAdminNotificationInput,
   ): Promise<AdminNotificationCreateResult> {
+    if (this.operationalAlerts !== undefined) {
+      const observedAt = input.createdAt ?? new Date();
+      const cycle = await this.operationalAlerts.openOrObserve({
+        ...(input.body === undefined ? {} : { body: input.body }),
+        dedupeKey: input.dedupeKey,
+        ...(input.href === undefined ? {} : { href: input.href }),
+        observedAt,
+        ...(input.payload === undefined ? {} : { payload: input.payload }),
+        ...(input.routePlanId === undefined ? {} : { routePlanId: input.routePlanId }),
+        severity: input.severity === 'critical' ? 'CRITICAL' : 'WARNING',
+        shopId: input.shopId,
+        title: input.title,
+        type: input.type
+      });
+      const projected = await this.prisma.adminNotification.findUnique({
+        select: adminNotificationSelect,
+        where: { shopId_dedupeKey: { dedupeKey: input.dedupeKey, shopId: input.shopId } }
+      });
+      if (projected === null) throw new Error('Atomic alert projection was not created');
+      return { created: cycle.openedAt === cycle.lastObservedAt, notification: toAdminNotificationDto(projected) };
+    }
     try {
       const created = await this.prisma.adminNotification.create({
         data: {
@@ -171,22 +206,46 @@ export class PrismaAdminNotificationRepository {
     if (shop === null) return null;
 
     const readAt = input.readAt ?? new Date();
-    await this.prisma.adminNotification.updateMany({
-      data: { readAt },
-      where: {
-        id: input.notificationId,
-        readAt: null,
-        shopId: shop.id,
-      },
+    const notification = await this.prisma.$transaction(async (tx) => {
+      const projected = await tx.adminNotification.findFirst({
+        select: {
+          alertCycles: { orderBy: { openedAt: 'desc' }, select: { readAt: true }, take: 1 },
+          id: true,
+          readAt: true
+        },
+        where: { id: input.notificationId, shopId: shop.id }
+      });
+      if (projected === null) return null;
+      const effectiveReadAt = projected.alertCycles[0]?.readAt ?? projected.readAt ?? readAt;
+      await tx.alertCycle.updateMany({
+        data: { readAt: effectiveReadAt },
+        where: { legacyNotificationId: projected.id, readAt: null }
+      });
+      await tx.adminNotification.updateMany({
+        data: { readAt: effectiveReadAt },
+        where: { id: projected.id, readAt: null, shopId: shop.id }
+      });
+      return tx.adminNotification.findFirst({
+        select: adminNotificationSelect,
+        where: { id: projected.id, shopId: shop.id }
+      });
     });
+    return notification === null ? null : toAdminNotificationDto(notification);
+  }
 
-    const notification = await this.prisma.adminNotification.findFirst({
-      select: adminNotificationSelect,
-      where: {
-        id: input.notificationId,
-        shopId: shop.id,
-      },
+  async acknowledgeForShopDomain(input: { actor: string; notificationId: string; shopDomain: string }): Promise<AdminNotificationDto | null> {
+    if (this.operationalAlerts === undefined) return null;
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null) return null;
+    const cycle = await this.prisma.adminNotification.findFirst({
+      select: { alertCycles: { orderBy: { openedAt: 'desc' }, select: { id: true }, take: 1, where: { resolvedAt: null } } },
+      where: { id: input.notificationId, shopId: shop.id }
     });
+    const cycleId = cycle?.alertCycles[0]?.id;
+    if (cycleId === undefined) return null;
+    const acknowledged = await this.operationalAlerts.acknowledge({ actor: input.actor, alertId: cycleId, shopDomain: input.shopDomain });
+    if (acknowledged === null) return null;
+    const notification = await this.prisma.adminNotification.findFirst({ select: adminNotificationSelect, where: { id: input.notificationId, shopId: shop.id } });
     return notification === null ? null : toAdminNotificationDto(notification);
   }
 
@@ -205,7 +264,15 @@ export class PrismaAdminNotificationRepository {
 export function toAdminNotificationDto(
   row: AdminNotificationRow,
 ): AdminNotificationDto {
+  const cycle = row.alertCycles?.[0] ?? null;
   return {
+    ...(cycle === null ? {} : {
+      acknowledgedAt: cycle.acknowledgedAt?.toISOString() ?? null,
+      alertCycleId: cycle.id,
+      lastObservedAt: cycle.lastObservedAt.toISOString(),
+      openedAt: cycle.openedAt.toISOString(),
+      resolvedAt: cycle.resolvedAt?.toISOString() ?? null
+    }),
     body: row.body,
     createdAt: row.createdAt.toISOString(),
     href: row.href,

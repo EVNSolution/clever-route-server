@@ -28,6 +28,43 @@ const session = {
 };
 
 describe('DSV Driver app auth routes', () => {
+  test('redacts caught DSV auth errors even when caller serializers request raw errors', async () => {
+    const privateMessage = 'password=dsv-secret dsv@example.invalid +82 10 9000 0001 71 DSV Road';
+    const logLines: string[] = [];
+    const app = await buildApp({
+      dsvDriverAuth: {
+        jwtSecret: 'test-jwt-secret',
+        repository: { login: vi.fn(() => Promise.reject(new Error(privateMessage))) } as never
+      },
+      logger: {
+        level: 'error',
+        serializers: {
+          err: () => ({ message: privateMessage, stack: privateMessage, type: 'RawError' }),
+          error: () => ({ message: privateMessage, stack: privateMessage })
+        },
+        stream: { write: (line: string) => logLines.push(line) }
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { loginId: 'driver.one', password: 'valid-password' },
+        url: '/api/dsv/driver/auth/login'
+      });
+
+      expect(response.statusCode).toBe(500);
+      const serialized = logLines.join('\n');
+      expect(serialized).toContain('errorCode');
+      expect(serialized).not.toContain(privateMessage);
+      expect(serialized).not.toContain('dsv-secret');
+      expect(serialized).not.toContain('dsv@example.invalid');
+      expect(serialized).not.toContain('stack');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('registers, links, and returns an account-scoped bearer session', async () => {
     const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.resolve(session));
     const app = await buildApp({

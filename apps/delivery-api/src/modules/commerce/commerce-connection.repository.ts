@@ -1,7 +1,9 @@
 import type { CommerceConnectionStatus, CommerceSourcePlatform, PrismaClient, Prisma } from '@prisma/client';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
+import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 
-type CommerceConnectionPrismaClient = Pick<PrismaClient, 'commerceConnection' | 'commerceConnectionAuditLog' | 'shop'>;
+type CommerceConnectionPrismaClient = Pick<PrismaClient, '$transaction' | 'commerceConnection' | 'commerceConnectionAuditLog' | 'shop'>;
 
 export type CommerceConnectionRecord = {
   credentialFingerprint: string | null;
@@ -225,9 +227,13 @@ export class PrismaCommerceConnectionRepository {
       throw new Error(`Shop not installed: ${shopDomain}`);
     }
 
-    return this.prisma.shop.create({
-      data: { shopDomain },
-      select: { id: true }
+    return this.prisma.$transaction(async (tx) => {
+      const appId = normalizeShopifyAppId(undefined);
+      await assertShopifyShopPrivacyWriteAllowed(tx, { appId, shopDomain });
+      return tx.shop.create({
+        data: { appId, shopDomain },
+        select: { id: true }
+      });
     });
   }
 

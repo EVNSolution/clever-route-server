@@ -4,6 +4,7 @@ import { PrismaAdminNotificationRepository } from './admin-notification.reposito
 import { PostgresAdminNotificationStreamBridge } from './admin-notification.postgres-stream.js';
 import { AdminNotificationService } from './admin-notification.service.js';
 import { AdminNotificationStreamHub } from './admin-notification.stream.js';
+import type { PrismaOperationalAlertRepository } from './operational-alert.repository.js';
 
 type LoggerLike = {
   error?(bindings: unknown, message?: string): void;
@@ -20,10 +21,11 @@ export type AdminNotificationRuntime = {
 export function createAdminNotificationRuntime(input: {
   databaseUrl?: string | undefined;
   logger?: LoggerLike | undefined;
+  operationalAlertRepository?: PrismaOperationalAlertRepository;
   prisma: PrismaClient;
 }): AdminNotificationRuntime {
   const streamHub = new AdminNotificationStreamHub();
-  const repository = new PrismaAdminNotificationRepository(input.prisma);
+  const repository = new PrismaAdminNotificationRepository(input.prisma, input.operationalAlertRepository);
   const bridge =
     input.databaseUrl === undefined || input.databaseUrl.trim() === ''
       ? null

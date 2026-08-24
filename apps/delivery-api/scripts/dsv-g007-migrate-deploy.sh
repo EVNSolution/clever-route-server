@@ -45,6 +45,10 @@ const { Client } = require('pg');
 
 async function main() {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
+  const timeoutSeconds = Number(process.env.G008_ONLINE_INDEX_TIMEOUT_SECONDS || '1800');
+  if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 60 || timeoutSeconds > 7200) {
+    throw new Error('G008_ONLINE_INDEX_TIMEOUT_SECONDS must be an integer between 60 and 7200');
+  }
   await client.connect();
   try {
     const exists = await client.query(
@@ -177,6 +181,85 @@ process.stdout.write(`${manifest.expectedAppliedThrough} ${manifest.schemaSha256
     echo "dsv-g007-migrate-deploy: resolving approved production baseline $migration_name"
     DATABASE_URL="$DATABASE_URL" "$prisma_bin" migrate resolve --applied "$migration_name"
   done < "$expected_file"
+}
+
+prepare_online_g008_indexes() {
+  (
+    cd "$api_root"
+    node <<'NODE'
+const { Client } = require('pg');
+
+async function main() {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  const timeoutSeconds = Number(process.env.G008_ONLINE_INDEX_TIMEOUT_SECONDS || '1800');
+  if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 60 || timeoutSeconds > 7200) {
+    throw new Error('G008_ONLINE_INDEX_TIMEOUT_SECONDS must be an integer between 60 and 7200');
+  }
+  await client.connect();
+  try {
+    await client.query("SET lock_timeout = '5s'");
+    await client.query('ALTER TABLE driver_event_attempts ADD COLUMN IF NOT EXISTS "transportRequestId" TEXT');
+    await client.query('ALTER TABLE driver_proof_media ADD COLUMN IF NOT EXISTS "idempotencyKey" VARCHAR(120)');
+    await client.query(`SET statement_timeout = '${timeoutSeconds}s'`);
+    const inspectIndex = (name) => client.query(`
+      SELECT i.indisready,
+             i.indisvalid,
+             i.indisunique,
+             ns.nspname AS schema_name,
+             tbl.relname AS table_name,
+             i.indpred IS NULL AS no_predicate,
+             i.indexprs IS NULL AS no_expressions,
+             ARRAY(
+               SELECT att.attname
+                 FROM unnest(i.indkey) WITH ORDINALITY AS key(attnum, position)
+                 JOIN pg_attribute att ON att.attrelid = i.indrelid AND att.attnum = key.attnum
+                ORDER BY key.position
+             ) AS columns
+        FROM pg_index i
+        JOIN pg_class idx ON idx.oid = i.indexrelid
+        JOIN pg_class tbl ON tbl.oid = i.indrelid
+        JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+       WHERE idx.relname = $1 AND ns.nspname = 'public'
+    `, [name]);
+    const matchesExpected = (index, table, expectedUnique, expectedColumns) => index
+      && index.indisready
+      && index.indisvalid
+      && index.indisunique === expectedUnique
+      && index.schema_name === 'public'
+      && index.table_name === table
+      && index.no_predicate
+      && index.no_expressions
+      && JSON.stringify(index.columns) === JSON.stringify(expectedColumns);
+    for (const [name, sql, table, expectedUnique, expectedColumns] of [
+      ['driver_event_attempts_shopId_transportRequestId_createdAt_idx', 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "driver_event_attempts_shopId_transportRequestId_createdAt_idx" ON driver_event_attempts("shopId", "transportRequestId", "createdAt")', 'driver_event_attempts', false, ['shopId', 'transportRequestId', 'createdAt']],
+      ['driver_proof_media_idempotency_scope_key', 'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "driver_proof_media_idempotency_scope_key" ON driver_proof_media("shopId", "driverId", "routePlanId", "deliveryStopId", "idempotencyKey")', 'driver_proof_media', true, ['shopId', 'driverId', 'routePlanId', 'deliveryStopId', 'idempotencyKey']],
+    ]) {
+      const estimate = await client.query('SELECT reltuples::bigint AS rows FROM pg_class WHERE oid = $1::regclass', [table]);
+      const before = await inspectIndex(name);
+      if (before.rows[0] && (!before.rows[0].indisready || !before.rows[0].indisvalid)) {
+        await client.query(`DROP INDEX CONCURRENTLY IF EXISTS "${name}"`);
+      } else if (before.rows[0] && !matchesExpected(before.rows[0], table, expectedUnique, expectedColumns)) {
+        throw new Error(`online index definition drift requires review: ${name}`);
+      }
+      const startedAt = Date.now();
+      await client.query(sql);
+      const after = await inspectIndex(name);
+      const index = after.rows[0];
+      if (!matchesExpected(index, table, expectedUnique, expectedColumns)) {
+        throw new Error(`online index verification failed: ${name}`);
+      }
+      process.stdout.write(`dsv-g007-migrate-deploy: online index ${name} rows=${estimate.rows[0]?.rows ?? 'unknown'} durationMs=${Date.now() - startedAt}\n`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
+NODE
+  )
 }
 
 case "$DSV_MIGRATION_MODE" in
@@ -322,5 +405,6 @@ esac
 echo "dsv-g007-migrate-deploy: validated $DSV_MIGRATION_MODE target $database_host/$database_name"
 if [[ "$DSV_MIGRATION_MODE" == "production" ]]; then
   run_production_baseline_if_approved
+  prepare_online_g008_indexes
 fi
 exec npm --prefix "$api_root" run prisma:migrate:deploy

@@ -24,6 +24,7 @@ type DriverRouteAccessPrismaClient = Pick<
 >;
 
 type DriverRoutePlanRecord = {
+  assignmentGeneration?: bigint;
   constraints: unknown;
   driver: {
     account: {
@@ -39,6 +40,7 @@ type DriverRoutePlanRecord = {
   id: string;
   name: string;
   planDate: Date;
+  routeGroupingChildVersions?: Array<{ id: string }>;
   shop: {
     shopDomain: string;
   };
@@ -46,6 +48,7 @@ type DriverRoutePlanRecord = {
 };
 
 const routePlanSelect = {
+  assignmentGeneration: true,
   constraints: true,
   driver: {
     select: {
@@ -59,6 +62,12 @@ const routePlanSelect = {
   id: true,
   name: true,
   planDate: true,
+  routeGroupingChildVersions: {
+    orderBy: { updatedAt: 'desc' as const },
+    select: { id: true },
+    take: 1,
+    where: { status: 'CURRENT' as const, supersededAt: null }
+  },
   shop: { select: { shopDomain: true } },
   status: true
 } as const;
@@ -308,6 +317,8 @@ function mapRoutePlan(
     return { status: 'NOT_FOUND' };
   }
 
+  const currentRouteVersion = routePlan.routeGroupingChildVersions?.[0];
+
   return {
     driverContext: {
       accountId: routePlan.driver.account.id,
@@ -316,6 +327,13 @@ function mapRoutePlan(
     },
     status: 'INVITED',
     routeAccess: {
+      ...(currentRouteVersion === undefined || routePlan.assignmentGeneration === undefined
+        ? {}
+        : {
+            assignmentGeneration: routePlan.assignmentGeneration.toString(),
+            driverContractVersion: 2 as const,
+            expectedRouteVersionId: currentRouteVersion.id
+          }),
       nextState: 'consent_required',
       routeContext: input.routeContext,
       routePlanId: routePlan.id

@@ -5,12 +5,12 @@ import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from './shop
 import { PrismaShopTokenRepository } from './shop-token.repository.js';
 import { ShopTokenService } from './shop-token.service.js';
 import { ShopifySessionTokenVerifier } from './session-token-verifier.js';
-import { ShopifyTokenExchangeClient } from './token-exchange.client.js';
+import { loadShopifyTokenExchangeTimeoutMs, ShopifyTokenExchangeClient } from './token-exchange.client.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from './shopify-api-version.js';
 import type { ShopifyAuthDependencies } from '../../routes/shopify-auth.routes.js';
 
 export type ShopifyAuthRuntimeEnv = ShopifyAppCredentialsEnv &
-  Partial<Record<'SHOPIFY_API_VERSION' | 'SHOPIFY_TOKEN_ENCRYPTION_KEY', string>>;
+  Partial<Record<'SHOPIFY_API_VERSION' | 'SHOPIFY_TOKEN_ENCRYPTION_KEY' | 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS', string>>;
 
 type CreateShopifyAuthDependenciesInput = {
   env: ShopifyAuthRuntimeEnv;
@@ -45,8 +45,8 @@ export function loadShopifyAuthDependencies(
     shopTokenService,
     tokenExchangeClient: new ShopifyTokenExchangeClient(
       input.fetchImpl === undefined
-        ? { appCredentials }
-        : { appCredentials, fetchImpl: input.fetchImpl }
+        ? { appCredentials, timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS) }
+        : { appCredentials, fetchImpl: input.fetchImpl, timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS) }
     )
   };
 }

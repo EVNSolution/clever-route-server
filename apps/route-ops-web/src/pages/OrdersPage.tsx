@@ -1960,9 +1960,9 @@ function formatPaymentMethodEvidence(order: CanonicalOrderDto): string | null {
     methodTitle.length > 0 &&
     methodId.length > 0 &&
     methodTitle.toLowerCase() !== methodId.toLowerCase()
-      ? `${methodTitle} · ${methodId}`
+      ? `${methodTitle} (${methodId})`
       : methodTitle || methodId || null;
-  return [method, family || null].filter(isPresent).join(" · ") || null;
+  return [method, family || null].filter(isPresent).join(", ") || null;
 }
 
 function formatRouteLabel(
@@ -2697,8 +2697,8 @@ function OrderDetailPanel({
                   {formatDiagnosticPathLabel(candidate.path, locale)}:{" "}
                   {candidate.valuePreview}
                   <small>
-                    {" "}
-                    · {humanizeToken(candidate.parseStatus, locale)}
+                    {" ("}
+                    {humanizeToken(candidate.parseStatus, locale)})
                   </small>
                 </li>
               ))}
@@ -2845,7 +2845,7 @@ export function OrderDetailChoiceDropdown({
 
 function formatChoiceOptionLabel(choice: MetadataChoice): string {
   if (choice.label === choice.value) return choice.label;
-  return `${choice.label} · ${choice.value}`;
+  return `${choice.label} (${choice.value})`;
 }
 
 export function normalizeOrderMetadataPatchForFields(

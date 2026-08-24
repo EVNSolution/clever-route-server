@@ -32,7 +32,7 @@ export type ShopifyOfflineTokenRefreshResult = {
 
 type ShopTokenServiceOptions = {
   encryptionKey: TokenEncryptionKey;
-  repository: Pick<PrismaShopTokenRepository, 'findByShopDomain' | 'upsertShopToken'>;
+  repository: Pick<PrismaShopTokenRepository, 'findByShopDomain' | 'updateRefreshedShopToken' | 'upsertShopToken'>;
   tokenRefreshClient?: {
     refreshOfflineToken(input: {
       appId?: string | undefined;
@@ -94,8 +94,7 @@ export class ShopTokenService {
     }
 
     if (this.shouldRefreshAccessToken(row)) {
-      const refreshed = await this.refreshAccessToken(row);
-      if (refreshed !== null) return refreshed;
+      return this.refreshAccessToken(row);
     }
 
     return decryptSecret(row.adminAccessTokenCiphertext, {
@@ -130,20 +129,33 @@ export class ShopTokenService {
     });
     const now = this.options.now?.() ?? new Date();
 
-    await this.storeAdminApiToken({
+    const encryptedAccessToken = encryptSecret(refreshed.accessToken, {
+      aad: tokenAad(row.shopDomain, 'access'),
+      key: this.options.encryptionKey
+    });
+    const nextRefreshToken = refreshed.refreshToken ?? refreshToken;
+    const persisted = await this.options.repository.updateRefreshedShopToken({
       appId: row.appId,
-      accessToken: refreshed.accessToken,
-      accessTokenExpiresAt: secondsFromNow(now, refreshed.expiresIn),
+      adminAccessTokenCiphertext: encryptedAccessToken,
+      adminAccessTokenExpiresAt: secondsFromNow(now, refreshed.expiresIn),
+      adminRefreshTokenCiphertext: encryptSecret(nextRefreshToken, {
+        aad: tokenAad(row.shopDomain, 'refresh'),
+        key: this.options.encryptionKey
+      }),
+      adminRefreshTokenExpiresAt: secondsFromNow(now, refreshed.refreshTokenExpiresIn) ?? row.adminRefreshTokenExpiresAt,
       apiVersion: row.apiVersion,
-      refreshToken: refreshed.refreshToken ?? refreshToken,
-      refreshTokenExpiresAt: secondsFromNow(now, refreshed.refreshTokenExpiresIn) ?? row.adminRefreshTokenExpiresAt,
       shopDomain: row.shopDomain,
       shopifyShopGid: row.shopifyShopGid,
       tokenIssuedAt: now,
       tokenScopes: normalizeScopes(refreshed.scope.split(','))
-    });
+    }, row);
 
-    return refreshed.accessToken;
+    return persisted?.adminAccessTokenCiphertext == null
+      ? null
+      : decryptSecret(persisted.adminAccessTokenCiphertext, {
+          aad: tokenAad(row.shopDomain, 'access'),
+          key: this.options.encryptionKey
+        });
   }
 }
 

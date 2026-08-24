@@ -88,10 +88,14 @@ export type AdminNotificationSeverity =
   | "warning";
 
 export type AdminNotificationDto = {
+  acknowledgedAt?: string | null;
   body: string | null;
   createdAt: string;
   href: string | null;
   id: string;
+  alertCycleId?: string | null;
+  lastObservedAt?: string | null;
+  openedAt?: string | null;
   orderId: string | null;
   payload:
     | Record<string, unknown>
@@ -101,10 +105,115 @@ export type AdminNotificationDto = {
     | boolean
     | null;
   readAt: string | null;
+  resolvedAt?: string | null;
   routePlanId: string | null;
   severity: AdminNotificationSeverity;
   title: string;
   type: string;
+};
+
+export type OperationalHealthState =
+  | "DEGRADED"
+  | "DISABLED"
+  | "HEALTHY"
+  | "UNKNOWN";
+
+export type OperationalRuntimeComponentDto = {
+  attemptCount?: number | null;
+  failedCount?: number | null;
+  lastErrorCode?: string | null;
+  lastSuccessAt?: string | null;
+  oldestPendingAt?: string | null;
+  pendingCount?: number | null;
+  state: OperationalHealthState;
+};
+
+export type OperationalRuntimeHealthDto = {
+  alertStream?: OperationalRuntimeComponentDto | null;
+  emailOutbox?: OperationalRuntimeComponentDto | null;
+  emailSender?: OperationalRuntimeComponentDto | null;
+  externalLogSink?: OperationalRuntimeComponentDto | null;
+  observedAt?: string | null;
+  syncDetector?: OperationalRuntimeComponentDto | null;
+  trackingStream?: OperationalRuntimeComponentDto | null;
+  webhookConsumer?: OperationalRuntimeComponentDto | null;
+  webhookIngest?: OperationalRuntimeComponentDto | null;
+};
+
+export type EmailRuntimeHealthDto = {
+  automatic?: {
+    senderConfigured: boolean;
+    workerEnabled: boolean;
+  };
+  configured: boolean;
+  manual?: {
+    brevoConfigured: boolean;
+  };
+  outbox: {
+    deadLetter: number;
+    lastErrorCode?: string | null;
+    lastSuccessAt?: string | null;
+    oldestPendingAt: string | null;
+    pending: number;
+    processing: number;
+    retryWait: number;
+  };
+  state: Exclude<OperationalHealthState, "UNKNOWN">;
+};
+
+export type RuntimeHealthDto = {
+  email?: EmailRuntimeHealthDto;
+} & OperationalRuntimeHealthDto;
+
+export type RouteOperationalAlertDto = {
+  acknowledgedAt: string | null;
+  id: string;
+  lastObservedAt: string;
+  openedAt: string;
+  resolvedAt: string | null;
+  routePlanId?: string | null;
+  severity: "CRITICAL" | "WARNING";
+  type: string;
+};
+
+export type RouteOperationalStateDto = {
+  activeAlerts?: RouteOperationalAlertDto[];
+  deviceProgress?: {
+    completedStopCount?: number;
+    currentStopSequence?: number | null;
+    locallyFinished?: boolean;
+    totalStopCount?: number;
+  } | null;
+  observedAt?: string;
+  physicalPosition?: {
+    accuracyMeters: number | null;
+    distanceMeters: number | null;
+    freshness: "AGING" | "FRESH" | "STALE" | "UNKNOWN";
+    nearestStopSequence: number | null;
+    occurredAt: string;
+    proximityPolicyVersion: number;
+    proximityThresholdMeters?: number;
+    receivedAt: string;
+    reliableForProximity?: boolean;
+    withinProximityThreshold?: boolean | null;
+  } | null;
+  routePlanId?: string;
+  routeStatus?: string;
+  serverProgress?: {
+    deliveredStopCount: number;
+    failedStopCount: number;
+    lastConfirmedAt: string | null;
+    resolvedStopCount: number;
+    totalStopCount: number;
+  };
+  syncHealth?: {
+    finishPending?: boolean;
+    lastAcknowledgedAt?: string | null;
+    lastErrorCode?: string | null;
+    oldestQueuedAt?: string | null;
+    queueDepth?: number | null;
+    state?: "BLOCKED" | "DELAYED" | "HEALTHY" | "UNKNOWN";
+  } | null;
 };
 
 export type CanonicalOrderDto = {
@@ -207,6 +316,7 @@ export type RoutePlanSummaryDto = {
   itemSummary?: RouteItemSummaryDto;
   missingCoordinates: number;
   name: string;
+  operationalState?: RouteOperationalStateDto | null;
   planDate: string;
   routeEndMode: "END_AT_LAST_STOP" | "RETURN_TO_DEPOT";
   routeGroupingChild?: {
@@ -594,8 +704,17 @@ export type OrdersResponse = {
 };
 
 export type NotificationsResponse = {
+  activeCount?: number;
   notifications: AdminNotificationDto[];
   unreadCount: number;
+};
+
+export type OperationalHealthResponse = {
+  runtimeHealth: RuntimeHealthDto;
+};
+
+export type RouteOperationalStateResponse = {
+  operationalState: RouteOperationalStateDto;
 };
 
 export type NotificationMutationResponse = {

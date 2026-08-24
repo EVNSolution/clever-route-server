@@ -160,6 +160,49 @@ describe('Driver proof media route', () => {
     }
   });
 
+  test('passes the canonical durable idempotency key to authenticated proof storage', async () => {
+    const { app, storeProofMedia } = await createAppHarness();
+    const request = multipartUploadRequest();
+    const idempotencyKey = 'proof-media-v1:0123456789abcdef0123456789abcdef';
+
+    try {
+      const response = await app.inject({
+        ...request,
+        headers: { ...request.headers, authorization: `Bearer ${driverToken()}`, 'idempotency-key': idempotencyKey },
+        method: 'POST',
+        url: '/driver/proof-media'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(storeProofMedia).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects malformed proof idempotency keys before parsing or storage', async () => {
+    const { app, storeProofMedia } = await createAppHarness();
+    const request = multipartUploadRequest();
+
+    try {
+      const response = await app.inject({
+        ...request,
+        headers: { ...request.headers, authorization: `Bearer ${driverToken()}`, 'idempotency-key': 'retry user@example.test token=secret' },
+        method: 'POST',
+        url: '/driver/proof-media'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'INVALID_IDEMPOTENCY_KEY', message: 'Proof media idempotency key is invalid' }
+      });
+      expect(storeProofMedia).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects non-image proof media content before storage', async () => {
     const { app, storeProofMedia } = await createAppHarness();
 
@@ -318,6 +361,7 @@ type StoreProofMedia = (input: {
   driverId: string;
   fileBytes: Buffer;
   filename: string;
+  idempotencyKey?: string;
   routePlanId: string;
   shopDomain: string;
   shopId: string;
@@ -408,6 +452,8 @@ async function createAppHarness(input: {
 
   const dependencies: ProofMediaDependencies = {
     driverEventService: {
+      admitDriverEventAttempt: vi.fn(() => Promise.resolve({ attemptId: 'attempt-id', attemptNumber: 1 })),
+      finalizeDriverEventAttempt: vi.fn(() => Promise.resolve()),
       recordDriverEvent: vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'unused' }))
     },
     driverTokenAccessRepository: {

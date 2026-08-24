@@ -49,6 +49,13 @@ services:
       NODE_ENV: production
       PORT: 3000
     restart: unless-stopped
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:-ap-northeast-2}
+        awslogs-group: ${DRIVER_EVENT_CLOUDWATCH_LOG_GROUP:-/clever/route-ops/delivery-api}
+        awslogs-create-group: "false"
+        tag: route-ops-api/{{.ID}}
     healthcheck:
       test:
         - CMD-SHELL

@@ -103,6 +103,39 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('GET /docs/openapi.yaml publishes the additive driver route contract v2 context', async () => {
+    const app = await buildApp();
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const context = response.body.slice(
+        response.body.indexOf('    DriverRouteAccessContext:'),
+        response.body.indexOf('    DriverAccessTokenData:')
+      );
+      expect(context).toContain('assignmentGeneration:');
+      expect(context).toContain('driverContractVersion:');
+      expect(context).toContain('expectedRouteVersionId:');
+      expect(context).toContain('const: 2');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml publishes monotonic sync and operational health contracts', async () => {
+    const app = await buildApp();
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      expect(response.body).toContain('/driver/sync-health:');
+      expect(response.body).toContain('/driver/sync-health/takeover:');
+      expect(response.body).toContain('/admin/route-plans/{routePlanId}/operational-state:');
+      expect(response.body).toContain('/admin/ui/app/api/runtime-health:');
+      expect(response.body).toContain('DriverSyncHeartbeatRequest:');
+      expect(response.body).toContain('RouteOperationalState:');
+      expect(response.body).toContain('EmailRuntimeHealthEnvelope:');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml documents route stop location diagnostics and strict override coordinates', async () => {
     const app = await buildApp();
 
@@ -560,6 +593,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/send' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/departure-time' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/driver' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/operational-state' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/options' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/refresh-order-data' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/start-time' },

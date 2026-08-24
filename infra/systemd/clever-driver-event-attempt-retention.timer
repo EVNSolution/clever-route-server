@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly CLEVER route retention cleanup with bounded continuation
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5m
+Unit=clever-driver-event-attempt-retention.service
+
+[Install]
+WantedBy=timers.target

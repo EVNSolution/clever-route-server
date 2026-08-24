@@ -26,6 +26,7 @@ type ShopifyTokenExchangeClientOptions = {
   clientId?: string;
   clientSecret?: string;
   fetchImpl?: FetchLike;
+  timeoutMs?: number;
 };
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -41,9 +42,11 @@ type ShopifyTokenExchangeResponse = {
 export class ShopifyTokenExchangeClient {
   private readonly fetchImpl: FetchLike;
   private readonly appCredentials: ShopifyTokenExchangeCredential[];
+  private readonly timeoutMs: number;
 
   constructor(options: ShopifyTokenExchangeClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.timeoutMs = normalizeTimeout(options.timeoutMs);
     this.appCredentials =
       options.appCredentials ??
       [
@@ -70,7 +73,7 @@ export class ShopifyTokenExchangeClient {
       subject_token_type: 'urn:ietf:params:oauth:token-type:id_token'
     });
 
-    const response = await this.fetchImpl(`https://${shopDomain}/admin/oauth/access_token`, {
+    const { payload, response } = await this.fetchJsonWithDeadline(`https://${shopDomain}/admin/oauth/access_token`, {
       body,
       headers: {
         Accept: 'application/json',
@@ -79,7 +82,6 @@ export class ShopifyTokenExchangeClient {
       method: 'POST'
     });
 
-    const payload = (await readJson(response)) as ShopifyTokenExchangeResponse;
     if (!response.ok) {
       throw new Error('Shopify token exchange failed');
     }
@@ -101,7 +103,7 @@ export class ShopifyTokenExchangeClient {
       refresh_token: input.refreshToken
     });
 
-    const response = await this.fetchImpl(`https://${shopDomain}/admin/oauth/access_token`, {
+    const { payload, response } = await this.fetchJsonWithDeadline(`https://${shopDomain}/admin/oauth/access_token`, {
       body,
       headers: {
         Accept: 'application/json',
@@ -110,7 +112,6 @@ export class ShopifyTokenExchangeClient {
       method: 'POST'
     });
 
-    const payload = (await readJson(response)) as ShopifyTokenExchangeResponse;
     if (!response.ok) {
       throw new Error('Shopify token refresh failed');
     }
@@ -126,6 +127,50 @@ export class ShopifyTokenExchangeClient {
     }
     return credential;
   }
+
+  private async fetchJsonWithDeadline(
+    url: string,
+    init: RequestInit
+  ): Promise<{ payload: ShopifyTokenExchangeResponse; response: Response }> {
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new ShopifyTokenExchangeTimeoutError());
+      }, this.timeoutMs);
+    });
+    try {
+      return await Promise.race([this.fetchImpl(url, { ...init, signal: controller.signal }).then(async (response) => ({
+        payload: await readJson(response),
+        response
+      })), deadline]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
+  }
+}
+
+export class ShopifyTokenExchangeTimeoutError extends Error {
+  readonly code = 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT';
+
+  constructor() {
+    super('Shopify token exchange timed out');
+    this.name = 'ShopifyTokenExchangeTimeoutError';
+  }
+}
+
+export function loadShopifyTokenExchangeTimeoutMs(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') return 3_000;
+  return normalizeTimeout(Number(value));
+}
+
+function normalizeTimeout(timeoutMs: number | undefined): number {
+  const value = timeoutMs ?? 3_000;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 60_000) {
+    throw new Error('Shopify token exchange timeout must be between 1 and 60000 milliseconds');
+  }
+  return value;
 }
 
 function requireOption(value: string | undefined, name: string): string {
@@ -155,10 +200,35 @@ function parseTokenExchangeResponse(
   };
 }
 
-async function readJson(response: Response): Promise<unknown> {
+async function readJson(response: Response): Promise<ShopifyTokenExchangeResponse> {
   try {
-    return await response.json();
+    const reader = response.body?.getReader();
+    if (reader === undefined) return {};
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      const bytes = chunk.value as unknown;
+      if (!(bytes instanceof Uint8Array)) {
+        throw new Error('Shopify token exchange returned an invalid response body');
+      }
+      totalBytes += bytes.byteLength;
+      if (totalBytes > 64 * 1024) {
+        await reader.cancel();
+        throw new Error('Shopify token exchange response exceeded 65536 bytes');
+      }
+      chunks.push(bytes);
+    }
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes)) as ShopifyTokenExchangeResponse;
   } catch (error) {
+    if (error instanceof Error && error.message.includes('exceeded 65536 bytes')) throw error;
     throw new Error('Shopify token exchange returned invalid JSON', { cause: error });
   }
 }

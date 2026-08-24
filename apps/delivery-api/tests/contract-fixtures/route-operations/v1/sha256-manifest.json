@@ -1,0 +1,25 @@
+{
+  "files": [
+    {
+      "path": "fixtures/receipt.applied.json",
+      "sha256": "a4153ed500870ca58f1d1ca16566ef1accfb54466a81bd3b36a144a023d86f62"
+    },
+    {
+      "path": "fixtures/route-assignment-changed.error.json",
+      "sha256": "e570489593f7141dd70005261a5e06770970fb7456a60c8df6eebb3f9a8b78fa"
+    },
+    {
+      "path": "fixtures/route-completed.applied.json",
+      "sha256": "146e81c56efd40448d8be39c4a8d742ccba4a47909c0fea2f29c920ecb428aa2"
+    },
+    {
+      "path": "fixtures/route-completed.request.json",
+      "sha256": "04d857a56747966d83d9f812f03cb343b994460a43a3d4a8941ae8313a5f89b5"
+    },
+    {
+      "path": "fixtures/route-version-mismatch.error.json",
+      "sha256": "0dff037fa6be5b7383d02aed44c18cf5b82e433c729e5dc554e695bb681afc40"
+    }
+  ],
+  "schemaVersion": "clever.route-operations.v1"
+}

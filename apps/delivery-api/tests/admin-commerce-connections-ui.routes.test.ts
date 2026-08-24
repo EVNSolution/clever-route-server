@@ -6010,6 +6010,46 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("fails closed before reading operational state when the scoped route fallback is missing", async () => {
+    const getRoutePlanDetail = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["getRoutePlanDetail"]
+    >(() => Promise.resolve(null));
+    const getOperationalState = vi.fn();
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      operationalStateService: { get: getOperationalState },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([])),
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/routes/foreign-route-id/operational-state?shopDomain=tenant-a.example.test",
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(getRoutePlanDetail).toHaveBeenCalledWith({
+        routePlanId: "foreign-route-id",
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(getOperationalState).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test("returns not found when reading latest route optimization job for a missing route", async () => {
     const routeOptimizationJobService = routeOptimizationJobServiceMock({
       findLatestJob: vi.fn(() => Promise.resolve(null)),
@@ -7240,6 +7280,7 @@ async function createUiHarness(
     orderIngestAuditService: AdminCommerceConnectionsUiDependencies["orderIngestAuditService"];
     orderSyncService: AdminCommerceConnectionsUiDependencies["orderSyncService"];
     notificationService: AdminCommerceConnectionsUiDependencies["notificationService"];
+    operationalStateService: AdminCommerceConnectionsUiDependencies["operationalStateService"];
     pairingCodeService:
       | AdminCommerceConnectionsUiDependencies["pairingCodeService"]
       | null;
@@ -7358,6 +7399,9 @@ async function createUiHarness(
     ...(overrides.notificationService === undefined
       ? {}
       : { notificationService: overrides.notificationService }),
+    ...(overrides.operationalStateService === undefined
+      ? {}
+      : { operationalStateService: overrides.operationalStateService }),
     ...(overrides.now === undefined ? {} : { now: overrides.now }),
     publicBaseUrl: "https://clever-route-api.cleversystem.ai",
     ...(overrides.routeOptimizationJobService === undefined

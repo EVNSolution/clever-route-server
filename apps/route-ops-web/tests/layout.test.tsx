@@ -13,6 +13,7 @@ import {
 } from '../src/components/TopbarNotifications';
 import { OrdersPage } from '../src/pages/OrdersPage';
 import {
+  EmailRuntimeHealthDetails,
   SettingsPage,
   buildSettingsSaveInput,
   getNextTemplateModalFocusIndex
@@ -59,12 +60,12 @@ describe('route ops layout components', () => {
   test('TopbarNotifications renders an accessible empty dropdown shell', () => {
     const html = renderToStaticMarkup(<TopbarNotifications initialOpen />);
 
-    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain('aria-haspopup="dialog"');
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('class="notification-menu"');
     expect(html).toContain('Notifications');
     expect(html).toContain('No notifications yet.');
-    expect(html).toContain('All caught up');
+    expect(html).toContain('0 active');
   });
 
   test('TopbarNotifications renders unread badges and critical route-change items', () => {
@@ -74,6 +75,7 @@ describe('route ops layout components', () => {
         createdAt: '2026-06-05T06:00:00.000Z',
         href: '/admin/ui/app/routes/route-1',
         id: 'address-change',
+        alertCycleId: 'cycle-1',
         read: false,
         title: 'Address changed in Woo for #1234 after it was added to Route A.',
         tone: 'critical'
@@ -93,6 +95,9 @@ describe('route ops layout components', () => {
     expect(html).toContain('notification-item--critical');
     expect(html).toContain('Address changed in Woo');
     expect(html).toContain('Review route order and geometry.');
+    expect(html).toContain('>Unread<');
+    expect(html).toContain('>Active<');
+    expect(html).toContain('>Acknowledge<');
     expect(html).toContain('dateTime="2026-06-05T06:00:00.000Z"');
     expect(html).not.toContain('disabled=""');
   });
@@ -108,6 +113,26 @@ describe('route ops layout components', () => {
 
     expect(html).toContain('45 unread');
     expect(html).toContain('class="notification-badge"');
+  });
+
+  test('TopbarNotifications keeps read, acknowledgement, and resolution distinct', () => {
+    const html = renderToStaticMarkup(
+      <TopbarNotifications
+        initialOpen
+        items={[
+          { acknowledgedAt: '2026-08-24T01:10:00.000Z', alertCycleId: 'cycle-ack', id: 'ack', read: false, title: 'Acknowledged alert', tone: 'warning' },
+          { alertCycleId: 'cycle-resolved', id: 'resolved', read: true, resolvedAt: '2026-08-24T01:20:00.000Z', title: 'Resolved alert', tone: 'success' },
+        ]}
+      />,
+    );
+
+    expect(html).toContain('>Unread<');
+    expect(html).toContain('>Acknowledged<');
+    expect(html).toContain('>Read<');
+    expect(html).toContain('>Resolved<');
+    expect(html).toContain('1 active');
+    expect(html).not.toContain('>Acknowledge<');
+    expect(html).not.toContain('·');
   });
 
   test('TopbarNotifications surfaces notification load failures without claiming an empty inbox', () => {
@@ -135,10 +160,12 @@ describe('route ops layout components', () => {
 
   test('startNotificationRefresh opens the stream, coalesces invalidation bursts, and closes cleanup', async () => {
     let onNotificationsChanged: (() => void) | undefined;
+    let onReconnected: (() => void) | undefined;
     const close = vi.fn();
     const openStream = vi.fn(
-      (input: { onNotificationsChanged: () => void }) => {
+      (input: { onNotificationsChanged: () => void; onReconnected?: () => void }) => {
         onNotificationsChanged = input.onNotificationsChanged;
+        onReconnected = input.onReconnected;
         return { close };
       },
     );
@@ -157,6 +184,7 @@ describe('route ops layout components', () => {
 
     expect(openStream).toHaveBeenCalledWith({
       onNotificationsChanged: expect.any(Function),
+      onReconnected: expect.any(Function),
     });
     expect(loadNotifications).toHaveBeenCalledTimes(1);
     onNotificationsChanged?.();
@@ -165,12 +193,17 @@ describe('route ops layout components', () => {
     resolvers.shift()?.();
     await Promise.resolve();
     expect(loadNotifications).toHaveBeenCalledTimes(2);
+    onReconnected?.();
+    expect(loadNotifications).toHaveBeenCalledTimes(2);
+    resolvers.shift()?.();
+    await Promise.resolve();
+    expect(loadNotifications).toHaveBeenCalledTimes(3);
 
     controller.close();
     onNotificationsChanged?.();
     resolvers.shift()?.();
     await Promise.resolve();
-    expect(loadNotifications).toHaveBeenCalledTimes(2);
+    expect(loadNotifications).toHaveBeenCalledTimes(3);
     expect(close).toHaveBeenCalledTimes(1);
   });
 
@@ -422,6 +455,16 @@ describe('route ops layout components', () => {
     expect(html).toContain('Store settings');
     expect(html).not.toContain('Language selection');
     expect(html).toContain('Stop dwell minutes');
+    expect(html).toContain('Delivery runtime health');
+    expect(html).toContain('Email sender unknown');
+    expect(html).toContain('Email outbox unknown');
+    expect(html).toContain('Webhook ingest unknown');
+    expect(html).toContain('Webhook consumer unknown');
+    expect(html).toContain('Sync detector unknown');
+    expect(html).toContain('Tracking stream unknown');
+    expect(html).toContain('Alert stream unknown');
+    expect(html).toContain('External logs unknown');
+    expect(html).toContain('No healthy state is inferred.');
     expect(html).toContain('Nearby stop threshold');
     expect(html).toContain('Customer email notification settings');
     expect(html).toContain('Add reminder');
@@ -436,6 +479,39 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('17:00');
     expect(html).not.toContain('Time window');
     expect(html).not.toContain('Français');
+  });
+
+  test('email runtime attempt evidence remains visible as label-value diagnostics', () => {
+    const html = renderToStaticMarkup(
+      <EmailRuntimeHealthDetails
+        health={{
+          automatic: { senderConfigured: true, workerEnabled: false },
+          configured: true,
+          manual: { brevoConfigured: true },
+          outbox: {
+            deadLetter: 1,
+            lastErrorCode: 'SMTP_TIMEOUT',
+            lastSuccessAt: '2026-08-24T01:00:00.000Z',
+            oldestPendingAt: '2026-08-24T01:30:00.000Z',
+            pending: 2,
+            processing: 1,
+            retryWait: 3,
+          },
+          state: 'DEGRADED',
+        }}
+        locale="en-CA"
+      />,
+    );
+
+    expect(html).toContain('aria-label="Email delivery attempt health"');
+    expect(html).toContain('<dt>Automatic sender</dt><dd>Ready</dd>');
+    expect(html).toContain('<dt>Automatic worker</dt><dd>Unavailable</dd>');
+    expect(html).toContain('<dt>Manual email provider</dt><dd>Ready</dd>');
+    expect(html).toContain('<dt>Pending</dt><dd>2</dd>');
+    expect(html).toContain('<dt>Retrying</dt><dd>3</dd>');
+    expect(html).toContain('<dt>Terminal failures</dt><dd>1</dd>');
+    expect(html).toContain('<dt>Last error code</dt><dd>SMTP_TIMEOUT</dd>');
+    expect(html).not.toContain('·');
   });
 
   test('Settings page renders Korean page copy and provider labels', () => {

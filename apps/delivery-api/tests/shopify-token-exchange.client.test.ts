@@ -169,4 +169,76 @@ describe('ShopifyTokenExchangeClient', () => {
       })
     ).rejects.toThrow('Shopify token exchange failed');
   });
+
+  test.each(['exchange', 'refresh'] as const)('bounds abort-ignoring %s requests with a stable timeout', async (operation) => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const client = new ShopifyTokenExchangeClient({
+        clientId: 'client-id-123',
+        clientSecret: 'shared-secret-456',
+        fetchImpl: (_url, init) => {
+          signal = init.signal ?? undefined;
+          return new Promise<Response>(() => undefined);
+        },
+        timeoutMs: 1_000
+      });
+      const request = operation === 'exchange'
+        ? client.exchangeSessionTokenForOfflineToken({
+            sessionToken: 'secret-session-token',
+            shopDomain: 'example.myshopify.com'
+          })
+        : client.refreshOfflineToken({
+            refreshToken: 'secret-refresh-token',
+            shopDomain: 'example.myshopify.com'
+          });
+      const rejected = expect(request).rejects.toMatchObject({
+        code: 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT',
+        name: 'ShopifyTokenExchangeTimeoutError'
+      });
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      await rejected;
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('keeps the deadline active while a response body stalls after headers', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new ShopifyTokenExchangeClient({
+        clientId: 'client-id-123',
+        clientSecret: 'shared-secret-456',
+        fetchImpl: () => Promise.resolve(new Response(new ReadableStream({ pull: () => new Promise(() => undefined) }))),
+        timeoutMs: 1_000
+      });
+      const request = client.exchangeSessionTokenForOfflineToken({
+        sessionToken: 'secret-session-token',
+        shopDomain: 'example.myshopify.com'
+      });
+      const rejected = expect(request).rejects.toMatchObject({ code: 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT' });
+      await vi.advanceTimersByTimeAsync(1_001);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('rejects token responses above the bounded JSON body size', async () => {
+    const client = new ShopifyTokenExchangeClient({
+      clientId: 'client-id-123',
+      clientSecret: 'shared-secret-456',
+      fetchImpl: () => Promise.resolve(new Response(JSON.stringify({
+        access_token: 'x'.repeat(65_537),
+        scope: 'read_orders'
+      })))
+    });
+
+    await expect(client.exchangeSessionTokenForOfflineToken({
+      sessionToken: 'secret-session-token',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toThrow('response exceeded 65536 bytes');
+  });
 });

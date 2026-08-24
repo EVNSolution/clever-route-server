@@ -24,7 +24,10 @@ export class ShopifyAdminGraphqlClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async request<TData = unknown>(request: ShopifyAdminGraphqlRequest): Promise<TData> {
+  async request<TData = unknown>(
+    request: ShopifyAdminGraphqlRequest,
+    options: { signal?: AbortSignal | undefined } = {}
+  ): Promise<TData> {
     assertReadOnlyGraphqlOperation(request.query);
 
     const response = await this.fetchImpl(this.endpointUrl(), {
@@ -37,7 +40,8 @@ export class ShopifyAdminGraphqlClient {
         'Content-Type': 'application/json',
         'X-Shopify-Access-Token': this.options.accessToken
       },
-      method: 'POST'
+      method: 'POST',
+      ...(options.signal === undefined ? {} : { signal: options.signal })
     });
 
     const payload = (await readJson(response)) as ShopifyGraphqlResponse<TData>;

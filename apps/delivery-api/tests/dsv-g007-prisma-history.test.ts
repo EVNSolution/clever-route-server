@@ -163,7 +163,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(83);
+    expect(migrations).toHaveLength(94);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -372,7 +372,7 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260819223000_add_custom_route_stop_source')).toBeLessThan(
       migrations.indexOf('20260820093000_own_virtual_route_group_orders')
     );
-    expect(migrations.at(-1)).toBe('20260820093000_own_virtual_route_group_orders');
+    expect(migrations.at(-1)).toBe('20260824240000_preserve_shop_redaction_receipts');
   });
 
   test('adds driver destination notes without rewriting existing customer profiles', async () => {
@@ -542,7 +542,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('schema preserves historical DB defaults instead of planning default drops', async () => {
     const schema = await readFile(schemaPath, 'utf8');
 
-    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(38);
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(44);
     expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(14);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });

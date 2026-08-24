@@ -69,6 +69,36 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     );
   });
 
+  test('skips a permanently redacted Shopify identity before any canonical write', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0, tombstonedOrder: true });
+    const repository = createOrderSyncRepository(prisma);
+
+    await expect(repository.upsertOrderWithDeliveryStop({
+      appId: 'clever',
+      shopDomain: 'example.myshopify.com',
+      synced: syncedOrder()
+    })).resolves.toEqual({
+      orderId: 'gid://shopify/Order/123',
+      reason: 'ORDER_PRIVACY_REDACTED',
+      status: 'skipped',
+      stopId: null
+    });
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.shopifyOrderRedactionTombstone.findUnique).toHaveBeenCalledWith({
+      select: { id: true },
+      where: {
+        appId_shopId_shopifyOrderLegacyId: {
+          appId: 'clever',
+          shopId: 'shop-id',
+          shopifyOrderLegacyId: 123n
+        }
+      }
+    });
+    expect(prisma.order.findFirst).not.toHaveBeenCalled();
+    expect(prisma.order.upsert).not.toHaveBeenCalled();
+    expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+  });
+
   test('returns every route membership and keeps planned orders eligible for another plan', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 2 });
     const repository = createOrderSyncRepository(prisma);
@@ -1636,8 +1666,10 @@ function createOrderSyncRepository(
 function createPrismaHarness(input: {
   existingOrder: ({ id: string; sourceUpdatedAt?: Date | null; updatedAtShopify: Date | null; deliveryFacts?: Array<Record<string, unknown>>; deliveryStops?: Array<Record<string, unknown>> } & Record<string, unknown>) | null;
   routeStopCount: number;
+  tombstonedOrder?: boolean;
 }): {
   prisma: {
+    $queryRaw: ReturnType<typeof vi.fn>;
     $transaction: ReturnType<typeof vi.fn>;
     adminNotification: { create: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
     commerceConnectionOrderMapping: { findUnique: ReturnType<typeof vi.fn> };
@@ -1650,6 +1682,8 @@ function createPrismaHarness(input: {
       upsert: ReturnType<typeof vi.fn>;
     };
     orderDeliveryFact: { findMany: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
+    shopifyOrderRedactionTombstone: { findUnique: ReturnType<typeof vi.fn> };
+    shopifyShopRedactionTombstone: { findUnique: ReturnType<typeof vi.fn> };
     shop: {
       create?: ReturnType<typeof vi.fn>;
       findFirst: ReturnType<typeof vi.fn>;
@@ -1659,6 +1693,7 @@ function createPrismaHarness(input: {
 } {
   const orderRecord = canonicalOrderRecord(input.routeStopCount);
   const prisma = {
+    $queryRaw: vi.fn(() => Promise.resolve([{ pg_advisory_xact_lock: null }])),
     $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prisma)),
     adminNotification: {
       create: vi.fn((createInput: { data: Record<string, unknown> }) =>
@@ -1696,6 +1731,10 @@ function createPrismaHarness(input: {
       findMany: vi.fn(() => Promise.resolve([])),
       upsert: vi.fn(() => Promise.resolve({ id: 'fact-id' }))
     },
+    shopifyOrderRedactionTombstone: {
+      findUnique: vi.fn(() => Promise.resolve(input.tombstonedOrder === true ? { id: 'tombstone-id' } : null))
+    },
+    shopifyShopRedactionTombstone: { findUnique: vi.fn(() => Promise.resolve(null)) },
     shop: {
       findFirst: vi.fn(() => Promise.resolve({ id: 'shop-id' })),
       findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' }))

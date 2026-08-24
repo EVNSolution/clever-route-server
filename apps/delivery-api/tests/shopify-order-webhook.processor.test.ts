@@ -16,13 +16,16 @@ describe('ShopifyOrderWebhookProcessor', () => {
   test('refetches fulfilled order webhooks through mapper/upsert without marking stop delivered', async () => {
     const harness = createHarness({ graphqlNode: orderNode({ displayFulfillmentStatus: 'FULFILLED' }) });
 
-    await expect(harness.processor.processClaimedEvent(orderWebhook())).resolves.toBeUndefined();
+    await expect(harness.processor.processClaimedEvent(orderWebhook({
+      payload: { orderId: 'gid://shopify/Order/123', redacted: true, schema: 'shopify_order_reference_v1' }
+    }))).resolves.toBeUndefined();
 
     expect(harness.graphqlRequests[0]).toEqual(
       expect.objectContaining({ variables: { id: 'gid://shopify/Order/123' } })
     );
     const upsertInput = harness.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
     expect(upsertInput?.synced.order.fulfillmentStatus).toBe('FULFILLED');
+    expect(upsertInput?.webhookClaim).toEqual({ eventId: 'event-row-id', leaseToken: 'lease-token' });
     expect(upsertInput?.synced.deliveryStop).not.toEqual(expect.objectContaining({ status: 'DELIVERED' }));
     expect(harness.markOrderWebhookProcessed).toHaveBeenCalledWith(expect.objectContaining({ webhookId: 'webhook-1' }));
   });
@@ -81,6 +84,28 @@ describe('ShopifyOrderWebhookProcessor', () => {
       expect(timeout.markOrderWebhookFailed).toHaveBeenCalledWith(
         expect.objectContaining({ error: 'TRANSIENT:ORDER_WEBHOOK_PROCESSING_TIMEOUT' })
       );
+      expect(timeout.graphqlSignals[0]?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('fences an abort-ignoring late GraphQL completion with the original webhook claim', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveGraphql!: (value: { node: ShopifyOrderNode | null }) => void;
+      const graphqlResponse = new Promise<{ node: ShopifyOrderNode | null }>((resolve) => {
+        resolveGraphql = resolve;
+      });
+      const harness = createHarness({ graphqlResponse });
+      const processing = harness.processor.processClaimedEvent(orderWebhook());
+      await vi.advanceTimersByTimeAsync(3_000);
+      await processing;
+      resolveGraphql({ node: orderNode() });
+      await vi.waitFor(() => expect(harness.upsertOrderWithDeliveryStop).toHaveBeenCalledOnce());
+      expect(harness.upsertOrderWithDeliveryStop).toHaveBeenCalledWith(expect.objectContaining({
+        webhookClaim: { eventId: 'event-row-id', leaseToken: 'lease-token' }
+      }));
     } finally {
       vi.useRealTimers();
     }
@@ -139,6 +164,7 @@ function createHarness(input: {
   upsertError?: Error;
 } = {}) {
   const graphqlRequests: ShopifyAdminGraphqlRequest[] = [];
+  const graphqlSignals: AbortSignal[] = [];
   const getOrderWebhookDeliveryDisposition = vi.fn(() => Promise.resolve(input.disposition ?? { action: 'queued', reason: 'already_queued' } satisfies Claim));
   const claimNextOrderWebhook = vi.fn(() => Promise.resolve({ action: 'process', event: orderWebhook() } satisfies Claim));
   const markOrderWebhookFailed = vi.fn(() => Promise.resolve(true));
@@ -153,8 +179,9 @@ function createHarness(input: {
     defaultApiVersion: '2026-04',
     eventStore: { claimNextOrderWebhook, getOrderWebhookDeliveryDisposition, markOrderWebhookFailed, markOrderWebhookProcessed },
     graphqlClientFactory: () => ({
-      request: <TData>(request: ShopifyAdminGraphqlRequest): Promise<TData> => {
+      request: <TData>(request: ShopifyAdminGraphqlRequest, options?: { signal?: AbortSignal }): Promise<TData> => {
         graphqlRequests.push(request);
+        if (options?.signal !== undefined) graphqlSignals.push(options.signal);
         if (input.graphqlResponse !== undefined) return input.graphqlResponse as Promise<TData>;
         return Promise.resolve({ node: input.graphqlNode === undefined ? orderNode() : input.graphqlNode } as TData);
       }
@@ -168,6 +195,7 @@ function createHarness(input: {
     getAdminAccessToken,
     getOrderWebhookDeliveryDisposition,
     graphqlRequests,
+    graphqlSignals,
     markOrderWebhookFailed,
     markOrderWebhookProcessed,
     processor,

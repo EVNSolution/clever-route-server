@@ -74,6 +74,14 @@ export class AdminNotificationService {
     return this.repository.markReadForShopDomain(input);
   }
 
+  async acknowledgeNotification(input: {
+    actor: string;
+    notificationId: string;
+    shopDomain: string;
+  }): Promise<AdminNotificationDto | null> {
+    return this.repository.acknowledgeForShopDomain(input);
+  }
+
   async subscribeToNotificationChanges(input: {
     listener: (event: AdminNotificationStreamEvent) => void;
     shopDomain: string;
@@ -87,4 +95,4 @@ export class AdminNotificationService {
 export type AdminNotificationServiceApi = Pick<
   AdminNotificationService,
   'createAdminNotification' | 'listNotifications' | 'markNotificationRead' | 'subscribeToNotificationChanges'
->;
+> & Partial<Pick<AdminNotificationService, 'acknowledgeNotification'>>;

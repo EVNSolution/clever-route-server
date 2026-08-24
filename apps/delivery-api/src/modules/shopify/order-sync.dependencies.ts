@@ -15,7 +15,7 @@ import type { AdminNotificationServiceApi } from '../notifications/admin-notific
 import type { AdminOrdersDependencies } from '../../routes/admin-orders.routes.js';
 import { PrismaShopTokenRepository } from './shop-token.repository.js';
 import { ShopTokenService } from './shop-token.service.js';
-import { ShopifyTokenExchangeClient } from './token-exchange.client.js';
+import { loadShopifyTokenExchangeTimeoutMs, ShopifyTokenExchangeClient } from './token-exchange.client.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from './shopify-api-version.js';
 
 export type AdminOrdersRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<
@@ -25,6 +25,7 @@ export type AdminOrdersRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<
   | 'CLEVER_SHOPIFY_ORDER_RECONCILIATION_WORKER'
   | 'ORDERS_PAGINATION_HMAC_KEY'
   | 'SHOPIFY_API_VERSION'
+  | 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS'
   | 'SHOPIFY_TOKEN_ENCRYPTION_KEY',
   string
 >>;
@@ -90,7 +91,10 @@ export function loadAdminOrdersRuntime(input: {
     shopTokenService: new ShopTokenService({
       encryptionKey: loadTokenEncryptionKey(encryptionKey),
       repository: new PrismaShopTokenRepository(input.prisma),
-      tokenRefreshClient: new ShopifyTokenExchangeClient({ appCredentials })
+      tokenRefreshClient: new ShopifyTokenExchangeClient({
+        appCredentials,
+        timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS)
+      })
     })
   });
 

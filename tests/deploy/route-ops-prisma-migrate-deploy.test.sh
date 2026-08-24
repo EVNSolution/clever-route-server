@@ -274,20 +274,84 @@ run_production_loopback_case() {
 }
 
 run_production_contract_case() {
-  local tmp
+  local online_index_database_url tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-migrate-production.XXXXXX")"
+  online_index_database_url="$(printf '%s://%s:%s@%s:%s/%s' \
+    'postgresql' 'fixture_user' 'fixture_password' 'db.example.invalid' '5432' 'clever_route')"
   trap 'rm -rf "$tmp"' RETURN
   make_fake_npm "$tmp"
   run_expect_fail "$tmp" 'production mode requires DSV_MIGRATION_APPROVED=1' env \
     PATH="$tmp/bin:$PATH" \
     FAKE_NPM_ARGS_FILE="$tmp/npm.args" \
     DSV_MIGRATION_MODE='production' \
+    DATABASE_URL="$online_index_database_url" \
+    bash "$WRAPPER"
+
+  cat > "$tmp/fake-pg.cjs" <<'EOF_PG'
+const Module = require('node:module');
+const fs = require('node:fs');
+const originalLoad = Module._load;
+const indexes = new Map([
+  ['driver_event_attempts_shopId_transportRequestId_createdAt_idx', {
+    columns: ['wrong'], indisready: process.env.FAKE_PG_VALID_DRIFT === '1', indisunique: false, indisvalid: process.env.FAKE_PG_VALID_DRIFT === '1',
+    no_expressions: true, no_predicate: true, schema_name: 'public', table_name: 'driver_event_attempts'
+  }]
+]);
+class Client {
+  async connect() {}
+  async end() {}
+  async query(sql, params = []) {
+    fs.appendFileSync(process.env.FAKE_PG_LOG, `${String(sql).replace(/\s+/g, ' ').trim()}\n`);
+    if (String(sql).includes('FROM pg_index')) return { rows: indexes.has(params[0]) ? [indexes.get(params[0])] : [] };
+    if (String(sql).includes('reltuples')) return { rows: [{ rows: '250000' }] };
+    const drop = /DROP INDEX CONCURRENTLY IF EXISTS "([^"]+)"/.exec(String(sql));
+    if (drop) indexes.delete(drop[1]);
+    const create = /CREATE (UNIQUE )?INDEX CONCURRENTLY IF NOT EXISTS "([^"]+)" ON ([^(]+)\(([^)]+)\)/.exec(String(sql));
+    if (create) indexes.set(create[2], {
+      columns: [...create[4].matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+      indisready: true, indisunique: Boolean(create[1]), indisvalid: true,
+      no_expressions: true, no_predicate: true, schema_name: 'public', table_name: create[3].trim()
+    });
+    return { rows: [] };
+  }
+}
+Module._load = function(request, parent, isMain) {
+  if (request === 'pg') return { Client };
+  return originalLoad.call(this, request, parent, isMain);
+};
+EOF_PG
+  : > "$tmp/pg.log"
+
+  run_expect_fail "$tmp" 'G008_ONLINE_INDEX_TIMEOUT_SECONDS must be an integer between 60 and 7200' env \
+    PATH="$tmp/bin:$PATH" \
+    FAKE_NPM_ARGS_FILE="$tmp/npm.args" \
+    FAKE_PG_LOG="$tmp/pg.log" \
+    NODE_OPTIONS="--require=$tmp/fake-pg.cjs" \
+    DSV_MIGRATION_MODE='production' \
+    DSV_MIGRATION_APPROVED='1' \
+    DSV_MIGRATION_MANIFEST_SHA256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    DSV_RESTORE_REHEARSAL_SHA256='abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' \
+    G008_ONLINE_INDEX_TIMEOUT_SECONDS='1' \
     DATABASE_URL='postgresql://clever:clever@db.example.invalid:5432/clever_route' \
     bash "$WRAPPER"
+
+  : > "$tmp/pg.log"
+  rm -f "$tmp/npm.args"
+  run_expect_fail "$tmp" 'online index definition drift requires review' env \
+    PATH="$tmp/bin:$PATH" FAKE_NPM_ARGS_FILE="$tmp/npm.args" FAKE_PG_LOG="$tmp/pg.log" \
+    FAKE_PG_VALID_DRIFT='1' NODE_OPTIONS="--require=$tmp/fake-pg.cjs" \
+    DSV_MIGRATION_MODE='production' DSV_MIGRATION_APPROVED='1' \
+    DSV_MIGRATION_MANIFEST_SHA256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    DSV_RESTORE_REHEARSAL_SHA256='abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' \
+    DATABASE_URL="$online_index_database_url" bash "$WRAPPER"
+  if grep -Fq 'DROP INDEX CONCURRENTLY' "$tmp/pg.log"; then fail 'valid index drift must not be dropped'; fi
+  : > "$tmp/pg.log"
 
   env \
     PATH="$tmp/bin:$PATH" \
     FAKE_NPM_ARGS_FILE="$tmp/npm.args" \
+    FAKE_PG_LOG="$tmp/pg.log" \
+    NODE_OPTIONS="--require=$tmp/fake-pg.cjs" \
     DSV_MIGRATION_MODE='production' \
     DSV_MIGRATION_APPROVED='1' \
     DSV_MIGRATION_MANIFEST_SHA256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
@@ -295,6 +359,9 @@ run_production_contract_case() {
     DATABASE_URL='postgresql://clever:clever@db.example.invalid:5432/clever_route' \
     bash "$WRAPPER" > "$tmp/stdout" 2> "$tmp/stderr"
   grep -Fq 'validated production target db.example.invalid/clever_route' "$tmp/stdout"
+  grep -Fq 'DROP INDEX CONCURRENTLY IF EXISTS "driver_event_attempts_shopId_transportRequestId_createdAt_idx"' "$tmp/pg.log"
+  grep -Fq 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "driver_event_attempts_shopId_transportRequestId_createdAt_idx"' "$tmp/pg.log"
+  grep -Fq 'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "driver_proof_media_idempotency_scope_key"' "$tmp/pg.log"
   grep -Fq -- "--prefix $ROOT/apps/delivery-api run prisma:migrate:deploy" "$tmp/npm.args"
 }
 

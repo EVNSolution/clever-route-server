@@ -5,6 +5,7 @@ import { getRawBody } from './json-body-parser.js';
 
 export type ShopifyWebhookDependencies = {
   appCredentials: Array<{ appId: string; clientSecret: string }>;
+  bodyLimitBytes?: number | undefined;
   orderWebhookProcessor?: {
     canProcessTopic(topic: string): boolean;
   } | undefined;
@@ -37,7 +38,7 @@ export function registerShopifyWebhookRoutes(
   app: FastifyInstance,
   dependencies: ShopifyWebhookDependencies
 ): void {
-  app.post('/shopify/webhooks', async (request, reply) => {
+  app.post('/shopify/webhooks', { bodyLimit: dependencies.bodyLimitBytes ?? 5 * 1024 * 1024 }, async (request, reply) => {
     const rawBody = getRawBody(request);
     if (rawBody === null) {
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Raw request body is required'));
@@ -76,7 +77,7 @@ export function registerShopifyWebhookRoutes(
     };
     const result = await dependencies.webhookService.recordWebhook(record);
 
-    return reply.code(result.duplicate ? 200 : 202).send({
+    return reply.code(result.duplicate || result.status === 'IGNORED' ? 200 : 202).send({
       data: {
         duplicate: result.duplicate,
         queued: dependencies.orderWebhookProcessor?.canProcessTopic(headers.topic) === true,

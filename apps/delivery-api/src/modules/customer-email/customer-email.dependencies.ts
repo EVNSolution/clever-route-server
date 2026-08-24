@@ -8,6 +8,7 @@ import {
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../shopify/shopify-app-credentials.js';
 import { ShopifySessionTokenVerifier } from '../shopify/session-token-verifier.js';
 import type { AdminCustomerEmailDependencies } from '../../routes/admin-customer-email.routes.js';
+import { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
 
 export const DEFAULT_CUSTOMER_EMAIL_ASSETS_DIR = 'var/customer-email-assets';
 
@@ -24,7 +25,11 @@ export function loadAdminCustomerEmailDependencies(input: {
   if (appCredentials.length === 0) return undefined;
   const logoAssets = loadLogoAssets(input.env);
   return {
-    customerEmailService: new CustomerEmailService(input.prisma, loadCustomerEmailTransport(input.env)),
+    customerEmailService: new CustomerEmailService(
+      input.prisma,
+      loadCustomerEmailTransport(input.env),
+      new PrismaCustomerDeliveryNotificationAttemptRepository(input.prisma)
+    ),
     ...(logoAssets === undefined ? {} : { logoAssets }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials }),
   };

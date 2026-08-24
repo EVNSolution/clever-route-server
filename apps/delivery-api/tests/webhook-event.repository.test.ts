@@ -3,6 +3,40 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrismaShopifyWebhookEventRepository } from '../src/modules/shopify/webhook-event.repository.js';
 
 describe('PrismaShopifyWebhookEventRepository privacy compliance handling', () => {
+  test('stores only a replay identity envelope for nonterminal order webhooks', async () => {
+    const prisma = createPrismaHarness();
+    const repository = new PrismaShopifyWebhookEventRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
+    );
+
+    await repository.recordWebhook({
+      apiVersion: '2026-07',
+      eventId: 'event-id',
+      payload: {
+        admin_graphql_api_id: 'gid://shopify/Order/299938',
+        email: 'customer@clever.invalid',
+        id: 299938,
+        phone: '555-625-1199',
+        shipping_address: { address1: '99 Private Street', name: 'Private Customer' }
+      },
+      rawBody: '{"topic":"orders/create"}',
+      shopDomain: 'clever-route-test.myshopify.com',
+      topic: 'orders/create',
+      triggeredAt: new Date('2026-08-24T00:00:00.000Z'),
+      webhookId: 'order-webhook-id'
+    });
+
+    const createInput = readCreateWebhookEventInput(prisma);
+    expect(createInput.data.payload).toEqual({
+      admin_graphql_api_id: 'gid://shopify/Order/299938',
+      orderId: 'gid://shopify/Order/299938',
+      redacted: true,
+      schema: 'shopify_order_reference_v1'
+    });
+    expect(createInput.data.payloadRedactedAt).toBeInstanceOf(Date);
+    expect(JSON.stringify(createInput.data.payload)).not.toMatch(/customer|phone|address|private/iu);
+  });
+
   test('stores customers/data_request receipts without customer email or phone', async () => {
     const prisma = createPrismaHarness();
     const repository = new PrismaShopifyWebhookEventRepository(
@@ -76,15 +110,34 @@ describe('PrismaShopifyWebhookEventRepository privacy compliance handling', () =
     expect(prisma.order.deleteMany).toHaveBeenCalledWith({
       where: {
         shopId: 'shop-id',
-        shopifyOrderLegacyId: { in: [299938n, 280263n] }
+        shopifyOrderLegacyId: { in: [280263n, 299938n] }
+      }
+    });
+    expect(prisma.shopifyOrderRedactionTombstone.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    const anyDate: unknown = expect.any(Date);
+    const anyArray: unknown = expect.any(Array);
+    expect(prisma.shopifyWebhookEvent.updateMany).toHaveBeenCalledWith({
+      data: {
+        payload: {
+          admin_graphql_api_id: 'gid://shopify/Order/299938',
+          orderId: 'gid://shopify/Order/299938',
+          redacted: true,
+          schema: 'shopify_order_reference_v1'
+        },
+        payloadRedactedAt: anyDate
+      },
+      where: {
+        OR: anyArray,
+        shopId: 'shop-id',
+        topic: { in: anyArray }
       }
     });
     const createInput = readCreateWebhookEventInput(prisma);
     expect(createInput.data.payload).toEqual({
-      customer: { id: 191167 },
-      orders_to_redact: ['299938', '280263'],
-      shop_domain: 'clever-route-test.myshopify.com',
-      shop_id: 954889
+      redacted: true,
+      schema: 'shopify_webhook_tombstone_v1',
+      terminalStatus: 'PROCESSED'
     });
     expect(createInput.data.status).toBe('PROCESSED');
     expect(createInput.data.topic).toBe('customers/redact');
@@ -114,7 +167,10 @@ describe('PrismaShopifyWebhookEventRepository privacy compliance handling', () =
     });
 
     expect(result).toEqual({ duplicate: false, status: 'PROCESSED', webhookId: 'webhook-id' });
-    expect(prisma.shop.delete).toHaveBeenCalledWith({ where: { id: 'shop-id' } });
+    expect(prisma.shopifyShopRedactionTombstone.upsert).toHaveBeenCalledOnce();
+    expect(prisma.shop.deleteMany).toHaveBeenCalledWith({
+      where: { appId: 'clever', shopDomain: 'clever-route-test.myshopify.com' }
+    });
     expect(prisma.shopifyWebhookEvent.create).not.toHaveBeenCalled();
   });
 });
@@ -213,9 +269,15 @@ describe('PrismaShopifyWebhookEventRepository order webhook lifecycle', () => {
 
     expect(prisma.order.deleteMany).not.toHaveBeenCalled();
     const processedUpdateInput = prisma.shopifyWebhookEvent.updateMany.mock.calls[1]?.[0] as
-      | { data: { status: string } }
+      | { data: { payload: unknown; payloadRedactedAt: Date; status: string } }
       | undefined;
     expect(processedUpdateInput?.data.status).toBe('PROCESSED');
+    expect(processedUpdateInput?.data.payload).toEqual({
+      redacted: true,
+      schema: 'shopify_webhook_tombstone_v1',
+      terminalStatus: 'PROCESSED'
+    });
+    expect(processedUpdateInput?.data.payloadRedactedAt).toBeInstanceOf(Date);
     const retryUpdateDataMatcher: unknown = expect.objectContaining({
       lastError: 'TRANSIENT:boom',
       status: 'RETRY_WAIT'
@@ -251,40 +313,110 @@ describe('PrismaShopifyWebhookEventRepository order webhook lifecycle', () => {
       leaseToken: 'stale-token'
     })).resolves.toBe(false);
   });
+
+  test('deletes only bounded expired terminal webhook rows', async () => {
+    const prisma = createOrderWebhookPrismaHarness({ status: 'PROCESSED' });
+    prisma.shopifyWebhookEvent.findMany = vi.fn(() => Promise.resolve([
+      { id: 'processed-old' },
+      { id: 'ignored-old' }
+    ]));
+    prisma.shopifyWebhookEvent.deleteMany = vi.fn(() => Promise.resolve({ count: 2 }));
+    const repository = new PrismaShopifyWebhookEventRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
+    );
+
+    await expect(repository.deleteExpiredTerminalWebhookEvents({
+      completedBefore: new Date('2026-07-01T00:00:00.000Z'),
+      limit: 2
+    })).resolves.toEqual({ deleted: 2, scanned: 2 });
+    expect(prisma.shopifyWebhookEvent.findMany).toHaveBeenCalledWith({
+      orderBy: { updatedAt: 'asc' },
+      select: { id: true },
+      take: 2,
+      where: {
+        OR: [
+          { processedAt: { lt: new Date('2026-07-01T00:00:00.000Z') }, status: 'PROCESSED' },
+          { status: 'IGNORED', updatedAt: { lt: new Date('2026-07-01T00:00:00.000Z') } }
+        ]
+      }
+    });
+    expect(prisma.shopifyWebhookEvent.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['processed-old', 'ignored-old'] } }
+    });
+  });
 });
 
 type CreateWebhookEventInput = {
   data: {
     payload: unknown;
+    payloadRedactedAt?: Date;
     status?: string;
     topic?: string;
   };
 };
 
 type PrismaHarness = {
+  $queryRaw: ReturnType<typeof vi.fn<() => Promise<unknown[]>>>;
+  $transaction: ReturnType<typeof vi.fn>;
   order: { deleteMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>> };
   shop: {
-    delete: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
+    deleteMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>>;
+    findUnique: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string } | null>>>;
+    findUniqueOrThrow: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
     upsert: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
   };
   shopifyWebhookEvent: {
     create: ReturnType<typeof vi.fn<(input: CreateWebhookEventInput) => Promise<{ id: string }>>>;
+    findUnique: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ status: string } | null>>>;
+    updateMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>>;
+  };
+  shopifyOrderRedactionTombstone: {
+    upsert: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>
+  };
+  shopifyRedactedWebhookReceipt: {
+    create: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
+    findUnique: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string } | null>>>;
+  };
+  shopifyShopRedactionTombstone: {
+    findUnique: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string } | null>>>;
+    upsert: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
   };
 };
 
 function createPrismaHarness(): PrismaHarness {
-  return {
+  const prisma = {
+    $queryRaw: vi.fn(() => Promise.resolve([])),
+    $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prisma)),
     order: {
       deleteMany: vi.fn(() => Promise.resolve({ count: 2 }))
     },
     shop: {
-      delete: vi.fn(() => Promise.resolve({ id: 'shop-id' })),
+      deleteMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' })),
+      findUniqueOrThrow: vi.fn(() => Promise.resolve({ id: 'shop-id' })),
       upsert: vi.fn(() => Promise.resolve({ id: 'shop-id' }))
     },
     shopifyWebhookEvent: {
-      create: vi.fn(() => Promise.resolve({ id: 'event-id' }))
+      create: vi.fn(() => Promise.resolve({ id: 'event-id' })),
+      findUnique: vi.fn(() => Promise.resolve({ status: 'PROCESSED' })),
+      updateMany: vi.fn((input: unknown) => {
+        void input;
+        return Promise.resolve({ count: 1 });
+      })
+    },
+    shopifyOrderRedactionTombstone: {
+      upsert: vi.fn(() => Promise.resolve({ id: 'tombstone-id' }))
+    },
+    shopifyRedactedWebhookReceipt: {
+      create: vi.fn(() => Promise.resolve({ id: 'receipt-id' })),
+      findUnique: vi.fn(() => Promise.resolve(null))
+    },
+    shopifyShopRedactionTombstone: {
+      findUnique: vi.fn(() => Promise.resolve(null)),
+      upsert: vi.fn(() => Promise.resolve({ id: 'shop-tombstone-id' }))
     }
   };
+  return prisma;
 }
 
 function readCreateWebhookEventInput(prisma: PrismaHarness): CreateWebhookEventInput {
@@ -323,6 +455,8 @@ type OrderWebhookPrismaHarness = PrismaHarness & {
       >
     >;
     findFirst: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string; status: OrderWebhookEventStatus } | null>>>;
+    findMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<Array<{ id: string }>>>>;
+    deleteMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>>;
     update: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
     updateMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>>;
   };
@@ -334,9 +468,16 @@ function createOrderWebhookPrismaHarness(input: {
   updatedAt?: Date;
 }): OrderWebhookPrismaHarness {
   const base = createPrismaHarness() as OrderWebhookPrismaHarness;
-  base.shop.findUnique = vi.fn(() => Promise.resolve({ id: 'shop-id' }));
+  base.shop.findUnique = vi.fn((findInput: unknown) => {
+    void findInput;
+    return Promise.resolve({ id: 'shop-id' });
+  });
   base.shopifyWebhookEvent.findFirst = vi.fn(() => Promise.resolve({ id: 'event-row-id', status: input.status }));
-  base.shopifyWebhookEvent.findUnique = vi.fn(() =>
+  base.shopifyWebhookEvent.findMany = vi.fn(() => Promise.resolve([]));
+  base.shopifyWebhookEvent.deleteMany = vi.fn(() => Promise.resolve({ count: 0 }));
+  base.shopifyWebhookEvent.findUnique = vi.fn((findInput: unknown) => {
+    void findInput;
+    return (
     Promise.resolve({
       apiVersion: '2026-04',
       attemptCount: 2,
@@ -352,9 +493,13 @@ function createOrderWebhookPrismaHarness(input: {
       updatedAt: input.updatedAt ?? new Date('2026-07-08T00:00:00.000Z'),
       webhookId: 'webhook-id'
     })
-  );
+    );
+  });
   base.shopifyWebhookEvent.update = vi.fn(() => Promise.resolve({ id: 'event-row-id' }));
-  base.shopifyWebhookEvent.updateMany = vi.fn(() => Promise.resolve({ count: 1 }));
+  base.shopifyWebhookEvent.updateMany = vi.fn((updateInput: unknown) => {
+    void updateInput;
+    return Promise.resolve({ count: 1 });
+  });
   return base;
 }
 

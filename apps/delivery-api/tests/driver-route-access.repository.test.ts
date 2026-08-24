@@ -19,6 +19,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
 
     expect(prisma.routePlan.findUnique).toHaveBeenCalledWith({
       select: {
+        assignmentGeneration: true,
         constraints: true,
         driver: {
           select: {
@@ -32,6 +33,12 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         name: true,
         planDate: true,
+        routeGroupingChildVersions: {
+          orderBy: { updatedAt: 'desc' },
+          select: { id: true },
+          take: 1,
+          where: { status: 'CURRENT', supersededAt: null }
+        },
         shop: { select: { shopDomain: true } },
         status: true
       },
@@ -94,6 +101,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     expect(prisma.routePlan.findMany).toHaveBeenCalledWith({
       orderBy: [{ planDate: 'asc' }, { name: 'asc' }],
       select: {
+        assignmentGeneration: true,
         constraints: true,
         driver: {
           select: {
@@ -107,6 +115,12 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         name: true,
         planDate: true,
+        routeGroupingChildVersions: {
+          orderBy: { updatedAt: 'desc' },
+          select: { id: true },
+          take: 1,
+          where: { status: 'CURRENT', supersededAt: null }
+        },
         shop: { select: { shopDomain: true } },
         status: true
       },
@@ -421,6 +435,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     expect(prisma.routePlan.findMany).toHaveBeenCalledWith({
       orderBy: [{ planDate: 'asc' }, { name: 'asc' }],
       select: {
+        assignmentGeneration: true,
         constraints: true,
         driver: {
           select: {
@@ -434,6 +449,12 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         name: true,
         planDate: true,
+        routeGroupingChildVersions: {
+          orderBy: { updatedAt: 'desc' },
+          select: { id: true },
+          take: 1,
+          where: { status: 'CURRENT', supersededAt: null }
+        },
         shop: { select: { shopDomain: true } },
         status: true
       },
@@ -494,6 +515,21 @@ describe('PrismaDriverRouteAccessRepository', () => {
         routePlanId: '22222222-2222-4222-8222-222222222222'
       }
     }));
+  });
+
+  test('projects the bigint-safe v2 contract from the current route assignment snapshot', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlan: routePlanRecord({ assignmentGeneration: 9n, routeVersionId: 'version-id' })
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+    const result = await repository.lookupRouteAccess({ accountId: 'account-id', routeContext: routePlanId });
+    expect(result).toMatchObject({
+      routeAccess: {
+        assignmentGeneration: '9',
+        driverContractVersion: 2,
+        expectedRouteVersionId: 'version-id'
+      }
+    });
   });
 
   test('returns not found for non-UUID route contexts with no active shared match', async () => {
@@ -568,11 +604,13 @@ function createPrismaHarness(
 
 function routePlanRecord(
   overrides: {
+    assignmentGeneration?: bigint;
     authSubject?: string | null;
     driverStatus?: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
     id?: string;
     name?: string;
     planDate?: string;
+    routeVersionId?: string;
     shopDomain?: string;
     status?: string;
     vehicleId?: string | null;
@@ -580,6 +618,7 @@ function routePlanRecord(
 ) {
   const shopDomain = overrides.shopDomain ?? 'tomatono.myshopify.com';
   return {
+    ...(overrides.assignmentGeneration === undefined ? {} : { assignmentGeneration: overrides.assignmentGeneration }),
     constraints: {
       companyDisplayName: shopDomain === 'north-market.myshopify.com' ? 'North Market' : 'Tomatono Toronto',
       driverInstructions: ['Bring insulated bag'],
@@ -604,6 +643,7 @@ function routePlanRecord(
     id: overrides.id ?? routePlanId,
     name: overrides.name ?? 'Tuesday AM Route',
     planDate: new Date(`${overrides.planDate ?? '2026-05-12'}T00:00:00.000Z`),
+    ...(overrides.routeVersionId === undefined ? {} : { routeGroupingChildVersions: [{ id: overrides.routeVersionId }] }),
     shop: {
       shopDomain
     },

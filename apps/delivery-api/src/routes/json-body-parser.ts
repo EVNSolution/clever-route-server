@@ -6,6 +6,19 @@ declare module 'fastify' {
   }
 }
 
+export class InvalidJsonBodyError extends Error {
+  readonly code = 'CLEVER_INVALID_JSON_BODY';
+
+  constructor() {
+    super('Invalid JSON request body');
+    this.name = 'InvalidJsonBodyError';
+  }
+}
+
+export function isInvalidJsonBodyError(error: unknown): error is InvalidJsonBodyError {
+  return error instanceof InvalidJsonBodyError;
+}
+
 export function registerJsonBodyParser(app: FastifyInstance): void {
   app.removeContentTypeParser('application/json');
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
@@ -19,8 +32,8 @@ export function registerJsonBodyParser(app: FastifyInstance): void {
 
     try {
       done(null, JSON.parse(rawBody) as unknown);
-    } catch (error) {
-      done(error as Error);
+    } catch {
+      done(new InvalidJsonBodyError());
     }
   });
 

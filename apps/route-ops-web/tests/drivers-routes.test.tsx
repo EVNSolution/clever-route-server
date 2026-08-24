@@ -3,12 +3,15 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
+  acknowledgeNotification,
   ApiError,
   createRouteOptimizationJob,
   deleteDriver,
   generateRouteGroupingChildRoutes,
   getLatestRouteOptimizationJob,
   getNotifications,
+  getOperationalHealth,
+  getRouteOperationalState,
   getRouteOptimizationJob,
   openNotificationChangeStream,
   markNotificationRead,
@@ -38,6 +41,7 @@ import {
   getRouteStopSequenceDisplay,
   hasDepotCoordinates,
   isRouteVisibleToLinkedDriver,
+  loadRouteList,
   RouteBuilder,
   RouteListTable,
   RouteStopOrderCompactList,
@@ -283,6 +287,35 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('class="route-group-child-row"');
   });
 
+  test('route rows separate lifecycle, device, server, sync, and active alert pills', () => {
+    const route = routePlanFixture({
+      operationalState: {
+        activeAlerts: [{ acknowledgedAt: null, id: 'alert-1', lastObservedAt: '2026-08-24T01:02:00.000Z', openedAt: '2026-08-24T01:00:00.000Z', resolvedAt: null, severity: 'CRITICAL', type: 'ROUTE_PROGRESS_MISMATCH' }],
+        deviceProgress: { completedStopCount: 11, totalStopCount: 11 },
+        observedAt: '2026-08-24T01:02:00.000Z',
+        physicalPosition: { accuracyMeters: 14, distanceMeters: 20, freshness: 'FRESH', nearestStopSequence: 11, occurredAt: '2026-08-24T01:01:00.000Z', proximityPolicyVersion: 1, receivedAt: '2026-08-24T01:01:01.000Z' },
+        routePlanId: 'route-id',
+        routeStatus: 'IN_PROGRESS',
+        serverProgress: { deliveredStopCount: 1, failedStopCount: 0, lastConfirmedAt: '2026-08-24T01:00:00.000Z', resolvedStopCount: 1, totalStopCount: 11 },
+        syncHealth: { queueDepth: 10, state: 'BLOCKED' },
+      },
+      status: 'PUBLISHED',
+      stopsCount: 11,
+    });
+    const html = renderToStaticMarkup(
+      <RouteListTable deletingRouteId={null} drivers={[]} navigate={() => undefined} onDeleteRoute={() => undefined} routeGroups={[]} routes={[route]} />,
+    );
+
+    expect(html).toContain('>Published<');
+    expect(html).toContain('>Alert critical<');
+    expect(html).toContain('>Route in progress<');
+    expect(html).toContain('>GPS live<');
+    expect(html).toContain('>Device 11/11<');
+    expect(html).toContain('>Server 1/11<');
+    expect(html).toContain('>Sync blocked<');
+    expect(html).not.toContain('·');
+  });
+
   test('formats child route rows with the full driver name only', () => {
     expect(
       formatRouteChildDriverName({
@@ -382,7 +415,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Return to store');
     expect(html).not.toContain('save driver');
     expect(html).not.toContain('Publish route');
-    expect(html).not.toContain('Stops ready · road path not generated');
+    expect(html).not.toContain('Road path not generated for ready stops');
   });
 
   test('RouteBuilder renders a full-width child sequence card with one aggregate Save route action', () => {
@@ -531,6 +564,39 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(routesSource).toContain('const deletedCurrentDetail = routePlanId === routeId;');
     expect(routesSource).toContain('if (!deletedCurrentDetail) await refreshRoutes();');
     expect(routesSource).not.toContain('input.onRefreshRoutes();');
+  });
+
+  test('loads many route operational states from one list request without per-route requests', async () => {
+    const routePlans = Array.from({ length: 40 }, (_, index) => routePlanFixture({
+      id: `route-${index}`,
+      operationalState: index === 0
+        ? undefined
+        : index === 1
+          ? null
+          : {
+              activeAlerts: [],
+              observedAt: '2026-08-24T02:00:00.000Z',
+              physicalPosition: null,
+              routePlanId: `route-${index}`,
+              routeStatus: 'IN_PROGRESS',
+              serverProgress: { deliveredStopCount: index, failedStopCount: 0, lastConfirmedAt: null, resolvedStopCount: index, totalStopCount: 40 },
+            },
+    }));
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve(new Response(JSON.stringify({
+      data: { routeGroups: [], routePlans, standaloneRoutes: routePlans },
+      error: null,
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '' } });
+
+    const loaded = await loadRouteList();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith('/admin/ui/app/api/routes', expect.objectContaining({ credentials: 'same-origin' }));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/operational-state'))).toBe(false);
+    expect(loaded.routes[0]?.operationalState).toBeUndefined();
+    expect(loaded.routes[1]?.operationalState).toBeNull();
+    expect(loaded.routes[39]?.operationalState?.serverProgress?.resolvedStopCount).toBe(39);
   });
 
   test('RouteBuilder does not show unavailable helper while publishing', () => {
@@ -721,7 +787,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('role="list"');
     expect(html).toContain('role="listitem"');
     expect(html).toContain('#1001');
-    expect(html).toContain('Jane Customer · 100 King St W, Toronto, ON');
+    expect(html).toContain('<span>Jane Customer</span><span>100 King St W, Toronto, ON</span>');
+    expect(html).not.toContain('Jane Customer ·');
     expect(html).toContain('Toronto');
     expect(html).not.toContain('class="drag-handle"');
     expect(html).not.toContain('::');
@@ -1151,11 +1218,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     }
     const EventSourceStub = FakeEventSource as unknown as typeof EventSource;
     const onNotificationsChanged = vi.fn();
+    const onReconnected = vi.fn();
     vi.stubGlobal('EventSource', EventSourceStub);
     vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
 
     const subscription = openNotificationChangeStream({
       onNotificationsChanged,
+      onReconnected,
     });
     const source = instances[0];
 
@@ -1166,6 +1235,9 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(onNotificationsChanged).not.toHaveBeenCalled();
     source?.emit('open');
     expect(onNotificationsChanged).not.toHaveBeenCalled();
+    expect(onReconnected).not.toHaveBeenCalled();
+    source?.emit('open');
+    expect(onReconnected).toHaveBeenCalledTimes(1);
     source?.emit('notifications_changed');
     expect(onNotificationsChanged).toHaveBeenCalledTimes(1);
     source?.onerror?.call(source as unknown as EventSource, new Event('error'));
@@ -1175,6 +1247,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     source?.emit('open');
     source?.emit('notifications_changed');
     expect(onNotificationsChanged).toHaveBeenCalledTimes(1);
+    expect(onReconnected).toHaveBeenCalledTimes(1);
     expect(source?.close).toHaveBeenCalledTimes(1);
   });
 
@@ -1223,6 +1296,52 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
         method: 'PATCH',
       }),
+    );
+  });
+
+  test('acknowledgeNotification patches acknowledgement without conflating read state', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      data: { notification: { acknowledgedAt: '2026-08-24T02:00:00.000Z', id: 'notification-id', readAt: null } },
+      error: null,
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await acknowledgeNotification({ csrfToken: 'csrf-token', notificationId: 'notification/id' });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/admin/ui/app/api/notifications/notification%2Fid/acknowledge?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        body: '{}',
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
+        method: 'PATCH',
+      }),
+    );
+  });
+
+  test('operational clients read route snapshots and runtime health with workspace isolation', async () => {
+    const fetchMock = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify({
+      data: url.includes('runtime-health')
+        ? { runtimeHealth: { email: { configured: false, outbox: { deadLetter: 0, oldestPendingAt: null, pending: 0, processing: 0, retryWait: 0 }, state: 'DISABLED' }, observedAt: '2026-08-24T02:00:00.000Z' } }
+        : { operationalState: { activeAlerts: [], observedAt: '2026-08-24T02:00:00.000Z', physicalPosition: null, routePlanId: 'route/id', routeStatus: 'IN_PROGRESS', serverProgress: { deliveredStopCount: 1, failedStopCount: 0, lastConfirmedAt: null, resolvedStopCount: 1, totalStopCount: 11 } } },
+      error: null,
+    }), { headers: { 'Content-Type': 'application/json' }, status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await getRouteOperationalState('route/id');
+    await getOperationalHealth();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/admin/ui/app/api/routes/route%2Fid/operational-state?shopDomain=tenant-a.example.test',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/admin/ui/app/api/runtime-health?shopDomain=tenant-a.example.test',
+      expect.objectContaining({ credentials: 'same-origin' }),
     );
   });
 });

@@ -79,7 +79,9 @@ function dependenciesWith(
 ): DriverApiDependencies {
   return {
     driverEventService: {
+      admitDriverEventAttempt: vi.fn(() => Promise.resolve({ attemptId: 'attempt-id', attemptNumber: 1 })),
       completeDeliveryDestination,
+      finalizeDriverEventAttempt: vi.fn(() => Promise.resolve()),
       recordDriverEvent: vi.fn(),
     },
     driverTokenAccessRepository: {

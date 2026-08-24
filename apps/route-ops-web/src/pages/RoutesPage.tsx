@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Mail, MapPin, Phone } from "lucide-react";
 import type { CSSProperties, DragEvent, ReactElement } from "react";
 
@@ -10,15 +10,17 @@ import {
   getSettings,
   getRouteDetail,
   getRouteGrouping,
+  getRouteOperationalState,
   getRoutes,
   publishRoute,
   saveRoute,
 } from "../api";
-import { Badge, Kpi } from "../components/primitives";
+import { Badge, Kpi, OperationalPillGroup } from "../components/primitives";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import { ROUTE_START_ICON_PATH } from "../components/maps/mapIcons";
 import { getRoutesCopy, resolveLocale } from "../i18n";
+import { routeOperationalPills } from "../operationalStatus";
 import {
   formatOrderItemLine,
   formatOrderItemName,
@@ -51,6 +53,17 @@ type StopDropPreview = {
   position: StopDropPosition;
   targetStopId: string;
 };
+
+export async function loadRouteList(): Promise<{
+  routeGroups: RouteGroupingSummaryDto[];
+  routes: RoutePlanSummaryDto[];
+}> {
+  const payload = await getRoutes("");
+  return {
+    routeGroups: payload.routeGroups ?? [],
+    routes: payload.standaloneRoutes ?? payload.routePlans,
+  };
+}
 
 export function getDriverOptionLabel(
   driver: DriverDto,
@@ -215,6 +228,7 @@ export function RoutesPage({
   const [detail, setDetail] = useState<RoutePlanDetailDto | null>(null);
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
   const [settings, setSettings] = useState<StoreSettingsDto | null>(null);
+  const routeRefreshGeneration = useRef(0);
   const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
   const [deletingRouteGroupId, setDeletingRouteGroupId] = useState<
     string | null
@@ -226,12 +240,16 @@ export function RoutesPage({
     useState(false);
 
   const refreshRoutes = useCallback(async (): Promise<void> => {
+    const generation = routeRefreshGeneration.current + 1;
+    routeRefreshGeneration.current = generation;
     try {
-      const payload = await getRoutes("");
-      setRoutes(payload.standaloneRoutes ?? payload.routePlans);
-      setRouteGroups(payload.routeGroups ?? []);
+      const payload = await loadRouteList();
+      if (routeRefreshGeneration.current !== generation) return;
+      setRoutes(payload.routes);
+      setRouteGroups(payload.routeGroups);
       setError(null);
     } catch (error) {
+      if (routeRefreshGeneration.current !== generation) return;
       setError(readErrorMessage(error));
     }
   }, [setError]);
@@ -282,6 +300,18 @@ export function RoutesPage({
         if (!active) return;
         setDetail(payload);
         setError(null);
+        void getRouteOperationalState(routePlanId)
+          .then((operationalPayload) => {
+            if (!active) return;
+            setDetail((current) => current === null ? null : {
+              ...current,
+              routePlan: {
+                ...current.routePlan,
+                operationalState: operationalPayload.operationalState,
+              },
+            });
+          })
+          .catch(() => undefined);
       })
       .catch((error: unknown) => {
         if (!shouldTryRouteGroupFallback(error)) {
@@ -597,7 +627,17 @@ export function RouteListTable({
               <strong>{item.name}</strong>
             </td>
             <td>
-              <Badge>{formatRoutePlanStatus(item.status, locale)}</Badge>
+              <div className="route-operational-status-cell">
+                <Badge>{formatRoutePlanStatus(item.status, locale)}</Badge>
+                <OperationalPillGroup
+                  ariaLabel={`${item.name} operational state`}
+                  pills={routeOperationalPills(
+                    item.operationalState,
+                    item.stopsCount,
+                    resolveLocale(locale),
+                  )}
+                />
+              </div>
             </td>
             <td>{item.stopsCount}</td>
             <td>{item.deliveryDate ?? item.planDate}</td>
@@ -839,6 +879,16 @@ export function RouteBuilder(input: {
     draftStops.length > 0;
   const routeMapHeaderAction = (
     <div className="route-map-header-actions">
+      {effectiveRoutePlan === null ? null : (
+        <OperationalPillGroup
+          ariaLabel={`${effectiveRoutePlan.name} operational state`}
+          pills={routeOperationalPills(
+            effectiveRoutePlan.operationalState,
+            effectiveRoutePlan.stopsCount,
+            resolveLocale(locale),
+          )}
+        />
+      )}
       {publishBadge === null ? null : isDriverVisible ? (
         <span className="route-driver-visible-badge">{t.visibleToDriver}</span>
       ) : (
@@ -1771,11 +1821,13 @@ export function RouteStopOrderCompactList({
             <span className="stop-number compact">{index + 1}</span>
             <div className="route-stop-compact-main">
               <strong>{stop.orderName}</strong>
-              <small>
-                {stop.recipientName ?? t.noRecipient} · {stop.addressLabel}
+              <small className="route-stop-compact-description">
+                <span>{stop.recipientName ?? t.noRecipient}</span>
+                <span>{stop.addressLabel}</span>
               </small>
               <small className="route-stop-compact-meta">
-                {stop.deliveryArea ?? "—"} · <Badge>{stop.status}</Badge>
+                <span>{stop.deliveryArea ?? "—"}</span>
+                <Badge>{stop.status}</Badge>
               </small>
               {showItems && getOrderItems(stop.items).length > 0 ? (
                 <ul className="route-stop-item-lines">

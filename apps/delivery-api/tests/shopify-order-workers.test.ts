@@ -4,6 +4,30 @@ import { ShopifyOrderReconciliationWorker } from '../src/modules/shopify/order-r
 import { ShopifyOrderWebhookWorker } from '../src/modules/shopify/order-webhook.worker.js';
 
 describe('Shopify order workers', () => {
+  test('webhook worker reports failures through a logger attached after app construction', async () => {
+    vi.useFakeTimers();
+    try {
+      const error = vi.fn();
+      const worker = new ShopifyOrderWebhookWorker({
+        intervalMs: 10,
+        processor: { processNextDue: vi.fn(() => Promise.reject(new Error('database unavailable'))) },
+        workerId: 'worker-logger'
+      });
+
+      worker.attachLogger({ error, info: vi.fn() });
+      worker.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(error).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'shopify_order_webhook_worker_error' }),
+        'Shopify order webhook worker failed'
+      );
+      await worker.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('webhook worker close waits for in-flight tick and prevents reschedule', async () => {
     vi.useFakeTimers();
     try {

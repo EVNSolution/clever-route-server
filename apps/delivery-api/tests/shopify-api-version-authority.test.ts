@@ -39,7 +39,7 @@ describe('Shopify Admin API version authority', () => {
     );
 
     expect(envExample).toContain(`SHOPIFY_API_VERSION=${DEFAULT_SHOPIFY_ADMIN_API_VERSION}`);
-    expect(schema).toContain(`apiVersion                        String                                 @default("${DEFAULT_SHOPIFY_ADMIN_API_VERSION}")`);
+    expect(schema).toMatch(new RegExp(`apiVersion\\s+String\\s+@default\\("${DEFAULT_SHOPIFY_ADMIN_API_VERSION}"\\)`));
     expect(migration).toContain(`ALTER COLUMN "apiVersion" SET DEFAULT '${DEFAULT_SHOPIFY_ADMIN_API_VERSION}'`);
     expect(openApi).toContain('ShopifyApiVersionHeader:');
     expect(openApi).toContain(`example: ${DEFAULT_SHOPIFY_ADMIN_API_VERSION}`);

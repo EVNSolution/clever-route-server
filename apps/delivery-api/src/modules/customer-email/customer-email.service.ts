@@ -18,6 +18,7 @@ import {
 } from './customer-email-transport.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { DEFAULT_SHOPIFY_APP_ID, appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import type { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
 
 export type CustomerEmailPreviewInput = {
   appId?: string | undefined;
@@ -159,6 +160,7 @@ export class CustomerEmailService {
   constructor(
     private readonly prisma: CustomerEmailPrismaClient,
     private readonly transport: CustomerEmailTransport,
+    private readonly attempts?: PrismaCustomerDeliveryNotificationAttemptRepository,
   ) {}
 
   async getSettings(input: { appId?: string | undefined; shopDomain: string }): Promise<CustomerEmailSettings | null> {
@@ -369,8 +371,21 @@ export class CustomerEmailService {
 
     for (const recipient of preview.recipients) {
       const rowCommandId = `${input.commandId}:${recipient.deliveryStopId}`;
+      const startedAt = new Date();
+      const attempt = this.attempts === undefined
+        ? undefined
+        : await this.prisma.customerEmailManualDispatchRecipient.findFirstOrThrow({
+            select: { id: true },
+            where: { deliveryStopId: recipient.deliveryStopId, dispatchId: created.dispatchId }
+          }).then(({ id }) => this.attempts!.startManual({
+            manualDispatchRecipientId: id,
+            provider: this.transport.providerName,
+            shopId: routePlan.shop.id,
+            startedAt
+          }));
+      let sendResult: Awaited<ReturnType<CustomerEmailTransport['send']>>;
       try {
-        const result = await this.transport.send({
+        sendResult = await this.transport.send({
           branding: settings.branding,
           body: recipient.rendered.body,
           commandId: rowCommandId,
@@ -381,22 +396,6 @@ export class CustomerEmailService {
           signal: input.signal,
           subject: recipient.rendered.subject,
           tags: ['customer-delivery-email', input.signal.toLowerCase()],
-        });
-        await this.updateRecipient(created.dispatchId, recipient.deliveryStopId, {
-          provider: result.provider,
-          providerMessageId: result.providerMessageId,
-          sentAt: new Date(),
-          status: 'SENT',
-        });
-        results.push({
-          deliveryStopId: recipient.deliveryStopId,
-          email: recipient.email,
-          errorCode: null,
-          errorMessage: null,
-          orderId: recipient.orderId,
-          provider: result.provider,
-          providerMessageId: result.providerMessageId,
-          status: 'SENT',
         });
       } catch (error) {
         const errorCode = error instanceof CustomerEmailTransportConfigurationError
@@ -410,6 +409,12 @@ export class CustomerEmailService {
           errorMessage,
           status: 'FAILED',
         });
+        if (attempt !== undefined) await this.attempts?.settle({
+          attemptId: attempt.attemptId,
+          completedAt: new Date(),
+          errorCode,
+          outcome: 'TERMINAL_FAILURE'
+        });
         results.push({
           deliveryStopId: recipient.deliveryStopId,
           email: recipient.email,
@@ -420,7 +425,38 @@ export class CustomerEmailService {
           providerMessageId: null,
           status: 'FAILED',
         });
+        continue;
       }
+
+      await this.updateRecipient(created.dispatchId, recipient.deliveryStopId, {
+        provider: sendResult.provider,
+        providerMessageId: sendResult.providerMessageId,
+        sentAt: new Date(),
+        status: 'SENT',
+      });
+      if (attempt !== undefined) {
+        try {
+          await this.attempts?.settle({
+            attemptId: attempt.attemptId,
+            completedAt: new Date(),
+            outcome: 'SENT',
+            providerMessageId: sendResult.providerMessageId
+          });
+        } catch {
+          // The durable STARTED attempt is deliberately retained for reconciliation.
+          // Provider success and the authoritative recipient SENT state must never regress.
+        }
+      }
+      results.push({
+        deliveryStopId: recipient.deliveryStopId,
+        email: recipient.email,
+        errorCode: null,
+        errorMessage: null,
+        orderId: recipient.orderId,
+        provider: sendResult.provider,
+        providerMessageId: sendResult.providerMessageId,
+        status: 'SENT',
+      });
     }
 
     const counts = countDispatchResults(results);

@@ -1418,7 +1418,7 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
         },
         driverProofMedia: {
           select: proofStatusSelect,
-          where: { shopId },
+          where: { shopId, uploadStatus: 'READY' },
         },
         dsvDispatchImportRows: {
           orderBy: [{ appliedAt: 'desc' }, { createdAt: 'desc' }],
@@ -1518,7 +1518,7 @@ function recordStopSelect(shopId: string) {
     driverProofMedia: {
       orderBy: [{ uploadedAt: 'desc' }, { id: 'desc' }],
       select: recordProofMediaSelect,
-      where: { shopId },
+      where: { shopId, uploadStatus: 'READY' },
     },
     id: true,
     order: {

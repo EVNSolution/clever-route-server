@@ -4,6 +4,7 @@ import { PrismaDriverAssignedRouteRepository } from './driver-assigned-route.rep
 import { PrismaDriverDestinationNotesRepository } from './driver-destination-notes.repository.js';
 import { PrismaDriverConsentRepository } from './driver-consent.repository.js';
 import { PrismaDriverEventRepository } from './driver-event.repository.js';
+import { PrismaDriverEventReceiptRepository } from './driver-event-receipt.repository.js';
 import { PrismaDriverProofMediaRepository } from './driver-proof-media.repository.js';
 import { PrismaDriverRouteAccessRepository } from './driver-route-access.repository.js';
 import { PrismaDriverRouteSessionRepository } from './driver-route-session.repository.js';
@@ -42,6 +43,8 @@ import type { RouteGroupingAssignmentDto } from '../route-grouping/route-groupin
 import type { DsvRouteOptimizationSchedulerPort } from '../dsv/dsv-route-optimization.scheduler.js';
 import type { DsvOrderMessageService } from '../dsv/dsv-order-message.service.js';
 import type { PrismaDsvDriverNotificationDispatcher } from '../dsv/dsv-driver-notification.dispatcher.js';
+import { PrismaDriverSyncHealthService } from './driver-sync-health.service.js';
+import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
 import {
   DsvAssignmentCommandError,
   DsvAssignmentCommandService,
@@ -49,6 +52,7 @@ import {
 } from '../dsv/dsv-assignment-command.service.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 180;
+export const DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS = 90;
 export const DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS = 5 * 60;
 export const DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND = 'local';
 export const DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_DIR = 'var/driver-proof-media';
@@ -57,6 +61,8 @@ export const DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND = 'none';
 
 export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS'
+  | 'DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED'
+  | 'DRIVER_EVENT_ATTEMPT_RETENTION_DAYS'
   | 'DRIVER_PROOF_MEDIA_RETENTION_DAYS'
   | 'DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND'
   | 'DRIVER_PROOF_MEDIA_SCAN_MONITOR_BEARER_TOKEN'
@@ -104,6 +110,7 @@ type LoadDriverApiDependenciesInput = {
   env: DriverApiRuntimeEnv;
   prisma: PrismaClient;
   orderMessageService?: Pick<DsvOrderMessageService, 'markDriverMessageRead'>;
+  operationalAlertRepository?: PrismaOperationalAlertRepository;
   routeGroupingService?: RouteGroupingService;
   routeOptimizationScheduler?: DsvRouteOptimizationSchedulerPort;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
@@ -135,6 +142,7 @@ export function loadDriverApiDependencies(
     jwtSecret
   });
 
+  const driverSyncHealthService = new PrismaDriverSyncHealthService(input.prisma, input.operationalAlertRepository);
   return {
     ...(input.adminNotificationService === undefined
       ? {}
@@ -142,7 +150,12 @@ export function loadDriverApiDependencies(
     driverAssignedRouteService,
     driverDestinationNotesService: new PrismaDriverDestinationNotesRepository(input.prisma),
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
-    driverEventService: new PrismaDriverEventRepository(input.prisma),
+    driverEventService: new PrismaDriverEventRepository(input.prisma, {
+      attemptRetentionDays: loadDriverEventAttemptRetentionPolicy(input.env).retentionDays
+    }),
+    driverEventReceiptService: new PrismaDriverEventReceiptRepository(input.prisma),
+    driverOperationalHealthService: driverSyncHealthService,
+    driverSyncHealthService,
     ...(input.routeGroupingService === undefined
       ? {}
       : {
@@ -176,6 +189,10 @@ export function loadDriverApiDependencies(
     ...(input.orderMessageService === undefined ? {} : { orderMessageService: input.orderMessageService }),
     proofMediaService: new PrismaDriverProofMediaRepository(input.prisma, {
       readAccessTtlSeconds: loadDriverProofMediaReadAccessPolicy(input.env).readAccessTtlSeconds,
+      reservationWritesEnabled: readOptionalBoolean(
+        input.env.DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED,
+        'DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED'
+      ) === true,
       ...proofMediaStorageOptions,
       ...proofMediaSafetyOptions
     }),
@@ -183,6 +200,17 @@ export function loadDriverApiDependencies(
     ...(input.routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler: input.routeOptimizationScheduler }),
     routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma, input.routeGroupingService)
   };
+}
+
+export function loadDriverEventAttemptRetentionPolicy(env: DriverApiRuntimeEnv): { retentionDays: number } {
+  const retentionDays = readOptionalPositiveInteger(
+    env.DRIVER_EVENT_ATTEMPT_RETENTION_DAYS,
+    'DRIVER_EVENT_ATTEMPT_RETENTION_DAYS'
+  ) ?? DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS;
+  if (retentionDays < DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS) {
+    throw new Error(`DRIVER_EVENT_ATTEMPT_RETENTION_DAYS must be at least ${DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS}`);
+  }
+  return { retentionDays };
 }
 
 function createDsvDriverSellerOrderAssignmentCommandKernel(input: {
@@ -328,7 +356,7 @@ function readRequiredDriverRouteMapPreviewPublicBaseUrl(env: DriverApiRuntimeEnv
   }
 }
 
-function loadDriverProofMediaRepositoryStorageOptions(env: DriverApiRuntimeEnv): DriverProofMediaRepositoryStorageOptions {
+export function loadDriverProofMediaRepositoryStorageOptions(env: DriverApiRuntimeEnv): DriverProofMediaRepositoryStorageOptions {
   const backend = readOptional(env.DRIVER_PROOF_MEDIA_STORAGE_BACKEND)?.toLowerCase() ?? DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND;
   if (backend === 'local') {
     return { storageRoot: loadDriverProofMediaStorageRoot(env) };

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 
 import {
+  acknowledgeNotification,
   getBootstrap,
   getNotifications,
   markNotificationRead,
@@ -126,10 +127,30 @@ export function App(): ReactElement {
       .catch(() => undefined);
   };
 
+  const handleNotificationAcknowledge = (item: TopbarNotificationItem): void => {
+    if (bootstrap === null || item.acknowledgedAt != null || item.resolvedAt != null) return;
+    void acknowledgeNotification({
+      csrfToken: bootstrap.csrfToken,
+      notificationId: item.id,
+    })
+      .then((payload) => {
+        setNotifications((current) => current.map((currentItem) =>
+          currentItem.id === item.id
+            ? toTopbarNotificationItem(payload.notification, bootstrap.locale)
+            : currentItem,
+        ));
+      })
+      .catch((acknowledgeError: unknown) => setNotificationLoadError(
+        getAppCopy(bootstrap.locale).notifications.acknowledgeFailed(
+          readErrorMessage(acknowledgeError),
+        ),
+      ));
+  };
+
   if (bootstrap === null) return <BootFrame error={error} />;
 
   return (
-    <AppShell activePage={route.page} bootstrap={bootstrap} error={error} navItems={buildNavItems(bootstrap.locale)} navigate={navigate} notificationLoadError={notificationLoadError} notificationUnreadCount={notificationUnreadCount} notifications={notifications} onNotificationOpen={handleNotificationOpen} title={pageTitle(route, bootstrap.locale)}>
+    <AppShell activePage={route.page} bootstrap={bootstrap} error={error} navItems={buildNavItems(bootstrap.locale)} navigate={navigate} notificationLoadError={notificationLoadError} notificationUnreadCount={notificationUnreadCount} notifications={notifications} onNotificationAcknowledge={handleNotificationAcknowledge} onNotificationOpen={handleNotificationOpen} title={pageTitle(route, bootstrap.locale)}>
       <PageBody bootstrap={bootstrap} navigate={navigate} route={route} setError={setError} />
     </AppShell>
   );
@@ -172,6 +193,7 @@ export function startNotificationRefresh(input: {
   const notificationStream: NotificationChangeStreamSubscription | null =
     openStream({
       onNotificationsChanged: run,
+      onReconnected: run,
     });
   run();
 
@@ -191,21 +213,27 @@ export function toTopbarNotificationItem(
   const orderName = readNotificationPayloadString(notification.payload, 'orderName');
   if (notification.type === 'WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED') {
     return {
+      acknowledgedAt: notification.acknowledgedAt,
+      alertCycleId: notification.alertCycleId,
       body: t.wooAssignedRouteAddressChangedBody(orderName),
       createdAt: notification.createdAt,
       href: notification.href,
       id: notification.id,
       read: notification.readAt !== null,
+      resolvedAt: notification.resolvedAt,
       title: t.wooAssignedRouteAddressChangedTitle,
       tone: notification.severity,
     };
   }
   return {
+    acknowledgedAt: notification.acknowledgedAt,
+    alertCycleId: notification.alertCycleId,
     body: notification.body,
     createdAt: notification.createdAt,
     href: notification.href,
     id: notification.id,
     read: notification.readAt !== null,
+    resolvedAt: notification.resolvedAt,
     title: notification.title,
     tone: notification.severity,
   };

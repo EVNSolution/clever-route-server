@@ -273,7 +273,7 @@ export function RouteGroupingPage({
             </button>
           )}
         </div>
-        <span className="route-group-map-edit-help">{editingPolygonId === null ? "Double-click to finish" : "Drag points · double-click line"}</span>
+        <span className="route-group-map-edit-help">{editingPolygonId === null ? "Double-click to finish" : "Drag points, then double-click the line"}</span>
       </div>
     );
   }

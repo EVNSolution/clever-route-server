@@ -327,7 +327,7 @@ describe("Orders compact operations table", () => {
 
     expect(html).not.toContain("<h4>Payment</h4>");
     expect(html).toContain("Review payment");
-    expect(html).not.toContain("Cash · custom_cash_gateway");
+    expect(html).not.toContain("Cash (custom_cash_gateway)");
     expect(html).not.toContain("processing");
     expect(html).not.toContain(
       "Payment method/status mapping is not configured",
@@ -991,7 +991,7 @@ describe("Orders compact operations table", () => {
       },
     );
 
-    expect(html).toContain("1 selected · 3 selectable · 0 unavailable");
+    expect(html).toContain("1 selected, 3 selectable, 0 unavailable");
     expect(html).not.toContain("Select filtered");
     expect(html).not.toContain("Clear filtered");
     expect(html).not.toContain("Clear selection");
@@ -1039,7 +1039,7 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("지도에 추가");
     expect(html).not.toContain("일괄 좌표 변환");
     expect(html).toContain("1 주문");
-    expect(html).toContain("0개 선택 · 1개 선택 가능 · 0개 불가");
+    expect(html).toContain("0개 선택, 1개 선택 가능, 0개 불가");
     expect(html).toContain("리뷰");
     expect(html).toContain("준비 안 됨");
     expect(html).toContain("배송 날짜 누락");

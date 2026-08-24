@@ -21,7 +21,7 @@ export function formatOrderItemName(item: Pick<OrderItemDto, 'name'>): string {
 }
 
 export function formatOrderItemOptions(item: Pick<OrderItemDto, 'options'>): string {
-  return getOrderItemOptions(item).join(' · ');
+  return getOrderItemOptions(item).join(', ');
 }
 
 export function formatOrderItemLine(item: OrderItemDto): string {

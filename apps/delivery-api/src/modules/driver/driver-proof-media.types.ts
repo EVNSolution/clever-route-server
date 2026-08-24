@@ -6,6 +6,7 @@ export type StoreDriverProofMediaInput = {
   driverId: string;
   fileBytes: Buffer;
   filename: string;
+  idempotencyKey?: string;
   routePlanId: string;
   shopDomain: string;
   shopId: string;
@@ -94,5 +95,19 @@ export class DriverProofMediaAccessUnavailableError extends Error {
   constructor(message = 'Proof media read access is not configured') {
     super(message);
     this.name = 'DriverProofMediaAccessUnavailableError';
+  }
+}
+
+export class DriverProofMediaIdempotencyConflictError extends Error {
+  constructor() {
+    super('Proof media idempotency key was reused with different content');
+    this.name = 'DriverProofMediaIdempotencyConflictError';
+  }
+}
+
+export class DriverProofMediaIdempotencyPendingError extends Error {
+  constructor() {
+    super('Proof media idempotent upload is still pending');
+    this.name = 'DriverProofMediaIdempotencyPendingError';
   }
 }

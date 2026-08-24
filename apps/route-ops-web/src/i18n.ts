@@ -15,6 +15,15 @@ export const appCopy = {
     wordpressSession: 'WordPress launch session',
     internalAdmin: 'CLEVER internal admin',
     notifications: {
+      acknowledge: 'Acknowledge',
+      acknowledged: 'Acknowledged',
+      acknowledgeFailed(error: string): string {
+        return `Alert acknowledgement failed. ${error}`;
+      },
+      active: 'Active',
+      activeCount(count: number): string {
+        return `${count} active`;
+      },
       allCaughtUp: 'All caught up',
       loadFailed(error: string): string {
         return `Notifications could not be loaded. Last known alerts are preserved. ${error}`;
@@ -23,6 +32,10 @@ export const appCopy = {
       noNotifications: 'No notifications yet.',
       notifications: 'Notifications',
       openNotifications: 'Open notifications',
+      lifecycle: 'Alert lifecycle',
+      read: 'Read',
+      resolved: 'Resolved',
+      unread: 'Unread',
       unreadCount(count: number): string {
         return `${count} unread`;
       },
@@ -57,6 +70,15 @@ export const appCopy = {
     wordpressSession: 'WordPress 실행 세션',
     internalAdmin: 'CLEVER 내부 관리자',
     notifications: {
+      acknowledge: '확인 처리',
+      acknowledged: '확인 처리됨',
+      acknowledgeFailed(error: string): string {
+        return `알림 확인 처리에 실패했습니다. ${error}`;
+      },
+      active: '활성',
+      activeCount(count: number): string {
+        return `활성 ${count}건`;
+      },
       allCaughtUp: '모두 확인됨',
       loadFailed(error: string): string {
         return `알림을 불러오지 못했습니다. 이전 알림은 유지됩니다. ${error}`;
@@ -65,6 +87,10 @@ export const appCopy = {
       noNotifications: '아직 알림이 없습니다.',
       notifications: '알림',
       openNotifications: '알림 열기',
+      lifecycle: '알림 처리 상태',
+      read: '읽음',
+      resolved: '해결됨',
+      unread: '읽지 않음',
       unreadCount(count: number): string {
         return `읽지 않은 알림 ${count}개`;
       },
@@ -510,8 +536,8 @@ export const stateCopy = {
       noRouteSelected: 'No route selected',
       roadGeometry: 'Road path ready',
       noCoordinates: 'Need coordinates for road path',
-      routerNotConfigured: 'Stops ready · router not configured',
-      roadGeometryUnavailable: 'Stops ready · road path not generated'
+      routerNotConfigured: 'Router not configured for ready stops',
+      roadGeometryUnavailable: 'Road path not generated for ready stops'
     },
     storeAddress: 'Store address',
     store: 'Store'
@@ -534,8 +560,8 @@ export const stateCopy = {
       noRouteSelected: '선택된 경로 없음',
       roadGeometry: '도로 경로',
       noCoordinates: '경로 선에 필요한 좌표 부족',
-      routerNotConfigured: '정류장 표시됨 · 라우터 미설정',
-      roadGeometryUnavailable: '정류장 표시됨 · 경로 선 없음'
+      routerNotConfigured: '표시된 정류지의 라우터가 설정되지 않음',
+      roadGeometryUnavailable: '표시된 정류지의 경로 선이 생성되지 않음'
     },
     storeAddress: '매장 주소',
     store: '매장'
@@ -596,7 +622,7 @@ export const ordersCopy = {
     typeFallback: 'Type',
     tableTitle: 'Order List',
     diagnosticMetadata: 'Order metadata',
-    selectedSummary(selected: number, selectable: number, unavailable: number): string { return `${selected} selected · ${selectable} selectable · ${unavailable} unavailable`; },
+    selectedSummary(selected: number, selectable: number, unavailable: number): string { return `${selected} selected, ${selectable} selectable, ${unavailable} unavailable`; },
     updating: 'Updating…',
     wooSyncing: 'Syncing orders…',
     wooSync: 'Sync Order',
@@ -841,7 +867,7 @@ export const ordersCopy = {
     typeFallback: '타입',
     tableTitle: '주문 목록',
     diagnosticMetadata: '주문 메타데이터',
-    selectedSummary(selected: number, selectable: number, unavailable: number): string { return `${selected}개 선택 · ${selectable}개 선택 가능 · ${unavailable}개 불가`; },
+    selectedSummary(selected: number, selectable: number, unavailable: number): string { return `${selected}개 선택, ${selectable}개 선택 가능, ${unavailable}개 불가`; },
     updating: '업데이트 중…',
     wooSyncing: '주문 동기화 중…',
     wooSync: '주문 동기화',
@@ -1065,6 +1091,25 @@ export const settingsCopy = {
     emailTitle: 'Customer email notification settings',
     emailDescription: 'Phase 1 stores settings and templates only. No email is sent or scheduled.',
     emailEnabled: 'Enable customer email reminders',
+    runtimeHealthEyebrow: 'Operations',
+    runtimeHealthTitle: 'Delivery runtime health',
+    runtimeHealthDescription: 'Sender and outbox are reported independently. Delivery settings do not prove that the sender is running.',
+    runtimeHealthUnavailable: 'Runtime health is unavailable. No healthy state is inferred.',
+    runtimeHealthObservedAt(value: string): string {
+      return `Last observed ${value}`;
+    },
+    runtimeAttemptHealth: 'Email delivery attempt health',
+    runtimeAutomaticSender: 'Automatic sender',
+    runtimeAutomaticWorker: 'Automatic worker',
+    runtimeManualProvider: 'Manual email provider',
+    runtimeReady: 'Ready',
+    runtimeUnavailable: 'Unavailable',
+    runtimePending: 'Pending',
+    runtimeProcessing: 'Processing',
+    runtimeRetrying: 'Retrying',
+    runtimeTerminalFailures: 'Terminal failures',
+    runtimeLastSuccess: 'Last success',
+    runtimeLastError: 'Last error code',
     reminderPlans: 'Reminder plans',
     addReminder: 'Add reminder',
     noReminderPlans: 'No reminders configured.',
@@ -1148,6 +1193,25 @@ export const settingsCopy = {
     emailTitle: '고객 이메일 알림 설정',
     emailDescription: '1차에서는 설정과 템플릿만 저장합니다. 이메일 발송/예약은 하지 않습니다.',
     emailEnabled: '고객 이메일 리마인더 사용',
+    runtimeHealthEyebrow: '운영',
+    runtimeHealthTitle: '배송 런타임 상태',
+    runtimeHealthDescription: '발송기와 보관함 상태를 별도로 표시합니다. 배송 설정만으로 발송기 정상 상태를 추정하지 않습니다.',
+    runtimeHealthUnavailable: '런타임 상태를 확인할 수 없습니다. 정상으로 추정하지 않습니다.',
+    runtimeHealthObservedAt(value: string): string {
+      return `마지막 확인 ${value}`;
+    },
+    runtimeAttemptHealth: '이메일 발송 시도 상태',
+    runtimeAutomaticSender: '자동 발송기',
+    runtimeAutomaticWorker: '자동 발송 워커',
+    runtimeManualProvider: '수동 이메일 제공자',
+    runtimeReady: '준비됨',
+    runtimeUnavailable: '사용 불가',
+    runtimePending: '대기',
+    runtimeProcessing: '처리 중',
+    runtimeRetrying: '재시도',
+    runtimeTerminalFailures: '영구 실패',
+    runtimeLastSuccess: '마지막 성공',
+    runtimeLastError: '마지막 오류 코드',
     reminderPlans: '리마인더 계획',
     addReminder: '리마인더 추가',
     noReminderPlans: '설정된 리마인더가 없습니다.',

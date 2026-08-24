@@ -21,6 +21,7 @@ export function AppShell({
   notificationLoadError,
   notificationUnreadCount,
   notifications = [],
+  onNotificationAcknowledge,
   onNotificationOpen,
   title
 }: {
@@ -33,6 +34,7 @@ export function AppShell({
   notificationLoadError?: string | null;
   notificationUnreadCount?: number;
   notifications?: TopbarNotificationItem[];
+  onNotificationAcknowledge?(item: TopbarNotificationItem): void;
   onNotificationOpen?(item: TopbarNotificationItem): void;
   title: string;
 }): ReactElement {
@@ -71,6 +73,7 @@ export function AppShell({
               locale={bootstrap.locale}
               loadError={notificationLoadError}
               navigate={navigate}
+              onNotificationAcknowledge={onNotificationAcknowledge}
               onNotificationOpen={onNotificationOpen}
               unreadCount={notificationUnreadCount}
             />

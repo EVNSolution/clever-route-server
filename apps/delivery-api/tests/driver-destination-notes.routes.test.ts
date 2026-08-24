@@ -113,6 +113,8 @@ async function createAppHarness(input: { scopeRejected?: boolean } = {}) {
     driverApi: {
       driverDestinationNotesService: { update },
       driverEventService: {
+        admitDriverEventAttempt: vi.fn(() => Promise.resolve({ attemptId: 'attempt-id', attemptNumber: 1 })),
+        finalizeDriverEventAttempt: vi.fn(() => Promise.resolve()),
         recordDriverEvent: vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'unused-event-id' }))
       },
       driverTokenAccessRepository: {

@@ -6,6 +6,7 @@ import {
 } from './customer-delivery-notification.sender.js';
 import { PrismaCustomerDeliveryNotificationOutbox } from './customer-delivery-notification.outbox.js';
 import { CustomerDeliveryNotificationWorker } from './customer-delivery-notification.worker.js';
+import { PrismaCustomerDeliveryNotificationAttemptRepository } from '../customer-email/customer-delivery-notification-attempt.repository.js';
 
 type LoggerLike = {
   error?(bindings: unknown, message?: string): void;
@@ -25,7 +26,7 @@ export function createCustomerDeliveryNotificationRuntime(input: {
   prisma: PrismaClient;
 }): CustomerDeliveryNotificationRuntime {
   const sender = loadCustomerDeliveryNotificationSender(input.env);
-  if (sender === undefined) {
+  if (sender === undefined || !isCustomerDeliveryNotificationWorkerEnabled(input.env)) {
     return {
       close: () => Promise.resolve(),
       enabled: false,
@@ -37,7 +38,8 @@ export function createCustomerDeliveryNotificationRuntime(input: {
     new PrismaCustomerDeliveryNotificationOutbox(input.prisma),
     sender,
     {},
-    input.logger
+    input.logger,
+    new PrismaCustomerDeliveryNotificationAttemptRepository(input.prisma)
   );
   return {
     close: () => worker.close(),
@@ -47,4 +49,9 @@ export function createCustomerDeliveryNotificationRuntime(input: {
       return Promise.resolve();
     }
   };
+}
+
+export function isCustomerDeliveryNotificationWorkerEnabled(env: CustomerDeliveryNotificationRuntimeEnv): boolean {
+  const value = env.CUSTOMER_DELIVERY_NOTIFICATION_WORKER_ENABLED?.trim().toLowerCase();
+  return value === undefined || value === '' || value === 'true' || value === '1';
 }

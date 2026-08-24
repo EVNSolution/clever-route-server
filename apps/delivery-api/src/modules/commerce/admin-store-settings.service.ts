@@ -11,6 +11,8 @@ import {
   type RouteOpsUiSettingsDto,
 } from "../route-ops/route-ops-ui-settings.js";
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
+import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 import {
   normalizeDsvOperationalSettings,
   validateDsvOperationalSettings,
@@ -39,7 +41,7 @@ export type SaveAdminStoreSettingsInput = {
   shopDomain: string;
 };
 
-type AdminStoreSettingsPrismaClient = Pick<PrismaClient, "shop">;
+type AdminStoreSettingsPrismaClient = Pick<PrismaClient, "$transaction" | "shop">;
 
 export class PrismaAdminStoreSettingsService {
   constructor(private readonly prisma: AdminStoreSettingsPrismaClient) {}
@@ -78,7 +80,12 @@ export class PrismaAdminStoreSettingsService {
       input.dsvOperationalSettings === undefined
         ? undefined
         : validateDsvOperationalSettings(input.dsvOperationalSettings);
-    const shop = await this.prisma.shop.upsert({
+    const shop = await this.prisma.$transaction(async (tx) => {
+      await assertShopifyShopPrivacyWriteAllowed(tx, {
+        appId: normalizeShopifyAppId(undefined),
+        shopDomain: input.shopDomain
+      });
+      return tx.shop.upsert({
       create: {
         defaultDepotAddress: input.defaultDepotAddress,
         defaultDepotLatitude: input.defaultDepotLatitude,
@@ -109,6 +116,7 @@ export class PrismaAdminStoreSettingsService {
         ...(routeScopeConfig === undefined ? {} : { routeScopeConfig }),
       },
       where: appScopedShopWhere({ shopDomain: input.shopDomain }),
+      });
     });
     return toAdminStoreSettings(shop);
   }

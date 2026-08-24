@@ -10,8 +10,9 @@ import type {
   UpdateAdminDriverNameInput
 } from './admin-driver.types.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
+import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 
-type AdminDriverPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount' | 'driverSession' | 'shop'>;
+type AdminDriverPrismaClient = Pick<PrismaClient, '$transaction' | 'driver' | 'driverAccount' | 'driverSession' | 'shop'>;
 
 const INVITE_CODE_TTL_HOURS = 24;
 
@@ -40,10 +41,13 @@ export class PrismaAdminDriverRepository {
   async createPendingDriver(input: CreatePendingDriverRecordInput): Promise<AdminDriverRow> {
     const appId = normalizeShopifyAppId(input.appId);
     const shopDomain = normalizeShopDomain(input.shopDomain);
-    const shop = await this.prisma.shop.upsert({
-      create: { appId, shopDomain },
-      update: {},
-      where: appScopedShopWhere({ appId, shopDomain })
+    const shop = await this.prisma.$transaction(async (tx) => {
+      await assertShopifyShopPrivacyWriteAllowed(tx, { appId, shopDomain });
+      return tx.shop.upsert({
+        create: { appId, shopDomain },
+        update: {},
+        where: appScopedShopWhere({ appId, shopDomain })
+      });
     });
     const displayName = normalizeDisplayName(input.displayName) ?? input.phone;
 

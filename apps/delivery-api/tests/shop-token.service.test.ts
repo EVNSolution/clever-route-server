@@ -14,6 +14,11 @@ const encryptionKey = loadTokenEncryptionKey(
 function createRepositoryHarness() {
   let stored: ShopTokenRow | null = null;
   const shop = {
+    updateMany: vi.fn(({ data }: { data: Partial<ShopTokenRow> }) => {
+      if (stored === null) return Promise.resolve({ count: 0 });
+      stored = { ...stored, ...data };
+      return Promise.resolve({ count: 1 });
+    }),
     upsert: vi.fn(({ create, update }: { create: ShopTokenRow; update: Partial<ShopTokenRow> }) => {
       stored = {
         ...create,
@@ -25,15 +30,32 @@ function createRepositoryHarness() {
     }),
     findUnique: vi.fn(() => Promise.resolve(stored))
   };
+  const shopifyShopRedactionTombstone = {
+    findUnique: vi.fn(() => Promise.resolve({ redactedAt: new Date('2026-05-06T00:00:00.000Z'), reinstalledAt: null })),
+    updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+  };
 
   return {
     getStored: () => stored,
-    prisma: { shop },
-    repository: new PrismaShopTokenRepository({ shop })
+    prisma: { shop, shopifyShopRedactionTombstone },
+    repository: new PrismaShopTokenRepository({
+      $transaction: (callback) => callback({
+        $queryRaw: vi.fn(() => Promise.resolve([{ lock: 'ok' }])),
+        shop,
+        shopifyShopRedactionTombstone
+      }),
+      shop
+    })
   };
+
 }
 
 describe('ShopTokenService', () => {
+  test('fails closed when transactional privacy fencing is unavailable', () => {
+    expect(() => new PrismaShopTokenRepository({ shop: {} } as never))
+      .toThrow('Shop token repository requires transactional privacy fencing');
+  });
+
   test('stores encrypted access and refresh tokens for a normalized shop domain', async () => {
     const { prisma, repository } = createRepositoryHarness();
     const service = new ShopTokenService({ encryptionKey, repository });
@@ -59,6 +81,15 @@ describe('ShopTokenService', () => {
         where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
       })
     );
+    expect(prisma.shopifyShopRedactionTombstone.updateMany).toHaveBeenCalledWith({
+      data: { reinstalledAt: stored.installedAt },
+      where: {
+        appId: 'clever',
+        redactedAt: { lt: stored.installedAt },
+        reinstalledAt: null,
+        shopDomain: 'example.myshopify.com'
+      }
+    });
   });
 
   test('decrypts the stored Admin API access token for Shopify API calls', async () => {

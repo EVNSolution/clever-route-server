@@ -35,6 +35,30 @@ const linkedDriver: AdminDriverRow = {
 };
 
 describe('Admin drivers routes', () => {
+  test('redacts caught admin driver errors even when caller serializers request raw errors', async () => {
+    const privateMessage = 'token=admin-secret driver@example.invalid +1 519 555 0111 19 Driver Street';
+    const { dependencies, listDrivers } = createDependencyHarness();
+    listDrivers.mockRejectedValueOnce(new Error(privateMessage));
+    const logLines: string[] = [];
+    const app = await buildApp({
+      adminDrivers: dependencies,
+      logger: hostileLogger(logLines, privateMessage)
+    });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/drivers'
+      });
+
+      expect(response.statusCode).toBe(500);
+      expectSafeCaughtErrorLogs(logLines, privateMessage);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects driver creation without a Shopify session token', async () => {
     const { createPendingDriver, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminDrivers: dependencies });
@@ -435,4 +459,26 @@ function driverInvitePayload(): Record<string, unknown> {
     phone: '+821089216198',
     source: 'clever-app-driver-invite'
   };
+}
+
+function hostileLogger(logLines: string[], privateMessage: string) {
+  return {
+    level: 'error' as const,
+    serializers: {
+      err: () => ({ message: privateMessage, stack: privateMessage, type: 'RawError' }),
+      error: () => ({ message: privateMessage, stack: privateMessage })
+    },
+    stream: { write: (line: string) => { logLines.push(line); } }
+  };
+}
+
+function expectSafeCaughtErrorLogs(logLines: string[], privateMessage: string): void {
+  const serialized = logLines.join('\n');
+  expect(serialized).toContain('errorCode');
+  expect(serialized).not.toContain(privateMessage);
+  expect(serialized).not.toContain('admin-secret');
+  expect(serialized).not.toContain('driver@example.invalid');
+  expect(serialized).not.toContain('+1 519 555 0111');
+  expect(serialized).not.toContain('19 Driver Street');
+  expect(serialized).not.toContain('stack');
 }

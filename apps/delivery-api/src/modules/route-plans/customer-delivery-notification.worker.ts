@@ -7,6 +7,8 @@ import type {
   CustomerDeliveryNotificationJob,
   PrismaCustomerDeliveryNotificationOutbox
 } from './customer-delivery-notification.outbox.js';
+import type { PrismaCustomerDeliveryNotificationAttemptRepository } from '../customer-email/customer-delivery-notification-attempt.repository.js';
+import { redactTelemetryMessage, safeErrorTelemetry } from '../security/safe-telemetry-redaction.js';
 
 type LoggerLike = {
   error?(bindings: unknown, message?: string): void;
@@ -54,7 +56,8 @@ export class CustomerDeliveryNotificationWorker {
     private readonly outbox: PrismaCustomerDeliveryNotificationOutbox,
     private readonly sender: CustomerDeliveryNotificationSender,
     options: CustomerDeliveryNotificationWorkerOptions = {},
-    private readonly logger?: LoggerLike
+    private readonly logger?: LoggerLike,
+    private readonly attempts?: PrismaCustomerDeliveryNotificationAttemptRepository
   ) {
     this.options = {
       batchSize: options.batchSize ?? defaultOptions.batchSize,
@@ -101,7 +104,7 @@ export class CustomerDeliveryNotificationWorker {
         if (processed >= this.options.batchSize) continue;
       } catch (error) {
         this.logger?.error?.(
-          { error: error instanceof Error ? error.message : 'unknown worker error' },
+          { ...safeErrorTelemetry(error), errorCode: 'CUSTOMER_NOTIFICATION_WORKER_ITERATION_FAILED' },
           'customer delivery notification worker iteration failed'
         );
       }
@@ -112,6 +115,12 @@ export class CustomerDeliveryNotificationWorker {
 
   private async processJob(job: CustomerDeliveryNotificationJob, fixedNow?: Date): Promise<void> {
     const startedAt = fixedNow ?? new Date();
+    const attempt = await this.attempts?.startAutomatic({
+      attemptNumber: job.attemptCount,
+      factId: job.factId,
+      provider: this.sender.providerName,
+      startedAt
+    });
     const payload = buildJobMessage(job);
     if ('error' in payload) {
       await this.outbox.markDead({
@@ -122,6 +131,7 @@ export class CustomerDeliveryNotificationWorker {
         now: startedAt,
         provider: this.sender.providerName
       });
+      if (attempt !== undefined) await this.attempts?.settle({ attemptId: attempt.attemptId, completedAt: startedAt, errorCode: payload.error.code, outcome: 'TERMINAL_FAILURE' });
       this.logger?.warn?.(
         { attemptCount: job.attemptCount, errorCode: payload.error.code, factId: job.factId },
         'customer delivery notification moved to dead letter state'
@@ -138,6 +148,7 @@ export class CustomerDeliveryNotificationWorker {
         now: startedAt,
         provider: this.sender.providerName
       });
+      if (attempt !== undefined) await this.attempts?.settle({ attemptId: attempt.attemptId, completedAt: startedAt, errorCode: 'CUSTOMER_NOTIFICATION_EXPIRED', outcome: 'TERMINAL_FAILURE' });
       this.logger?.warn?.(
         { attemptCount: job.attemptCount, errorCode: 'CUSTOMER_NOTIFICATION_EXPIRED', factId: job.factId },
         'customer delivery notification moved to dead letter state'
@@ -151,7 +162,7 @@ export class CustomerDeliveryNotificationWorker {
     } catch (error) {
       sendResult = {
         errorCode: 'CUSTOMER_NOTIFICATION_SENDER_ERROR',
-        errorMessage: error instanceof Error ? error.message : 'Customer notification sender failed.',
+        errorMessage: redactTelemetryMessage(error),
         provider: this.sender.providerName,
         retryable: true,
         status: 'FAILED'
@@ -167,6 +178,21 @@ export class CustomerDeliveryNotificationWorker {
         provider: sendResult.provider,
         providerMessageId: sendResult.providerMessageId
       });
+      if (attempt !== undefined) {
+        try {
+          await this.attempts?.settle({
+            attemptId: attempt.attemptId,
+            completedAt: settledAt,
+            outcome: 'SENT',
+            ...(sendResult.providerMessageId === undefined ? {} : { providerMessageId: sendResult.providerMessageId })
+          });
+        } catch {
+          this.logger?.warn?.(
+            { attemptCount: job.attemptCount, errorCode: 'CUSTOMER_NOTIFICATION_ATTEMPT_RECONCILIATION_REQUIRED', factId: job.factId },
+            'customer delivery notification attempt requires reconciliation'
+          );
+        }
+      }
       this.logger?.info?.(
         { attemptCount: job.attemptCount, factId: job.factId, provider: sendResult.provider },
         'customer delivery notification sent'
@@ -186,6 +212,7 @@ export class CustomerDeliveryNotificationWorker {
         nextAttemptAt,
         provider: sendResult.provider
       });
+      if (attempt !== undefined) await this.attempts?.settle({ attemptId: attempt.attemptId, completedAt: settledAt, errorCode, outcome: 'RETRYABLE_FAILURE' });
       this.logger?.warn?.(
         { attemptCount: job.attemptCount, errorCode, factId: job.factId, nextAttemptAt: nextAttemptAt.toISOString() },
         'customer delivery notification scheduled for retry'
@@ -201,6 +228,7 @@ export class CustomerDeliveryNotificationWorker {
       now: settledAt,
       provider: sendResult.provider
     });
+    if (attempt !== undefined) await this.attempts?.settle({ attemptId: attempt.attemptId, completedAt: settledAt, errorCode, outcome: 'TERMINAL_FAILURE' });
     this.logger?.warn?.(
       { attemptCount: job.attemptCount, errorCode, factId: job.factId },
       'customer delivery notification moved to dead letter state'

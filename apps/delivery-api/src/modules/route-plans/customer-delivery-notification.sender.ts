@@ -39,7 +39,8 @@ export type CustomerDeliveryNotificationSender = {
 export type CustomerDeliveryNotificationRuntimeEnv = Partial<Record<
   | 'CUSTOMER_DELIVERY_NOTIFICATION_BEARER_TOKEN'
   | 'CUSTOMER_DELIVERY_NOTIFICATION_TIMEOUT_MS'
-  | 'CUSTOMER_DELIVERY_NOTIFICATION_URL',
+  | 'CUSTOMER_DELIVERY_NOTIFICATION_URL'
+  | 'CUSTOMER_DELIVERY_NOTIFICATION_WORKER_ENABLED',
   string
 >>;
 

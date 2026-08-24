@@ -31,7 +31,7 @@ import { registerAdminOrdersRoutes, type AdminOrdersDependencies } from './route
 import { registerApiDocsRoutes } from './routes/api-docs.routes.js';
 import { registerDriverEventRoutes, type DriverApiDependencies } from './routes/driver-events.routes.js';
 import { registerDriverAuthRoutes, type DriverAuthDependencies } from './routes/driver-auth.routes.js';
-import { registerJsonBodyParser } from './routes/json-body-parser.js';
+import { isInvalidJsonBodyError, registerJsonBodyParser } from './routes/json-body-parser.js';
 import { registerPrivacyRoutes } from './routes/privacy.routes.js';
 import { registerHealthRoutes } from './routes/health.routes.js';
 import { registerShopifyAuthRoutes, type ShopifyAuthDependencies } from './routes/shopify-auth.routes.js';
@@ -54,6 +54,7 @@ import {
   registerDsvDriverAppReleaseRoutes,
   type DsvDriverAppReleaseDependencies
 } from './routes/dsv-driver-app-release.routes.js';
+import { safeErrorTelemetry } from './modules/security/safe-telemetry-redaction.js';
 
 export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
@@ -79,6 +80,8 @@ export type BuildAppOptions = {
 };
 
 type AppLoggerOption = Exclude<FastifyServerOptions['logger'], undefined>;
+type AppLoggerConfiguration = Exclude<AppLoggerOption, boolean>;
+type FastifyErrorSerializer = NonNullable<NonNullable<AppLoggerConfiguration['serializers']>['err']>;
 type DsvApiSurfaceCategory = 'v1_read' | 'canonical_assignment_command_alias' | 'legacy_read' | 'legacy_write';
 type ShopifyAdminApiSurface = 'customer_email' | 'drivers' | 'inventories' | 'orders' | 'route_groups' | 'route_plans';
 
@@ -90,6 +93,20 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     done();
   });
   app.setErrorHandler((error, request, reply) => {
+    if (isInvalidJsonBodyError(error)) {
+      request.log.warn({
+        event: 'invalid_json_request_rejected',
+        requestId: request.id,
+        route: request.routeOptions.url
+      }, 'Rejected malformed JSON request body');
+      return reply.code(400).send({
+        data: null,
+        error: {
+          code: 'INVALID_JSON',
+          message: 'Request body must be valid JSON.'
+        }
+      });
+    }
     if (hasStatusCode(error, 429)) {
       if (isDsvLoginRequest(request)) {
         request.log.warn({
@@ -106,11 +123,20 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         }
       });
     }
+    if (hasStatusCode(error, 413)) {
+      return reply.code(413).send({
+        data: null,
+        error: {
+          code: 'PAYLOAD_TOO_LARGE',
+          message: 'Request payload is too large.'
+        }
+      });
+    }
     if (isPrismaSchemaDriftError(error)) {
       const code = request.url.startsWith('/admin/inventories')
         ? 'INVENTORY_SCHEMA_NOT_READY'
         : 'DELIVERY_SCHEMA_NOT_READY';
-      request.log.error({ code, error }, 'delivery api schema is not up to date');
+      request.log.error({ code, event: 'delivery_api_schema_drift', ...safeErrorTelemetry(error) }, 'delivery api schema is not up to date');
       return reply.code(500).send({
         data: null,
         error: {
@@ -119,8 +145,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         }
       });
     }
-
-    throw error;
+    request.log.error({
+      event: 'unexpected_request_error',
+      requestId: request.id,
+      route: request.routeOptions.url,
+      ...safeErrorTelemetry(error)
+    }, 'Unexpected request failure');
+    return reply.code(500).send({
+      data: null,
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'An internal server error occurred.'
+      }
+    });
   });
 
   registerJsonBodyParser(app);
@@ -243,15 +280,39 @@ function isDsvLoginRequest(request: FastifyRequest): boolean {
 function withSafeRequestLogging(logger: AppLoggerOption): AppLoggerOption {
   if (logger === false) return false;
   if (logger === true) {
-    return { serializers: { req: serializeRequestForLog } };
+    return {
+      serializers: {
+        err: serializeErrorForLog as FastifyErrorSerializer,
+        error: serializeErrorForLog,
+        req: serializeRequestForLog
+      }
+    };
   }
   return {
     ...logger,
     serializers: {
       ...logger.serializers,
+      err: serializeErrorForLog as FastifyErrorSerializer,
+      error: serializeErrorForLog,
       req: serializeRequestForLog
     }
   };
+}
+
+function serializeErrorForLog(value: unknown): Record<string, unknown> {
+  const correlationId = readErrorCorrelationId(value);
+  return {
+    ...safeErrorTelemetry(value),
+    ...(correlationId === null ? {} : { correlationId })
+  };
+}
+
+function readErrorCorrelationId(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || !('correlationId' in value)) return null;
+  const correlationId = value.correlationId;
+  if (typeof correlationId !== 'string') return null;
+  const trimmed = correlationId.trim();
+  return /^[A-Za-z0-9._:-]{1,120}$/u.test(trimmed) ? trimmed : null;
 }
 
 function serializeRequestForLog(request: FastifyRequest): {
