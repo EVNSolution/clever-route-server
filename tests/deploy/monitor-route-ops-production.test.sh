@@ -75,8 +75,23 @@ case "$g007_status" in *"eta_input_route_version_mismatches"*"route_plan.status 
 esac
 case "$g007_status" in *"\"etaStatus\" = 'STALE'"*) echo "G007 invariant must not only count stale ETA statuses" >&2; exit 1 ;; esac
 case "$g007_status" in
-  *"SUM(failures) FILTER (WHERE name <> 'duplicate_active_assignments') > 0"*) ;;
-  *) echo "G007 duplicate assignments must remain observable without making monitor status critical" >&2; exit 1 ;;
+  *"canonical_duplicate_active_assignments"*'GROUP BY "shopId", "sellerOrderSourceKind", "sellerOrderKey", "serviceDate"'*) ;;
+  *) echo "G007 active-assignment invariant must use the full canonical order identity" >&2; exit 1 ;;
+esac
+case "$g007_status" in
+  *"recurring_active_seller_keys"*'GROUP BY "shopId", "sellerOrderKey"'*) ;;
+  *) echo "G007 recurring seller keys must remain observable as an explicitly informational metric" >&2; exit 1 ;;
+esac
+case "$g007_status" in
+  *"deprecatedNoncriticalMetrics"*"'duplicate_active_assignments'"*"'recurring_active_seller_keys'"*) ;;
+  *) echo "G007 must preserve the old duplicate metric only as an explicit deprecated noncritical alias" >&2; exit 1 ;;
+esac
+case "$g007_status" in
+  *"SUM(failures) > 0"*) ;;
+  *) echo "G007 canonical invariant failures must fail closed without name-based exceptions" >&2; exit 1 ;;
+esac
+case "$g007_status" in
+  *"name <> 'duplicate_active_assignments'"*) echo "G007 must not exempt a misleading duplicate invariant from critical status" >&2; exit 1 ;;
 esac
 case "$g007_status" in *"expectedCount"*"appliedCount"*"pendingCount"*"failedCount"*"recoveredCount"*"checksumMismatchCount"*"pendingMigrations"*) ;;
   *) echo "G007 JSON status must report expected, applied, pending, failed, recovered, and checksum counts" >&2; exit 1 ;;
@@ -95,6 +110,26 @@ import tempfile
 from pathlib import Path
 
 script = Path('scripts/monitor-route-ops-production.sh').read_text()
+
+monitor_policy = json.loads(Path('docs/observability/dsv-g007-monitor-policy.json').read_text())
+checks_by_name = {check['name']: check for check in monitor_policy['checks']}
+canonical_duplicates = checks_by_name['canonical_duplicate_active_assignments']
+assert canonical_duplicates['severity'] == 'critical', canonical_duplicates
+assert canonical_duplicates['identityFields'] == [
+    'shopId', 'sellerOrderSourceKind', 'sellerOrderKey', 'serviceDate',
+], canonical_duplicates
+recurring_keys = checks_by_name['recurring_active_seller_keys']
+assert recurring_keys['severity'] == 'informational', recurring_keys
+assert recurring_keys['criticalWhen'] == 'never', recurring_keys
+assert recurring_keys['deprecatedAlias'] == 'duplicate_active_assignments', recurring_keys
+
+invariant_sql_match = re.search(r'invariant_sql = """\n(?P<body>.*?)\n"""', script, re.S)
+if not invariant_sql_match:
+    raise SystemExit('missing G007 invariant SQL')
+invariant_sql = invariant_sql_match.group('body')
+assert re.search(r'\bSELECT\b', invariant_sql), invariant_sql
+assert not re.search(r'\b(INSERT|UPDATE|DELETE|ALTER|DROP|TRUNCATE)\b', invariant_sql, re.I), invariant_sql
+assert 'COUNT(DISTINCT ROW("sellerOrderSourceKind", "serviceDate")) > 1' in invariant_sql, invariant_sql
 
 http_match = re.search(r"# BEGIN G007_HTTP_STATUS_POLICY\n(?P<body>.*?)\n# END G007_HTTP_STATUS_POLICY", script, re.S)
 if not http_match:

@@ -530,15 +530,20 @@ SELECT COALESCE(json_agg(json_build_object(
 """
 
 invariant_sql = """
-WITH checks(name, failures) AS (
+WITH critical_checks(name, failures) AS (
   VALUES
-    ('duplicate_active_assignments', (
+    ('canonical_duplicate_active_assignments', (
       SELECT COUNT(*) FROM (
-        SELECT "shopId", "sellerOrderKey", COUNT(*)
+        SELECT
+          "shopId",
+          "sellerOrderSourceKind",
+          "sellerOrderKey",
+          "serviceDate",
+          COUNT(*)
         FROM orders
         WHERE "currentRouteVersionId" IS NOT NULL
           AND "sellerOrderKey" IS NOT NULL
-        GROUP BY "shopId", "sellerOrderKey"
+        GROUP BY "shopId", "sellerOrderSourceKind", "sellerOrderKey", "serviceDate"
         HAVING COUNT(*) > 1
       ) duplicates
     )),
@@ -569,15 +574,42 @@ WITH checks(name, failures) AS (
           OR stop."etaInputRouteVersionId" <> current_version.id
         )
     ))
+),
+informational_metrics(name, value) AS (
+  VALUES
+    ('recurring_active_seller_keys', (
+      SELECT COUNT(*) FROM (
+        SELECT "shopId", "sellerOrderKey"
+        FROM orders
+        WHERE "currentRouteVersionId" IS NOT NULL
+          AND "sellerOrderKey" IS NOT NULL
+        GROUP BY "shopId", "sellerOrderKey"
+        HAVING COUNT(DISTINCT ROW("sellerOrderSourceKind", "serviceDate")) > 1
+      ) recurring_keys
+    ))
 )
 SELECT json_build_object(
   'status', CASE
-    WHEN SUM(failures) FILTER (WHERE name <> 'duplicate_active_assignments') > 0
+    WHEN SUM(failures) > 0
       THEN 'critical'
     ELSE 'ok'
   END,
-  'invariantFailures', COALESCE(json_object_agg(name, failures), '{}'::json)
-) FROM checks;
+  'invariantFailures', COALESCE(
+    (SELECT json_object_agg(name, failures) FROM critical_checks),
+    '{}'::json
+  ),
+  'invariantInformation', COALESCE(
+    (SELECT json_object_agg(name, value) FROM informational_metrics),
+    '{}'::json
+  ),
+  'deprecatedNoncriticalMetrics', json_build_object(
+    'duplicate_active_assignments',
+    (SELECT value FROM informational_metrics WHERE name = 'recurring_active_seller_keys')
+  ),
+  'deprecatedMetricAliases', json_build_object(
+    'duplicate_active_assignments', 'recurring_active_seller_keys'
+  )
+) FROM critical_checks LIMIT 1;
 """
 
 legacy_logs = run([

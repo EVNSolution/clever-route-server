@@ -30,9 +30,19 @@
       "fields": ["expectedCount", "appliedCount", "pendingCount", "failedCount", "latestMigration", "actualLatestMigration", "pendingMigrations", "unexpectedCount", "unexpectedMigrations"]
     },
     {
-      "name": "duplicate_active_assignments",
+      "name": "canonical_duplicate_active_assignments",
       "source": "orders",
-      "criticalWhen": "more than one active currentRouteVersionId exists for the same shopId/sellerOrderKey"
+      "severity": "critical",
+      "identityFields": ["shopId", "sellerOrderSourceKind", "sellerOrderKey", "serviceDate"],
+      "criticalWhen": "more than one active currentRouteVersionId exists for the same full canonical order identity"
+    },
+    {
+      "name": "recurring_active_seller_keys",
+      "source": "orders",
+      "severity": "informational",
+      "criticalWhen": "never",
+      "deprecatedAlias": "duplicate_active_assignments",
+      "note": "counts shopId/sellerOrderKey pairs that are active across multiple source-kind/service-date identities; recurring seller keys are permitted and are not assignment duplicates"
     },
     {
       "name": "failed_command_receipts",
