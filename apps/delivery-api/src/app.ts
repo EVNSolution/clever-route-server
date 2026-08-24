@@ -318,15 +318,11 @@ function readErrorCorrelationId(value: unknown): string | null {
 function serializeRequestForLog(request: FastifyRequest): {
   host: string;
   method: string;
-  remoteAddress: string;
-  remotePort: number;
   url: string;
 } {
   return {
     host: request.hostname,
     method: request.method,
-    remoteAddress: request.ip,
-    remotePort: request.raw.socket.remotePort ?? 0,
     url: redactSensitiveUrl(request.url)
   };
 }
