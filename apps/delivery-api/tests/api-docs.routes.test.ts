@@ -103,6 +103,22 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('GET /docs/openapi.yaml documents route stop location diagnostics and strict override coordinates', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('RouteStopLocationDiagnostic:');
+      expect(response.body).toContain('COORDINATES_ZERO');
+      expect(response.body).toContain('latitude: [longitude]');
+      expect(response.body).toContain('The pair 0,0 is rejected as unrouteable.');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml documents the embedded app-facing admin contract', async () => {
     const app = await buildApp();
     const [ordersSource, routeGroupsSource, inventoriesSource, customerEmailSource, driversSource, routePlansSource] = await Promise.all([

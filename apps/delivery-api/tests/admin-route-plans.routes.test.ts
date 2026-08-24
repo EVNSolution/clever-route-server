@@ -6,6 +6,7 @@ import {
   RoutePlanGeometryRefreshFailedError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanRefreshNotAllowedError,
+  RoutePlanStopOverrideInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../src/modules/route-plans/route-plan.types.js';
 import type {
@@ -282,6 +283,58 @@ describe('Admin route plan routes', () => {
 
       expect(response.statusCode).toBe(400);
       expect(updateAdminRouteStopOverride).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    ['zero coordinates', { latitude: 0, longitude: 0 }],
+    ['a partial coordinate pair', { latitude: 43.6426 }],
+    ['an invalid country code', { countryCode: '1' }]
+  ])('rejects %s in an admin stop override', async (_label, payload) => {
+    const { dependencies, updateAdminRouteStopOverride } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/route-plans/route-plan-id/stops/stop-1/override'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: 'BAD_REQUEST' } });
+      expect(updateAdminRouteStopOverride).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns a PII-free location error when the merged stop override is not routeable', async () => {
+    const { dependencies, updateAdminRouteStopOverride } = createDependencyHarness();
+    updateAdminRouteStopOverride.mockRejectedValueOnce(
+      new RoutePlanStopOverrideInvalidError('Stop location is not routeable: COORDINATES_OUTSIDE_PROVINCE')
+    );
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { latitude: 0.1, longitude: 0.1 },
+        url: '/admin/route-plans/route-plan-id/stops/stop-1/override'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_STOP_OVERRIDE_INVALID',
+          message: 'Stop location is not routeable: COORDINATES_OUTSIDE_PROVINCE'
+        }
+      });
     } finally {
       await app.close();
     }

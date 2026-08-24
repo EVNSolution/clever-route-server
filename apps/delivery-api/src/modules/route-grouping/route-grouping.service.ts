@@ -16,6 +16,7 @@ import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-
 import { toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
+import { diagnoseRouteStopLocation } from '../route-plans/route-stop-location-diagnostic.js';
 import { aggregateOrderItems, toOrderItemDto } from '../order-items/order-items.js';
 import {
   CustomOrderReferenceCopyNotAllowedError,
@@ -777,7 +778,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         province: input.province === undefined ? assignment.deliveryStop.province : input.province,
         recipientName: input.recipientName === undefined ? assignment.deliveryStop.recipientName : input.recipientName
       };
-      validateCustomStopValues(merged);
+      validateCustomStopValues({ ...merged, ...mergedAddress });
       await updateGroupingRevision(tx, group, input.expectedUpdatedAt);
 
       if (hasCustomStopOrderFields(input)) {
@@ -2348,9 +2349,11 @@ async function assertNoCustomStopsRemovedAsOrders(
 }
 
 function validateCustomStopValues(input: {
+  countryCode?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   priority?: number;
+  province?: string | null;
   serviceMinutes?: number;
   timeWindowEnd?: string | null;
   timeWindowStart?: string | null;
@@ -2365,6 +2368,20 @@ function validateCustomStopValues(input: {
   }
   if (longitude !== null && (!Number.isFinite(longitude) || longitude < -180 || longitude > 180)) {
     throw new RouteGroupingValidationError(['longitude must be between -180 and 180']);
+  }
+  if (latitude !== null && longitude !== null) {
+    const locationDiagnostic = diagnoseRouteStopLocation({
+      countryCode: input.countryCode,
+      geocodeStatus: 'RESOLVED',
+      latitude,
+      longitude,
+      province: input.province
+    });
+    if (!locationDiagnostic.routeable) {
+      throw new RouteGroupingValidationError([
+        `custom stop location is not routeable: ${locationDiagnostic.issues.join(', ')}`
+      ]);
+    }
   }
   if (input.serviceMinutes !== undefined && (!Number.isInteger(input.serviceMinutes) || input.serviceMinutes < 0 || input.serviceMinutes > 1_440)) {
     throw new RouteGroupingValidationError(['serviceMinutes must be an integer between 0 and 1440']);

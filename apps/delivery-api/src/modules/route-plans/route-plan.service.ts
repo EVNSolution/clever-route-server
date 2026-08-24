@@ -351,6 +351,15 @@ export class RoutePlanAdminService implements RoutePlanService {
     }
 
     const generatedAt = new Date();
+    if (
+      !hasValidCoordinates(detail.routePlan.depot.latitude, detail.routePlan.depot.longitude) ||
+      detail.stops.some((stop) => (
+        stop.locationDiagnostic?.routeable === false ||
+        !hasValidCoordinates(stop.coordinates.latitude, stop.coordinates.longitude)
+      ))
+    ) {
+      return withRouteGeometryResult(detail, emptyRouteResult(), { generatedAt, source });
+    }
     const routeResult = await this.buildRouteSafely(detail);
     if (routeResult === null) {
       return withRouteGeometryResult(detail, emptyRouteResult(), { generatedAt, source });
@@ -382,7 +391,10 @@ export class RoutePlanAdminService implements RoutePlanService {
     if (!hasValidCoordinates(detail.routePlan.depot.latitude, detail.routePlan.depot.longitude)) {
       throw new RoutePlanGeometryRefreshFailedError('Route depot coordinates are missing. Existing geometry was preserved.');
     }
-    if (detail.stops.some((stop) => !hasValidCoordinates(stop.coordinates.latitude, stop.coordinates.longitude))) {
+    if (detail.stops.some((stop) => (
+      stop.locationDiagnostic?.routeable === false ||
+      !hasValidCoordinates(stop.coordinates.latitude, stop.coordinates.longitude)
+    ))) {
       throw new RoutePlanGeometryRefreshFailedError('One or more route stops have no valid coordinates. Existing geometry was preserved.');
     }
 
@@ -439,7 +451,8 @@ function hasValidCoordinates(latitude: number | null, longitude: number | null):
     typeof longitude === 'number' &&
     Number.isFinite(longitude) &&
     longitude >= -180 &&
-    longitude <= 180
+    longitude <= 180 &&
+    !(latitude === 0 && longitude === 0)
   );
 }
 

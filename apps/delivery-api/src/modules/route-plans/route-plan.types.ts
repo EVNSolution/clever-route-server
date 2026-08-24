@@ -1,5 +1,6 @@
 import type { NormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 import type { OrderItemDto, RouteItemSummary } from "../order-items/order-items.js";
+import type { RouteStopLocationDiagnostic } from './route-stop-location-diagnostic.js';
 
 export type RoutePlanRouteScopeInput = {
   deliveryDate: string;
@@ -151,6 +152,7 @@ export type RoutePlanDetailStop = {
   deliveryStopId: string;
   financialStatus: string | null;
   fulfillmentStatus: string | null;
+  geocodeStatus?: string;
   itemCount?: number;
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
   currencyCode?: string | null;
@@ -172,6 +174,7 @@ export type RoutePlanDetailStop = {
     matchReasons: unknown;
     matchStatus: string | null;
   };
+  locationDiagnostic?: RouteStopLocationDiagnostic;
   orderName: string;
   paymentStatus: string | null;
   recipientName: string | null;
@@ -432,6 +435,15 @@ export class RoutePlanStopUpdateInvalidError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'RoutePlanStopUpdateInvalidError';
+  }
+}
+
+export class RoutePlanStopOverrideInvalidError extends Error {
+  readonly code = 'ROUTE_STOP_OVERRIDE_INVALID';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoutePlanStopOverrideInvalidError';
   }
 }
 

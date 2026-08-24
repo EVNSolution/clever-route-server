@@ -11,7 +11,8 @@ import {
 } from '../src/modules/route-grouping/route-grouping.service.js';
 import {
   RouteGroupingConflictError,
-  RouteGroupingStopMembershipConflictError
+  RouteGroupingStopMembershipConflictError,
+  RouteGroupingValidationError
 } from '../src/modules/route-grouping/route-grouping.types.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -289,6 +290,27 @@ describe('route grouping contracts', () => {
         sourceSequence: 4
       }
     });
+  });
+
+  test('rejects zero coordinates before creating a custom route stop', async () => {
+    const transaction = vi.fn();
+    const service = new PrismaRouteGroupingService({ $transaction: transaction } as never, new FakeDriverPushProvider());
+
+    const error = await service.createCustomStop({
+      actor: 'admin-user',
+      countryCode: 'CA',
+      groupingId: 'group-1',
+      latitude: 0,
+      longitude: 0,
+      province: 'ON',
+      shopDomain: 'tenant.example',
+      stopName: 'Invalid stop'
+    }).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(RouteGroupingValidationError);
+    if (!(error instanceof RouteGroupingValidationError)) throw error;
+    expect(error.blockers.some((blocker) => blocker.includes('COORDINATES_ZERO'))).toBe(true);
+    expect(error.code).toBe('ROUTE_GROUPING_INVALID');
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   test('denies cross-tenant custom stop creation and rejects commerce stop edits', async () => {
