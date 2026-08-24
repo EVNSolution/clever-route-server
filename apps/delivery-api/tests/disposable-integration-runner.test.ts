@@ -22,6 +22,7 @@ describe('disposable DB integration runner', () => {
     expect(script).toContain('dsv-g009-tenant-composite-fks.integration.test.ts');
     expect(script).toContain('dsv-v1-read-query.integration.test.ts');
     expect(script).toContain('shopify-webhook-durability.integration.test.ts');
+    expect(script).toContain('customer-email-reconciliation.integration.test.ts');
     expect(script).toContain('trap cleanup EXIT');
     expect(script).not.toContain(':55444');
     expect(script).not.toContain(':55455');

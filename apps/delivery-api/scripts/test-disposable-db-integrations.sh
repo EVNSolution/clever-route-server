@@ -222,8 +222,9 @@ done
 G002_DATABASE_TARGET_CLASS='safe-local-g002-disposable' \
 DATABASE_URL="$g002_url" \
 DRIVER_EVENT_CONTRACT_V2_DATABASE_URL="$g002_url" \
+EMAIL_RECONCILIATION_DATABASE_URL="$g002_url" \
 ROUTE_OPERATIONAL_HEALTH_DATABASE_URL="$g002_url" \
-npm test -- driver-event-contract-v2.integration.test.ts route-operational-health.integration.test.ts
+npm test -- customer-email-reconciliation.integration.test.ts driver-event-contract-v2.integration.test.ts route-operational-health.integration.test.ts
 
 G003_DATABASE_TARGET_CLASS='safe-local-g003-temp-cluster' \
 DATABASE_URL="$g003_url" \
