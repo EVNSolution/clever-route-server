@@ -147,6 +147,14 @@ import type { AdminNotificationServiceApi } from "../modules/notifications/admin
 import type { PrismaRouteOperationalStateService } from "../modules/route-tracking/route-operational-state.service.js";
 import type { PrismaEmailRuntimeHealthService } from "../modules/customer-email/email-runtime-health.service.js";
 import type { DriverRouteCompletionInvariantMode } from "../modules/driver/driver-route-completion-invariant.js";
+import {
+  DRIVER_ROUTE_COMPLETION_REVIEW_OUTCOMES,
+  DRIVER_ROUTE_COMPLETION_REVIEW_SOURCES,
+  DriverRouteCompletionReviewNotFoundError,
+  type DriverRouteCompletionReviewOutcome,
+  type DriverRouteCompletionReviewSource,
+  type PrismaDriverRouteCompletionReviewRepository
+} from "../modules/driver/driver-route-completion-review.repository.js";
 import type { PrismaDeliveryCustomerProfileService } from "../modules/delivery-customer/delivery-customer-profile.service.js";
 import type { RoutesAppReleaseRepository } from "../modules/routes-app/routes-app-release.repository.js";
 import {
@@ -432,6 +440,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "regenerateInviteCode"
   >;
   driverRouteCompletionInvariantMode?: DriverRouteCompletionInvariantMode;
+  driverRouteCompletionReviewService?: Pick<PrismaDriverRouteCompletionReviewRepository, "review">;
   loginSecret: string;
   now?: () => Date;
   onboardingService: Pick<
@@ -796,6 +805,33 @@ export function registerAdminCommerceConnectionsUiRoutes(
           }
         }
       });
+    })
+  );
+
+  app.patch<{ Body: unknown; Params: { reviewId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/driver-route-completion-reviews/:reviewId`,
+    async (request, reply) => withRouteOpsApi(request, reply, readSession(request, dependencies), async (session) => {
+      assertRouteOpsMutationCsrf(request, session);
+      if (dependencies.driverRouteCompletionReviewService === undefined) {
+        throw new WooCommerceOnboardingError("BAD_REQUEST", "Completion review is not enabled", 400);
+      }
+      const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
+      const review = readDriverRouteCompletionReview(request.body);
+      try {
+        return routeOpsData({ completionReview: await dependencies.driverRouteCompletionReviewService.review({
+          actor: session.subject,
+          note: review.note,
+          outcome: review.outcome,
+          reviewId: request.params.reviewId,
+          shopDomain,
+          source: review.source
+        }) });
+      } catch (error) {
+        if (error instanceof DriverRouteCompletionReviewNotFoundError) {
+          throw new WooCommerceOnboardingError("NOT_FOUND", "Completion review was not found", 404);
+        }
+        throw error;
+      }
     })
   );
 
@@ -5054,4 +5090,33 @@ function assertRouteOpsMutationCsrf(
       403,
     );
   }
+}
+
+function readDriverRouteCompletionReview(body: unknown): {
+  note: string;
+  outcome: DriverRouteCompletionReviewOutcome;
+  source: DriverRouteCompletionReviewSource;
+} {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new WooCommerceOnboardingError("BAD_REQUEST", "Invalid completion review payload", 400);
+  }
+  const value = body as Record<string, unknown>;
+  const outcome = value.outcome;
+  const source = value.source;
+  const note = typeof value.note === "string" ? value.note.trim() : "";
+  if (
+    typeof outcome !== "string"
+    || !DRIVER_ROUTE_COMPLETION_REVIEW_OUTCOMES.includes(outcome as DriverRouteCompletionReviewOutcome)
+    || typeof source !== "string"
+    || !DRIVER_ROUTE_COMPLETION_REVIEW_SOURCES.includes(source as DriverRouteCompletionReviewSource)
+    || note === ""
+    || note.length > 500
+  ) {
+    throw new WooCommerceOnboardingError("BAD_REQUEST", "Invalid completion review payload", 400);
+  }
+  return {
+    note,
+    outcome: outcome as DriverRouteCompletionReviewOutcome,
+    source: source as DriverRouteCompletionReviewSource
+  };
 }

@@ -19,6 +19,7 @@ COPY apps/delivery-api/tests ./apps/delivery-api/tests
 RUN npm --prefix apps/delivery-api run prisma:generate \
   && npm --prefix apps/delivery-api run build \
   && test -f apps/delivery-api/dist/scripts/cleanup-driver-event-attempts.js \
+  && test -f apps/delivery-api/dist/scripts/report-driver-route-completion-invariant.js \
   && test -f apps/delivery-api/dist/scripts/cleanup-shopify-webhook-events.js \
   && test -f apps/delivery-api/dist/scripts/cleanup-driver-proof-media.js
 

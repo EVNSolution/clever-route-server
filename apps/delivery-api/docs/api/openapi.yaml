@@ -4879,6 +4879,31 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EmailRuntimeHealthEnvelope' }
+  /admin/ui/app/api/driver-route-completion-reviews/{reviewId}:
+    parameters:
+      - { in: path, name: reviewId, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Route Operations Admin]
+      summary: Append an audited operator decision to an incomplete-completion review
+      operationId: reviewDriverRouteCompletionInvariant
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outcome, source, note]
+              properties:
+                outcome: { type: string, enum: [CONFIRMED_CORRECT, FALSE_POSITIVE] }
+                source: { type: string, enum: [ROUTE_OPS_UI, REPORT_RECONCILIATION] }
+                note: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '200': { description: Current review outcome and reviewedAt; an immutable actor/source/note history row is appended. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /admin/ui/app/api/routes/{routePlanId}/operational-state:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'

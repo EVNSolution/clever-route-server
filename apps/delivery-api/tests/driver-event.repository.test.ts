@@ -1024,6 +1024,7 @@ describe('PrismaDriverEventRepository', () => {
               driverContractVersion: null,
               mode: 'OBSERVE',
               receiptAware: false,
+              routeVersionId: 'route-version-id',
               terminalStatuses: ['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED'],
               totalStopCount: 2,
               unresolvedStopCount: 1,
@@ -1107,6 +1108,22 @@ describe('PrismaDriverEventRepository', () => {
       data: { decision: string; receiptAware: boolean; unresolvedStopCount: number };
     };
     expect(reviewCreate.data).toMatchObject({ decision: 'REJECTED', receiptAware: true, unresolvedStopCount: 1 });
+  });
+
+  test('uses immutable route-version membership instead of mutable route plan stops', async () => {
+    const { prisma } = createPrismaHarness({
+      completionSnapshotStops: [{ deliveryStopId: 'snapshot-stop', status: 'ASSIGNED' }],
+      routeEtaInputVersionId: 'route-version-id',
+      routeStops: [{ deliveryStop: { status: 'DELIVERED' } }]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never, { completionInvariantMode: 'GUARDED' });
+    await expect(repository.recordDriverEvent(baseInput({
+      assignmentGeneration: '1', attemptId: 'attempt-id', clientEventId: 'snapshot-authority', deliveryStopId: null,
+      driverContractVersion: 2, eventType: 'ROUTE_COMPLETED', expectedRouteVersionId: 'route-version-id', routePlanId: 'route-plan-id'
+    }))).rejects.toMatchObject({ code: 'ROUTE_COMPLETION_INCOMPLETE' });
+    expect(prisma.deliveryStop.findMany).toHaveBeenCalledWith({
+      select: { id: true, status: true }, where: { id: { in: ['snapshot-stop'] }, shopId: 'shop-id' }
+    });
   });
 
   test('rejects incomplete legacy completion in FULL mode without creating a receipt attempt', async () => {
@@ -1523,6 +1540,7 @@ function baseInput(overrides: Partial<Parameters<PrismaDriverEventRepository['re
 }
 
 function createPrismaHarness(input: {
+  completionSnapshotStops?: Array<{ deliveryStopId: string; status: string }>;
   conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
   completionEvent?: { id: string } | null;
   dispatchChangeRequest?: {
@@ -1584,7 +1602,7 @@ function createPrismaHarness(input: {
   const prisma: {
     $queryRaw: ReturnType<typeof vi.fn>;
     $transaction: ReturnType<typeof vi.fn>;
-    deliveryStop: { updateMany: ReturnType<typeof vi.fn> };
+    deliveryStop: { findMany: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
     driver: { findUnique: ReturnType<typeof vi.fn> };
     driverEvent: {
       create: ReturnType<typeof vi.fn>;
@@ -1662,6 +1680,11 @@ function createPrismaHarness(input: {
       return Promise.resolve(callback(prisma));
     }),
     deliveryStop: {
+      findMany: vi.fn(() => Promise.resolve(input.completionSnapshotStops?.map((stop) => ({ id: stop.deliveryStopId, status: stop.status }))
+        ?? (input.routeStops ?? input.routeSequenceStops ?? [{ deliveryStop: { status: 'DELIVERED' } }]).map((stop, index) => ({
+          id: input.routeSequenceStops?.[index]?.deliveryStopId ?? `stop-${index + 1}`,
+          status: stop.deliveryStop.status
+        })))),
       updateMany: vi.fn(() => Promise.resolve({ count: input.deliveryStopUpdateCount ?? 1 }))
     },
     driver: {
@@ -1710,6 +1733,20 @@ function createPrismaHarness(input: {
       count: vi.fn(() => Promise.resolve(input.otherOrdersOnStop ?? 0)),
       findFirst: vi.fn(() => Promise.resolve({ currentRouteVersionId: input.orderAssignmentVersionId ?? 'route-version-id' })),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    },
+    routeGroupingChildVersion: {
+      findFirst: vi.fn(() => {
+        const stops = input.completionSnapshotStops ?? (input.routeStops ?? input.routeSequenceStops ?? [{ deliveryStop: { status: 'DELIVERED' } }]).map((stop, index) => ({
+          deliveryStopId: input.routeSequenceStops?.[index]?.deliveryStopId ?? `stop-${index + 1}`,
+          status: stop.deliveryStop.status
+        }));
+        return Promise.resolve({
+          id: input.routeEtaInputVersionId ?? 'route-version-id',
+          snapshot: {
+            stops: stops.map(({ deliveryStopId }) => ({ deliveryStopId }))
+          }
+        });
+      })
     },
     routePlan: {
       findFirst: vi.fn((args: { select?: { routeStops?: unknown } }) => {

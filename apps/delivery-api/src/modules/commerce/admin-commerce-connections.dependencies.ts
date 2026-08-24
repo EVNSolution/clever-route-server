@@ -58,6 +58,7 @@ import { PrismaEmailRuntimeHealthService } from '../customer-email/email-runtime
 import { isCustomerDeliveryNotificationWorkerEnabled } from '../route-plans/customer-delivery-notification.runtime.js';
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
 import { loadDriverRouteCompletionInvariantMode } from '../driver/driver-route-completion-invariant.js';
+import { PrismaDriverRouteCompletionReviewRepository } from '../driver/driver-route-completion-review.repository.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
   Record<
@@ -204,6 +205,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...(notificationService === undefined ? {} : { notificationService }),
     ...(input.prisma === undefined ? {} : {
       driverRouteCompletionInvariantMode: loadDriverRouteCompletionInvariantMode(input.env),
+      driverRouteCompletionReviewService: new PrismaDriverRouteCompletionReviewRepository(input.prisma),
       runtimeHealthService: new PrismaEmailRuntimeHealthService(
         input.prisma,
         {

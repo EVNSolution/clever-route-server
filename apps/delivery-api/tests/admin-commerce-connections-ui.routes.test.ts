@@ -180,6 +180,28 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("records completion review decisions with authenticated actor and CSRF", async () => {
+    const review = vi.fn(() => Promise.resolve({ outcome: "FALSE_POSITIVE" as const, reviewedAt: "2026-08-25T01:00:00.000Z" }));
+    const { app } = await createUiHarness({ driverRouteCompletionReviewService: { review } });
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/driver-route-completion-reviews/11111111-1111-4111-8111-111111111111?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {
+          note: "Snapshot membership was stale at observation time.", outcome: "FALSE_POSITIVE", source: "ROUTE_OPS_UI"
+        }, csrfToken)
+      });
+      expect(response.statusCode).toBe(200);
+      expect(review).toHaveBeenCalledWith({
+        actor: "web-operator", note: "Snapshot membership was stale at observation time.", outcome: "FALSE_POSITIVE",
+        reviewId: "11111111-1111-4111-8111-111111111111", shopDomain: "tenant-a.example.test", source: "ROUTE_OPS_UI"
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test("does not register UI dependencies without dedicated strong web secrets or through JWT fallback", () => {
     const base = createBaseAdminCommerceDependencies();
 
@@ -7308,6 +7330,7 @@ async function createUiHarness(
     deliveryCustomerService: AdminCommerceConnectionsUiDependencies["deliveryCustomerService"];
     driverService: AdminCommerceConnectionsUiDependencies["driverService"];
     driverRouteCompletionInvariantMode: AdminCommerceConnectionsUiDependencies["driverRouteCompletionInvariantMode"];
+    driverRouteCompletionReviewService: AdminCommerceConnectionsUiDependencies["driverRouteCompletionReviewService"];
     geocodingService: AdminCommerceConnectionsUiDependencies["geocodingService"];
     getConnection: ReturnType<typeof vi.fn>;
     listConnections: ReturnType<typeof vi.fn>;
@@ -7428,6 +7451,9 @@ async function createUiHarness(
     ...(overrides.driverRouteCompletionInvariantMode === undefined
       ? {}
       : { driverRouteCompletionInvariantMode: overrides.driverRouteCompletionInvariantMode }),
+    ...(overrides.driverRouteCompletionReviewService === undefined
+      ? {}
+      : { driverRouteCompletionReviewService: overrides.driverRouteCompletionReviewService }),
     ...(overrides.orderIngestAuditService === undefined
       ? {}
       : { orderIngestAuditService: overrides.orderIngestAuditService }),

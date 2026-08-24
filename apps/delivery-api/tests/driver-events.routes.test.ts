@@ -840,6 +840,7 @@ describe('Driver events route', () => {
       driverContractVersion: 2,
       mode: 'GUARDED',
       receiptAware: true,
+      routeVersionId: 'route-version-1',
       terminalStatuses: ['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED'],
       totalStopCount: 11,
       unresolvedStopCount: 10,

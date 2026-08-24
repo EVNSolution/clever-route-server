@@ -7,6 +7,7 @@ export type DriverRouteCompletionInvariantEvidence = {
   driverContractVersion: number | null;
   mode: DriverRouteCompletionInvariantMode;
   receiptAware: boolean;
+  routeVersionId: string;
   terminalStatuses: readonly string[];
   totalStopCount: number;
   unresolvedStopCount: number;

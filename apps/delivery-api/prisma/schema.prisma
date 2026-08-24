@@ -1385,7 +1385,6 @@ model RoutePlan {
   optimizationJobs                RouteOptimizationJob[]
   driverEvents                    DriverEvent[]
   driverEventAttempts             DriverEventAttempt[]
-  driverRouteCompletionReviews    DriverRouteCompletionReview[]
   driverProofMedia                DriverProofMedia[]
   driverRouteFeedback             DriverRouteFeedback[]
   routeGroupingChildVersions      RouteGroupingChildVersion[]
@@ -2871,7 +2870,7 @@ model DriverRouteCompletionReview {
   shopId                String    @db.Uuid
   shop                  Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
   routePlanId           String    @db.Uuid
-  routePlan             RoutePlan @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  routeVersionId        String?   @db.Uuid
   attemptId             String?   @unique @db.Uuid
   attempt               DriverEventAttempt? @relation(fields: [attemptId], references: [id], onDelete: SetNull)
   driverEventId         String?   @unique @db.Uuid
@@ -2884,11 +2883,31 @@ model DriverRouteCompletionReview {
   unresolvedStopCount   Int
   wouldReject           Boolean
   reviewOutcome         String?   @db.Text
+  reviewedByActor       String?   @db.Text
+  reviewSource          String?   @db.Text
+  reviewNote            String?   @db.Text
   reviewedAt            DateTime? @db.Timestamptz(6)
   createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  history               DriverRouteCompletionReviewHistory[]
 
   @@index([createdAt, mode, decision])
   @@index([createdAt, receiptAware])
   @@index([createdAt, reviewOutcome])
   @@map("driver_route_completion_reviews")
+}
+
+model DriverRouteCompletionReviewHistory {
+  id           String                      @id @default(uuid()) @db.Uuid
+  reviewId     String                      @db.Uuid
+  review       DriverRouteCompletionReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  priorOutcome String?                     @db.Text
+  outcome      String                      @db.Text
+  actor        String                      @db.Text
+  source       String                      @db.Text
+  note         String                      @db.Text
+  createdAt    DateTime                    @default(now()) @db.Timestamptz(6)
+
+  @@index([reviewId, createdAt])
+  @@index([createdAt, outcome])
+  @@map("driver_route_completion_review_history")
 }

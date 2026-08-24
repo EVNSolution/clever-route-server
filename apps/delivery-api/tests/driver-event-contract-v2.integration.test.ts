@@ -12,6 +12,7 @@ import {
   PrismaDriverEventReceiptRepository
 } from '../src/modules/driver/driver-event-receipt.repository.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
+import { PrismaDriverRouteCompletionReviewRepository } from '../src/modules/driver/driver-route-completion-review.repository.js';
 
 const databaseUrl = process.env.DRIVER_EVENT_CONTRACT_V2_DATABASE_URL ?? '';
 const live = databaseUrl === '' ? test.skip : test;
@@ -125,6 +126,10 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       await prisma.$executeRawUnsafe(`INSERT INTO route_plan_stops
         (id, "shopId", "routePlanId", "deliveryStopId", sequence, "createdAt", "updatedAt") VALUES
         ('62000000-0000-4000-8000-000000000010', '${shopId}', '${routePlanId}', '61000000-0000-4000-8000-000000000010', 1, now(), now())`);
+      await prisma.routeGroupingChildVersion.update({
+        data: { snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010' }] } },
+        where: { id: routeVersionId }
+      });
 
       const guardedRepository = new PrismaDriverEventRepository(prisma, { completionInvariantMode: 'GUARDED' });
       await expect(guardedRepository.recordDriverEvent({
@@ -137,8 +142,45 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.driverEvent.count({ where: { clientEventId: 'guarded-incomplete' } })).toBe(0);
       await expect(receipts.lookup({ accountId: accountA, clientEventId: 'guarded-incomplete', routePlanId }))
         .resolves.toMatchObject({ errorCode: 'ROUTE_COMPLETION_INCOMPLETE', status: 'REJECTED' });
-      expect(await prisma.driverRouteCompletionReview.findFirst({ where: { routePlanId, decision: 'REJECTED' } }))
-        .toMatchObject({ receiptAware: true, totalStopCount: 1, unresolvedStopCount: 1 });
+      const guardedReview = await prisma.driverRouteCompletionReview.findFirstOrThrow({ where: { routePlanId, decision: 'REJECTED' } });
+      expect(guardedReview).toMatchObject({ receiptAware: true, routeVersionId, totalStopCount: 1, unresolvedStopCount: 1 });
+      const reviewRepository = new PrismaDriverRouteCompletionReviewRepository(prisma, () => new Date('2026-08-24T05:01:00.000Z'));
+      await reviewRepository.review({
+        actor: 'route-ops:test', note: 'The immutable assignment snapshot correctly had one unresolved stop.',
+        outcome: 'CONFIRMED_CORRECT', reviewId: guardedReview.id, shopDomain: 'g002-evidence.invalid', source: 'REPORT_RECONCILIATION'
+      });
+      expect(await prisma.driverRouteCompletionReviewHistory.findMany({ where: { reviewId: guardedReview.id } }))
+        .toEqual([expect.objectContaining({ actor: 'route-ops:test', outcome: 'CONFIRMED_CORRECT', priorOutcome: null })]);
+
+      await prisma.$executeRawUnsafe(`CREATE FUNCTION reject_completion_review_for_fault_test() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'fault-injected completion review failure'; END $$`);
+      await prisma.$executeRawUnsafe(`CREATE TRIGGER reject_completion_review_for_fault_test
+        BEFORE INSERT ON driver_route_completion_reviews FOR EACH ROW EXECUTE FUNCTION reject_completion_review_for_fault_test()`);
+      try {
+        await expect(guardedRepository.recordDriverEvent({
+          appVersion: '1.2.0', assignmentGeneration: '1', clientEventId: 'guarded-fault', deliveryStopId: null,
+          driverContractVersion: 2, driverId: driverA, eventType: 'ROUTE_COMPLETED', expectedRouteVersionId: routeVersionId,
+          latitude: null, longitude: null, occurredAt: new Date('2026-08-24T04:58:30.000Z'), payload: {},
+          requestId: 'request-guarded-fault-1', routePlanId, shopDomain: 'g002-evidence.invalid', shopId, versionCode: 120
+        })).rejects.not.toBeInstanceOf(DriverRouteCompletionIncompleteError);
+      } finally {
+        await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS reject_completion_review_for_fault_test ON driver_route_completion_reviews');
+        await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS reject_completion_review_for_fault_test()');
+      }
+      expect(await prisma.driverRouteCompletionReview.count({ where: { attempt: { clientEventId: 'guarded-fault' } } })).toBe(0);
+      expect(await prisma.driverEvent.count({ where: { clientEventId: 'guarded-fault' } })).toBe(0);
+      expect(await prisma.driverEventAttempt.findFirst({ where: { clientEventId: 'guarded-fault' }, orderBy: { attemptNumber: 'desc' } }))
+        .toMatchObject({ status: 'FAILED' });
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({ status: 'IN_PROGRESS' });
+      await expect(guardedRepository.recordDriverEvent({
+        appVersion: '1.2.0', assignmentGeneration: '1', clientEventId: 'guarded-fault', deliveryStopId: null,
+        driverContractVersion: 2, driverId: driverA, eventType: 'ROUTE_COMPLETED', expectedRouteVersionId: routeVersionId,
+        latitude: null, longitude: null, occurredAt: new Date('2026-08-24T04:58:30.000Z'), payload: {},
+        requestId: 'request-guarded-fault-2', routePlanId, shopDomain: 'g002-evidence.invalid', shopId, versionCode: 120
+      })).rejects.toBeInstanceOf(DriverRouteCompletionIncompleteError);
+      expect(await prisma.driverEventAttempt.findFirst({ where: { clientEventId: 'guarded-fault' }, orderBy: { attemptNumber: 'desc' } }))
+        .toMatchObject({ attemptNumber: 2, status: 'REJECTED' });
+      expect(await prisma.driverRouteCompletionReview.count({ where: { attempt: { clientEventId: 'guarded-fault' } } })).toBe(1);
 
       const malformedAdmission = await repository.admitDriverEventAttempt({
         appVersion: null, assignmentGeneration: null, clientEventId: null, driverContractVersion: 2,
@@ -278,7 +320,7 @@ async function seedEvidenceFixture(prisma: PrismaClient, input: {
   await prisma.$executeRawUnsafe(`INSERT INTO route_grouping_child_versions
     (id, "shopId", "groupingId", "groupingVersionId", "driverId", "routePlanId", version, status, snapshot, "createdAt", "updatedAt") VALUES
     ('${input.routeVersionId}', '${input.shopId}', '40000000-0000-4000-8000-000000000010',
-     '41000000-0000-4000-8000-000000000010', '${input.driverA}', '${input.routePlanId}', 1, 'CURRENT', '{}', now(), now())`);
+     '41000000-0000-4000-8000-000000000010', '${input.driverA}', '${input.routePlanId}', 1, 'CURRENT', '{"stops":[]}', now(), now())`);
 }
 
 async function lock(client: pg.Client): Promise<{ assignmentGeneration: string; driverId: string | null }> {
