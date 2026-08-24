@@ -240,6 +240,35 @@ for (const contractPath of [
   );
 }
 
+for (const contractPath of [
+  'apps/delivery-api/package.json',
+  'apps/delivery-api/Dockerfile',
+  'apps/delivery-api/src/scripts/cleanup-driver-event-attempts.ts',
+  'apps/delivery-api/src/scripts/cleanup-shopify-webhook-events.ts',
+  'apps/delivery-api/src/scripts/cleanup-driver-proof-media.ts',
+  'apps/delivery-api/tests/package-scripts.test.ts',
+  'apps/delivery-api/tests/deploy/driver-event-attempt-retention-schedule.test.sh',
+  'scripts/run-driver-event-attempt-retention.sh',
+  'tests/deploy/route-ops-retention-runtime.test.sh',
+]) {
+  check(`retention runtime contract triggers image and release checks: ${contractPath}`, [contractPath], {
+    deploy_changed: true,
+    critical_changed: true,
+  });
+  assert.equal(
+    releaseStaticChecksRun([contractPath]),
+    true,
+    `Route Ops release static checks must run when ${contractPath} changes`,
+  );
+  if (contractPath.startsWith('apps/delivery-api/')) {
+    assert.equal(
+      deliveryApiJobRunsOnMainPush([contractPath]),
+      true,
+      `Delivery API build and tests must run when ${contractPath} changes`,
+    );
+  }
+}
+
 check('shopify auth/session verifier is critical', ['apps/delivery-api/src/modules/shopify/session-token-verifier.ts', 'apps/delivery-api/tests/shopify-session-token-verifier.test.ts'], {
   api_changed: true,
   critical_changed: true,
