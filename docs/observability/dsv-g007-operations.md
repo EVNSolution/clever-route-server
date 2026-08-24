@@ -54,6 +54,17 @@ The JSON status schema is version 2 and follows this exit policy:
 | `unknown` | 1 | A check could not be read and no critical finding was observed. |
 | `critical` | 2 | Health/readiness failed, the deployed migration manifest is malformed, migration history is pending, incomplete, unresolved, unexpected, or has a current successful-row checksum mismatch, an invariant failed, legacy read/write usage was observed, email work is stranded/dead, or an enabled email runtime has overdue work. |
 
+Assignment monitoring distinguishes a canonical invariant from recurring seller
+keys. `canonical_duplicate_active_assignments` groups active orders by the full
+canonical identity `(shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate)`;
+any nonzero count is critical. `recurring_active_seller_keys` counts active
+`(shopId, sellerOrderKey)` pairs spanning more than one source-kind/service-date
+identity. That count is informational because seller order keys may legitimately
+recur on different service dates. For report consumers migrating from the old
+name, `deprecatedNoncriticalMetrics.duplicate_active_assignments` exposes the
+same informational count and `deprecatedMetricAliases` identifies its replacement.
+It is never included in `invariantFailures` or the critical status calculation.
+
 The `customerEmailOutbox` check reads every `(app, shop)` database scope, including
 non-default app scopes, but emits anonymous scope ordinals and a `defaultApp`
 boolean only. It never emits app/shop identifiers, recipient data, email content,
@@ -109,7 +120,7 @@ These values preserve the G007 checkpoint facts before the G009 and G010 FK
 repairs were added.
 
 - Recovery DB migration status: `appliedCount=42`, `failedCount=0`, latest `20260722233000_align_migration_history_to_schema`.
-- Invariant monitor status: `ok`; the historical five invariant failures were zero (`duplicate_active_assignments`, `failed_command_receipts`, `audit_rows_missing_request_ids`, `import_partial_apply_indicators`, `stale_eta_route_versions`). Current monitor policy replaces the stale-only ETA check with `eta_input_route_version_mismatches`, which flags active route-plan stops whose non-null ETA input version differs from the route plan's current child version regardless of `etaStatus`.
+- Invariant monitor status: `ok`; the historical monitor reported zero for its then-five invariant fields (`duplicate_active_assignments`, `failed_command_receipts`, `audit_rows_missing_request_ids`, `import_partial_apply_indicators`, `stale_eta_route_versions`). The old `duplicate_active_assignments` field grouped only by shop and seller key, so it is now retained solely as a deprecated noncritical compatibility metric; `canonical_duplicate_active_assignments` is the fail-closed full-identity invariant. Current monitor policy also replaces the stale-only ETA check with `eta_input_route_version_mismatches`, which flags active route-plan stops whose non-null ETA input version differs from the route plan's current child version regardless of `etaStatus`.
 - Local API smoke against the recovery DB returned `/healthz` 200 and `/readyz` 200.
 - Deduped observation saw one v1 request and one canonical alias request; `legacy_read` and `legacy_write` had zero sampled request IDs.
 - Production was not deployed. Live production and SSM access remain operator-gated.
