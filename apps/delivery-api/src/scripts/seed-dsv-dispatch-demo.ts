@@ -1,11 +1,14 @@
 import { PrismaClient } from '@prisma/client';
 import { PrismaDsvAdminAccountRepository } from '../modules/dsv/dsv-admin-account.repository.js';
+import { assertShopifyShopPrivacyWriteAllowed } from '../modules/shopify/order-privacy-redaction.js';
 
 const prisma = new PrismaClient();
 const shopDomain = process.env.CLEVER_DSV_DEMO_SHOP_DOMAIN?.trim() || 'dsv-demo.local';
 
 try {
-  const shop = await prisma.shop.upsert({
+  const shop = await prisma.$transaction(async (tx) => {
+    await assertShopifyShopPrivacyWriteAllowed(tx, { appId: 'clever', shopDomain });
+    return tx.shop.upsert({
     create: {
       appId: 'clever',
       defaultDepotAddress: '경기도 군포시 번영로 82 군포복합물류센터',
@@ -21,6 +24,7 @@ try {
       locale: 'ko-KR',
     },
     where: { appId_shopDomain: { appId: 'clever', shopDomain } },
+    });
   });
 
   for (const condition of [

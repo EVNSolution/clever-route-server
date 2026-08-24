@@ -91,6 +91,13 @@ export function safeErrorCode(value: unknown): string {
   return normalized === '' ? 'UNKNOWN' : normalized;
 }
 
+export function safeErrorTelemetry(error: unknown): { errorCode: string; errorMessage: string } {
+  return {
+    errorCode: safeErrorCode(error instanceof Error ? error.name : 'UNKNOWN'),
+    errorMessage: redactTelemetryMessage(error)
+  };
+}
+
 export function hashTelemetryShop(value: string): string {
   return createHash('sha256').update(value.trim().toLowerCase()).digest('hex').slice(0, 16);
 }
@@ -104,7 +111,6 @@ function redactString(value: string, path: string): string {
   let redacted = value;
   redacted = redacted.replace(/https?:\/\/[^\s)]+/giu, (urlValue) => redactUrl(urlValue));
   redacted = redacted.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, '[redacted-email]');
-  redacted = redacted.replace(/\+?\d[\d\s().-]{7,}\d/gu, '[redacted-phone]');
   redacted = redacted.replace(
     /\b(?:authorization|cookie|hmac|id[_-]?token|access[_-]?token|refresh[_-]?token|session[_-]?token|token|secret|password|api[_-]?key|api[_-]?token)\s*[:=]\s*(?:Bearer\s+)?[^\s,;]+/giu,
     '[redacted-secret]'
@@ -113,6 +119,7 @@ function redactString(value: string, path: string): string {
     /\b\d{1,6}\s+[A-Za-z0-9][A-Za-z0-9\s.'-]{1,80}\s(?:Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Terrace|Way|Lane|Ln|Court|Ct|Boulevard|Blvd|Place|Pl)\b(?:\s+(?:North|South|East|West|N|S|E|W))?(?:\s*(?:,|Unit|Suite|Apt|#)\s*[A-Za-z0-9\s#,-]{0,80})?/giu,
     '[redacted-address]'
   );
+  redacted = redacted.replace(/\+?\d[\d\s().-]{7,}\d/gu, '[redacted-phone]');
   return redacted.length > 180 ? `${redacted.slice(0, 177)}...` : redacted;
 }
 

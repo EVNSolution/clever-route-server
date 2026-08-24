@@ -284,6 +284,8 @@ function createPrismaHarness(input: {
   updatedDriver?: ReturnType<typeof driverRecord>;
 } = {}): {
   prisma: {
+    $queryRaw: ReturnType<typeof vi.fn>;
+    $transaction: ReturnType<typeof vi.fn>;
     driver: {
       create: ReturnType<typeof vi.fn>;
       delete: ReturnType<typeof vi.fn>;
@@ -303,12 +305,14 @@ function createPrismaHarness(input: {
       findUnique: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
     };
+    shopifyShopRedactionTombstone: { findUnique: ReturnType<typeof vi.fn> };
   };
 } {
   const shop = input.shop === undefined ? { id: 'shop-id' } : input.shop;
   const createdDriver = input.createdDriver ?? driverRecord();
-  return {
-    prisma: {
+  const prisma = {
+      $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
+      $transaction: vi.fn(),
       driver: {
         create: vi.fn(() => Promise.resolve(createdDriver)),
         delete: vi.fn(() => Promise.resolve(input.deletedDriver ?? { id: 'driver-id' })),
@@ -327,9 +331,11 @@ function createPrismaHarness(input: {
       shop: {
         findUnique: vi.fn(() => Promise.resolve(shop)),
         upsert: vi.fn(() => Promise.resolve(shop ?? { id: 'shop-id' }))
-      }
-    }
-  };
+      },
+      shopifyShopRedactionTombstone: { findUnique: vi.fn(() => Promise.resolve(null)) }
+    };
+  prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => unknown) => callback(prisma));
+  return { prisma };
 }
 
 function driverRecord(overrides: Partial<{

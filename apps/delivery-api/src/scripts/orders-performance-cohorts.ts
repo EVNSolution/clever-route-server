@@ -4,6 +4,7 @@ import { performance } from 'node:perf_hooks';
 import process from 'node:process';
 
 import { PrismaClient } from '@prisma/client';
+import { assertShopifyShopPrivacyWriteAllowed } from '../modules/shopify/order-privacy-redaction.js';
 
 import { PrismaOrderQueryRepository } from '../modules/shopify/order-query.repository.js';
 
@@ -102,7 +103,10 @@ try {
 
 async function seedFixture(): Promise<void> {
   await prisma.shop.deleteMany({ where: { appId: APP_ID, shopDomain: SHOP_DOMAIN } });
-  const shop = await prisma.shop.create({ data: { appId: APP_ID, shopDomain: SHOP_DOMAIN } });
+  const shop = await prisma.$transaction(async (tx) => {
+    await assertShopifyShopPrivacyWriteAllowed(tx, { appId: APP_ID, shopDomain: SHOP_DOMAIN });
+    return tx.shop.create({ data: { appId: APP_ID, shopDomain: SHOP_DOMAIN } });
+  });
   const shopId = shop.id.replaceAll("'", "''");
   await prisma.$executeRawUnsafe(`
     INSERT INTO "orders" (

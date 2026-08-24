@@ -173,9 +173,17 @@ function createPrismaHarness(): {
     upsert: vi.fn(({ create }: ShopUpsertArgs) => Promise.resolve(create)),
     findUnique: vi.fn(() => Promise.resolve(null))
   };
+  const tx = {
+    $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
+    shop,
+    shopifyShopRedactionTombstone: {
+      findUnique: vi.fn(() => Promise.resolve(null)),
+      updateMany: vi.fn(() => Promise.resolve({ count: 0 }))
+    }
+  };
 
   return {
-    prisma: { shop } as unknown as PrismaClient,
+    prisma: { ...tx, $transaction: (callback: (client: typeof tx) => unknown) => callback(tx) } as unknown as PrismaClient,
     shop
   };
 }

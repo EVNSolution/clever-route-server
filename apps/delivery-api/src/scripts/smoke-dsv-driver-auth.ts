@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 
 import { PrismaClient } from '@prisma/client';
+import { assertShopifyShopPrivacyWriteAllowed } from '../modules/shopify/order-privacy-redaction.js';
 
 import { fingerprintResidentNumberFront } from '../modules/dsv/dsv-driver-identity.js';
 
@@ -46,7 +47,10 @@ let shopId: string | undefined;
 const driverIds: string[] = [];
 
 try {
-  const shop = await prisma.shop.create({ data: { appId: 'clever', shopDomain } });
+  const shop = await prisma.$transaction(async (tx) => {
+    await assertShopifyShopPrivacyWriteAllowed(tx, { appId: 'clever', shopDomain });
+    return tx.shop.create({ data: { appId: 'clever', shopDomain } });
+  });
   shopId = shop.id;
 
   for (const fixture of fixtures) {

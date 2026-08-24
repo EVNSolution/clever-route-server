@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 
 import { ROUTE_TRACKING_V1_POLICY } from './route-tracking.policy.js';
 
-const ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS = 90;
+export const ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS = 90;
 const ROUTE_TRACKING_GEOMETRY_SCHEMA_VERSION = 'route_tracking_geometry.v1';
 const EARTH_RADIUS_METERS = 6_371_000;
 
@@ -65,12 +65,21 @@ export async function persistRouteTrackingGeometryPosition(
   const current = await prisma.routeTrackingGeometry.findUnique({
     where: { routePlanId: position.routePlanId }
   });
+  const retentionCutoff = new Date(
+    Date.parse(position.receivedAt) - ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS * 24 * 60 * 60 * 1000
+  );
+  if (Date.parse(position.occurredAt) < retentionCutoff.getTime()) {
+    return readRouteTrackingGeometryDocument(current);
+  }
   const currentLastOccurredAt = current?.lastOccurredAt?.getTime() ?? Number.NEGATIVE_INFINITY;
   const nextOccurredAt = Date.parse(position.occurredAt);
   const mustRebuild = current !== null && Number.isFinite(nextOccurredAt) && nextOccurredAt < currentLastOccurredAt;
   const document = mustRebuild
-    ? buildRouteTrackingGeometryDocument(await loadRouteTrackingPositions(prisma, position.routePlanId))
-    : appendRouteTrackingGeometryPosition(readRouteTrackingGeometryDocument(current), position);
+    ? buildRouteTrackingGeometryDocument(await loadRouteTrackingPositions(prisma, position.routePlanId, retentionCutoff))
+    : appendRouteTrackingGeometryPosition(
+        pruneRouteTrackingGeometryDocument(readRouteTrackingGeometryDocument(current), retentionCutoff),
+        position
+      );
   const write = createRouteTrackingGeometryWrite(position.routePlanId, document);
 
   await prisma.routeTrackingGeometry.upsert({
@@ -125,6 +134,23 @@ export function appendRouteTrackingGeometryPosition(
     coordinates,
     samples,
     sourcePointCount: document.sourcePointCount + 1
+  };
+}
+
+export function pruneRouteTrackingGeometryDocument(
+  document: RouteTrackingGeometryDocumentV1,
+  cutoff: Date
+): RouteTrackingGeometryDocumentV1 {
+  const retainedIndexes = document.samples.flatMap((sample, index) =>
+    Date.parse(sample.occurredAt) >= cutoff.getTime() ? [index] : []
+  );
+  return {
+    coordinates: retainedIndexes.flatMap((index) => {
+      const coordinate = document.coordinates[index];
+      return coordinate === undefined ? [] : [coordinate];
+    }),
+    samples: retainedIndexes.map((index) => document.samples[index]!),
+    sourcePointCount: retainedIndexes.length
   };
 }
 
@@ -188,7 +214,7 @@ export function toRouteTrackingPositionEvents(record: RouteTrackingGeometryRecor
   });
 }
 
-function createRouteTrackingGeometryWrite(routePlanId: string, document: RouteTrackingGeometryDocumentV1) {
+export function createRouteTrackingGeometryWrite(routePlanId: string, document: RouteTrackingGeometryDocumentV1) {
   const first = document.samples[0];
   const last = document.samples.at(-1);
   const lastCoordinate = document.coordinates.at(-1);
@@ -220,7 +246,8 @@ function createRouteTrackingGeometryWrite(routePlanId: string, document: RouteTr
 
 async function loadRouteTrackingPositions(
   prisma: RouteTrackingGeometryPrismaClient,
-  routePlanId: string
+  routePlanId: string,
+  retentionCutoff: Date
 ): Promise<RouteTrackingGeometryPositionInput[]> {
   const rows = await prisma.driverEvent.findMany({
     orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
@@ -237,6 +264,7 @@ async function loadRouteTrackingPositions(
       eventType: 'LOCATION_UPDATED',
       latitude: { not: null },
       longitude: { not: null },
+      occurredAt: { gte: retentionCutoff },
       routePlanId
     }
   });

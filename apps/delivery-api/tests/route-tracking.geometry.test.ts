@@ -1,9 +1,10 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import {
   appendRouteTrackingGeometryPosition,
   buildRouteTrackingGeometryDocument,
-  persistRouteTrackingGeometryPosition
+  persistRouteTrackingGeometryPosition,
+  pruneRouteTrackingGeometryDocument
 } from '../src/modules/route-tracking/route-tracking.geometry.js';
 
 describe('route tracking geometry projection', () => {
@@ -69,6 +70,63 @@ describe('route tracking geometry projection', () => {
 
     expect(afterGap.coordinates).toHaveLength(3);
     expect(afterGap.samples.map((sample) => sample.eventId)).toEqual(['event-1', 'event-2', 'event-3']);
+  });
+
+  test('does not resurrect expired GPS geometry from a late location event', async () => {
+    const upsert = vi.fn(() => Promise.resolve(null));
+    const prisma = {
+      $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
+      driverEvent: { findMany: vi.fn(() => Promise.resolve([])) },
+      routeTrackingGeometry: { findUnique: vi.fn(() => Promise.resolve(null)), upsert }
+    } as unknown as Parameters<typeof persistRouteTrackingGeometryPosition>[0];
+
+    await expect(persistRouteTrackingGeometryPosition(prisma, position({
+      occurredAt: '2026-01-01T00:00:00.000Z',
+      receivedAt: '2026-08-25T00:00:00.000Z'
+    }))).resolves.toEqual({ coordinates: [], samples: [], sourcePointCount: 0 });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  test('prunes expired points while retaining recent active-route geometry', () => {
+    const document = buildRouteTrackingGeometryDocument([
+      position({ eventId: 'old', occurredAt: '2026-01-01T00:00:00.000Z', receivedAt: '2026-01-01T00:00:01.000Z' }),
+      position({ eventId: 'recent', longitude: 126.91, occurredAt: '2026-08-24T00:00:00.000Z', receivedAt: '2026-08-24T00:00:01.000Z' })
+    ]);
+
+    expect(pruneRouteTrackingGeometryDocument(document, new Date('2026-05-27T00:00:00.000Z'))).toEqual({
+      coordinates: [[126.91, 37.5]],
+      samples: [expect.objectContaining({ eventId: 'recent' })],
+      sourcePointCount: 1
+    });
+  });
+
+  test('excludes expired source events when rebuilding out-of-order geometry', async () => {
+    const findMany = vi.fn(() => Promise.resolve([{
+      createdAt: new Date('2026-08-24T23:00:01.000Z'),
+      driverId: position().driverId,
+      id: position().eventId,
+      latitude: 37.5,
+      longitude: 126.9,
+      occurredAt: new Date('2026-08-24T23:00:00.000Z'),
+      routePlanId: position().routePlanId
+    }]));
+    const prisma = {
+      $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
+      driverEvent: { findMany },
+      routeTrackingGeometry: {
+        findUnique: vi.fn(() => Promise.resolve({ lastOccurredAt: new Date('2026-08-25T00:00:00.000Z') })),
+        upsert: vi.fn(() => Promise.resolve(null))
+      }
+    } as unknown as Parameters<typeof persistRouteTrackingGeometryPosition>[0];
+
+    await persistRouteTrackingGeometryPosition(prisma, position({
+      occurredAt: '2026-08-24T23:30:00.000Z',
+      receivedAt: '2026-08-25T00:00:00.000Z'
+    }));
+
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ occurredAt: { gte: new Date('2026-05-27T00:00:00.000Z') } }) as unknown
+    }));
   });
 });
 

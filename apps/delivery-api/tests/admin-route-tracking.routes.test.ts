@@ -176,6 +176,52 @@ describe('Admin route tracking routes', () => {
     expect(body.match(/event: tracking_snapshot/g)).toHaveLength(2);
     expect(body).toContain('"eventId":"driver-event-from-another-process"');
   });
+
+  test('redacts caught route tracking stream errors even when caller serializers request raw errors', async () => {
+    const privateMessage = 'token=stream-secret stream@example.invalid +1 416 555 0109 91 Stream Avenue';
+    const logLines: string[] = [];
+    let heartbeat: (() => void) | undefined;
+    const routeTrackingStreamHub = new RouteTrackingStreamHub();
+    const { dependencies, getRouteTrackingSnapshot } = createDependencyHarness({ routeTrackingStreamHub });
+    getRouteTrackingSnapshot
+      .mockResolvedValueOnce(trackingSnapshot())
+      .mockRejectedValueOnce(new Error(privateMessage));
+    vi.spyOn(globalThis, 'setInterval').mockImplementation((callback) => {
+      heartbeat = callback;
+      return { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    });
+    const app = await buildApp({
+      adminRoutePlans: dependencies,
+      logger: {
+        level: 'warn',
+        serializers: {
+          err: () => ({ message: privateMessage, stack: privateMessage, type: 'RawError' }),
+          error: () => ({ message: privateMessage, stack: privateMessage })
+        },
+        stream: { write: (line: string) => logLines.push(line) }
+      }
+    });
+    openApps.push(app);
+    await app.listen({ port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const abortController = new AbortController();
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/admin/route-plans/route-plan-id/tracking/stream`, {
+      headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+      signal: abortController.signal
+    });
+    expect(response.status).toBe(200);
+    heartbeat?.();
+    await vi.waitFor(() => expect(logLines.join('\n')).toContain('Route tracking stream reconciliation failed'));
+    abortController.abort();
+
+    const serialized = logLines.join('\n');
+    expect(serialized).toContain('errorCode');
+    expect(serialized).not.toContain(privateMessage);
+    expect(serialized).not.toContain('stream-secret');
+    expect(serialized).not.toContain('stream@example.invalid');
+    expect(serialized).not.toContain('stack');
+  });
 });
 
 function createDependencyHarness(input: {

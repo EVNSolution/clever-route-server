@@ -758,6 +758,54 @@ describe('CustomerEmailService', () => {
     expect('customerRouteNotificationFact' in prisma).toBe(false);
   });
 
+  test('keeps a provider-confirmed manual recipient SENT when attempt settlement fails', async () => {
+    const attempts = {
+      settle: vi.fn(() => Promise.reject(new Error('attempt database unavailable'))),
+      startManual: vi.fn(() => Promise.resolve({ attemptId: 'attempt-id', correlationId: 'correlation-id' }))
+    };
+    const { prisma, service, transport } = createHarness(attempts);
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      stops: [stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    prisma.customerEmailManualDispatch.create.mockResolvedValue({ id: 'dispatch-id' });
+    prisma.customerEmailManualDispatchRecipient.findFirstOrThrow.mockResolvedValue({ id: 'recipient-id' });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'command-settle-gap',
+      confirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({
+      counts: { duplicate: 0, failed: 0, sent: 1, skipped: 0 },
+      results: [{ providerMessageId: 'message-id', status: 'SENT' }],
+    });
+    expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledOnce();
+    expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'SENT' }) as unknown,
+    }));
+    expect(attempts.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'SENT' }));
+    expect(transport.send).toHaveBeenCalledOnce();
+
+    prisma.customerEmailManualDispatch.create.mockRejectedValueOnce({ code: 'P2002' });
+    prisma.customerEmailManualDispatch.findUnique.mockResolvedValueOnce({ id: 'dispatch-id' });
+    prisma.customerEmailManualDispatch.findUniqueOrThrow.mockResolvedValueOnce({
+      commandId: 'command-settle-gap',
+      id: 'dispatch-id',
+      recipients: [{
+        deliveryStopId: 'stop-1', errorCode: null, errorMessage: null, orderId: 'order-1',
+        provider: 'brevo', providerMessageId: 'message-id', recipientEmail: 'customer@example.com', status: 'SENT'
+      }]
+    });
+    await expect(service.send({
+      actor: 'admin-user', commandId: 'command-settle-gap', confirmed: true, routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com', signal: 'DELIVERY_SCHEDULED'
+    })).resolves.toMatchObject({ duplicate: true, results: [{ status: 'DUPLICATE' }] });
+    expect(transport.send).toHaveBeenCalledOnce();
+  });
+
   test('idempotency duplicate returns stored results without sending again', async () => {
     const { prisma, service, transport } = createHarness();
     prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
@@ -937,7 +985,10 @@ describe('BrevoCustomerEmailTransport', () => {
   });
 });
 
-function createHarness() {
+function createHarness(attempts?: {
+  settle(input: unknown): Promise<void>;
+  startManual(input: unknown): Promise<{ attemptId: string; correlationId: string }>;
+}) {
   const prisma = {
     customerEmailManualDispatch: {
       create: vi.fn(),
@@ -946,6 +997,7 @@ function createHarness() {
       update: vi.fn(),
     },
     customerEmailManualDispatchRecipient: {
+      findFirstOrThrow: vi.fn(),
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn(),
     },
@@ -965,7 +1017,7 @@ function createHarness() {
   };
   return {
     prisma,
-    service: new CustomerEmailService(prisma as never, transport),
+    service: new CustomerEmailService(prisma as never, transport, attempts as never),
     transport,
   };
 }

@@ -42,12 +42,16 @@ export function createS3DriverProofMediaStorage(options: S3DriverProofMediaStora
 
   return {
     createReadAccess: (input) => createReadAccess(normalized, input),
-    remove: (storageKey) => removeObject(normalized, storageKey),
-    write: (input) => writeObject(normalized, input)
+    remove: (storageKey, signal) => removeObject(normalized, storageKey, signal),
+    write: (input, signal) => writeObject(normalized, input, signal)
   };
 }
 
-async function writeObject(options: NormalizedS3Options, input: DriverProofMediaStorageWriteInput): Promise<void> {
+async function writeObject(
+  options: NormalizedS3Options,
+  input: DriverProofMediaStorageWriteInput,
+  signal: AbortSignal
+): Promise<void> {
   const url = buildObjectUrl(options, input.storageKey);
   const payloadHash = sha256Hex(input.fileBytes);
   const signed = signHeaderRequest({
@@ -60,14 +64,19 @@ async function writeObject(options: NormalizedS3Options, input: DriverProofMedia
   const response = await options.fetch(url.href, {
     body: input.fileBytes,
     headers: signed.headers,
-    method: 'PUT'
+    method: 'PUT',
+    signal
   });
   if (!response.ok) {
     throw new Error(`S3 proof media write failed with HTTP ${response.status}`);
   }
 }
 
-async function removeObject(options: NormalizedS3Options, storageKey: string): Promise<'missing' | 'removed'> {
+async function removeObject(
+  options: NormalizedS3Options,
+  storageKey: string,
+  signal: AbortSignal
+): Promise<'missing' | 'removed'> {
   const url = buildObjectUrl(options, storageKey);
   const signed = signHeaderRequest({
     method: 'DELETE',
@@ -78,7 +87,8 @@ async function removeObject(options: NormalizedS3Options, storageKey: string): P
 
   const response = await options.fetch(url.href, {
     headers: signed.headers,
-    method: 'DELETE'
+    method: 'DELETE',
+    signal
   });
   if (response.status === 404) {
     return 'missing';

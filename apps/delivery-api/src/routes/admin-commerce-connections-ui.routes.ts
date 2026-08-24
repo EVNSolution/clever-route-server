@@ -144,6 +144,8 @@ import { summarizeGeocodeDiagnostic } from "../modules/geocoding/geocoding.diagn
 import type { GeocodingService } from "../modules/geocoding/geocoding.service.js";
 import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
 import type { AdminNotificationServiceApi } from "../modules/notifications/admin-notification.service.js";
+import type { PrismaRouteOperationalStateService } from "../modules/route-tracking/route-operational-state.service.js";
+import type { PrismaEmailRuntimeHealthService } from "../modules/customer-email/email-runtime-health.service.js";
 import type { PrismaDeliveryCustomerProfileService } from "../modules/delivery-customer/delivery-customer-profile.service.js";
 import type { RoutesAppReleaseRepository } from "../modules/routes-app/routes-app-release.repository.js";
 import {
@@ -441,6 +443,8 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "updateStatus"
   >;
   notificationService?: AdminNotificationServiceApi;
+  operationalStateService?: Pick<PrismaRouteOperationalStateService, "get">;
+  runtimeHealthService?: Pick<PrismaEmailRuntimeHealthService, "get">;
   pairingCodeService?: {
     createPairingCode(input: {
       commerceConnectionId: string;
@@ -776,6 +780,14 @@ export function registerAdminCommerceConnectionsUiRoutes(
       if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
       return renderRouteOpsSpaShell(reply, request, dependencies, session);
     },
+  );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/runtime-health`, async (request, reply) =>
+    withRouteOpsApi(request, reply, readSession(request, dependencies), async (session) => {
+      if (dependencies.runtimeHealthService === undefined) throw new WooCommerceOnboardingError("BAD_REQUEST", "Runtime health is not enabled", 400);
+      const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
+      return routeOpsData({ runtimeHealth: await dependencies.runtimeHealthService.get({ shopDomain }) });
+    })
   );
 
   app.get<{ Params: { routeGroupId: string } }>(
@@ -1481,6 +1493,28 @@ function registerRouteOpsAppRoutes(
     ),
   );
 
+  app.get<{ Params: { routePlanId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/operational-state`,
+    async (request, reply) => withRouteOpsApi(
+      request,
+      reply,
+      readSession(request, dependencies),
+      async (session) => {
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
+        const services = requireRouteUiServices(dependencies);
+        await assertScopedRoutePlanExists({
+          routePlanId: request.params.routePlanId,
+          services,
+          shopDomain,
+        });
+        const operationalState = await dependencies.operationalStateService?.get(request.params.routePlanId);
+        if (operationalState === undefined) throw new WooCommerceOnboardingError("BAD_REQUEST", "Operational state is not enabled", 400);
+        if (operationalState === null) throw new WooCommerceOnboardingError("NOT_FOUND", "Route plan not found", 404);
+        return routeOpsData({ operationalState });
+      }
+    )
+  );
+
   app.get(
     `${ADMIN_UI_APP_API_PATH}/notifications/stream`,
     async (request, reply) =>
@@ -1519,6 +1553,27 @@ function registerRouteOpsAppRoutes(
           return routeOpsData({ notification });
         },
       ),
+  );
+
+  app.patch<{ Params: { notificationId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/notifications/:notificationId/acknowledge`,
+    async (request, reply) => withRouteOpsApi(
+      request,
+      reply,
+      readSession(request, dependencies),
+      async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
+        const notification = await dependencies.notificationService?.acknowledgeNotification?.({
+          actor: session.subject,
+          notificationId: request.params.notificationId,
+          shopDomain
+        });
+        if (notification === undefined) throw new WooCommerceOnboardingError("BAD_REQUEST", "Notification service is not enabled", 400);
+        if (notification === null) throw new WooCommerceOnboardingError("NOT_FOUND", "Notification not found", 404);
+        return routeOpsData({ notification });
+      }
+    )
   );
 
   app.get(`${ADMIN_UI_APP_API_PATH}/order-ingest-audit`, async (request, reply) =>
@@ -2777,7 +2832,7 @@ function registerRouteOpsAppRoutes(
           const services = requireRouteUiServices(dependencies);
           const jobService = requireRouteOptimizationJobService(services);
           const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
-          await assertRoutePlanExistsForOptimizationRead({
+          await assertScopedRoutePlanExists({
             routePlanId: request.params.routePlanId,
             services,
             shopDomain,
@@ -2802,7 +2857,7 @@ function registerRouteOpsAppRoutes(
           const services = requireRouteUiServices(dependencies);
           const jobService = requireRouteOptimizationJobService(services);
           const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
-          await assertRoutePlanExistsForOptimizationRead({
+          await assertScopedRoutePlanExists({
             routePlanId: request.params.routePlanId,
             services,
             shopDomain,
@@ -4895,7 +4950,7 @@ async function createRouteOptimizationJobForRequest(
   return job;
 }
 
-async function assertRoutePlanExistsForOptimizationRead(input: {
+async function assertScopedRoutePlanExists(input: {
   routePlanId: string;
   services: RouteUiServices;
   shopDomain: string;

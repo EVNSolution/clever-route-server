@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { Writable } from 'node:stream';
 
 import { buildApp } from '../src/app.js';
 import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
@@ -132,9 +133,42 @@ describe('Driver consents route', () => {
       await app.close();
     }
   });
+
+  test('redacts hostile consent repository errors from structured logs', async () => {
+    let logOutput = '';
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        logOutput += String(chunk);
+        callback();
+      }
+    });
+    const { app } = await createAppHarness({
+      logger: { level: 'error', stream },
+      recordError: new Error('token=secret customer@example.invalid at 99 Private Street')
+    });
+
+    try {
+      await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: consentPayload(),
+        url: '/driver/consents'
+      });
+
+      expect(logOutput).toContain('CONSENT_RECORD_FAILED');
+      expect(logOutput).not.toContain('token=secret');
+      expect(logOutput).not.toContain('customer@example.invalid');
+      expect(logOutput).not.toContain('99 Private Street');
+    } finally {
+      await app.close();
+    }
+  });
 });
 
-async function createAppHarness(input: { recordError?: Error } = {}) {
+async function createAppHarness(input: {
+  logger?: { level: string; stream: Writable };
+  recordError?: Error;
+} = {}) {
   const recordDriverConsents = vi.fn(() => input.recordError === undefined
     ? Promise.resolve({
       status: 'CONSENT_RECORDED' as const,
@@ -147,9 +181,14 @@ async function createAppHarness(input: { recordError?: Error } = {}) {
     : Promise.reject(input.recordError)
   );
   const app = await buildApp({
+    logger: input.logger,
     driverApi: {
       driverConsentService: { recordDriverConsents },
-      driverEventService: { recordDriverEvent: vi.fn() },
+      driverEventService: {
+        admitDriverEventAttempt: vi.fn(() => Promise.resolve({ attemptId: 'attempt-id', attemptNumber: 1 })),
+        finalizeDriverEventAttempt: vi.fn(() => Promise.resolve()),
+        recordDriverEvent: vi.fn()
+      },
       driverTokenAccessRepository: {
         isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
         isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, ReactElement } from "react";
 
-import { geocodeSettings, getSettings, saveSettings } from "../api";
+import { geocodeSettings, getOperationalHealth, getSettings, saveSettings } from "../api";
+import { OperationalPillGroup } from "../components/primitives";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import { resolveLocale, settingsCopy } from "../i18n";
+import { runtimeHealthPills } from "../operationalStatus";
 import {
   TEMPLATE_VARIABLES,
   createReminderPlan,
@@ -16,7 +18,9 @@ import {
 import type {
   BootstrapPayload,
   CanonicalOrderDto,
+  EmailRuntimeHealthDto,
   RouteOpsUiReminderPlanDto,
+  RuntimeHealthDto,
   StoreSettingsDto,
 } from "../types";
 import {
@@ -33,6 +37,7 @@ export function SettingsPage({
   setError(error: string | null): void;
 }): ReactElement {
   const [settings, setSettingsState] = useState<StoreSettingsDto | null>(null);
+  const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealthDto | null>(null);
   const [geocoding, setGeocoding] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -45,6 +50,20 @@ export function SettingsPage({
       .then((payload) => setSettingsState(payload.settings))
       .catch((error: unknown) => setError(readErrorMessage(error)));
   }, [setError]);
+
+  useEffect(() => {
+    let active = true;
+    getOperationalHealth()
+      .then((payload) => {
+        if (active) setRuntimeHealth(payload.runtimeHealth);
+      })
+      .catch(() => {
+        if (active) setRuntimeHealth(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const draft = settings ?? emptySettings(bootstrap);
   const normalizedUiSettings = normalizeRouteOpsUiSettings(
@@ -328,6 +347,27 @@ export function SettingsPage({
           </SettingsCategorySection>
 
           <SettingsCategorySection
+            description={t.runtimeHealthDescription}
+            eyebrow={t.runtimeHealthEyebrow}
+            title={t.runtimeHealthTitle}
+          >
+            <div>
+              <OperationalPillGroup
+                ariaLabel={t.runtimeHealthTitle}
+                pills={runtimeHealthPills(runtimeHealth, locale)}
+              />
+              {runtimeHealth?.email === undefined ? null : (
+                <EmailRuntimeHealthDetails health={runtimeHealth.email} locale={locale} />
+              )}
+              <p className="muted settings-runtime-health-note">
+                {runtimeHealth?.observedAt == null
+                  ? t.runtimeHealthUnavailable
+                  : t.runtimeHealthObservedAt(runtimeHealth.observedAt)}
+              </p>
+            </div>
+          </SettingsCategorySection>
+
+          <SettingsCategorySection
             description={t.emailDescription}
             eyebrow={t.emailEyebrow}
             title={t.emailTitle}
@@ -583,6 +623,38 @@ export function SettingsPage({
         </div>
       ) : null}
     </section>
+  );
+}
+
+export function EmailRuntimeHealthDetails({
+  health,
+  locale,
+}: {
+  health: EmailRuntimeHealthDto;
+  locale: "en-CA" | "ko-KR";
+}): ReactElement {
+  const t = settingsCopy[locale];
+  const values = [
+    ...(health.automatic === undefined ? [] : [
+      [t.runtimeAutomaticSender, health.automatic.senderConfigured ? t.runtimeReady : t.runtimeUnavailable],
+      [t.runtimeAutomaticWorker, health.automatic.workerEnabled ? t.runtimeReady : t.runtimeUnavailable],
+    ] as const),
+    ...(health.manual === undefined ? [] : [
+      [t.runtimeManualProvider, health.manual.brevoConfigured ? t.runtimeReady : t.runtimeUnavailable],
+    ] as const),
+    [t.runtimePending, health.outbox.pending],
+    [t.runtimeProcessing, health.outbox.processing],
+    [t.runtimeRetrying, health.outbox.retryWait],
+    [t.runtimeTerminalFailures, health.outbox.deadLetter],
+    [t.runtimeLastSuccess, health.outbox.lastSuccessAt ?? "—"],
+    [t.runtimeLastError, health.outbox.lastErrorCode ?? "—"],
+  ] as const;
+  return (
+    <dl aria-label={t.runtimeAttemptHealth} className="settings-runtime-health-details">
+      {values.map(([label, value]) => (
+        <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+      ))}
+    </dl>
   );
 }
 

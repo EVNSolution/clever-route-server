@@ -1,0 +1,7 @@
+{
+  "data": null,
+  "error": {
+    "code": "ROUTE_ASSIGNMENT_CHANGED",
+    "message": "Route assignment changed; refresh the assigned route"
+  }
+}

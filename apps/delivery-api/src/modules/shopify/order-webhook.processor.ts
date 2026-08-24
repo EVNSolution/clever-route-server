@@ -172,11 +172,14 @@ export class ShopifyOrderWebhookProcessor {
 
     try {
       await withDeadline(
-        this.refetchAndUpsert({
+        (signal) => this.refetchAndUpsert({
           accessToken,
           apiVersion: input.apiVersion ?? this.options.defaultApiVersion,
           appId: input.appId,
+          eventId: input.id,
+          leaseToken: input.leaseToken,
           orderId,
+          signal,
           shopDomain: input.shopDomain
         }),
         PROCESSING_DEADLINE_MS
@@ -195,11 +198,17 @@ export class ShopifyOrderWebhookProcessor {
     accessToken: string;
     apiVersion: string;
     appId?: string | undefined;
+    eventId: string;
+    leaseToken: string;
     orderId: string;
+    signal: AbortSignal;
     shopDomain: string;
   }): Promise<void> {
     const client = this.options.graphqlClientFactory(input);
-    const data = await client.request<OrderByIdResponse>(buildOrderByIdQuery({ id: input.orderId }));
+    const data = await client.request<OrderByIdResponse>(
+      buildOrderByIdQuery({ id: input.orderId }),
+      { signal: input.signal }
+    );
     if (data.node === null) {
       throw new Error('ORDER_NODE_NOT_FOUND');
     }
@@ -207,7 +216,8 @@ export class ShopifyOrderWebhookProcessor {
     await this.options.orderRepository.upsertOrderWithDeliveryStop({
       appId: input.appId,
       shopDomain: input.shopDomain,
-      synced: mapShopifyOrderNodeToDeliveryInputs(data.node)
+      synced: mapShopifyOrderNodeToDeliveryInputs(data.node),
+      webhookClaim: { eventId: input.eventId, leaseToken: input.leaseToken }
     });
   }
 }
@@ -216,6 +226,8 @@ export function extractShopifyOrderGid(payload: unknown): string | null {
   const object = objectOrNull(payload);
   const adminGid = stringOrNull(object?.admin_graphql_api_id);
   if (adminGid !== null) return adminGid;
+  const redactedOrderGid = stringOrNull(object?.orderId);
+  if (redactedOrderGid !== null) return redactedOrderGid;
 
   const legacyId = object?.id;
   if (typeof legacyId === 'number' && Number.isInteger(legacyId) && legacyId > 0) {
@@ -238,13 +250,17 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
-async function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+async function withDeadline<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  const abortController = new AbortController();
   try {
     return await Promise.race([
-      promise,
+      operation(abortController.signal),
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('ORDER_WEBHOOK_PROCESSING_TIMEOUT')), timeoutMs);
+        timeout = setTimeout(() => {
+          abortController.abort();
+          reject(new Error('ORDER_WEBHOOK_PROCESSING_TIMEOUT'));
+        }, timeoutMs);
       })
     ]);
   } finally {

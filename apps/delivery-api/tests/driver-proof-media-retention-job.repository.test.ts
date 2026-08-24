@@ -13,6 +13,7 @@ describe('PrismaDriverProofMediaCleanupMonitor', () => {
     const uploadedBefore = new Date('2025-11-14T00:00:00.000Z');
 
     await monitor.recordProofMediaCleanup({
+      continuationRequired: false,
       deleted: 2,
       deletedAt,
       limit: 50,
@@ -55,6 +56,7 @@ describe('PrismaDriverProofMediaCleanupMonitor', () => {
     const deletedAt = new Date('2026-05-13T00:00:00.000Z');
 
     await monitor.recordProofMediaCleanup({
+      continuationRequired: false,
       deleted: 0,
       deletedAt,
       limit: null,

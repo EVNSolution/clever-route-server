@@ -200,6 +200,12 @@ enum DriverProofMediaSource {
   LIBRARY
 }
 
+enum DriverProofMediaUploadStatus {
+  PENDING_UPLOAD
+  CLEANING
+  READY
+}
+
 enum RetentionJobRunStatus {
   SUCCEEDED
   FAILED
@@ -360,94 +366,100 @@ enum DriverBundleHandoffRequestStatus {
 }
 
 model Shop {
-  id                                String                                 @id @default(uuid()) @db.Uuid
-  appId                             String                                 @default("clever") @db.Text
-  shopDomain                        String                                 @db.Text
-  shopifyShopGid                    String?                                @db.Text
-  apiVersion                        String                                 @default("2026-07") @db.Text
-  adminAccessTokenCiphertext        String?                                @db.Text
-  adminAccessTokenExpiresAt         DateTime?                              @db.Timestamptz(6)
-  adminRefreshTokenCiphertext       String?                                @db.Text
-  adminRefreshTokenExpiresAt        DateTime?                              @db.Timestamptz(6)
-  tokenScopes                       String[]                               @default([])
-  tokenIssuedAt                     DateTime?                              @db.Timestamptz(6)
-  installedAt                       DateTime                               @default(now()) @db.Timestamptz(6)
-  uninstalledAt                     DateTime?                              @db.Timestamptz(6)
-  defaultDepotAddress               String?                                @db.Text
-  defaultDepotLatitude              Decimal?                               @db.Decimal(10, 7)
-  defaultDepotLongitude             Decimal?                               @db.Decimal(10, 7)
-  locale                            String?                                @db.Text
-  routeScopeConfig                  Json?
-  routeOpsUiSettings                Json?
-  customerEmailSettings             Json?
-  dsvOperationalSettings            Json?
-  createdAt                         DateTime                               @default(now()) @db.Timestamptz(6)
-  updatedAt                         DateTime                               @updatedAt @db.Timestamptz(6)
-  webhookEvents                     ShopifyWebhookEvent[]
-  shopifyOrderReconciliationJobs    ShopifyOrderReconciliationJob[]
-  orders                            Order[]
-  orderSelectionSnapshots           OrderSelectionSnapshot[]
-  orderItems                        OrderItem[]
-  deliveryStops                     DeliveryStop[]
-  routePlans                        RoutePlan[]
-  drivers                           Driver[]
-  vehicles                          Vehicle[]
-  driverEvents                      DriverEvent[]
-  driverConsentRecords              DriverConsentRecord[]
-  driverProofMedia                  DriverProofMedia[]
-  driverRouteFeedback               DriverRouteFeedback[]
-  driverAccountDeletionRequests     DriverAccountDeletionRequest[]
-  commerceConnections               CommerceConnection[]
-  commerceConnectionAuditLogs       CommerceConnectionAuditLog[]
-  commerceConnectionOrderMappings   CommerceConnectionOrderMapping[]
-  commerceSyncRuns                  CommerceSyncRun[]
-  commerceRawOrderIngests           CommerceRawOrderIngest[]
-  commerceRawOrderIngestEvents      CommerceRawOrderIngestEvent[]
-  adminNotifications                AdminNotification[]
-  orderDeliveryFacts                OrderDeliveryFact[]
-  wordpressPluginPairingCodes       WordPressPluginPairingCode[]
-  routeOptimizationJobs             RouteOptimizationJob[]
-  routePlanStops                    RoutePlanStop[]
-  deliveryCustomerProfiles          DeliveryCustomerProfile[]
-  deliveryCustomerProfileOrderLinks DeliveryCustomerProfileOrderLink[]
-  destinationTips                   DestinationTip[]
-  destinationTipAudits              DestinationTipAudit[]
-  routeGroupings                    RouteGrouping[]
-  routeGroupingOrders               RouteGroupingOrder[]
-  routeGroupingPolygons             RouteGroupingPolygon[]
-  routeGroupingVersions             RouteGroupingVersion[]
-  routeGroupingChildVersions        RouteGroupingChildVersion[]
-  routeGroupingBranches             RouteGroupingBranch[]
-  routeGroupingBranchOrderLocks     RouteGroupingBranchOrderLock[]
-  inventories                       Inventory[]
-  inventoryOrders                   InventoryOrder[]
-  inventoryEvents                   InventoryEvent[]
-  driverRouteNotificationAttempts   DriverRouteNotificationAttempt[]
-  customerRouteNotificationFacts    CustomerRouteNotificationFact[]
-  orderMessages                     OrderMessage[]
-  customerEmailManualDispatches     CustomerEmailManualDispatch[]
-  customerEmailManualRecipients     CustomerEmailManualDispatchRecipient[]
-  adminRouteStopActionAudits        AdminRouteStopActionAudit[]
-  dsvTransportConditions            DsvTransportCondition[]
-  dsvDispatchImports                DsvDispatchImport[]
-  dsvDispatchImportRows             DsvDispatchImportRow[]
-  dsvDriverProfiles                 DsvDriverProfile[]
-  dsvVehicleProfiles                DsvVehicleProfile[]
-  dsvVehicleDriverAssignments       DsvVehicleDriverAssignment[]
-  dsvVehicleTelematicsDevices       DsvVehicleTelematicsDevice[]
-  uvisVehicleTelemetryCurrents      UvisVehicleTelemetryCurrent[]
-  uvisVehicleTelemetrySamples       UvisVehicleTelemetrySample[]
-  uvisVehicleTrailMaterializations  UvisVehicleTrailMaterialization[]
-  uvisTelemetryPollState            UvisTelemetryPollState?
-  dsvDriverAccountSignupInvites     DsvDriverAccountSignupInvite[]
-  dsvCustomerAccountInvites         DsvCustomerAccountInvite[]
-  dsvAdminAccountInvites            DsvAdminAccountInvite[]
-  customers                         Customer[]
-  customerAccounts                  CustomerAccount[]
-  dsvCommandReceipts                DsvCommandReceipt[]
-  dsvAuditEvents                    DsvAuditEvent[]
-  dsvDispatchChangeRequests         DsvDispatchChangeRequest[]
-  driverBundleHandoffRequests       DriverBundleHandoffRequest[]
+  id                                   String                                 @id @default(uuid()) @db.Uuid
+  appId                                String                                 @default("clever") @db.Text
+  shopDomain                           String                                 @db.Text
+  shopifyShopGid                       String?                                @db.Text
+  apiVersion                           String                                 @default("2026-07") @db.Text
+  adminAccessTokenCiphertext           String?                                @db.Text
+  adminAccessTokenExpiresAt            DateTime?                              @db.Timestamptz(6)
+  adminRefreshTokenCiphertext          String?                                @db.Text
+  adminRefreshTokenExpiresAt           DateTime?                              @db.Timestamptz(6)
+  tokenScopes                          String[]                               @default([])
+  tokenIssuedAt                        DateTime?                              @db.Timestamptz(6)
+  installedAt                          DateTime                               @default(now()) @db.Timestamptz(6)
+  uninstalledAt                        DateTime?                              @db.Timestamptz(6)
+  defaultDepotAddress                  String?                                @db.Text
+  defaultDepotLatitude                 Decimal?                               @db.Decimal(10, 7)
+  defaultDepotLongitude                Decimal?                               @db.Decimal(10, 7)
+  locale                               String?                                @db.Text
+  routeScopeConfig                     Json?
+  routeOpsUiSettings                   Json?
+  customerEmailSettings                Json?
+  dsvOperationalSettings               Json?
+  createdAt                            DateTime                               @default(now()) @db.Timestamptz(6)
+  updatedAt                            DateTime                               @updatedAt @db.Timestamptz(6)
+  webhookEvents                        ShopifyWebhookEvent[]
+  shopifyOrderRedactionTombstones      ShopifyOrderRedactionTombstone[]
+  shopifyOrderReconciliationJobs       ShopifyOrderReconciliationJob[]
+  orders                               Order[]
+  orderSelectionSnapshots              OrderSelectionSnapshot[]
+  orderItems                           OrderItem[]
+  deliveryStops                        DeliveryStop[]
+  routePlans                           RoutePlan[]
+  drivers                              Driver[]
+  vehicles                             Vehicle[]
+  driverEvents                         DriverEvent[]
+  driverEventAttempts                  DriverEventAttempt[]
+  driverConsentRecords                 DriverConsentRecord[]
+  driverProofMedia                     DriverProofMedia[]
+  driverRouteFeedback                  DriverRouteFeedback[]
+  driverAccountDeletionRequests        DriverAccountDeletionRequest[]
+  commerceConnections                  CommerceConnection[]
+  commerceConnectionAuditLogs          CommerceConnectionAuditLog[]
+  commerceConnectionOrderMappings      CommerceConnectionOrderMapping[]
+  commerceSyncRuns                     CommerceSyncRun[]
+  commerceRawOrderIngests              CommerceRawOrderIngest[]
+  commerceRawOrderIngestEvents         CommerceRawOrderIngestEvent[]
+  adminNotifications                   AdminNotification[]
+  orderDeliveryFacts                   OrderDeliveryFact[]
+  wordpressPluginPairingCodes          WordPressPluginPairingCode[]
+  routeOptimizationJobs                RouteOptimizationJob[]
+  routePlanStops                       RoutePlanStop[]
+  deliveryCustomerProfiles             DeliveryCustomerProfile[]
+  deliveryCustomerProfileOrderLinks    DeliveryCustomerProfileOrderLink[]
+  destinationTips                      DestinationTip[]
+  destinationTipAudits                 DestinationTipAudit[]
+  routeGroupings                       RouteGrouping[]
+  routeGroupingOrders                  RouteGroupingOrder[]
+  routeGroupingPolygons                RouteGroupingPolygon[]
+  routeGroupingVersions                RouteGroupingVersion[]
+  routeGroupingChildVersions           RouteGroupingChildVersion[]
+  routeGroupingBranches                RouteGroupingBranch[]
+  routeGroupingBranchOrderLocks        RouteGroupingBranchOrderLock[]
+  inventories                          Inventory[]
+  inventoryOrders                      InventoryOrder[]
+  inventoryEvents                      InventoryEvent[]
+  driverRouteNotificationAttempts      DriverRouteNotificationAttempt[]
+  customerRouteNotificationFacts       CustomerRouteNotificationFact[]
+  orderMessages                        OrderMessage[]
+  customerEmailManualDispatches        CustomerEmailManualDispatch[]
+  customerEmailManualRecipients        CustomerEmailManualDispatchRecipient[]
+  adminRouteStopActionAudits           AdminRouteStopActionAudit[]
+  dsvTransportConditions               DsvTransportCondition[]
+  dsvDispatchImports                   DsvDispatchImport[]
+  dsvDispatchImportRows                DsvDispatchImportRow[]
+  dsvDriverProfiles                    DsvDriverProfile[]
+  dsvVehicleProfiles                   DsvVehicleProfile[]
+  dsvVehicleDriverAssignments          DsvVehicleDriverAssignment[]
+  dsvVehicleTelematicsDevices          DsvVehicleTelematicsDevice[]
+  uvisVehicleTelemetryCurrents         UvisVehicleTelemetryCurrent[]
+  uvisVehicleTelemetrySamples          UvisVehicleTelemetrySample[]
+  uvisVehicleTrailMaterializations     UvisVehicleTrailMaterialization[]
+  uvisTelemetryPollState               UvisTelemetryPollState?
+  dsvDriverAccountSignupInvites        DsvDriverAccountSignupInvite[]
+  dsvCustomerAccountInvites            DsvCustomerAccountInvite[]
+  dsvAdminAccountInvites               DsvAdminAccountInvite[]
+  customers                            Customer[]
+  customerAccounts                     CustomerAccount[]
+  dsvCommandReceipts                   DsvCommandReceipt[]
+  dsvAuditEvents                       DsvAuditEvent[]
+  dsvDispatchChangeRequests            DsvDispatchChangeRequest[]
+  driverBundleHandoffRequests          DriverBundleHandoffRequest[]
+  driverSyncSessions                   DriverSyncSession[]
+  driverRouteSessionLeases             DriverRouteSessionLease[]
+  alertConditions                      AlertCondition[]
+  customerDeliveryNotificationAttempts CustomerDeliveryNotificationAttempt[]
 
   @@unique([appId, shopDomain])
   @@unique([appId, shopifyShopGid])
@@ -456,21 +468,21 @@ model Shop {
 }
 
 model DriverBundleHandoffRequest {
-  id                  String                           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId              String                           @db.Uuid
-  shop                Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  groupingId          String                           @db.Uuid
-  destinationId       String                           @db.Text
-  sourceDriverId      String                           @db.Uuid
-  sourceRoutePlanId   String                           @db.Uuid
-  targetDriverId      String                           @db.Uuid
-  targetRoutePlanId   String                           @db.Uuid
-  expectedVersion     String                           @db.Text
-  status              DriverBundleHandoffRequestStatus @default(PROPOSED)
-  expiresAt           DateTime                         @db.Timestamptz(6)
-  respondedAt         DateTime?                        @db.Timestamptz(6)
-  createdAt           DateTime                         @default(now()) @db.Timestamptz(6)
-  updatedAt           DateTime                         @updatedAt @db.Timestamptz(6)
+  id                String                           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId            String                           @db.Uuid
+  shop              Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  groupingId        String                           @db.Uuid
+  destinationId     String                           @db.Text
+  sourceDriverId    String                           @db.Uuid
+  sourceRoutePlanId String                           @db.Uuid
+  targetDriverId    String                           @db.Uuid
+  targetRoutePlanId String                           @db.Uuid
+  expectedVersion   String                           @db.Text
+  status            DriverBundleHandoffRequestStatus @default(PROPOSED)
+  expiresAt         DateTime                         @db.Timestamptz(6)
+  respondedAt       DateTime?                        @db.Timestamptz(6)
+  createdAt         DateTime                         @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime                         @updatedAt @db.Timestamptz(6)
 
   @@index([shopId, sourceDriverId, status, createdAt])
   @@index([shopId, targetDriverId, status, createdAt])
@@ -480,21 +492,22 @@ model DriverBundleHandoffRequest {
 }
 
 model AdminNotification {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId      String    @db.Uuid
-  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  type        String    @db.Text
-  severity    String    @db.Text
-  dedupeKey   String    @db.Text
-  title       String    @db.Text
-  body        String?   @db.Text
-  href        String?   @db.Text
-  orderId     String?   @db.Uuid
-  routePlanId String?   @db.Uuid
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId      String       @db.Uuid
+  shop        Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  type        String       @db.Text
+  severity    String       @db.Text
+  dedupeKey   String       @db.Text
+  title       String       @db.Text
+  body        String?      @db.Text
+  href        String?      @db.Text
+  orderId     String?      @db.Uuid
+  routePlanId String?      @db.Uuid
   payload     Json?
-  readAt      DateTime? @db.Timestamptz(6)
-  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  readAt      DateTime?    @db.Timestamptz(6)
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
+  alertCycles AlertCycle[]
 
   @@unique([shopId, dedupeKey])
   @@index([shopId, readAt, createdAt])
@@ -733,6 +746,7 @@ model ShopifyWebhookEvent {
   triggeredAt              DateTime?                 @db.Timestamptz(6)
   rawBodySha256            String                    @db.Text
   payload                  Json
+  payloadRedactedAt        DateTime?                 @db.Timestamptz(6)
   status                   ShopifyWebhookEventStatus @default(RECEIVED)
   attemptCount             Int                       @default(0)
   maxAttempts              Int                       @default(8)
@@ -752,9 +766,55 @@ model ShopifyWebhookEvent {
   @@unique([shopId, webhookId])
   @@index([shopId, topic, receivedAt])
   @@index([status, receivedAt])
+  @@index([status, processedAt])
   @@index([status, nextRunAt])
   @@index([leaseExpiresAt])
   @@map("shopify_webhook_events")
+}
+
+model ShopifyOrderRedactionTombstone {
+  id                      String   @id @default(uuid()) @db.Uuid
+  appId                   String   @db.Text
+  shopId                  String   @db.Uuid
+  shop                    Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyOrderLegacyId    BigInt
+  complianceWebhookId     String   @db.Text
+  redactedAt              DateTime @db.Timestamptz(6)
+  createdAt               DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([appId, shopId, shopifyOrderLegacyId], map: "shopify_order_redaction_identity_key")
+  @@index([shopId, redactedAt])
+  @@map("shopify_order_redaction_tombstones")
+}
+
+model ShopifyShopRedactionTombstone {
+  id                   String   @id @default(uuid()) @db.Uuid
+  appId                String   @db.Text
+  shopDomain           String   @db.Text
+  complianceWebhookId  String   @db.Text
+  redactedAt           DateTime @db.Timestamptz(6)
+  reinstalledAt        DateTime? @db.Timestamptz(6)
+  createdAt            DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([appId, shopDomain], map: "shopify_shop_redaction_identity_key")
+  @@index([redactedAt])
+  @@map("shopify_shop_redaction_tombstones")
+}
+
+model ShopifyRedactedWebhookReceipt {
+  id          String   @id @default(uuid()) @db.Uuid
+  appId       String   @db.Text
+  shopDomain  String   @db.Text
+  webhookId   String   @db.Text
+  topic       String   @db.Text
+  redactedAt  DateTime @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([appId, shopDomain, webhookId], map: "shopify_redacted_webhook_receipt_key")
+  @@index([appId, shopDomain, redactedAt])
+  @@map("shopify_redacted_webhook_receipts")
 }
 
 model ShopifyOrderReconciliationJob {
@@ -1308,6 +1368,7 @@ model RoutePlan {
   planDate                        DateTime                         @db.Date
   status                          RoutePlanStatus                  @default(READY)
   driverId                        String?                          @db.Uuid
+  assignmentGeneration            BigInt                           @default(1)
   driver                          Driver?                          @relation(fields: [driverId], references: [id], onDelete: SetNull)
   vehicleId                       String?                          @db.Uuid
   vehicle                         Vehicle?                         @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
@@ -1322,6 +1383,7 @@ model RoutePlan {
   routeStops                      RoutePlanStop[]
   optimizationJobs                RouteOptimizationJob[]
   driverEvents                    DriverEvent[]
+  driverEventAttempts             DriverEventAttempt[]
   driverProofMedia                DriverProofMedia[]
   driverRouteFeedback             DriverRouteFeedback[]
   routeGroupingChildVersions      RouteGroupingChildVersion[]
@@ -1332,6 +1394,8 @@ model RoutePlan {
   nextDsvCommandReceipts          DsvCommandReceipt[]              @relation("DsvCommandReceiptNextRoutePlan")
   previousDsvAuditEvents          DsvAuditEvent[]                  @relation("DsvAuditEventPreviousRoutePlan")
   nextDsvAuditEvents              DsvAuditEvent[]                  @relation("DsvAuditEventNextRoutePlan")
+  driverSyncSessions              DriverSyncSession[]
+  driverRouteSessionLeases        DriverRouteSessionLease[]
 
   @@unique([id, shopId])
   @@index([shopId, planDate, status])
@@ -1486,6 +1550,7 @@ model Driver {
   sessions                   DriverSession[]
   routePlans                 RoutePlan[]
   driverEvents               DriverEvent[]
+  driverEventAttempts        DriverEventAttempt[]
   consentRecords             DriverConsentRecord[]
   driverProofMedia           DriverProofMedia[]
   driverRouteFeedback        DriverRouteFeedback[]
@@ -1499,6 +1564,8 @@ model Driver {
   dsvProfile                 DsvDriverProfile?
   dsvVehicleAssignments      DsvVehicleDriverAssignment[]
   accountSignupInvites       DsvDriverAccountSignupInvite[]
+  syncSessions               DriverSyncSession[]
+  routeSessionLeases         DriverRouteSessionLease[]
 
   @@unique([id, shopId])
   @@unique([shopId, inviteCode])
@@ -1663,6 +1730,10 @@ model DriverProofMedia {
   deliveryStop     DeliveryStop           @relation(fields: [deliveryStopId], references: [id], onDelete: Cascade)
   kind             DriverProofMediaKind   @default(PHOTO)
   source           DriverProofMediaSource
+  uploadStatus     DriverProofMediaUploadStatus @default(READY)
+  cleanupToken     String?                @db.Text
+  cleanupClaimedAt DateTime?              @db.Timestamptz(6)
+  idempotencyKey   String?                @db.VarChar(120)
   contentType      String                 @db.Text
   originalFilename String?                @db.Text
   storageKey       String                 @db.Text
@@ -1673,8 +1744,10 @@ model DriverProofMedia {
   createdAt        DateTime               @default(now()) @db.Timestamptz(6)
 
   @@unique([shopId, storageKey])
+  @@unique([shopId, driverId, routePlanId, deliveryStopId, idempotencyKey], map: "driver_proof_media_idempotency_scope_key")
   @@index([shopId, routePlanId, deliveryStopId, uploadedAt])
   @@index([driverId, uploadedAt])
+  @@index([uploadStatus, cleanupClaimedAt, createdAt])
   @@map("driver_proof_media")
 }
 
@@ -1953,33 +2026,34 @@ model DriverRouteNotificationAttempt {
 }
 
 model CustomerRouteNotificationFact {
-  id                     String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId                 String                          @db.Uuid
-  shop                   Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  orderId                String                          @db.Uuid
-  order                  Order                           @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  routePlanId            String?                         @db.Uuid
-  deliveryStopId         String?                         @db.Uuid
-  recipientEmailSnapshot String?                         @db.Text
-  requestedUiStatus      String?                         @db.Text
-  idempotencyKey         String?                         @db.Text
-  source                 String                          @db.Text
+  id                     String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                 String                                @db.Uuid
+  shop                   Shop                                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId                String                                @db.Uuid
+  order                  Order                                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  routePlanId            String?                               @db.Uuid
+  deliveryStopId         String?                               @db.Uuid
+  recipientEmailSnapshot String?                               @db.Text
+  requestedUiStatus      String?                               @db.Text
+  idempotencyKey         String?                               @db.Text
+  source                 String                                @db.Text
   status                 CustomerRouteNotificationStatus
-  attemptCount           Int                             @default(0)
-  nextAttemptAt          DateTime?                       @default(now()) @db.Timestamptz(6)
-  processingStartedAt    DateTime?                       @db.Timestamptz(6)
-  leaseToken             String?                         @db.Text
-  leaseExpiresAt         DateTime?                       @db.Timestamptz(6)
-  provider               String?                         @db.Text
-  providerMessageId      String?                         @db.Text
-  errorCode              String?                         @db.Text
-  errorMessage           String?                         @db.Text
-  sentAt                 DateTime?                       @db.Timestamptz(6)
-  deadAt                 DateTime?                       @db.Timestamptz(6)
+  attemptCount           Int                                   @default(0)
+  nextAttemptAt          DateTime?                             @default(now()) @db.Timestamptz(6)
+  processingStartedAt    DateTime?                             @db.Timestamptz(6)
+  leaseToken             String?                               @db.Text
+  leaseExpiresAt         DateTime?                             @db.Timestamptz(6)
+  provider               String?                               @db.Text
+  providerMessageId      String?                               @db.Text
+  errorCode              String?                               @db.Text
+  errorMessage           String?                               @db.Text
+  sentAt                 DateTime?                             @db.Timestamptz(6)
+  deadAt                 DateTime?                             @db.Timestamptz(6)
   metadata               Json?
-  occurredAt             DateTime                        @default(now()) @db.Timestamptz(6)
-  createdAt              DateTime                        @default(now()) @db.Timestamptz(6)
-  updatedAt              DateTime                        @default(now()) @updatedAt @db.Timestamptz(6)
+  occurredAt             DateTime                              @default(now()) @db.Timestamptz(6)
+  createdAt              DateTime                              @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime                              @default(now()) @updatedAt @db.Timestamptz(6)
+  attempts               CustomerDeliveryNotificationAttempt[]
 
   @@unique([idempotencyKey])
   @@index([shopId, orderId, status])
@@ -2033,29 +2107,180 @@ model CustomerEmailManualDispatch {
 }
 
 model CustomerEmailManualDispatchRecipient {
-  id                String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId            String                      @db.Uuid
-  shop              Shop                        @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  dispatchId        String                      @db.Uuid
-  dispatch          CustomerEmailManualDispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
-  routePlanId       String                      @db.Uuid
-  deliveryStopId    String?                     @db.Uuid
-  orderId           String?                     @db.Uuid
-  recipientEmail    String?                     @db.Text
-  status            String                      @db.Text
-  errorCode         String?                     @db.Text
-  errorMessage      String?                     @db.Text
-  provider          String?                     @db.Text
-  providerMessageId String?                     @db.Text
-  renderedSubject   String?                     @db.Text
-  renderedBody      String?                     @db.Text
-  sentAt            DateTime?                   @db.Timestamptz(6)
-  createdAt         DateTime                    @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime                    @default(now()) @updatedAt @db.Timestamptz(6)
+  id                String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId            String                                @db.Uuid
+  shop              Shop                                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  dispatchId        String                                @db.Uuid
+  dispatch          CustomerEmailManualDispatch           @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  routePlanId       String                                @db.Uuid
+  deliveryStopId    String?                               @db.Uuid
+  orderId           String?                               @db.Uuid
+  recipientEmail    String?                               @db.Text
+  status            String                                @db.Text
+  errorCode         String?                               @db.Text
+  errorMessage      String?                               @db.Text
+  provider          String?                               @db.Text
+  providerMessageId String?                               @db.Text
+  renderedSubject   String?                               @db.Text
+  renderedBody      String?                               @db.Text
+  sentAt            DateTime?                             @db.Timestamptz(6)
+  createdAt         DateTime                              @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime                              @default(now()) @updatedAt @db.Timestamptz(6)
+  attempts          CustomerDeliveryNotificationAttempt[]
 
   @@index([shopId, routePlanId, deliveryStopId])
   @@index([dispatchId, status])
   @@map("customer_email_manual_dispatch_recipients")
+}
+
+model DriverSyncSession {
+  id                    String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                String                    @db.Uuid
+  shop                  Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  routePlanId           String                    @db.Uuid
+  routePlan             RoutePlan                 @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  driverId              String                    @db.Uuid
+  driver                Driver                    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  deviceInstanceHash    String                    @db.Text
+  sessionGeneration     String                    @db.Text
+  driverContractVersion Int
+  appVersion            String                    @db.Text
+  versionCode           Int
+  firstObservedAt       DateTime                  @db.Timestamptz(6)
+  lastObservedAt        DateTime                  @db.Timestamptz(6)
+  expiresAt             DateTime                  @db.Timestamptz(6)
+  createdAt             DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime                  @updatedAt @db.Timestamptz(6)
+  heartbeats            DriverSyncHeartbeat[]
+  leases                DriverRouteSessionLease[]
+
+  @@unique([routePlanId, driverId, deviceInstanceHash, sessionGeneration])
+  @@index([routePlanId, driverId, expiresAt])
+  @@index([lastObservedAt])
+  @@map("driver_sync_sessions")
+}
+
+model DriverSyncHeartbeat {
+  id                  String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  syncSessionId       String            @db.Uuid
+  syncSession         DriverSyncSession @relation(fields: [syncSessionId], references: [id], onDelete: Cascade)
+  heartbeatSequence   Int
+  state               String            @db.Text
+  clientOccurredAt    DateTime          @db.Timestamptz(6)
+  serverReceivedAt    DateTime          @db.Timestamptz(6)
+  queueDepth          Int?
+  oldestQueuedAt      DateTime?         @db.Timestamptz(6)
+  lastAcknowledgedAt  DateTime?         @db.Timestamptz(6)
+  firstFailedAt       DateTime?         @db.Timestamptz(6)
+  firstErrorCode      String?           @db.Text
+  lastErrorCode       String?           @db.Text
+  lastRetryAt         DateTime?         @db.Timestamptz(6)
+  nextRetryAt         DateTime?         @db.Timestamptz(6)
+  retryCount          Int               @default(0)
+  finishPending       Boolean           @default(false)
+  completedStopCount  Int?
+  currentStopSequence Int?
+  totalStopCount      Int?
+  locallyFinished     Boolean?
+  retryJournal        Json?
+  retainedUntil       DateTime          @db.Timestamptz(6)
+  createdAt           DateTime          @default(now()) @db.Timestamptz(6)
+
+  @@unique([syncSessionId, heartbeatSequence])
+  @@index([syncSessionId, serverReceivedAt])
+  @@index([retainedUntil])
+  @@map("driver_sync_heartbeats")
+}
+
+model DriverRouteSessionLease {
+  id                 String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId             String            @db.Uuid
+  shop               Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  routePlanId        String            @db.Uuid
+  routePlan          RoutePlan         @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  driverId           String            @db.Uuid
+  driver             Driver            @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  syncSessionId      String            @db.Uuid
+  syncSession        DriverSyncSession @relation(fields: [syncSessionId], references: [id], onDelete: Cascade)
+  deviceInstanceHash String            @db.Text
+  sessionGeneration  String            @db.Text
+  issuedAt           DateTime          @db.Timestamptz(6)
+  expiresAt          DateTime          @db.Timestamptz(6)
+  revokedAt          DateTime?         @db.Timestamptz(6)
+  takeoverFromHash   String?           @db.Text
+  takeoverActorId    String?           @db.Uuid
+  createdAt          DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime          @updatedAt @db.Timestamptz(6)
+
+  @@index([routePlanId, driverId, expiresAt])
+  @@index([syncSessionId])
+  @@map("driver_route_session_leases")
+}
+
+model AlertCondition {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId      String       @db.Uuid
+  shop        Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  dedupeKey   String       @db.Text
+  type        String       @db.Text
+  routePlanId String?      @db.Uuid
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
+  cycles      AlertCycle[]
+
+  @@unique([shopId, dedupeKey])
+  @@index([shopId, type, updatedAt])
+  @@map("alert_conditions")
+}
+
+model AlertCycle {
+  id                    String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  conditionId           String             @db.Uuid
+  condition             AlertCondition     @relation(fields: [conditionId], references: [id], onDelete: Cascade)
+  legacyNotificationId  String?            @db.Uuid
+  legacyNotification    AdminNotification? @relation(fields: [legacyNotificationId], references: [id], onDelete: SetNull)
+  severity              String             @db.Text
+  payload               Json?
+  openedAt              DateTime           @db.Timestamptz(6)
+  lastObservedAt        DateTime           @db.Timestamptz(6)
+  readAt                DateTime?          @db.Timestamptz(6)
+  acknowledgedAt        DateTime?          @db.Timestamptz(6)
+  acknowledgedBy        String?            @db.Text
+  resolvedAt            DateTime?          @db.Timestamptz(6)
+  resolutionCode        String?            @db.Text
+  compatibilityMetadata Json?
+  retainedUntil         DateTime           @db.Timestamptz(6)
+  createdAt             DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
+
+  @@index([legacyNotificationId])
+  @@index([conditionId, openedAt])
+  @@index([resolvedAt, retainedUntil])
+  @@map("alert_cycles")
+}
+
+model CustomerDeliveryNotificationAttempt {
+  id                        String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                    String                                @db.Uuid
+  shop                      Shop                                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  factId                    String?                               @db.Uuid
+  fact                      CustomerRouteNotificationFact?        @relation(fields: [factId], references: [id], onDelete: Cascade)
+  manualDispatchRecipientId String?                               @db.Uuid
+  manualDispatchRecipient   CustomerEmailManualDispatchRecipient? @relation(fields: [manualDispatchRecipientId], references: [id], onDelete: Cascade)
+  attemptNumber             Int
+  startedAt                 DateTime                              @db.Timestamptz(6)
+  completedAt               DateTime?                             @db.Timestamptz(6)
+  provider                  String                                @db.Text
+  outcome                   String                                @db.Text
+  errorCode                 String?                               @db.Text
+  correlationId             String                                @db.Text
+  providerMessageId         String?                               @db.Text
+  retainedUntil             DateTime                              @db.Timestamptz(6)
+  createdAt                 DateTime                              @default(now()) @db.Timestamptz(6)
+
+  @@index([shopId, createdAt])
+  @@index([retainedUntil])
+  @@map("customer_delivery_notification_attempts")
 }
 
 model AdminRouteStopActionAudit {
@@ -2580,6 +2805,9 @@ model DriverEvent {
   deliveryStopId                String?                    @db.Uuid
   deliveryStop                  DeliveryStop?              @relation(fields: [deliveryStopId], references: [id], onDelete: SetNull)
   clientEventId                 String?                    @db.Text
+  expectedRouteVersionId        String?                    @db.Uuid
+  assignmentGeneration          BigInt?
+  driverContractVersion         Int?
   eventType                     DriverEventType
   occurredAt                    DateTime                   @db.Timestamptz(6)
   latitude                      Decimal?                   @db.Decimal(10, 7)
@@ -2593,4 +2821,43 @@ model DriverEvent {
   @@index([shopId, routeVersionId, occurredAt])
   @@index([shopId, deliveryStopId, occurredAt])
   @@map("driver_events")
+}
+
+model DriverEventAttempt {
+  id                     String     @id @default(uuid()) @db.Uuid
+  requestId              String     @unique @db.Text
+  transportRequestId     String?    @db.Text
+  shopId                 String     @db.Uuid
+  shop                   Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  driverId               String     @db.Uuid
+  driver                 Driver     @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  routePlanId            String?    @db.Uuid
+  routePlan              RoutePlan? @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  clientEventId          String?    @db.Text
+  attemptNumber          Int        @default(1)
+  eventType              String?    @db.Text
+  expectedRouteVersionId String?    @db.Uuid
+  assignmentGeneration   BigInt?
+  driverContractVersion  Int
+  appVersion             String?    @db.Text
+  versionCode            Int?
+  occurredAt             DateTime?  @db.Timestamptz(6)
+  receivedAt             DateTime   @default(now()) @db.Timestamptz(6)
+  status                 String     @default("ACCEPTED") @db.Text
+  failureStage           String?    @db.Text
+  errorCode              String?    @db.Text
+  retryable              Boolean?
+  committedEventId       String?    @db.Uuid
+  reconciledAt           DateTime?  @db.Timestamptz(6)
+  reconciliationCode     String?    @db.Text
+  retainedUntil          DateTime   @db.Timestamptz(6)
+  createdAt              DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime   @updatedAt @db.Timestamptz(6)
+
+  @@unique([driverId, clientEventId, attemptNumber])
+  @@index([driverId, clientEventId, createdAt])
+  @@index([shopId, transportRequestId, createdAt])
+  @@index([routePlanId, status, createdAt])
+  @@index([retainedUntil])
+  @@map("driver_event_attempts")
 }

@@ -8,6 +8,7 @@ import {
   DriverEventRouteNotInProgressError,
   DriverEventSellerOrderAssignmentChangedError,
   DriverEventScopeError,
+  DriverEventStopTransitionConflictError,
   PrismaDriverEventRepository
 } from '../src/modules/driver/driver-event.repository.js';
 import { dsvCanonicalNoteHash } from '../src/modules/dsv/dsv-time-constraint.js';
@@ -17,6 +18,24 @@ const serverReceivedAt = new Date('2026-06-01T06:00:00.000Z');
 type RoutePlanStopFixture = { id: string } | ReturnType<typeof confirmedTimeConstraintRoutePlanStop>;
 
 describe('PrismaDriverEventRepository', () => {
+  test('keeps committed receipt recovery non-blocking while surfacing sanitized attempt finalization failure', async () => {
+    const failures: Array<{ attemptId: string; errorCode: string }> = [];
+    const prisma = {
+      driverEventAttempt: {
+        update: vi.fn(() => Promise.reject(new Error('database token=private customer@example.invalid')))
+      }
+    };
+    const repository = new PrismaDriverEventRepository(prisma as never, {
+      finalizationMonitor: { recordFailure: (evidence) => failures.push(evidence) }
+    });
+
+    await expect(repository.finalizeDriverEventAttempt('attempt-id', {
+      committedEventId: 'event-id',
+      status: 'APPLIED'
+    })).resolves.toBeUndefined();
+    expect(failures).toEqual([{ attemptId: 'attempt-id', errorCode: 'ERROR' }]);
+    expect(JSON.stringify(failures)).not.toMatch(/private|customer@/u);
+  });
   test('records driver events for Woo customer-domain shops', async () => {
     const { prisma } = createPrismaHarness({ routePlan: { id: 'route-plan-id', status: 'IN_PROGRESS' } });
     const repository = new PrismaDriverEventRepository(prisma as never);
@@ -153,7 +172,8 @@ describe('PrismaDriverEventRepository', () => {
             routePlanId: 'route-plan-id'
           }
         },
-        shopId: 'shop-id'
+        shopId: 'shop-id',
+        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'DELIVERED'] }
       }
     });
     expect(prisma.routePlanStop.update).toHaveBeenCalledWith({
@@ -192,10 +212,23 @@ describe('PrismaDriverEventRepository', () => {
             routePlanId: 'route-plan-id'
           }
         },
-        shopId: 'shop-id'
+        shopId: 'shop-id',
+        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'FAILED'] }
       }
     });
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('rejects late arrived and conflicting terminal transitions without persisting the event', async () => {
+    for (const eventType of ['STOP_ARRIVED', 'STOP_FAILED'] as const) {
+      const { prisma } = createPrismaHarness({ deliveryStopUpdateCount: 0 });
+      const repository = new PrismaDriverEventRepository(prisma as never);
+      await expect(repository.recordDriverEvent(baseInput({
+        deliveryStopId: 'stop-id',
+        eventType,
+        routePlanId: 'route-plan-id'
+      }))).rejects.toBeInstanceOf(DriverEventStopTransitionConflictError);
+    }
   });
 
   test('uses the server receipt time to update future ETAs when STOP_ARRIVED is recorded', async () => {
@@ -263,7 +296,8 @@ describe('PrismaDriverEventRepository', () => {
             routePlanId: 'route-plan-id'
           }
         },
-        shopId: 'shop-id'
+        shopId: 'shop-id',
+        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED'] }
       }
     });
     expect(prisma.routePlanStop.update).toHaveBeenCalledWith({
@@ -956,7 +990,11 @@ describe('PrismaDriverEventRepository', () => {
   });
 
   test('treats explicit driver completion as authoritative even when a stop is not terminal', async () => {
-    const { prisma } = createPrismaHarness({
+    const { getCreatedDriverEventPayload, prisma } = createPrismaHarness({
+      routeSequenceStops: [
+        { deliveryStop: { status: 'DELIVERED' }, deliveryStopId: 'stop-1', sequence: 1 },
+        { deliveryStop: { status: 'ASSIGNED' }, deliveryStopId: 'stop-2', sequence: 2 }
+      ],
       routeStops: [
         { deliveryStop: { status: 'DELIVERED' } },
         { deliveryStop: { status: 'ASSIGNED' } }
@@ -979,6 +1017,18 @@ describe('PrismaDriverEventRepository', () => {
         status: { not: 'CANCELLED' }
       }
     });
+    expect(getCreatedDriverEventPayload()).toEqual({
+          serverObservation: {
+            completionInvariant: {
+              mode: 'OBSERVE',
+              terminalStatuses: ['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED'],
+              totalStopCount: 2,
+              unresolvedStopCount: 1,
+              wouldReject: true
+            }
+          },
+          source: 'driver-app'
+        });
   });
 
   test('keeps route lifecycle unchanged when final terminal stop arrives after route completion event', async () => {
@@ -1426,6 +1476,7 @@ function createPrismaHarness(input: {
     type: 'TIME_CONSTRAINT_CHANGE' | 'ACTIVE_ROUTE_ORDER_REMOVAL';
   } | null;
   driverEventCreateError?: Error;
+  deliveryStopUpdateCount?: number;
   driverEventRouteVersionColumnExists?: boolean;
   etaOwnershipColumnsExist?: boolean;
   existingEvent?: { deliveryStopId: string | null; eventType: string; id: string; payload?: unknown; routePlanId: string | null } | null;
@@ -1458,15 +1509,17 @@ function createPrismaHarness(input: {
   schemaCapabilityFailures?: number;
 } = {}) {
   let createdEventType: string | null = null;
+  let createdDriverEventPayload: unknown;
   let driverEventCreateAttempted = false;
   let schemaCapabilityFailuresRemaining = input.schemaCapabilityFailures ?? 0;
   const operations: string[] = [];
-  const createDriverEvent = vi.fn((args: { data: { eventType: string } }) => {
+  const createDriverEvent = vi.fn((args: { data: { eventType: string; payload?: unknown } }) => {
     driverEventCreateAttempted = true;
     if (input.driverEventCreateError !== undefined) {
       throw input.driverEventCreateError;
     }
     createdEventType = args.data.eventType;
+    createdDriverEventPayload = args.data.payload;
     return Promise.resolve({ createdAt: serverReceivedAt, id: 'driver-event-id' });
   });
   const prisma: {
@@ -1545,7 +1598,7 @@ function createPrismaHarness(input: {
       return Promise.resolve(callback(prisma));
     }),
     deliveryStop: {
-      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+      updateMany: vi.fn(() => Promise.resolve({ count: input.deliveryStopUpdateCount ?? 1 }))
     },
     driver: {
       findUnique: vi.fn(() => Promise.resolve({ id: 'driver-id', shopId: 'shop-id' }))
@@ -1641,7 +1694,7 @@ function createPrismaHarness(input: {
     }
   });
 
-  return { operations, prisma };
+  return { getCreatedDriverEventPayload: () => createdDriverEventPayload, operations, prisma };
 }
 
 function routeStopPoint(deliveryStopId: string, sequence: number, duration: number, distance: number) {

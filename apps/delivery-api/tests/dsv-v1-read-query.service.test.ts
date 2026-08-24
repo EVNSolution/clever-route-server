@@ -32,7 +32,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(deliveryStopsSelect?.select.driverEvents.where.eventType.in).not.toContain('PICKUP_COMPLETED');
     expect(deliveryStopsSelect?.select.dsvDispatchImportRows.select).toEqual({ conditionCode: true, shippedBoxes: true });
     expect(deliveryStopsSelect?.select.dsvDispatchImportRows.where).toEqual({ shopId: 'shop-a', status: 'APPLIED' });
-    expect(deliveryStopsSelect?.select.driverProofMedia.where).toEqual({ shopId: 'shop-a' });
+    expect(deliveryStopsSelect?.select.driverProofMedia.where).toEqual({ shopId: 'shop-a', uploadStatus: 'READY' });
     expect(deliveryStopsSelect?.select.routePlanStops.where).toEqual({ shopId: 'shop-a' });
     expect(firstOrderQuery?.select?.orderMessages).toMatchObject({
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -321,6 +321,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const query = firstMockArg<DeliveryStopFindManyQuery>(prisma.deliveryStop.findMany);
     expect(query?.where?.shopId).toBe('shop-a');
     expect(query?.where?.order).toEqual({ shopId: 'shop-a' });
+    expect(query?.select?.driverProofMedia.where).toEqual({ shopId: 'shop-a', uploadStatus: 'READY' });
   });
 
   test('lists all record dates by default and applies numbered page offsets', async () => {
@@ -1488,6 +1489,7 @@ type OrderFindManyQuery = {
 };
 
 type DeliveryStopFindManyQuery = {
+  select?: { driverProofMedia: { where: { shopId: string; uploadStatus: string } } };
   where?: {
     order?: { shopId: string };
     shopId?: string;

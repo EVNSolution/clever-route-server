@@ -809,7 +809,7 @@ describe('PrismaRoutePlanRepository', () => {
       }
     });
     expect(prisma.routePlan.update).toHaveBeenCalledWith({
-      data: { driverId: 'driver-id' },
+      data: { assignmentGeneration: { increment: 1 }, driverId: 'driver-id' },
       where: { id: 'route-plan-id' }
     });
   });
@@ -1735,7 +1735,7 @@ describe('PrismaRoutePlanRepository', () => {
       ]
     });
     expect(prisma.routePlan.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: { driverId: 'driver-id' },
+      data: { assignmentGeneration: { increment: 1 }, driverId: 'driver-id' },
       where: { id: 'route-plan-id' }
     }));
     expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'PUBLISHED')).toBe(false);
@@ -2180,6 +2180,7 @@ function createPrismaHarness(input: {
       findUnique: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
     };
+    shopifyShopRedactionTombstone: { findUnique: ReturnType<typeof vi.fn> };
   };
   routePlanStopCreateMany: ReturnType<typeof vi.fn>;
 } {
@@ -2225,6 +2226,7 @@ function createPrismaHarness(input: {
         occurredAt: new Date('2026-05-07T12:30:00.000Z')
       }))
     },
+    shopifyShopRedactionTombstone: { findUnique: vi.fn(() => Promise.resolve(null)) },
     order: {
       findMany: vi.fn(() => Promise.resolve(input.orders ?? [
         orderRecord({ id: 'order-1', gid: 'gid://shopify/Order/123', stopId: 'stop-1', deliveryDate: input.orderDeliveryDate ?? '2026-05-08' }),

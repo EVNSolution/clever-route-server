@@ -7,6 +7,7 @@ const createdAt = new Date('2026-06-05T07:00:00.000Z');
 const anyObjectMatcher: unknown = expect.any(Object);
 
 const notificationRow = {
+  alertCycles: [] as Array<{ acknowledgedAt: Date | null; id: string; lastObservedAt: Date; openedAt: Date; readAt: Date | null; resolvedAt: Date | null }>,
   body: 'Woo changed the destination after routing.',
   createdAt,
   href: '/admin/ui/app/routes/route-plan-id',
@@ -159,6 +160,10 @@ describe('PrismaAdminNotificationRepository', () => {
       data: { readAt: new Date('2026-06-05T07:02:00.000Z') },
       where: { id: 'notification-id', readAt: null, shopId: 'shop-id' }
     });
+    expect(prisma.alertCycle.updateMany).toHaveBeenCalledWith({
+      data: { readAt: new Date('2026-06-05T07:02:00.000Z') },
+      where: { legacyNotificationId: 'notification-id', readAt: null }
+    });
     expect(result).toEqual(
       expect.objectContaining({
         id: 'notification-id',
@@ -182,8 +187,12 @@ describe('PrismaAdminNotificationRepository', () => {
     });
 
     expect(prisma.adminNotification.updateMany).toHaveBeenCalledWith({
-      data: { readAt: new Date('2026-06-05T07:05:00.000Z') },
+      data: { readAt: originalReadAt },
       where: { id: 'notification-id', readAt: null, shopId: 'shop-id' }
+    });
+    expect(prisma.alertCycle.updateMany).toHaveBeenCalledWith({
+      data: { readAt: originalReadAt },
+      where: { legacyNotificationId: 'notification-id', readAt: null }
     });
     expect(result?.readAt).toBe('2026-06-05T07:01:00.000Z');
   });
@@ -196,6 +205,7 @@ function createPrismaHarness(input: {
 } = {}) {
   const row = input.notification ?? notificationRow;
   const prisma = {
+    $transaction: vi.fn(<T>(callback: (tx: unknown) => Promise<T>) => callback(prisma)),
     adminNotification: {
       count: vi.fn(() => Promise.resolve(1)),
       create: vi.fn(() => Promise.resolve(row)),
@@ -204,6 +214,7 @@ function createPrismaHarness(input: {
       findUnique: vi.fn(() => Promise.resolve(row)),
       updateMany: vi.fn(() => Promise.resolve({ count: input.updateCount ?? 1 }))
     },
+    alertCycle: { updateMany: vi.fn(() => Promise.resolve({ count: 1 })) },
     shop: {
       findUnique: vi.fn(() => Promise.resolve(input.shop === undefined ? { id: 'shop-id' } : input.shop))
     }

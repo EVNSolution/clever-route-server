@@ -65,6 +65,7 @@ describe('PrismaDriverProofMediaRepository', () => {
         sizeBytes: uploadBytes.byteLength,
         source: 'CAMERA',
         storageKey: 'driver-proof/dev1.tomatonofood.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg',
+        uploadStatus: 'PENDING_UPLOAD',
         uploadedAt: now
       }
     });
@@ -122,6 +123,7 @@ describe('PrismaDriverProofMediaRepository', () => {
         sizeBytes: sanitizedBytes.byteLength,
         source: 'LIBRARY',
         storageKey,
+        uploadStatus: 'PENDING_UPLOAD',
         uploadedAt: now
       }
     });
@@ -171,6 +173,465 @@ describe('PrismaDriverProofMediaRepository', () => {
         storageKey: 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg'
       }
     ]);
+  });
+
+  test('does not write proof bytes when the durable upload reservation fails', async () => {
+    const remove = vi.fn(() => Promise.resolve('removed' as const));
+    const write = vi.fn(() => Promise.resolve());
+    const storage: DriverProofMediaStorageBackend = {
+      remove,
+      write
+    };
+    const { prisma } = createPrismaHarness({ createProofMediaError: new Error('database unavailable') });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      createMediaId: () => '11111111-1111-4111-8111-111111111111',
+      now: () => now,
+      storage
+    });
+
+    await expect(repository.storeProofMedia(proofMediaInput())).rejects.toThrow('database unavailable');
+    expect(write).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  test('logs sanitized evidence and retains the reservation when storage cleanup fails', async () => {
+    const errorLogs: Array<{ details: Record<string, unknown>; message: string }> = [];
+    const storage: DriverProofMediaStorageBackend = {
+      remove: vi.fn(() => Promise.reject(new Error('DELETE https://private-bucket.invalid/proof?token=secret-value'))),
+      write: vi.fn(() => Promise.reject(new Error('upload failed for private-customer@example.invalid')))
+    };
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      cleanupLogger: {
+        error: (details: Record<string, unknown>, message: string) => errorLogs.push({ details, message })
+      },
+      createMediaId: () => '11111111-1111-4111-8111-111111111111',
+      now: () => now,
+      storage
+    });
+
+    await expect(repository.storeProofMedia(proofMediaInput())).rejects.toThrow('upload failed');
+    expect(errorLogs).toEqual([{
+      details: {
+        cleanupErrorCode: 'ERROR',
+        event: 'driver_proof_media_orphan_cleanup_failed',
+        mediaId: '11111111-1111-4111-8111-111111111111',
+        storageErrorCode: 'ERROR'
+      },
+      message: 'Failed to remove unfinalized proof media after storage failure'
+    }]);
+    expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+    const serializedLogs = JSON.stringify(errorLogs);
+    expect(serializedLogs).not.toContain('private-bucket.invalid');
+    expect(serializedLogs).not.toContain('secret-value');
+    expect(serializedLogs).not.toContain('private-customer@example.invalid');
+    expect(serializedLogs).not.toContain('storageKey');
+  });
+
+  test('aborts storage writes before the cleanup lease and removes the pending reservation', async () => {
+    const remove = vi.fn(() => Promise.resolve('missing' as const));
+    const storage: DriverProofMediaStorageBackend = {
+      remove,
+      write: (_input, signal) => new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(
+          signal.reason instanceof Error ? signal.reason : new Error('proof media storage write aborted')
+        ), { once: true });
+      })
+    };
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      now: () => now,
+      storage,
+      storageWriteTimeoutMs: 5
+    });
+
+    await expect(repository.storeProofMedia(proofMediaInput())).rejects.toMatchObject({ name: 'AbortError' });
+    expect(remove).toHaveBeenCalledOnce();
+    expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledWith({
+      where: { id: expect.any(String) as unknown, uploadStatus: 'PENDING_UPLOAD' }
+    });
+  });
+
+  test('bounds an abort-ignoring PUT and retains a CLEANING fence for late-object recovery', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveLateWrite!: () => void;
+      const mediaId = '11111111-1111-4111-8111-111111111111';
+      const storageKey = `driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/${mediaId}.jpg`;
+      const remove = vi.fn(() => Promise.resolve('removed' as const));
+      const storage: DriverProofMediaStorageBackend = {
+        remove,
+        write: () => new Promise<void>((resolve) => { resolveLateWrite = resolve; })
+      };
+      const { prisma } = createPrismaHarness({
+        expiredProofMedia: [{ id: mediaId, storageKey, uploadedAt: now, uploadStatus: 'CLEANING' }]
+      });
+      const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+        createMediaId: () => mediaId,
+        now: () => now,
+        storage,
+        storageWriteTimeoutMs: 5
+      });
+      const upload = repository.storeProofMedia(proofMediaInput());
+      const rejected = expect(upload).rejects.toMatchObject({ name: 'DriverProofMediaStorageWriteTimeoutError' });
+      await vi.advanceTimersByTimeAsync(6);
+      await rejected;
+      expect(remove).not.toHaveBeenCalled();
+      expect(prisma.driverProofMedia.updateMany).toHaveBeenCalledWith({
+        data: {
+          cleanupClaimedAt: new Date('2026-05-13T10:00:00.000Z'),
+          cleanupToken: expect.any(String) as unknown,
+          uploadStatus: 'CLEANING'
+        },
+        where: { id: mediaId, uploadStatus: 'PENDING_UPLOAD' }
+      });
+
+      resolveLateWrite();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(remove).toHaveBeenCalledWith(storageKey, expect.any(AbortSignal));
+      const settledToken = (prisma.driverProofMedia.updateMany.mock.calls[1]?.[0] as {
+        data: { cleanupToken: string };
+      }).data.cleanupToken;
+      expect(settledToken).toMatch(/^late-upload-settled:/u);
+      expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledWith({
+        where: { cleanupToken: settledToken, id: mediaId, uploadStatus: 'CLEANING' }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('removes an object again when cleanup wins before an abort-ignoring PUT settles', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveLateWrite!: () => void;
+      const mediaId = '11111111-1111-4111-8111-111111111111';
+      const storageKey = `driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/${mediaId}.jpg`;
+      const remove = vi.fn(() => Promise.resolve('removed' as const));
+      const storage: DriverProofMediaStorageBackend = {
+        remove,
+        write: () => new Promise<void>((resolve) => { resolveLateWrite = resolve; })
+      };
+      const expiredProofMedia = [{
+        cleanupToken: '', id: mediaId, storageKey, uploadedAt: now, uploadStatus: 'CLEANING' as const
+      }];
+      const { prisma } = createPrismaHarness({ expiredProofMedia });
+      const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+        createMediaId: () => mediaId,
+        now: () => now,
+        storage,
+        storageWriteTimeoutMs: 5
+      });
+      const upload = repository.storeProofMedia(proofMediaInput());
+      const rejected = expect(upload).rejects.toMatchObject({ name: 'DriverProofMediaStorageWriteTimeoutError' });
+      await vi.advanceTimersByTimeAsync(6);
+      await rejected;
+      expiredProofMedia[0]!.cleanupToken = (prisma.driverProofMedia.updateMany.mock.calls[0]?.[0] as {
+        data: { cleanupToken: string };
+      }).data.cleanupToken;
+      expect(expiredProofMedia[0]!.cleanupToken).toMatch(/^late-upload-possible:/u);
+
+      await repository.deleteStalePendingProofMedia({
+        createdBefore: new Date('2026-05-14T10:00:00.000Z'),
+        now: new Date('2026-05-14T10:00:00.000Z')
+      });
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+      resolveLateWrite();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(remove).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('keeps a settled late-upload marker when the second delete fails and a later cleanup removes it', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveLateWrite!: () => void;
+      const mediaId = '11111111-1111-4111-8111-111111111111';
+      const storageKey = `driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/${mediaId}.jpg`;
+      const remove = vi.fn()
+        .mockResolvedValueOnce('removed')
+        .mockRejectedValueOnce(new Error('temporary second DELETE failure'))
+        .mockResolvedValueOnce('removed');
+      const expiredProofMedia = [{
+        cleanupToken: '', id: mediaId, storageKey, uploadedAt: now, uploadStatus: 'CLEANING' as const
+      }];
+      const { prisma } = createPrismaHarness({ expiredProofMedia });
+      const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+        createMediaId: () => mediaId,
+        now: () => now,
+        storage: {
+          remove,
+          write: () => new Promise<void>((resolve) => { resolveLateWrite = resolve; })
+        },
+        storageWriteTimeoutMs: 5
+      });
+      const upload = repository.storeProofMedia(proofMediaInput());
+      const rejected = expect(upload).rejects.toMatchObject({ name: 'DriverProofMediaStorageWriteTimeoutError' });
+      await vi.advanceTimersByTimeAsync(6);
+      await rejected;
+      expiredProofMedia[0]!.cleanupToken = (prisma.driverProofMedia.updateMany.mock.calls[0]?.[0] as {
+        data: { cleanupToken: string };
+      }).data.cleanupToken;
+
+      await repository.deleteStalePendingProofMedia({
+        createdBefore: new Date('2026-05-14T10:00:00.000Z'),
+        now: new Date('2026-05-14T10:00:00.000Z')
+      });
+      resolveLateWrite();
+      await vi.advanceTimersByTimeAsync(0);
+      const settledToken = (prisma.driverProofMedia.updateMany.mock.calls[2]?.[0] as {
+        data: { cleanupToken: string };
+      }).data.cleanupToken;
+      expiredProofMedia[0]!.cleanupToken = settledToken;
+      expect(settledToken).toMatch(/^late-upload-settled:/u);
+      expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+
+      await repository.deleteStalePendingProofMedia({
+        createdBefore: new Date('2026-05-14T10:00:00.000Z'),
+        now: new Date('2026-05-14T10:16:00.000Z')
+      });
+      expect(remove).toHaveBeenCalledTimes(3);
+      expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledWith({
+        where: { cleanupToken: settledToken, id: mediaId, uploadStatus: 'CLEANING' }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('settles a late rejected PUT and lets a later cleanup delete its durable reservation', async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectLateWrite!: (error: Error) => void;
+      const mediaId = '11111111-1111-4111-8111-111111111111';
+      const storageKey = `driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/${mediaId}.jpg`;
+      const remove = vi.fn()
+        .mockRejectedValueOnce(new Error('ambiguous object DELETE unavailable'))
+        .mockResolvedValueOnce('missing');
+      const expiredProofMedia = [{
+        cleanupToken: '', id: mediaId, storageKey, uploadedAt: now, uploadStatus: 'CLEANING' as const
+      }];
+      const { prisma } = createPrismaHarness({ expiredProofMedia });
+      const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+        createMediaId: () => mediaId,
+        now: () => now,
+        storage: {
+          remove,
+          write: () => new Promise<void>((_resolve, reject) => { rejectLateWrite = reject; })
+        },
+        storageWriteTimeoutMs: 5
+      });
+      const upload = repository.storeProofMedia(proofMediaInput());
+      const rejected = expect(upload).rejects.toMatchObject({ name: 'DriverProofMediaStorageWriteTimeoutError' });
+      await vi.advanceTimersByTimeAsync(6);
+      await rejected;
+      expiredProofMedia[0]!.cleanupToken = (prisma.driverProofMedia.updateMany.mock.calls[0]?.[0] as {
+        data: { cleanupToken: string };
+      }).data.cleanupToken;
+
+      rejectLateWrite(new Error('late PUT rejected after timeout'));
+      await vi.advanceTimersByTimeAsync(0);
+      const settledToken = (prisma.driverProofMedia.updateMany.mock.calls[1]?.[0] as {
+        data: { cleanupToken: string };
+      }).data.cleanupToken;
+      expiredProofMedia[0]!.cleanupToken = settledToken;
+      expect(settledToken).toMatch(/^late-upload-settled:/u);
+      expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+
+      await repository.deleteStalePendingProofMedia({
+        createdBefore: new Date('2026-05-14T10:00:00.000Z'),
+        now: new Date('2026-05-12T10:16:00.000Z')
+      });
+      expect(remove).toHaveBeenCalledTimes(2);
+      expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledWith({
+        where: { cleanupToken: settledToken, id: mediaId, uploadStatus: 'CLEANING' }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('retains fenced cleanup evidence when upload succeeds after cleanup claimed the reservation', async () => {
+    const errorLogs: Array<{ details: Record<string, unknown>; message: string }> = [];
+    const remove = vi.fn(() => Promise.reject(new Error('DELETE token=private-secret failed')));
+    const storage: DriverProofMediaStorageBackend = { remove, write: vi.fn(() => Promise.resolve()) };
+    const { prisma } = createPrismaHarness();
+    prisma.driverProofMedia.updateMany.mockResolvedValueOnce({ count: 0 });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      cleanupLogger: {
+        error: (details: Record<string, unknown>, message: string) => errorLogs.push({ details, message })
+      },
+      now: () => now,
+      storage
+    });
+
+    await expect(repository.storeProofMedia(proofMediaInput())).rejects.toThrow(
+      'Proof media upload reservation could not be finalized'
+    );
+    expect(remove).toHaveBeenCalledOnce();
+    expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+    expect(errorLogs).toEqual([{
+      details: {
+        cleanupErrorCode: 'ERROR',
+        event: 'driver_proof_media_lost_finalize_cleanup_failed',
+        mediaId: expect.any(String) as unknown
+      },
+      message: 'Failed to remove proof media after upload finalization lost its reservation'
+    }]);
+    expect(JSON.stringify(errorLogs)).not.toContain('private-secret');
+  });
+
+  test('bounds an abort-ignoring finalize-loss delete and retains its durable cleanup reservation', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn((...args: [string, AbortSignal]) => {
+        void args[0];
+        return new Promise<'removed'>(() => undefined);
+      });
+      const storage: DriverProofMediaStorageBackend = { remove, write: vi.fn(() => Promise.resolve()) };
+      const { prisma } = createPrismaHarness();
+      prisma.driverProofMedia.updateMany.mockResolvedValueOnce({ count: 0 });
+      const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+        now: () => now,
+        storage,
+        storageRemoveTimeoutMs: 1_000
+      });
+
+      const upload = repository.storeProofMedia(proofMediaInput());
+      const rejected = expect(upload).rejects.toThrow('Proof media upload reservation could not be finalized');
+      await vi.advanceTimersByTimeAsync(1_001);
+      await rejected;
+      expect(remove.mock.calls[0]?.[1].aborted).toBe(true);
+      expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('fences stale pending uploads for one cleanup lease before deleting their reservation', async () => {
+    const storageKey = 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/pending-media-id.jpg';
+    const storage: DriverProofMediaStorageBackend = {
+      remove: vi.fn(() => Promise.resolve('removed' as const)),
+      write: vi.fn(() => Promise.resolve())
+    };
+    const { prisma } = createPrismaHarness({
+      expiredProofMedia: [{ id: 'pending-media-id', storageKey, uploadedAt: now, uploadStatus: 'PENDING_UPLOAD' }]
+    });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, { now: () => now, storage });
+    const createdBefore = new Date('2026-05-13T10:00:00.000Z');
+
+    await expect(repository.deleteStalePendingProofMedia({ createdBefore, limit: 10 })).resolves.toEqual({
+      deletedReservations: 0,
+      missingFiles: 0,
+      scanned: 1
+    });
+    expect(prisma.driverProofMedia.findMany).toHaveBeenCalledWith({
+      orderBy: { createdAt: 'asc' },
+      take: 10,
+      where: {
+        createdAt: { lt: createdBefore },
+        OR: [
+          { uploadStatus: 'PENDING_UPLOAD' },
+          { cleanupClaimedAt: { lt: new Date('2026-05-12T09:45:00.000Z') }, uploadStatus: 'CLEANING' }
+        ]
+      }
+    });
+    expect(prisma.driverProofMedia.updateMany).toHaveBeenCalledWith({
+      data: {
+        cleanupClaimedAt: now,
+        cleanupToken: expect.any(String) as unknown,
+        uploadStatus: 'CLEANING'
+      },
+      where: {
+        id: 'pending-media-id',
+        OR: [
+          { createdAt: { lt: createdBefore }, uploadStatus: 'PENDING_UPLOAD' },
+          { cleanupClaimedAt: { lt: new Date('2026-05-12T09:45:00.000Z') }, uploadStatus: 'CLEANING' }
+        ]
+      }
+    });
+    expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+  });
+
+  test('deletes a stale CLEANING reservation after the upload timeout fence elapsed', async () => {
+    const storageKey = 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/cleaning-media-id.jpg';
+    const storage: DriverProofMediaStorageBackend = {
+      remove: vi.fn(() => Promise.resolve('missing' as const)),
+      write: vi.fn(() => Promise.resolve())
+    };
+    const { prisma } = createPrismaHarness({
+      expiredProofMedia: [{ id: 'cleaning-media-id', storageKey, uploadedAt: now, uploadStatus: 'CLEANING' }]
+    });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, { now: () => now, storage });
+
+    await expect(repository.deleteStalePendingProofMedia({
+      createdBefore: new Date('2026-05-13T10:00:00.000Z')
+    })).resolves.toEqual({ deletedReservations: 1, missingFiles: 1, scanned: 1 });
+    const cleanupToken = (prisma.driverProofMedia.updateMany.mock.calls[0]?.[0] as {
+      data: { cleanupToken: string };
+    }).data.cleanupToken;
+    expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledWith({
+      where: { cleanupToken, id: 'cleaning-media-id', uploadStatus: 'CLEANING' }
+    });
+  });
+
+  test('retains a fenced CLEANING reservation when stale object removal fails', async () => {
+    const storageKey = 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/retry-cleanup.jpg';
+    const storage: DriverProofMediaStorageBackend = {
+      remove: vi.fn(() => Promise.reject(new Error('temporary object store failure'))),
+      write: vi.fn(() => Promise.resolve())
+    };
+    const { prisma } = createPrismaHarness({
+      expiredProofMedia: [{ id: 'retry-cleanup', storageKey, uploadedAt: now }]
+    });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, { now: () => now, storage });
+
+    await expect(repository.deleteStalePendingProofMedia({
+      createdBefore: new Date('2026-05-13T10:00:00.000Z')
+    })).rejects.toThrow('temporary object store failure');
+    const cleanupClaim = prisma.driverProofMedia.updateMany.mock.calls[0]?.[0] as {
+      data: { cleanupClaimedAt: Date; cleanupToken: unknown; uploadStatus: string };
+    };
+    expect(cleanupClaim.data).toMatchObject({ cleanupClaimedAt: now, uploadStatus: 'CLEANING' });
+    expect(typeof cleanupClaim.data.cleanupToken).toBe('string');
+    expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+  });
+
+  test('times out a stuck CLEANING delete without losing evidence and deletes it on the next retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const storageKey = 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/stuck-cleanup.jpg';
+      const remove = vi.fn()
+        .mockImplementationOnce(() => new Promise<'removed'>(() => undefined))
+        .mockResolvedValueOnce('removed');
+      const storage: DriverProofMediaStorageBackend = { remove, write: vi.fn(() => Promise.resolve()) };
+      const { prisma } = createPrismaHarness({
+        expiredProofMedia: [{ id: 'stuck-cleanup', storageKey, uploadedAt: now, uploadStatus: 'CLEANING' }]
+      });
+      const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+        now: () => now,
+        storage,
+        storageRemoveTimeoutMs: 1_000
+      });
+      const first = repository.deleteStalePendingProofMedia({
+        createdBefore: new Date('2026-05-13T10:00:00.000Z')
+      });
+      const rejected = expect(first).rejects.toThrow('Proof media storage delete timed out');
+      await vi.advanceTimersByTimeAsync(1_001);
+      await rejected;
+      expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
+
+      await expect(repository.deleteStalePendingProofMedia({
+        createdBefore: new Date('2026-05-13T10:00:00.000Z'),
+        now: new Date('2026-05-12T10:16:00.000Z')
+      })).resolves.toMatchObject({ deletedReservations: 1 });
+      expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('records clean scanner outcomes without proof bytes before writing accepted media', async () => {
@@ -274,7 +735,8 @@ describe('PrismaDriverProofMediaRepository', () => {
         driverId: 'driver-id',
         id: 'proof-media-id',
         routePlanId: 'route-plan-id',
-        shopId: 'shop-id'
+        shopId: 'shop-id',
+        uploadStatus: 'READY'
       }
     });
     expect(readAccessRequests).toEqual([
@@ -402,6 +864,7 @@ describe('PrismaDriverProofMediaRepository', () => {
         sizeBytes: fileBytes.byteLength,
         source: 'CAMERA',
         storageKey,
+        uploadStatus: 'PENDING_UPLOAD',
         uploadedAt: now
       }
     });
@@ -465,7 +928,8 @@ describe('PrismaDriverProofMediaRepository', () => {
       take: 100,
       where: {
         deletedAt: null,
-        uploadedAt: { lt: uploadedBefore }
+        uploadedAt: { lt: uploadedBefore },
+        uploadStatus: 'READY'
       }
     });
     expect(prisma.driverProofMedia.update).toHaveBeenCalledWith({
@@ -570,7 +1034,14 @@ describe('PrismaDriverProofMediaRepository', () => {
 });
 
 function createPrismaHarness(input: {
-  expiredProofMedia?: { id: string; storageKey: string; uploadedAt: Date }[];
+  createProofMediaError?: Error;
+  expiredProofMedia?: {
+    cleanupToken?: string | null;
+    id: string;
+    storageKey: string;
+    uploadedAt: Date;
+    uploadStatus?: 'CLEANING' | 'PENDING_UPLOAD' | 'READY';
+  }[];
   proofMedia?: {
     contentType: string;
     id: string;
@@ -587,9 +1058,16 @@ function createPrismaHarness(input: {
         findUnique: vi.fn(() => Promise.resolve({ id: 'driver-id', shopId: 'shop-id' }))
       },
       driverProofMedia: {
-        create: vi.fn(({ data }: { data: Record<string, unknown> }) => Promise.resolve({ ...data })),
+        create: vi.fn(({ data }: { data: Record<string, unknown> }) => input.createProofMediaError === undefined
+          ? Promise.resolve({ ...data })
+          : Promise.reject(input.createProofMediaError)),
         findFirst: vi.fn(() => Promise.resolve(input.proofMedia === undefined ? null : input.proofMedia)),
         findMany: vi.fn(() => Promise.resolve(input.expiredProofMedia ?? [])),
+        deleteMany: vi.fn(() => Promise.resolve({ count: 1 })),
+        updateMany: vi.fn((updateInput: unknown) => {
+          void updateInput;
+          return Promise.resolve({ count: 1 });
+        }),
         update: vi.fn(({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) =>
           Promise.resolve({ ...where, ...data })
         )
@@ -606,6 +1084,20 @@ function createPrismaHarness(input: {
         findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' }))
       }
     }
+  };
+}
+
+function proofMediaInput() {
+  return {
+    contentType: 'image/jpeg',
+    deliveryStopId: 'stop-id',
+    driverId: 'driver-id',
+    fileBytes: uploadBytes,
+    filename: 'proof.jpg',
+    routePlanId: 'route-plan-id',
+    shopDomain: 'tomatono.myshopify.com',
+    shopId: 'shop-id',
+    source: 'camera' as const
   };
 }
 

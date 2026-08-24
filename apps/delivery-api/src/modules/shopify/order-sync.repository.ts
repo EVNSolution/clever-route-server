@@ -27,6 +27,11 @@ import { requireOrdersPlanningReferenceDate } from "./order-pagination.js";
 import { parseOrderDisplaySequence } from "./order-display-sequence.js";
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
+import {
+  assertShopifyShopPrivacyWriteAllowed,
+  lockShopifyOrderPrivacyIdentity,
+  ORDER_PRIVACY_REDACTED
+} from "./order-privacy-redaction.js";
 
 const SHOPIFY_UNFULFILLED_STATUSES = ["UNFULFILLED", "OPEN", "RESTOCKED"];
 
@@ -47,10 +52,12 @@ export type UpsertOrderWithDeliveryStopInput = {
   shopId?: string | undefined;
   syncReason?: OrderSyncReason | undefined;
   synced: SyncedOrderWithDeliveryStopInput;
+  webhookClaim?: { eventId: string; leaseToken: string } | undefined;
 };
 
 export type UpsertOrderWithDeliveryStopResult = {
   orderId: string;
+  reason?: typeof ORDER_PRIVACY_REDACTED | "ORDER_WEBHOOK_CLAIM_LOST";
   status: "created" | "updated" | "unchanged" | "skipped";
   stopId: string | null;
 };
@@ -210,6 +217,7 @@ export type BulkPatchCanonicalOrderStatusInput = {
 type OrderSyncPrismaClient = Pick<
   PrismaClient,
   | "$transaction"
+  | "$queryRaw"
   | "adminNotification"
   | "commerceConnectionOrderMapping"
   | "deliveryStop"
@@ -219,12 +227,14 @@ type OrderSyncPrismaClient = Pick<
   | "order"
   | "orderItem"
   | "orderDeliveryFact"
+  | "shopifyOrderRedactionTombstone"
+  | "shopifyWebhookEvent"
   | "shop"
 >;
 
 type OrderSyncWriteClient = Pick<
   PrismaClient,
-  "deliveryStop" | "inventory" | "inventoryEvent" | "inventoryOrder" | "order" | "orderItem" | "orderDeliveryFact"
+  "$queryRaw" | "deliveryStop" | "inventory" | "inventoryEvent" | "inventoryOrder" | "order" | "orderItem" | "orderDeliveryFact" | "shopifyOrderRedactionTombstone" | "shopifyWebhookEvent"
 >;
 
 export type OrderSyncNotificationLogger = {
@@ -419,7 +429,57 @@ export class PrismaOrderSyncRepository {
     }
 
     const write = await this.runSerializableWrite(async (tx) => {
+      if (input.webhookClaim !== undefined) {
+        const claims = await tx.$queryRaw<Array<{ leaseToken: string | null; status: string }>>(Prisma.sql`
+          SELECT "leaseToken", "status"::text AS "status"
+          FROM "shopify_webhook_events"
+          WHERE "id" = ${input.webhookClaim.eventId}::uuid
+          FOR UPDATE
+        `);
+        const claim = claims[0];
+        if (claim?.status !== "PROCESSING" || claim.leaseToken !== input.webhookClaim.leaseToken) {
+          return {
+            notificationEvents: [],
+            result: {
+              orderId: input.synced.order.shopifyOrderGid,
+              reason: "ORDER_WEBHOOK_CLAIM_LOST",
+              status: "skipped",
+              stopId: null,
+            },
+          } satisfies OrderWriteWithNotificationIntents;
+        }
+      }
       const sourceIdentity = readSourceIdentity(input.synced.order);
+      const legacyId = input.synced.order.shopifyOrderLegacyId;
+      if (sourceIdentity.sourcePlatform === "SHOPIFY" && legacyId !== null) {
+        const appId = normalizeShopifyAppId(input.appId);
+        await lockShopifyOrderPrivacyIdentity(tx, {
+          appId,
+          orderLegacyId: legacyId,
+          shopId: shop.id,
+        });
+        const tombstone = await tx.shopifyOrderRedactionTombstone.findUnique({
+          select: { id: true },
+          where: {
+            appId_shopId_shopifyOrderLegacyId: {
+              appId,
+              shopId: shop.id,
+              shopifyOrderLegacyId: legacyId,
+            },
+          },
+        });
+        if (tombstone !== null) {
+          return {
+            notificationEvents: [],
+            result: {
+              orderId: input.synced.order.shopifyOrderGid,
+              reason: ORDER_PRIVACY_REDACTED,
+              status: "skipped",
+              stopId: null,
+            },
+          } satisfies OrderWriteWithNotificationIntents;
+        }
+      }
       const existing = await findExistingOrderForSync(tx, {
         shopId: shop.id,
         sourceIdentity,
@@ -433,13 +493,44 @@ export class PrismaOrderSyncRepository {
         } satisfies OrderWriteWithNotificationIntents;
       }
 
-      return this.writeOrderWithDeliveryStop({
+      const written = await this.writeOrderWithDeliveryStop({
         existing,
         shopId: shop.id,
         syncReason: input.syncReason,
         synced: input.synced,
         tx,
       });
+      if (input.webhookClaim !== undefined) {
+        const processedAt = new Date();
+        const finalized = await tx.shopifyWebhookEvent.updateMany({
+          data: {
+            deadLetteredAt: null,
+            lastError: null,
+            lastErrorCode: null,
+            lastErrorMessageRedacted: null,
+            leaseExpiresAt: null,
+            leaseToken: null,
+            payload: {
+              redacted: true,
+              schema: 'shopify_webhook_tombstone_v1',
+              terminalStatus: 'PROCESSED'
+            },
+            payloadRedactedAt: processedAt,
+            processedAt,
+            status: 'PROCESSED',
+            workerId: null
+          },
+          where: {
+            id: input.webhookClaim.eventId,
+            leaseToken: input.webhookClaim.leaseToken,
+            status: 'PROCESSING'
+          }
+        });
+        if (finalized.count !== 1) {
+          throw new Error('Order webhook claim was lost before atomic finalization');
+        }
+      }
+      return written;
     });
     if (this.notificationService !== undefined) {
       await createAdminNotificationsBestEffort({
@@ -1185,9 +1276,12 @@ export class PrismaOrderSyncRepository {
       return shop;
     }
 
-    return this.prisma.shop.create({
-      data: { appId, shopDomain: normalized },
-      select: { id: true },
+    return this.prisma.$transaction(async (tx) => {
+      await assertShopifyShopPrivacyWriteAllowed(tx, { appId, shopDomain: normalized });
+      return tx.shop.create({
+        data: { appId, shopDomain: normalized },
+        select: { id: true },
+      });
     });
   }
 

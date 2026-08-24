@@ -86,6 +86,8 @@ describe('driver phone PIN authentication contract', () => {
     const app = await buildApp({
       driverApi: {
         driverEventService: {
+          admitDriverEventAttempt: vi.fn(() => Promise.resolve({ attemptId: 'attempt-id', attemptNumber: 1 })),
+          finalizeDriverEventAttempt: vi.fn(() => Promise.resolve()),
           recordDriverEvent: vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'unused' }))
         },
         jwtSecret: 'driver-secret',

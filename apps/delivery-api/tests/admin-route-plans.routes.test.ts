@@ -587,6 +587,67 @@ describe('Admin route plan routes', () => {
     }
   });
 
+  test('adds operational state to the list through one batched service call', async () => {
+    const { dependencies } = createDependencyHarness();
+    const operationalState = {
+      activeAlerts: [],
+      deviceProgress: { completedStopCount: 10, currentStopSequence: 11, locallyFinished: false, totalStopCount: 20 },
+      observedAt: '2026-08-24T08:00:00.000Z',
+      physicalPosition: null,
+      routePlanId: routePlanSummary.id,
+      routeStatus: routePlanSummary.status,
+      serverProgress: { deliveredStopCount: 1, failedStopCount: 0, lastConfirmedAt: null, resolvedStopCount: 1, totalStopCount: 20 },
+      syncHealth: null
+    };
+    const getMany = vi.fn(() => Promise.resolve(new Map([[routePlanSummary.id, operationalState]])));
+    dependencies.operationalStateService = { get: vi.fn(), getMany };
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/route-plans'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: { routePlans: [{ ...routePlanSummary, operationalState }] },
+        error: null
+      });
+      expect(getMany).toHaveBeenCalledOnce();
+      expect(getMany).toHaveBeenCalledWith([routePlanSummary.id]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not query operational state before confirming the route belongs to the token shop', async () => {
+    const { dependencies, getRoutePlanDetail } = createDependencyHarness();
+    getRoutePlanDetail.mockResolvedValueOnce(null);
+    const get = vi.fn(() => Promise.resolve(null));
+    dependencies.operationalStateService = { get, getMany: vi.fn() };
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/route-plans/cross-shop-route/operational-state'
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(get).not.toHaveBeenCalled();
+      expect(getRoutePlanDetail).toHaveBeenCalledWith({
+        appId: 'clever',
+        routePlanId: 'cross-shop-route',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('returns route plan detail stops in sequence order', async () => {
     const { dependencies, getRoutePlanDetail } = createDependencyHarness();
     const app = await buildApp({ adminRoutePlans: dependencies });

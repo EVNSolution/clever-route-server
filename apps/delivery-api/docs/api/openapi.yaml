@@ -3613,6 +3613,27 @@ paths:
           $ref: '#/components/responses/NotFound'
         '501':
           description: Route tracking stream is unavailable in this runtime.
+  /admin/route-plans/{routePlanId}/operational-state:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read the server-derived operational state for a route
+      operationId: getAdminRoutePlanOperationalState
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read-and-observe-alerts
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route operational state envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteOperationalStateEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { description: Operational state is unavailable in this runtime. }
   /admin/route-plans/{routePlanId}/driver:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -4778,6 +4799,111 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Route version or assignment changed after session issue.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: Durable driver-event admission is temporarily unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /driver/sync-health:
+    put:
+      tags: [Driver Mobile]
+      summary: Record a monotonic driver sync heartbeat and renew its device lease
+      operationId: recordDriverSyncHealth
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriverSyncHeartbeatRequest' }
+      responses:
+        '200':
+          description: Latest accepted server sync state; stale sequences return accepted false without overwriting state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverSyncHeartbeatEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /driver/sync-health/takeover:
+    post:
+      tags: [Driver Mobile]
+      summary: Explicitly take over a route lease from another authenticated device session
+      operationId: takeoverDriverSyncSession
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccountAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriverSyncTakeoverRequest' }
+      responses:
+        '200': { description: The requested device session now holds the route lease. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /driver/event-receipts/{routePlanId}/{clientEventId}:
+    get:
+      tags: [Driver Mobile]
+      summary: Recover an ordered driver-event receipt after a lost response
+      operationId: getDriverEventReceipt
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccountAccessToken: []
+      parameters:
+        - { in: path, name: routePlanId, required: true, schema: { type: string } }
+        - { in: path, name: clientEventId, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: APPLIED, REJECTED, or UNKNOWN receipt without customer data.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverEventReceiptEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/ui/app/api/runtime-health:
+    get:
+      tags: [Route Operations Admin]
+      summary: Read redacted customer-email runtime and outbox health
+      operationId: getRouteOperationsRuntimeHealth
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      responses:
+        '200':
+          description: Runtime health envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailRuntimeHealthEnvelope' }
+  /admin/ui/app/api/routes/{routePlanId}/operational-state:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Route Operations Admin]
+      summary: Read the route operational state for the authenticated shop
+      operationId: getRouteOperationsOperationalState
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      responses:
+        '200':
+          description: Route operational state envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteOperationalStateEnvelope' }
+  /admin/ui/app/api/notifications/{notificationId}/acknowledge:
+    parameters:
+      - { in: path, name: notificationId, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Route Operations Admin]
+      summary: Acknowledge the active alert cycle projected by a legacy notification
+      operationId: acknowledgeRouteOperationsAlert
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      responses:
+        '200': { description: Updated legacy-compatible notification projection. }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     DsvSessionCookie:
@@ -7437,6 +7563,11 @@ components:
         updatedAt:
           format: date-time
           type: string
+        operationalState:
+          oneOf:
+            - $ref: '#/components/schemas/RouteOperationalState'
+            - type: 'null'
+          description: Batched server-authoritative operational evidence for route-list rendering. Optional for legacy deployments.
       additionalProperties: true
     RoutePlanEnvelope:
       type: object
@@ -7740,6 +7871,16 @@ components:
       type: object
       required: [nextState, routeContext, routePlanId]
       properties:
+        assignmentGeneration:
+          type: string
+          pattern: '^[1-9][0-9]*$'
+          description: Signed 64-bit assignment lineage projected as a decimal string for contract v2 clients.
+        driverContractVersion:
+          type: integer
+          const: 2
+        expectedRouteVersionId:
+          type: string
+          format: uuid
         nextState:
           const: consent_required
         routeContext:
@@ -8444,6 +8585,14 @@ components:
       required: [eventType, occurredAt]
       description: PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null. TIME_CONSTRAINT_ACKNOWLEDGED requires nonblank clientEventId, deliveryStopId, and routePlanId for the authenticated route.
       properties:
+        accuracyMeters:
+          description: Measured horizontal GPS accuracy for LOCATION_UPDATED; persisted as operational evidence and used to gate proximity conclusions.
+          type: [number, 'null']
+          minimum: 0
+        appVersion: { type: [string, 'null'], maxLength: 64 }
+        assignmentGeneration:
+          description: Canonical decimal string in 1..9223372036854775807. Required for v2 ordered events.
+          type: [string, 'null']
         clientEventId:
           description: Client-side idempotency key. Required and nonblank when eventType is PICKUP_COMPLETED or TIME_CONSTRAINT_ACKNOWLEDGED.
           type:
@@ -8454,9 +8603,14 @@ components:
           type:
             - string
             - 'null'
+        driverContractVersion: { type: [integer, 'null'], minimum: 1 }
         eventType:
           enum: [ROUTE_STARTED, ROUTE_PAUSED, ROUTE_COMPLETED, PICKUP_COMPLETED, TIME_CONSTRAINT_ACKNOWLEDGED, STOP_ARRIVED, STOP_DELIVERED, STOP_FAILED, LOCATION_UPDATED, NOTE_ADDED]
           type: string
+        expectedRouteVersionId:
+          description: Current route version UUID issued by route-access lookup. Required for v2 ordered events.
+          type: [string, 'null']
+          format: uuid
         latitude:
           type:
             - number
@@ -8472,6 +8626,7 @@ components:
           type:
             - string
             - 'null'
+        versionCode: { type: [integer, 'null'], minimum: 1 }
       additionalProperties: true
       examples:
         pickupCompleted:
@@ -8481,6 +8636,199 @@ components:
             eventType: PICKUP_COMPLETED
             occurredAt: '2026-05-07T06:09:30.000Z'
             routePlanId: route-plan-id
+    DriverSyncHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [appVersion, clientOccurredAt, deviceInstanceHash, driverContractVersion, finishPending, heartbeatSequence, retryCount, sessionGeneration, versionCode]
+      properties:
+        appVersion: { type: string, maxLength: 64 }
+        clientOccurredAt: { type: string, format: date-time }
+        completedStopCount: { type: [integer, 'null'], minimum: 0 }
+        currentStopSequence: { type: [integer, 'null'], minimum: 1 }
+        deviceInstanceHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        driverContractVersion: { type: integer, minimum: 1 }
+        finishPending: { type: boolean }
+        firstErrorCode: { type: [string, 'null'], pattern: '^[A-Z][A-Z0-9_]{0,63}$' }
+        firstFailedAt: { type: [string, 'null'], format: date-time }
+        heartbeatSequence: { type: integer, minimum: 1 }
+        lastAcknowledgedAt: { type: [string, 'null'], format: date-time }
+        lastErrorCode: { type: [string, 'null'], pattern: '^[A-Z][A-Z0-9_]{0,63}$' }
+        lastRetryAt: { type: [string, 'null'], format: date-time }
+        locallyFinished: { type: [boolean, 'null'] }
+        nextRetryAt: { type: [string, 'null'], format: date-time }
+        oldestQueuedAt: { type: [string, 'null'], format: date-time }
+        queueDepth: { type: [integer, 'null'], minimum: 0 }
+        retryCount: { type: integer, minimum: 0 }
+        retryJournal:
+          type: [array, 'null']
+          maxItems: 8
+          items:
+            type: object
+            additionalProperties: false
+            required: [errorCode, observedAt]
+            properties:
+              errorCode: { type: string, pattern: '^[A-Z][A-Z0-9_]{0,63}$' }
+              observedAt: { type: string, format: date-time }
+        sessionGeneration: { type: string, format: date-time, description: Canonical JavaScript ISO timestamp including milliseconds. }
+        totalStopCount: { type: [integer, 'null'], minimum: 0 }
+        versionCode: { type: integer, minimum: 1 }
+    DriverSyncHealth:
+      type: object
+      additionalProperties: false
+      required: [appVersion, clientOccurredAt, deviceInstanceHash, driverContractVersion, finishPending, firstErrorCode, firstFailedAt, heartbeatSequence, lastAcknowledgedAt, lastErrorCode, lastObservedAt, lastRetryAt, nextRetryAt, oldestQueuedAt, queueDepth, retryCount, serverReceivedAt, sessionGeneration, state, versionCode]
+      properties:
+        appVersion: { type: string }
+        clientOccurredAt: { type: string, format: date-time }
+        deviceInstanceHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        driverContractVersion: { type: integer }
+        finishPending: { type: boolean }
+        firstErrorCode: { type: [string, 'null'] }
+        firstFailedAt: { type: [string, 'null'], format: date-time }
+        heartbeatSequence: { type: integer }
+        lastAcknowledgedAt: { type: [string, 'null'], format: date-time }
+        lastErrorCode: { type: [string, 'null'] }
+        lastObservedAt: { type: string, format: date-time }
+        lastRetryAt: { type: [string, 'null'], format: date-time }
+        nextRetryAt: { type: [string, 'null'], format: date-time }
+        oldestQueuedAt: { type: [string, 'null'], format: date-time }
+        queueDepth: { type: [integer, 'null'] }
+        retryCount: { type: integer }
+        serverReceivedAt: { type: string, format: date-time }
+        sessionGeneration: { type: string, format: date-time }
+        state: { type: string, enum: [HEALTHY, DELAYED, BLOCKED, UNKNOWN] }
+        versionCode: { type: integer }
+    DriverSyncHeartbeatEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [accepted, conflict, syncHealth]
+          properties:
+            accepted: { type: boolean }
+            conflict: { type: boolean }
+            syncHealth: { $ref: '#/components/schemas/DriverSyncHealth' }
+        error: { type: 'null' }
+    DriverSyncTakeoverRequest:
+      type: object
+      additionalProperties: false
+      required: [deviceInstanceHash, routePlanId, sessionGeneration]
+      properties:
+        deviceInstanceHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        routePlanId: { type: string, format: uuid }
+        sessionGeneration: { type: string, format: date-time }
+    OperationalAlert:
+      type: object
+      additionalProperties: false
+      required: [acknowledgedAt, id, lastObservedAt, openedAt, resolvedAt, routePlanId, severity, type]
+      properties:
+        acknowledgedAt: { type: [string, 'null'], format: date-time }
+        id: { type: string, format: uuid }
+        lastObservedAt: { type: string, format: date-time }
+        openedAt: { type: string, format: date-time }
+        resolvedAt: { type: [string, 'null'], format: date-time }
+        routePlanId: { type: [string, 'null'], format: uuid }
+        severity: { type: string, enum: [WARNING, CRITICAL] }
+        type: { type: string }
+    RouteOperationalState:
+      type: object
+      additionalProperties: false
+      required: [activeAlerts, deviceProgress, observedAt, physicalPosition, routePlanId, routeStatus, serverProgress, syncHealth]
+      properties:
+        activeAlerts: { type: array, items: { $ref: '#/components/schemas/OperationalAlert' } }
+        deviceProgress: { type: [object, 'null'], additionalProperties: true }
+        observedAt: { type: string, format: date-time }
+        physicalPosition:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [accuracyMeters, distanceMeters, freshness, nearestStopSequence, occurredAt, proximityPolicyVersion, proximityThresholdMeters, reliableForProximity, receivedAt, withinProximityThreshold]
+          properties:
+            accuracyMeters: { type: [number, 'null'], minimum: 0 }
+            distanceMeters: { type: [number, 'null'], minimum: 0 }
+            freshness: { type: string, enum: [FRESH, AGING, STALE, UNKNOWN] }
+            nearestStopSequence: { type: [integer, 'null'], minimum: 1 }
+            occurredAt: { type: string, format: date-time }
+            proximityPolicyVersion: { type: integer, enum: [1] }
+            proximityThresholdMeters: { type: number, exclusiveMinimum: 0 }
+            reliableForProximity: { type: boolean }
+            receivedAt: { type: string, format: date-time }
+            withinProximityThreshold: { type: [boolean, 'null'] }
+        routePlanId: { type: string, format: uuid }
+        routeStatus: { type: string }
+        serverProgress:
+          type: object
+          additionalProperties: false
+          required: [deliveredStopCount, failedStopCount, lastConfirmedAt, resolvedStopCount, totalStopCount]
+          properties:
+            deliveredStopCount: { type: integer, minimum: 0 }
+            failedStopCount: { type: integer, minimum: 0 }
+            lastConfirmedAt: { type: [string, 'null'], format: date-time }
+            resolvedStopCount: { type: integer, minimum: 0 }
+            totalStopCount: { type: integer, minimum: 0 }
+        syncHealth: { oneOf: [{ $ref: '#/components/schemas/DriverSyncHealth' }, { type: 'null' }] }
+    RouteOperationalStateEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [operationalState]
+          properties:
+            operationalState: { $ref: '#/components/schemas/RouteOperationalState' }
+        error: { type: 'null' }
+    EmailRuntimeHealthEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [runtimeHealth]
+          properties:
+            runtimeHealth:
+              type: object
+              additionalProperties: false
+              required: [email, observedAt]
+              properties:
+                observedAt: { type: string, format: date-time }
+                email:
+                  type: object
+                  additionalProperties: false
+                  required: [automatic, configured, manual, outbox, state]
+                  properties:
+                    automatic:
+                      type: object
+                      additionalProperties: false
+                      required: [senderConfigured, workerEnabled]
+                      properties:
+                        senderConfigured: { type: boolean }
+                        workerEnabled: { type: boolean }
+                    configured: { type: boolean }
+                    manual:
+                      type: object
+                      additionalProperties: false
+                      required: [brevoConfigured]
+                      properties:
+                        brevoConfigured: { type: boolean }
+                    state: { type: string, enum: [HEALTHY, DEGRADED, DISABLED] }
+                    outbox:
+                      type: object
+                      additionalProperties: false
+                      required: [deadLetter, lastErrorCode, lastSuccessAt, oldestPendingAt, pending, processing, retryWait]
+                      properties:
+                        deadLetter: { type: integer, minimum: 0 }
+                        lastErrorCode: { type: [string, 'null'] }
+                        lastSuccessAt: { type: [string, 'null'], format: date-time }
+                        oldestPendingAt: { type: [string, 'null'], format: date-time }
+                        pending: { type: integer, minimum: 0 }
+                        processing: { type: integer, minimum: 0 }
+                        retryWait: { type: integer, minimum: 0 }
+        error: { type: 'null' }
     DriverEventEnvelope:
       type: object
       required: [data, error]
@@ -8499,6 +8847,23 @@ components:
               type: string
         error:
           type: 'null'
+
+    DriverEventReceiptEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [assignmentGeneration, clientEventId, errorCode, expectedRouteVersionId, routePlanId, routeStatus, status]
+          properties:
+            assignmentGeneration: { type: [string, 'null'] }
+            clientEventId: { type: string }
+            errorCode: { type: [string, 'null'] }
+            expectedRouteVersionId: { type: [string, 'null'], format: uuid }
+            routePlanId: { type: string }
+            routeStatus: { type: string }
+            status: { type: string, enum: [APPLIED, REJECTED, UNKNOWN] }
+        error: { type: 'null' }
     DriverRouteEtaSnapshot:
       type: object
       required: [status, pickupCompletedAt, nextStopEta, remainingRouteEta, failureCode, failureMessage, calculatedAt]

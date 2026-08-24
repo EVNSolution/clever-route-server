@@ -10,6 +10,7 @@ import { loadAdminDriverDependencies } from './modules/driver/admin-driver.depen
 import { loadAdminInventoryDependencies } from './modules/inventory/inventory.dependencies.js';
 import { loadAdminCustomerEmailDependencies } from './modules/customer-email/customer-email.dependencies.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
+import { DriverOperationalHealthRuntime } from './modules/driver/driver-operational-health.runtime.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
 import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
@@ -19,6 +20,7 @@ import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies
 import { loadShopifyWebhookRuntime } from './modules/shopify/webhook.dependencies.js';
 import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocommerce.dependencies.js';
 import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
+import { PrismaOperationalAlertRepository } from './modules/notifications/operational-alert.repository.js';
 import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.stream.js';
 import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
 import { loadDsvV1ReadDependencies } from './modules/dsv/dsv-v1-read.dependencies.js';
@@ -47,6 +49,7 @@ import type { DsvDriverAppReleaseDependencies } from './routes/dsv-driver-app-re
 
 const env = loadEnv();
 const prisma = new PrismaClient();
+const operationalAlertRepository = new PrismaOperationalAlertRepository(prisma);
 const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env: process.env, prisma });
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
 const adminInventories = loadAdminInventoryDependencies({ env: process.env, prisma });
@@ -54,11 +57,12 @@ const adminCustomerEmail = loadAdminCustomerEmailDependencies({ env: process.env
 const routeGroupingService = createRouteGroupingService({ env: process.env, prisma });
 const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma, routeGroupingService });
 const routeTrackingStreamHub = new RouteTrackingStreamHub();
-const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma, routeTrackingStreamHub });
+const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, operationalAlertRepository, prisma, routeTrackingStreamHub });
 const adminNotificationRuntime = createAdminNotificationRuntime({
   ...(process.env.DATABASE_URL === undefined
     ? {}
     : { databaseUrl: process.env.DATABASE_URL }),
+  operationalAlertRepository,
   prisma
 });
 const adminNotificationService = adminNotificationRuntime.service;
@@ -79,6 +83,7 @@ const adminCommerceConnectionsUi = loadAdminCommerceConnectionsUiDependencies({
   adminRoutePlans,
   adminNotificationService,
   env: process.env,
+  operationalAlertRepository,
   nodeEnv: env.nodeEnv,
   prisma
 });
@@ -88,6 +93,7 @@ const driverApi = loadDriverApiDependencies({
     ? {}
     : { driverNotificationDispatcher: dsvV1Read.driverNotificationRuntime.dispatcher }),
   env: process.env,
+  operationalAlertRepository,
   ...(dsvV1Read?.orderMessageService === undefined ? {} : { orderMessageService: dsvV1Read.orderMessageService }),
   prisma,
   ...(dsvV1Read?.routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler: dsvV1Read.routeOptimizationScheduler }),
@@ -139,11 +145,15 @@ const app = await buildApp(
     wordPressPlugin
   })
 );
+shopifyWebhookRuntime?.worker?.attachLogger(app.log);
 const customerDeliveryNotificationRuntime = createCustomerDeliveryNotificationRuntime({
   env: process.env,
   logger: app.log,
   prisma
 });
+const driverOperationalHealthRuntime = driverApi?.driverOperationalHealthService === undefined
+  ? null
+  : new DriverOperationalHealthRuntime(driverApi.driverOperationalHealthService, app.log);
 const uvisTelemetryRuntime = createUvisTelemetryRuntime({
   env: process.env,
   logger: app.log,
@@ -154,6 +164,7 @@ try {
   await app.listen({ host: '0.0.0.0', port: env.port });
   await adminNotificationRuntime.start();
   await customerDeliveryNotificationRuntime.start();
+  driverOperationalHealthRuntime?.start();
   await dsvV1Read?.driverNotificationRuntime?.start();
   uvisTelemetryRuntime.start();
   shopifyWebhookRuntime?.worker?.start();
@@ -165,6 +176,7 @@ try {
     app.close(),
     adminNotificationRuntime.close(),
     customerDeliveryNotificationRuntime.close(),
+    driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
     dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
     uvisTelemetryRuntime.close(),
     shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
@@ -180,6 +192,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       void Promise.all([
         adminNotificationRuntime.close(),
         customerDeliveryNotificationRuntime.close(),
+        driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
         dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
         uvisTelemetryRuntime.close(),
         shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),

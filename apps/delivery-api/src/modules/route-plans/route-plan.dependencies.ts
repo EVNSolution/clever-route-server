@@ -15,12 +15,16 @@ import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.
 import { PrismaRouteTrackingService } from '../route-tracking/route-tracking.service.js';
 import { OsrmRouteTrackingRoadMatchProvider } from '../route-tracking/route-tracking.road-match.js';
 import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
+import { PrismaDriverSyncHealthService } from '../driver/driver-sync-health.service.js';
+import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
+import { PrismaRouteOperationalStateService } from '../route-tracking/route-operational-state.service.js';
 
 export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>;
 
 export function loadAdminRoutePlanDependencies(input: {
   env: AdminRoutePlanRuntimeEnv;
   prisma: PrismaClient;
+  operationalAlertRepository: PrismaOperationalAlertRepository;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
 }): AdminRoutePlanDependencies | undefined {
   const appCredentials = loadShopifyAppCredentials(input.env);
@@ -36,6 +40,7 @@ export function loadAdminRoutePlanDependencies(input: {
   const routeOptimizationJobService = new RouteOptimizationJobService(
     new PrismaRouteOptimizationJobRepository(input.prisma)
   );
+  const syncHealthService = new PrismaDriverSyncHealthService(input.prisma, input.operationalAlertRepository);
   return {
     routePlanService: new RoutePlanAdminService(
       repository,
@@ -46,6 +51,7 @@ export function loadAdminRoutePlanDependencies(input: {
     routeTrackingService: new PrismaRouteTrackingService(input.prisma, {
       roadMatchProvider: createRouteTrackingRoadMatchProvider(input.env)
     }),
+    operationalStateService: new PrismaRouteOperationalStateService(input.prisma, syncHealthService, input.operationalAlertRepository),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };

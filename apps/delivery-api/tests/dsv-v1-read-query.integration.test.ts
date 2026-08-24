@@ -473,30 +473,30 @@ async function createFixture(
     createAppliedDispatchImportRow(prisma, importRecord.id, shop.id, stopANone.id, orderANone.id, customerA.id, sharedDestination.id, `SO-A-NONE-${unique}`, 3, 1),
     createAppliedDispatchImportRow(prisma, importRecord.id, shop.id, stopAExpired.id, orderAExpired.id, customerA.id, sharedDestination.id, `SO-A-EXPIRED-${unique}`, 4, 8),
   ]);
-  await Promise.all([
-    prisma.routePlanStop.create({
-      data: {
-        deliveryStopId: stopA.id,
-        estimatedArrivalAt: new Date('2026-07-23T02:00:00.000Z'),
-        etaInputRouteVersionId: routeVersionA.id,
-        etaSource: 'ROUTE_CALCULATION',
-        etaStatus: 'READY',
-        routePlanId: routePlan.id,
-        shopId: shop.id,
-        sequence: 1,
-      },
-    }),
-    prisma.routePlanStop.create({
-      data: {
-        deliveryStopId: stopB.id,
-        etaInputRouteVersionId: routeVersionA.id,
-        etaStatus: 'READY',
-        routePlanId: routePlan.id,
-        shopId: shop.id,
-        sequence: 2,
-      },
-    }),
-  ]);
+  // Both rows reference the same route plan through composite foreign keys.
+  // Insert in sequence so the fixture cannot deadlock on competing parent-row locks.
+  await prisma.routePlanStop.create({
+    data: {
+      deliveryStopId: stopA.id,
+      estimatedArrivalAt: new Date('2026-07-23T02:00:00.000Z'),
+      etaInputRouteVersionId: routeVersionA.id,
+      etaSource: 'ROUTE_CALCULATION',
+      etaStatus: 'READY',
+      routePlanId: routePlan.id,
+      shopId: shop.id,
+      sequence: 1,
+    },
+  });
+  await prisma.routePlanStop.create({
+    data: {
+      deliveryStopId: stopB.id,
+      etaInputRouteVersionId: routeVersionA.id,
+      etaStatus: 'READY',
+      routePlanId: routePlan.id,
+      shopId: shop.id,
+      sequence: 2,
+    },
+  });
   const allowedEvent = await prisma.driverEvent.create({
     data: {
       deliveryStopId: stopA.id,
@@ -625,32 +625,32 @@ async function createStaleEtaFixture(
   const groupingVersion = await prisma.routeGroupingVersion.create({
     data: { groupingId: grouping.id, shopId: shop.id, status: 'CURRENT', version: 1 },
   });
-  const [currentRouteVersion, staleRouteVersion] = await Promise.all([
-    prisma.routeGroupingChildVersion.create({
-      data: {
-        driverId: driver.id,
-        groupingId: grouping.id,
-        groupingVersionId: groupingVersion.id,
-        routePlanId: routePlan.id,
-        shopId: shop.id,
-        snapshot: {},
-        status: 'CURRENT',
-        version: 1,
-      },
-    }),
-    prisma.routeGroupingChildVersion.create({
-      data: {
-        driverId: driver.id,
-        groupingId: grouping.id,
-        groupingVersionId: groupingVersion.id,
-        routePlanId: routePlan.id,
-        shopId: shop.id,
-        snapshot: {},
-        status: 'ARCHIVED',
-        version: 2,
-      },
-    }),
-  ]);
+  // Both rows update FK-backed state under the same grouping/route parents.
+  // Serialize fixture setup so PostgreSQL lock ordering cannot obscure the read-query assertion.
+  const currentRouteVersion = await prisma.routeGroupingChildVersion.create({
+    data: {
+      driverId: driver.id,
+      groupingId: grouping.id,
+      groupingVersionId: groupingVersion.id,
+      routePlanId: routePlan.id,
+      shopId: shop.id,
+      snapshot: {},
+      status: 'CURRENT',
+      version: 1,
+    },
+  });
+  const staleRouteVersion = await prisma.routeGroupingChildVersion.create({
+    data: {
+      driverId: driver.id,
+      groupingId: grouping.id,
+      groupingVersionId: groupingVersion.id,
+      routePlanId: routePlan.id,
+      shopId: shop.id,
+      snapshot: {},
+      status: 'ARCHIVED',
+      version: 2,
+    },
+  });
   const orderKey = `SO-STALE-${unique}`;
   const order = await createOrder(prisma, shop.id, customer.id, destination.id, orderKey, currentRouteVersion.id);
   const stop = await createStop(prisma, shop.id, order.id, 'Stale ETA Recipient', '2026-07-23');

@@ -27,6 +27,8 @@ npm run driver:proof-media:cleanup
 
 The command does not start the HTTP server. It connects Prisma, applies `DRIVER_PROOF_MEDIA_RETENTION_DAYS`, runs the proof-media repository cleanup, records a sanitized `RetentionJobRun`, disconnects Prisma, and prints JSON with `scanned`, `deleted`, `missingFiles`, `uploadedBefore`, `deletedAt`, and `evidenceRecorded`.
 
+Uploads reserve a `PENDING_UPLOAD` database row before object storage is written and become readable only after a compare-and-set transition to `READY`. Hourly cleanup first claims a stale `PENDING_UPLOAD` row as `CLEANING`; it deliberately retains that fenced reservation for one cleanup lease so a delayed upload cannot create an untracked object. A later pass after lease expiry removes the object and deletes the same-token `CLEANING` reservation. Storage PUT and DELETE calls are bounded; a failed or timed-out DELETE retains the durable `CLEANING` row for retry. Normal retention and read APIs select only `READY`, so referenced proof is never treated as an orphan.
+
 `runDriverProofMediaRetentionCleanup()` accepts an optional `DriverProofMediaCleanupMonitor`. The monitor receives sanitized cleanup-run evidence: scanned count, deleted count, missing file count, `uploadedBefore`, `deletedAt`, retention days, and optional batch limit. The monitor payload intentionally excludes media ids, storage keys, file bytes, customer addresses, coordinates, phone numbers, and proof images. The default cleanup command wires `PrismaDriverProofMediaCleanupMonitor`, which creates a `RetentionJobRun` row with `jobName=driver-proof-media-retention-cleanup`, `status=SUCCEEDED`, sanitized counts, cutoff timestamps, and optional private `DRIVER_PROOF_MEDIA_CLEANUP_EVIDENCE_REF`. A production scheduler can run the command and reference private job/log evidence through that env value, but deployed scheduler evidence still remains a release blocker.
 
 Before filling production proof-media release evidence, generate a non-secret
@@ -172,6 +174,7 @@ Scanner-rejected proof media returns `422` without route/stop details, scanner i
 
 - shop, driver, route plan, and delivery stop references
 - `kind: PHOTO`
+- upload lifecycle (`PENDING_UPLOAD` reservation, cleanup-owned `CLEANING`, readable `READY`)
 - source (`CAMERA` or `LIBRARY`)
 - MIME type, original filename, storage key, sanitized byte size, sanitized SHA-256 hash
 - upload timestamp and optional future deletion timestamp
@@ -193,6 +196,7 @@ The repository checks all of the following before writing bytes or metadata:
 - The scan hook runs after EXIF stripping and before storage/metadata writes; scan rejection should not leak scanner rule names or signature details to the driver response.
 - The scan monitor hook records clean/rejected scanner outcome metadata without proof file bytes. Private monitoring backends may receive the scanner rejection reason, but public issue/PR/store evidence should use sanitized references only.
 - `PrismaDriverProofMediaRepository.deleteExpiredProofMedia()` selects undeleted metadata older than the configured cutoff, removes stored bytes through the configured storage backend, and marks rows with `deletedAt`.
+- Stale upload reconciliation atomically claims `PENDING_UPLOAD` as `CLEANING` with a cleanup token before removing bytes. Finalization can change only `PENDING_UPLOAD` to `READY`; if finalization wins, cleanup never removes the object, and if cleanup wins, finalization fails safely. A failed removal retains the fenced `CLEANING` row for lease-expiry retry.
 - Missing local files are treated idempotently and still result in `deletedAt` metadata so repeated cleanup can converge.
 - The cleanup monitor hook records cleanup run counts and cutoffs in `RetentionJobRun` without media ids, storage keys, coordinates, customer data, or proof bytes.
 - Storage keys are resolved under the configured storage root before deletion; keys that escape the root are rejected before metadata is updated.

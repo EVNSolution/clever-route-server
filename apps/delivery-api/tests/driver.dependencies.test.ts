@@ -4,12 +4,15 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { DsvAssignmentCommandService } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import {
   DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS,
+  DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS,
   DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS,
   DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND,
   DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND,
   DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND,
   loadDriverApiDependencies,
+  loadDriverEventAttemptRetentionPolicy,
   loadDriverProofMediaReadAccessPolicy,
+  loadDriverProofMediaRepositoryStorageOptions,
   loadDriverProofMediaRetentionPolicy
 } from '../src/modules/driver/driver.dependencies.js';
 import type { RouteGroupingService } from '../src/modules/route-grouping/route-grouping.types.js';
@@ -36,6 +39,19 @@ describe('loadDriverApiDependencies', () => {
 
     expect(dependencies?.proofMediaService).toBeDefined();
     expect(dependencies?.driverTokenAccessRepository).toBeDefined();
+    expect(dependencies?.proofMediaService).toMatchObject({ reservationWritesEnabled: false });
+  });
+
+  test('enables proof reservation writes only after an explicit rollout gate', () => {
+    const dependencies = loadDriverApiDependencies({
+      env: {
+        DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED: 'true',
+        JWT_SECRET: 'driver-secret'
+      },
+      prisma: {} as PrismaClient
+    });
+
+    expect(dependencies?.proofMediaService).toMatchObject({ reservationWritesEnabled: true });
   });
 
   test('keeps assigned route reads independent from driver OSRM runtime config', () => {
@@ -128,6 +144,27 @@ describe('loadDriverApiDependencies', () => {
     expect(dependencies?.proofMediaService).toBeDefined();
   });
 
+  test('exposes the same S3 DELETE backend to HTTP runtime and retention cleanup', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
+    vi.stubGlobal('fetch', fetchMock);
+    const options = loadDriverProofMediaRepositoryStorageOptions({
+      DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID: 'AKIA_TEST',
+      DRIVER_PROOF_MEDIA_S3_BUCKET: 'clever-proof-media',
+      DRIVER_PROOF_MEDIA_S3_ENDPOINT: 'https://objects.example.test',
+      DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE: 'true',
+      DRIVER_PROOF_MEDIA_S3_REGION: 'ap-northeast-2',
+      DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY: 'secret-test-key',
+      DRIVER_PROOF_MEDIA_STORAGE_BACKEND: 's3'
+    });
+    if (options.storage === undefined) throw new Error('expected S3 storage');
+    await expect(options.storage.remove('driver-proof/safe/proof.jpg', new AbortController().signal))
+      .resolves.toBe('removed');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://objects.example.test/clever-proof-media/driver-proof/safe/proof.jpg',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+  });
+
   test('rejects incomplete S3 proof media storage configuration', () => {
     expect(() => loadDriverApiDependencies({
       env: {
@@ -200,6 +237,15 @@ describe('loadDriverApiDependencies', () => {
     expect(loadDriverProofMediaRetentionPolicy({ DRIVER_PROOF_MEDIA_RETENTION_DAYS: '30' })).toEqual({
       retentionDays: 30
     });
+  });
+
+  test('keeps durable driver event attempt evidence for 90 days by default', () => {
+    expect(DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS).toBe(90);
+    expect(loadDriverEventAttemptRetentionPolicy({})).toEqual({ retentionDays: 90 });
+    expect(loadDriverEventAttemptRetentionPolicy({ DRIVER_EVENT_ATTEMPT_RETENTION_DAYS: '120' }))
+      .toEqual({ retentionDays: 120 });
+    expect(() => loadDriverEventAttemptRetentionPolicy({ DRIVER_EVENT_ATTEMPT_RETENTION_DAYS: '89' }))
+      .toThrow('DRIVER_EVENT_ATTEMPT_RETENTION_DAYS must be at least 90');
   });
 
   test('rejects invalid proof media retention days', () => {

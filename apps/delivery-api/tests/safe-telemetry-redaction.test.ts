@@ -1,8 +1,21 @@
 import { describe, expect, test } from 'vitest';
 
-import { redactTelemetry, redactTelemetryMessage } from '../src/modules/security/safe-telemetry-redaction.js';
+import { redactTelemetry, redactTelemetryMessage, safeErrorTelemetry } from '../src/modules/security/safe-telemetry-redaction.js';
 
 describe('safe telemetry redaction', () => {
+  test('serializes errors without stack or private message fields', () => {
+    const serialized = JSON.stringify(safeErrorTelemetry(
+      new Error('token=secret customer@example.com +1 416 555 1212 19 Private Street')
+    ));
+
+    expect(serialized).toContain('ERROR');
+    expect(serialized).not.toContain('token=secret');
+    expect(serialized).not.toContain('customer@example.com');
+    expect(serialized).not.toContain('+1 416 555 1212');
+    expect(serialized).not.toContain('19 Private Street');
+    expect(serialized).not.toContain('stack');
+  });
+
   test('recursively strips tokens, PII, URLs, raw payloads, and GraphQL variables', () => {
     const redacted = redactTelemetry({
       authorization: 'Bearer shpat_secret',

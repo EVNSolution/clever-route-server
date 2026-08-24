@@ -1,0 +1,14 @@
+[Unit]
+Description=CLEVER driver event attempt retention cleanup
+After=docker.service
+Requires=docker.service
+ConditionPathExists=/srv/clever-route-server/.deploy/current-image.env
+
+[Service]
+Type=oneshot
+TimeoutStartSec=12min
+SuccessExitStatus=75
+WorkingDirectory=/srv/clever-route-server
+ExecStart=/srv/clever-route-server/scripts/run-driver-event-attempt-retention.sh
+StandardOutput=journal
+StandardError=journal

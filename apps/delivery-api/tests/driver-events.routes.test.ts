@@ -14,6 +14,44 @@ const secret = 'driver-secret';
 const now = new Date('2026-05-07T06:10:00Z');
 
 describe('Driver events route', () => {
+  test('accepts only the strict monotonic sync heartbeat wire contract', async () => {
+    const { dependencies } = createDependencyHarness();
+    const recordHeartbeat = vi.fn().mockResolvedValue({
+      accepted: true,
+      conflict: false,
+      syncHealth: { heartbeatSequence: 1, state: 'HEALTHY' }
+    });
+    dependencies.driverSyncHealthService = { recordHeartbeat, takeover: vi.fn() };
+    const app = await buildApp({ driverApi: dependencies });
+    const payload = syncHeartbeatPayload();
+    try {
+      const accepted = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'PUT',
+        payload,
+        url: '/driver/sync-health'
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(recordHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ routePlanId: 'route-plan-id' }), expect.objectContaining({
+        clientOccurredAt: new Date('2026-05-07T06:09:30.000Z'),
+        deviceInstanceHash: 'a'.repeat(64),
+        heartbeatSequence: 1,
+        sessionGeneration: '2026-05-07T06:00:00.000Z'
+      }));
+
+      const rejected = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'PUT',
+        payload: { ...payload, recipientEmail: 'must-not-be-accepted@invalid.test' },
+        url: '/driver/sync-health'
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(recordHeartbeat).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects event requests without a driver bearer token', async () => {
     const { dependencies, recordDriverEvent } = createDependencyHarness();
     const app = await buildApp({ driverApi: dependencies });
@@ -927,6 +965,8 @@ function createDependencyHarness(input: { accessTokenActive?: boolean } = {}): {
   return {
     dependencies: {
       driverEventService: {
+        admitDriverEventAttempt: vi.fn(() => Promise.resolve({ attemptId: 'attempt-id', attemptNumber: 1 })),
+        finalizeDriverEventAttempt: vi.fn(() => Promise.resolve()),
         recordDriverEvent
       },
       driverTokenAccessRepository: {
@@ -951,6 +991,33 @@ function eventPayload(): Record<string, unknown> {
     longitude: -74.006,
     occurredAt: '2026-05-07T06:09:30.000Z',
     routePlanId: 'route-plan-id'
+  };
+}
+
+function syncHeartbeatPayload(): Record<string, unknown> {
+  return {
+    appVersion: '2.0.0',
+    clientOccurredAt: '2026-05-07T06:09:30.000Z',
+    completedStopCount: 0,
+    currentStopSequence: 1,
+    deviceInstanceHash: 'a'.repeat(64),
+    driverContractVersion: 2,
+    finishPending: false,
+    firstErrorCode: null,
+    firstFailedAt: null,
+    heartbeatSequence: 1,
+    lastAcknowledgedAt: null,
+    lastErrorCode: null,
+    lastRetryAt: null,
+    locallyFinished: false,
+    nextRetryAt: null,
+    oldestQueuedAt: null,
+    queueDepth: 0,
+    retryCount: 0,
+    retryJournal: null,
+    sessionGeneration: '2026-05-07T06:00:00.000Z',
+    totalStopCount: 1,
+    versionCode: 200
   };
 }
 

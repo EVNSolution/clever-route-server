@@ -47,10 +47,11 @@ describe('createS3DriverProofMediaStorage', () => {
     });
     const fileBytes = Buffer.from('synthetic-proof-photo');
 
+    const abortController = new AbortController();
     await storage.write({
       fileBytes,
       storageKey: 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/proof.jpg'
-    });
+    }, abortController.signal);
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(
@@ -58,6 +59,7 @@ describe('createS3DriverProofMediaStorage', () => {
     );
     expect(calls[0]?.init?.method).toBe('PUT');
     expect(calls[0]?.init?.body).toEqual(fileBytes);
+    expect(calls[0]?.init?.signal).toBe(abortController.signal);
     const headers = calls[0]?.init?.headers as Record<string, string>;
     expect(headers['x-amz-date']).toBe('20260512T100000Z');
     expect(headers['x-amz-content-sha256']).toBe(createHash('sha256').update(fileBytes).digest('hex'));
@@ -84,7 +86,10 @@ describe('createS3DriverProofMediaStorage', () => {
       secretAccessKey: 'secret-test-key'
     });
 
-    await expect(storage.remove('driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/proof.jpg')).resolves.toBe('missing');
+    await expect(storage.remove(
+      'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/proof.jpg',
+      new AbortController().signal
+    )).resolves.toBe('missing');
     expect(methods).toEqual(['DELETE']);
   });
 });

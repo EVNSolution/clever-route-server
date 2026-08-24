@@ -22,12 +22,18 @@ export class ShopifyOrderWebhookWorker {
   private readonly intervalMs: number;
   private readonly leaseMs: number;
   private readonly workerId: string;
+  private logger: Pick<FastifyBaseLogger, 'error' | 'info'> | undefined;
 
   constructor(private readonly options: ShopifyOrderWebhookWorkerOptions) {
     this.enabled = options.enabled ?? true;
     this.intervalMs = options.intervalMs ?? 2_000;
     this.leaseMs = options.leaseMs ?? 120_000;
     this.workerId = options.workerId ?? `order-webhook-${process.pid}-${randomUUID()}`;
+    this.logger = options.logger;
+  }
+
+  attachLogger(logger: Pick<FastifyBaseLogger, 'error' | 'info'>): void {
+    this.logger = logger;
   }
 
   start(): void {
@@ -74,10 +80,10 @@ export class ShopifyOrderWebhookWorker {
         processed += 1;
       }
       if (processed > 0) {
-        this.options.logger?.info({ event: 'shopify_order_webhook_worker_tick', processed }, 'processed Shopify order webhooks');
+        this.logger?.info({ event: 'shopify_order_webhook_worker_tick', processed }, 'processed Shopify order webhooks');
       }
     } catch (error) {
-      this.options.logger?.error({ error: redactTelemetry(error), event: 'shopify_order_webhook_worker_error' }, 'Shopify order webhook worker failed');
+      this.logger?.error({ error: redactTelemetry(error), event: 'shopify_order_webhook_worker_error' }, 'Shopify order webhook worker failed');
     } finally {
       this.running = false;
       if (!this.closing) this.schedule(this.intervalMs);

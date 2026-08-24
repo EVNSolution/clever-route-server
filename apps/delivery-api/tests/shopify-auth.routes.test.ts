@@ -107,6 +107,7 @@ describe('Shopify auth routes', () => {
           appId: 'clever',
           accessToken: 'shpat_access_token',
           apiVersion: '2026-04',
+          installedAt: new Date('2026-05-07T01:00:00.000Z'),
           refreshToken: 'shprt_refresh_token',
           shopDomain: 'example.myshopify.com',
           tokenScopes: ['read_orders', 'read_customers']
@@ -123,15 +124,18 @@ describe('Shopify auth routes', () => {
         .find((line) => line.event === 'shopify_admin_token_persisted');
       expect(successLog).toMatchObject({
         appId: 'clever',
-        requestCorrelationId: 'request-123',
+        requestCorrelationHash: expect.stringMatching(/^[a-f0-9]{16}$/u) as unknown,
+        requestCorrelationProvided: true,
         scopes: ['read_orders', 'read_customers'],
-        shopDomain: 'example.myshopify.com',
+        shopHash: expect.stringMatching(/^[a-f0-9]{16}$/u) as unknown,
         tokenAccessExpiresAt: expect.any(String) as unknown,
         tokenRefreshExpiresAt: expect.any(String) as unknown
       });
       expect(JSON.stringify(successLog)).not.toContain('shpat_access_token');
       expect(JSON.stringify(successLog)).not.toContain('shprt_refresh_token');
       expect(JSON.stringify(successLog)).not.toContain('session-token');
+      expect(JSON.stringify(successLog)).not.toContain('request-123');
+      expect(JSON.stringify(successLog)).not.toContain('example.myshopify.com');
     } finally {
       await app.close();
     }
@@ -280,6 +284,41 @@ describe('Shopify auth routes', () => {
       await app.close();
     }
   });
+
+  test('maps timeouts distinctly and logs only sanitized failure evidence', async () => {
+    const { dependencies, exchange } = createDependencyHarness();
+    const hostile = Object.assign(
+      new Error('private@example.invalid 1 Secret Street token=shpat_private'),
+      { code: 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT' }
+    );
+    exchange.mockRejectedValueOnce(hostile);
+    const logLines: string[] = [];
+    const app = await buildApp({
+      logger: { level: 'info', stream: { write: (line: string) => logLines.push(line) } },
+      shopifyAuth: dependencies
+    });
+    try {
+      const response = await app.inject({
+        headers: {
+          authorization: 'Bearer session-token',
+          'x-correlation-id': 'private@example.invalid token=secret'
+        },
+        method: 'POST',
+        payload: { shopDomain: 'example.myshopify.com' },
+        url: '/shopify/auth/token-exchange'
+      });
+      expect(response.statusCode).toBe(504);
+      expect(response.json()).toMatchObject({ error: { code: 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT' } });
+      const serialized = logLines.join('\n');
+      expect(serialized).toContain('shopify_admin_token_exchange_failed');
+      expect(serialized).not.toContain('private@example.invalid');
+      expect(serialized).not.toContain('Secret Street');
+      expect(serialized).not.toContain('shpat_private');
+      expect(serialized).not.toContain('example.myshopify.com');
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 function createDependencyHarness(): {
@@ -297,6 +336,7 @@ function createDependencyHarness(): {
   return {
     dependencies: {
       apiVersion: baseDependencies.apiVersion,
+      now: () => new Date('2026-05-07T01:00:00.000Z'),
       orderReconciliationService: {
         enqueueIfIdle
       },

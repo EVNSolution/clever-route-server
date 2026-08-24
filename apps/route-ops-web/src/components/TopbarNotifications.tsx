@@ -2,15 +2,20 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
 import { getAppCopy } from '../i18n';
+import type { OperationalPillModel } from '../operationalStatus';
+import { OperationalPillGroup } from './primitives';
 
 export type TopbarNotificationTone = 'critical' | 'info' | 'success' | 'warning';
 
 export type TopbarNotificationItem = {
+  acknowledgedAt?: string | null;
+  alertCycleId?: string | null;
   body?: string | null;
   createdAt?: string | null;
   href?: string | null;
   id: string;
   read?: boolean;
+  resolvedAt?: string | null;
   title: string;
   tone: TopbarNotificationTone;
 };
@@ -22,6 +27,7 @@ export function TopbarNotifications({
   loadError = null,
   navigate,
   onNotificationOpen,
+  onNotificationAcknowledge,
   unreadCount,
 }: {
   initialOpen?: boolean;
@@ -30,6 +36,7 @@ export function TopbarNotifications({
   loadError?: string | null;
   navigate?(path: string): void;
   onNotificationOpen?(item: TopbarNotificationItem): void;
+  onNotificationAcknowledge?(item: TopbarNotificationItem): void;
   unreadCount?: number;
 }): ReactElement {
   const t = getAppCopy(locale).notifications;
@@ -45,6 +52,7 @@ export function TopbarNotifications({
       ? visibleUnreadCount
       : Math.max(0, Math.floor(unreadCount));
   const hasLoadError = loadError !== null && loadError.trim() !== '';
+  const activeCount = items.filter((item) => isAlertLifecycleItem(item) && item.resolvedAt == null).length;
 
   useEffect(() => {
     if (!open || typeof document === 'undefined') return undefined;
@@ -81,7 +89,7 @@ export function TopbarNotifications({
       <button
         aria-controls={open ? menuId : undefined}
         aria-expanded={open}
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-label={t.openNotifications}
         className={`notification-button${hasLoadError ? ' has-error' : ''}`}
         onClick={() => setOpen((value) => !value)}
@@ -104,11 +112,11 @@ export function TopbarNotifications({
           aria-label={t.notifications}
           className="notification-menu"
           id={menuId}
-          role="menu"
+          role="dialog"
         >
           <div className="notification-menu-header">
             <strong>{t.notifications}</strong>
-            <span>{hasLoadError ? t.loadFailedShort : totalUnreadCount === 0 ? t.allCaughtUp : t.unreadCount(totalUnreadCount)}</span>
+            <span>{hasLoadError ? t.loadFailedShort : t.activeCount(activeCount)}</span>
           </div>
           {hasLoadError ? (
             <p className="notification-load-error" role="status">{loadError}</p>
@@ -118,15 +126,13 @@ export function TopbarNotifications({
           ) : (
             <div className="notification-list">
               {items.map((item) => (
-                <button
+                <article
                   className={`notification-item notification-item--${item.tone}${item.read === true ? ' is-read' : ''}`}
                   key={item.id}
-                  onClick={() => openNotification(item)}
-                  role="menuitem"
-                  type="button"
                 >
                   <span className="notification-item-tone" aria-hidden="true" />
-                  <span>
+                  <div className="notification-item-content">
+                    <button className="notification-item-open" onClick={() => openNotification(item)} type="button">
                     <strong>{item.title}</strong>
                     {item.body === null || item.body === undefined ? null : (
                       <small>{item.body}</small>
@@ -134,8 +140,13 @@ export function TopbarNotifications({
                     {item.createdAt === null || item.createdAt === undefined ? null : (
                       <time dateTime={item.createdAt}>{item.createdAt}</time>
                     )}
-                  </span>
-                </button>
+                    </button>
+                    <OperationalPillGroup ariaLabel={t.lifecycle} pills={notificationLifecyclePills(item, locale)} />
+                    {!isAlertLifecycleItem(item) || item.resolvedAt != null || item.acknowledgedAt != null ? null : (
+                      <button className="notification-acknowledge" onClick={() => onNotificationAcknowledge?.(item)} type="button">{t.acknowledge}</button>
+                    )}
+                  </div>
+                </article>
               ))}
             </div>
           )}
@@ -143,6 +154,32 @@ export function TopbarNotifications({
       ) : null}
     </div>
   );
+}
+
+export function notificationLifecyclePills(
+  item: TopbarNotificationItem,
+  locale: string | null | undefined,
+): OperationalPillModel[] {
+  const t = getAppCopy(locale).notifications;
+  const pills: OperationalPillModel[] = [{
+    ariaLabel: item.read === true ? t.read : t.unread,
+    key: 'read',
+    label: item.read === true ? t.read : t.unread,
+    tone: item.read === true ? 'neutral' : 'info',
+  }];
+  if (!isAlertLifecycleItem(item)) return pills;
+  if (item.resolvedAt != null) {
+    pills.push({ ariaLabel: t.resolved, key: 'resolved', label: t.resolved, tone: 'success' });
+  } else if (item.acknowledgedAt != null) {
+    pills.push({ ariaLabel: t.acknowledged, key: 'acknowledged', label: t.acknowledged, tone: 'warning' });
+  } else {
+    pills.push({ ariaLabel: t.active, key: 'active', label: t.active, tone: item.tone === 'critical' ? 'critical' : 'warning' });
+  }
+  return pills;
+}
+
+function isAlertLifecycleItem(item: TopbarNotificationItem): boolean {
+  return item.alertCycleId != null || item.acknowledgedAt != null || item.resolvedAt != null;
 }
 
 export function countUnreadNotifications(items: TopbarNotificationItem[]): number {

@@ -11,12 +11,16 @@ import { DEFAULT_SHOPIFY_APP_ID } from './shopify-app-scope.js';
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from './shopify-app-credentials.js';
 import { PrismaShopTokenRepository } from './shop-token.repository.js';
 import { ShopTokenService } from './shop-token.service.js';
-import { ShopifyTokenExchangeClient } from './token-exchange.client.js';
+import { loadShopifyTokenExchangeTimeoutMs, ShopifyTokenExchangeClient } from './token-exchange.client.js';
 import { PrismaShopifyWebhookEventRepository } from './webhook-event.repository.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from './shopify-api-version.js';
 
 export type ShopifyWebhookRuntimeEnv = ShopifyAppCredentialsEnv &
-  Partial<Record<'CLEVER_SHOPIFY_ORDER_WEBHOOK_WORKER' | 'SHOPIFY_API_VERSION' | 'SHOPIFY_TOKEN_ENCRYPTION_KEY' | 'SHOPIFY_WEBHOOK_SECRET', string>>;
+  Partial<Record<'CLEVER_SHOPIFY_ORDER_WEBHOOK_WORKER' | 'SHOPIFY_API_VERSION' | 'SHOPIFY_TOKEN_ENCRYPTION_KEY' | 'SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS' | 'SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES' | 'SHOPIFY_WEBHOOK_SECRET', string>>;
+
+const DEFAULT_SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES = 5 * 1024 * 1024;
+const MIN_SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES = 1024 * 1024;
+const MAX_SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 
 type LoadShopifyWebhookDependenciesInput = {
   env: ShopifyWebhookRuntimeEnv;
@@ -48,11 +52,13 @@ export function loadShopifyWebhookRuntime(
 
   const webhookService = new PrismaShopifyWebhookEventRepository(input.prisma);
   const encryptionKey = readOptional(input.env.SHOPIFY_TOKEN_ENCRYPTION_KEY);
+  const bodyLimitBytes = loadShopifyWebhookBodyLimitBytes(input.env.SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES);
 
   if (encryptionKey === undefined) {
     return {
       dependencies: {
         appCredentials,
+        bodyLimitBytes,
         webhookService
       }
     };
@@ -67,13 +73,17 @@ export function loadShopifyWebhookRuntime(
     shopTokenService: new ShopTokenService({
       encryptionKey: loadTokenEncryptionKey(encryptionKey),
       repository: new PrismaShopTokenRepository(input.prisma),
-      tokenRefreshClient: new ShopifyTokenExchangeClient({ appCredentials: shopifyAppCredentials })
+      tokenRefreshClient: new ShopifyTokenExchangeClient({
+        appCredentials: shopifyAppCredentials,
+        timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS)
+      })
     })
   });
 
   return {
     dependencies: {
       appCredentials,
+      bodyLimitBytes,
       orderWebhookProcessor: processor,
       webhookService
     },
@@ -83,6 +93,15 @@ export function loadShopifyWebhookRuntime(
       ...(input.logger === undefined ? {} : { logger: input.logger })
     })
   };
+}
+
+export function loadShopifyWebhookBodyLimitBytes(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') return DEFAULT_SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < MIN_SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES || parsed > MAX_SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES) {
+    throw new Error(`SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES must be an integer between ${MIN_SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES} and ${MAX_SHOPIFY_WEBHOOK_BODY_LIMIT_BYTES}`);
+  }
+  return parsed;
 }
 
 function readOptional(value: string | undefined): string | undefined {

@@ -1,0 +1,7 @@
+{
+  "data": null,
+  "error": {
+    "code": "ROUTE_VERSION_MISMATCH",
+    "message": "Route version changed; refresh the assigned route"
+  }
+}

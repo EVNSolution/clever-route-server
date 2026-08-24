@@ -32,6 +32,7 @@ DSV_PRODUCTION_BASELINE_APPROVED="${DSV_PRODUCTION_BASELINE_APPROVED:-}"
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256="${DSV_PRODUCTION_BASELINE_MANIFEST_SHA256:-}"
 FIREBASE_CREDENTIALS_PARAM="${ROUTE_OPS_FIREBASE_CREDENTIALS_PARAM:-/clever/route-ops/firebase/fcm-service-account-json}"
 UVIS_ENV_PARAM="${ROUTE_OPS_UVIS_ENV_PARAM:-}"
+PROOF_READY_FILTER_CONTRACT_SHA=''
 
 usage() {
   cat <<USAGE
@@ -153,6 +154,7 @@ COMPOSE_PROJECT=__COMPOSE_PROJECT__
 COMMIT_SHA=__COMMIT_SHA__
 CHANNEL_TAG=__CHANNEL_TAG__
 PRISMA_SCHEMA_SHA=__PRISMA_SCHEMA_SHA__
+PROOF_READY_FILTER_CONTRACT_SHA=__PROOF_READY_FILTER_CONTRACT_SHA__
 DELIVERY_API_IMAGE=__RUNTIME_IMAGE__
 ROUTE_OPS_WEB_STATIC_IMAGE=__STATIC_IMAGE__
 ROUTE_OPS_WEB_STATIC_VOLUME=__STATIC_VOLUME__
@@ -172,6 +174,10 @@ COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
 VROOM_CONFIG_B64=__VROOM_CONFIG_B64__
 VROOM_KOREA_CONFIG_B64=__VROOM_KOREA_CONFIG_B64__
 DOCKER_CLEANUP_SCRIPT_B64=__DOCKER_CLEANUP_SCRIPT_B64__
+RETENTION_RUNNER_B64=__RETENTION_RUNNER_B64__
+RETENTION_INSTALLER_B64=__RETENTION_INSTALLER_B64__
+RETENTION_SERVICE_B64=__RETENTION_SERVICE_B64__
+RETENTION_TIMER_B64=__RETENTION_TIMER_B64__
 GHCR_USERNAME_PARAM="${ROUTE_OPS_GHCR_USERNAME_PARAM:-/clever/deploy/github/username}"
 GHCR_TOKEN_PARAM="${ROUTE_OPS_GHCR_TOKEN_PARAM:-/clever/deploy/github/read-token}"
 cd "$APP_DIR"
@@ -186,11 +192,34 @@ command -v python3 >/dev/null
 command -v base64 >/dev/null
 [ -f apps/delivery-api/.env ] || { echo 'missing required runtime env: apps/delivery-api/.env' >&2; exit 65; }
 mkdir -p "$(dirname "$COMPOSE_FILE")" "$(dirname "$VROOM_CONFIG")" "$(dirname "$VROOM_KOREA_CONFIG")"
+mkdir -p scripts infra/systemd
 printf '%s' "$COMPOSE_FILE_B64" | base64 -d > "$COMPOSE_FILE"
 printf '%s' "$VROOM_CONFIG_B64" | base64 -d > "$VROOM_CONFIG"
 printf '%s' "$VROOM_KOREA_CONFIG_B64" | base64 -d > "$VROOM_KOREA_CONFIG"
 printf '%s' "$DOCKER_CLEANUP_SCRIPT_B64" | base64 -d > .deploy/route-ops-docker-cleanup.sh
 chmod 750 .deploy/route-ops-docker-cleanup.sh
+mkdir -p .deploy/retention-rollback .deploy/candidate-retention
+rm -f .deploy/retention-rollback/runner.present .deploy/retention-rollback/service.present .deploy/retention-rollback/timer.present .deploy/retention-rollback/timer.enabled
+if [ -f scripts/run-driver-event-attempt-retention.sh ]; then
+  cp scripts/run-driver-event-attempt-retention.sh .deploy/retention-rollback/run-driver-event-attempt-retention.sh
+  touch .deploy/retention-rollback/runner.present
+fi
+if [ -f /etc/systemd/system/clever-driver-event-attempt-retention.service ]; then
+  cp /etc/systemd/system/clever-driver-event-attempt-retention.service .deploy/retention-rollback/clever-driver-event-attempt-retention.service
+  touch .deploy/retention-rollback/service.present
+fi
+if [ -f /etc/systemd/system/clever-driver-event-attempt-retention.timer ]; then
+  cp /etc/systemd/system/clever-driver-event-attempt-retention.timer .deploy/retention-rollback/clever-driver-event-attempt-retention.timer
+  touch .deploy/retention-rollback/timer.present
+fi
+if systemctl is-enabled clever-driver-event-attempt-retention.timer >/dev/null 2>&1; then
+  touch .deploy/retention-rollback/timer.enabled
+fi
+printf '%s' "$RETENTION_RUNNER_B64" | base64 -d > .deploy/candidate-retention/run-driver-event-attempt-retention.sh
+printf '%s' "$RETENTION_INSTALLER_B64" | base64 -d > .deploy/install-driver-event-attempt-retention.sh
+printf '%s' "$RETENTION_SERVICE_B64" | base64 -d > .deploy/candidate-retention/clever-driver-event-attempt-retention.service
+printf '%s' "$RETENTION_TIMER_B64" | base64 -d > .deploy/candidate-retention/clever-driver-event-attempt-retention.timer
+chmod 0750 .deploy/candidate-retention/run-driver-event-attempt-retention.sh .deploy/install-driver-event-attempt-retention.sh
 cat > .deploy/simple-candidate-image.env <<EOF_ENV
 IMAGE_TAG=$CHANNEL_TAG
 COMMIT_SHA=$COMMIT_SHA
@@ -204,6 +233,8 @@ DSV_MIGRATION_MANIFEST_SHA256=$DSV_MIGRATION_MANIFEST_SHA256
 DSV_RESTORE_REHEARSAL_SHA256=$DSV_RESTORE_REHEARSAL_SHA256
 DSV_PRODUCTION_BASELINE_APPROVED=$DSV_PRODUCTION_BASELINE_APPROVED
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=$DSV_PRODUCTION_BASELINE_MANIFEST_SHA256
+DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE=$([ -n "$PROOF_READY_FILTER_CONTRACT_SHA" ] && echo true || echo false)
+DRIVER_PROOF_MEDIA_READY_FILTER_CONTRACT_SHA=$PROOF_READY_FILTER_CONTRACT_SHA
 EOF_ENV
 HAD_CURRENT_IMAGE_ENV=0
 if [ -f .deploy/current-image.env ]; then
@@ -216,6 +247,12 @@ if [ "$HAD_CURRENT_IMAGE_ENV" = "1" ]; then
   CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE="$(awk -F= '$1 == "ROUTE_OPS_WEB_STATIC_IMAGE" {print substr($0, index($0, "=") + 1)}' .deploy/simple-rollback-image.env | tail -n 1)"
 else
   CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE=''
+fi
+proof_reservations_enabled="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED" {print tolower(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
+rollback_ready_filter_compatible="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE" {print tolower(substr($0, index($0, "=") + 1))}' .deploy/simple-rollback-image.env | tail -n 1)"
+if [ "$proof_reservations_enabled" = "true" ] && [ "$rollback_ready_filter_compatible" != "true" ]; then
+  echo 'proof media reservation rollout blocked: rollback image does not advertise READY-only reads' >&2
+  exit 1
 fi
 is_digest_ref() {
   case "$1" in
@@ -280,6 +317,29 @@ rollback_delivery_api() {
   done
   echo 'simple deploy rollback failed health check; manual intervention required' >&2
   return 1
+}
+rollback_retention_runtime() {
+  if [ -f .deploy/retention-rollback/runner.present ]; then
+    cp .deploy/retention-rollback/run-driver-event-attempt-retention.sh scripts/run-driver-event-attempt-retention.sh
+  else
+    rm -f scripts/run-driver-event-attempt-retention.sh
+  fi
+  if [ -f .deploy/retention-rollback/service.present ]; then
+    cp .deploy/retention-rollback/clever-driver-event-attempt-retention.service /etc/systemd/system/clever-driver-event-attempt-retention.service
+  else
+    rm -f /etc/systemd/system/clever-driver-event-attempt-retention.service
+  fi
+  if [ -f .deploy/retention-rollback/timer.present ]; then
+    cp .deploy/retention-rollback/clever-driver-event-attempt-retention.timer /etc/systemd/system/clever-driver-event-attempt-retention.timer
+  else
+    rm -f /etc/systemd/system/clever-driver-event-attempt-retention.timer
+  fi
+  systemctl daemon-reload
+  if [ -f .deploy/retention-rollback/timer.enabled ]; then
+    systemctl enable --now clever-driver-event-attempt-retention.timer
+  else
+    systemctl disable --now clever-driver-event-attempt-retention.timer >/dev/null 2>&1 || true
+  fi
 }
 export AWS_REGION UVIS_ENV_PARAM
 python3 - <<'ENVUP'
@@ -399,6 +459,19 @@ for attempt in $(seq 1 30); do
 done
 cp .deploy/current-image.env ".deploy/current-image.env.before-simple-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
 cp .deploy/simple-candidate-image.env .deploy/current-image.env
+if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE="$APP_DIR/.deploy/candidate-retention/run-driver-event-attempt-retention.sh" \
+  CLEVER_ROUTE_RETENTION_UNIT_SOURCE_DIR="$APP_DIR/.deploy/candidate-retention" \
+  .deploy/install-driver-event-attempt-retention.sh; then
+  echo 'retention installer failed; restoring previous image env and runtime' >&2
+  if [ "$HAD_CURRENT_IMAGE_ENV" = "1" ]; then
+    cp .deploy/simple-rollback-image.env .deploy/current-image.env
+  else
+    rm -f .deploy/current-image.env
+  fi
+  rollback_retention_runtime || true
+  rollback_delivery_api || true
+  exit 1
+fi
 .deploy/route-ops-docker-cleanup.sh --enforce
 printf '{"ts":"%s","commitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
 printf 'simple deploy completed: commit=%s channel=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG"
@@ -422,6 +495,7 @@ replacements = {
     '__COMMIT_SHA__': shlex.quote(os.environ['COMMIT_SHA']),
     '__CHANNEL_TAG__': shlex.quote(os.environ['CHANNEL_TAG']),
     '__PRISMA_SCHEMA_SHA__': shlex.quote(os.environ['PRISMA_SCHEMA_SHA']),
+    '__PROOF_READY_FILTER_CONTRACT_SHA__': shlex.quote(os.environ['PROOF_READY_FILTER_CONTRACT_SHA']),
     '__RUNTIME_IMAGE__': shlex.quote(os.environ['RUNTIME_IMAGE']),
     '__STATIC_IMAGE__': shlex.quote(os.environ['STATIC_IMAGE']),
     '__STATIC_VOLUME__': shlex.quote(os.environ['STATIC_VOLUME']),
@@ -441,6 +515,10 @@ replacements = {
     '__VROOM_CONFIG_B64__': shlex.quote(os.environ['VROOM_CONFIG_B64']),
     '__VROOM_KOREA_CONFIG_B64__': shlex.quote(os.environ['VROOM_KOREA_CONFIG_B64']),
     '__DOCKER_CLEANUP_SCRIPT_B64__': shlex.quote(os.environ['DOCKER_CLEANUP_SCRIPT_B64']),
+    '__RETENTION_RUNNER_B64__': shlex.quote(os.environ['RETENTION_RUNNER_B64']),
+    '__RETENTION_INSTALLER_B64__': shlex.quote(os.environ['RETENTION_INSTALLER_B64']),
+    '__RETENTION_SERVICE_B64__': shlex.quote(os.environ['RETENTION_SERVICE_B64']),
+    '__RETENTION_TIMER_B64__': shlex.quote(os.environ['RETENTION_TIMER_B64']),
 }
 for key, value in replacements.items():
     script = script.replace(key, value)
@@ -458,7 +536,15 @@ COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
 VROOM_CONFIG_B64="$(base64 < "$VROOM_CONFIG" | tr -d '\n')"
 VROOM_KOREA_CONFIG_B64="$(base64 < "$VROOM_KOREA_CONFIG" | tr -d '\n')"
 DOCKER_CLEANUP_SCRIPT_B64="$(base64 < scripts/route-ops-docker-cleanup.sh | tr -d '\n')"
-export AWS_REGION APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 FIREBASE_CREDENTIALS_PARAM UVIS_ENV_PARAM COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64
+RETENTION_RUNNER_B64="$(base64 < scripts/run-driver-event-attempt-retention.sh | tr -d '\n')"
+RETENTION_INSTALLER_B64="$(base64 < scripts/install-driver-event-attempt-retention.sh | tr -d '\n')"
+RETENTION_SERVICE_B64="$(base64 < infra/systemd/clever-driver-event-attempt-retention.service | tr -d '\n')"
+RETENTION_TIMER_B64="$(base64 < infra/systemd/clever-driver-event-attempt-retention.timer | tr -d '\n')"
+if ! (cd apps/delivery-api && npm test -- driver-proof-media-read-inventory.test.ts dsv-v1-read-query.service.test.ts >/dev/null); then
+  fail 'proof media READY-filter compatibility contract failed'
+fi
+PROOF_READY_FILTER_CONTRACT_SHA="$(shasum -a 256 apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts apps/delivery-api/tests/dsv-v1-read-query.service.test.ts | shasum -a 256 | awk '{print $1}')"
+export AWS_REGION APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA PROOF_READY_FILTER_CONTRACT_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 FIREBASE_CREDENTIALS_PARAM UVIS_ENV_PARAM COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64 RETENTION_RUNNER_B64 RETENTION_INSTALLER_B64 RETENTION_SERVICE_B64 RETENTION_TIMER_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then

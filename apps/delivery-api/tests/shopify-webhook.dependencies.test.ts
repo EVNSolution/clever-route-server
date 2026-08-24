@@ -1,9 +1,15 @@
 import type { PrismaClient } from '@prisma/client';
 import { describe, expect, test } from 'vitest';
 
-import { loadShopifyWebhookDependencies } from '../src/modules/shopify/webhook.dependencies.js';
+import { loadShopifyWebhookBodyLimitBytes, loadShopifyWebhookDependencies } from '../src/modules/shopify/webhook.dependencies.js';
 
 describe('loadShopifyWebhookDependencies', () => {
+  test('uses a bounded Shopify-compatible webhook body limit', () => {
+    expect(loadShopifyWebhookBodyLimitBytes(undefined)).toBe(5 * 1024 * 1024);
+    expect(loadShopifyWebhookBodyLimitBytes(String(6 * 1024 * 1024))).toBe(6 * 1024 * 1024);
+    expect(() => loadShopifyWebhookBodyLimitBytes(String(1024 * 1024 - 1))).toThrow('between 1048576 and 10485760');
+    expect(() => loadShopifyWebhookBodyLimitBytes(String(10 * 1024 * 1024 + 1))).toThrow('between 1048576 and 10485760');
+  });
   test('stays disabled when no Shopify webhook secret material is configured', () => {
     expect(loadShopifyWebhookDependencies({ env: {}, prisma: prisma() })).toBeUndefined();
   });
@@ -47,5 +53,5 @@ describe('loadShopifyWebhookDependencies', () => {
 });
 
 function prisma(): PrismaClient {
-  return {} as PrismaClient;
+  return { $transaction: () => Promise.reject(new Error('not called')) } as unknown as PrismaClient;
 }

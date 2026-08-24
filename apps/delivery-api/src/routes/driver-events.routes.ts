@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MultipartFile, MultipartValue } from '@fastify/multipart';
+import type { Prisma } from '@prisma/client';
 
 import {
   signDriverRouteToken,
@@ -22,6 +23,10 @@ import {
   type DriverLunchEntryStatus
 } from '../modules/driver/driver-destination-notes.repository.js';
 import type { DriverRouteMapPreviewServiceApi } from '../modules/driver/driver-route-map-preview.service.js';
+import type {
+  DriverSyncHeartbeatInput,
+  PrismaDriverSyncHealthService
+} from '../modules/driver/driver-sync-health.service.js';
 import {
   DriverSellerOrderAlreadyAcquiredError,
   DriverSellerOrderAssignmentConflictError,
@@ -47,6 +52,8 @@ import type {
 import type { DriverRouteAccessServiceApi } from '../modules/driver/driver-route-access.repository.js';
 import {
   DriverProofMediaAccessUnavailableError,
+  DriverProofMediaIdempotencyConflictError,
+  DriverProofMediaIdempotencyPendingError,
   DriverProofMediaScanRejectedError,
   DriverProofMediaScopeError
 } from '../modules/driver/driver-proof-media.types.js';
@@ -67,14 +74,24 @@ import {
 } from '../modules/driver/driver-route-session.types.js';
 import type { DriverRouteSessionRestoreServiceApi } from '../modules/driver/driver-route-session.repository.js';
 import {
+  DriverEventAdmissionUnavailableError,
+  DriverEventAssignmentChangedError,
   DriverEventContextError,
   DriverEventEtaStaleConflictError,
+  DriverEventStopTransitionConflictError,
   DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError,
+  DriverEventRouteVersionMismatchError,
   DriverEventSellerOrderAssignmentChangedError,
   DriverEventScopeError,
+  type DriverEventAttemptAdmissionInput,
+  type DriverEventAttemptFinalization,
   type RecordDriverEventResult
 } from '../modules/driver/driver-event.repository.js';
+import {
+  DriverEventReceiptScopeError,
+  type DriverEventReceiptServiceApi
+} from '../modules/driver/driver-event-receipt.repository.js';
 import {
   createRouteTrackingPositionEvent,
   createRouteTrackingProgressEvent
@@ -83,6 +100,7 @@ import type { RouteTrackingStreamHub } from '../modules/route-tracking/route-tra
 import type { AdminNotificationServiceApi } from '../modules/notifications/admin-notification.service.js';
 import type { DsvRouteOptimizationSchedulerPort } from '../modules/dsv/dsv-route-optimization.scheduler.js';
 import { DsvOrderMessageError, type DsvOrderMessageService } from '../modules/dsv/dsv-order-message.service.js';
+import { safeErrorTelemetry } from '../modules/security/safe-telemetry-redaction.js';
 import {
   DriverDeliverySpaceError,
   type DriverDeliverySpaceServiceContract
@@ -95,6 +113,7 @@ export type DriverApiDependencies = {
   driverDeliverySpaceService?: DriverDeliverySpaceServiceContract;
   driverDestinationNotesService?: DriverDestinationNotesServiceContract;
   driverEventService: {
+    admitDriverEventAttempt(input: DriverEventAttemptAdmissionInput): Promise<{ attemptId: string; attemptNumber: number }>;
     completeDeliveryDestination?(input: {
       clientEventId: string;
       deliveryStopIds: string[];
@@ -107,11 +126,16 @@ export type DriverApiDependencies = {
       shopId: string;
     }): Promise<RecordDriverEventResult[]>;
     recordDriverEvent(input: {
+      appVersion?: string | null;
+      attemptId?: string | null;
+      assignmentGeneration?: string | null;
       changeRequestId?: string | null;
       clientEventId: string | null;
       deliveryStopId: string | null;
       driverId: string;
+      driverContractVersion?: number | null;
       eventType: string;
+      expectedRouteVersionId?: string | null;
       latitude: string | null;
       longitude: string | null;
       occurredAt: Date;
@@ -119,10 +143,16 @@ export type DriverApiDependencies = {
       routePlanId: string | null;
       shopDomain: string;
       shopId: string;
+      requestId?: string;
+      versionCode?: number | null;
     }): Promise<RecordDriverEventResult>;
+    finalizeDriverEventAttempt(attemptId: string, result: DriverEventAttemptFinalization): Promise<void>;
   };
+  driverEventReceiptService?: DriverEventReceiptServiceApi;
   driverSellerOrderAssignmentService?: DriverSellerOrderAssignmentServiceContract;
   driverSelfService?: DriverSelfServiceApi;
+  driverOperationalHealthService?: Pick<PrismaDriverSyncHealthService, 'detectOperationalHealth'>;
+  driverSyncHealthService?: Pick<PrismaDriverSyncHealthService, 'recordHeartbeat' | 'takeover'>;
   driverRouteSessionRestoreService?: DriverRouteSessionRestoreServiceApi;
   driverRouteMapPreviewBaseUrl?: string;
   driverRouteMapPreviewService?: DriverRouteMapPreviewServiceApi;
@@ -216,15 +246,22 @@ type DriverConsentRequestBody = {
 };
 
 type DriverEventRequestBody = {
+  appVersion?: unknown;
+  assignmentGeneration?: unknown;
   changeRequestId?: unknown;
   clientEventId?: unknown;
   deliveryStopId?: unknown;
+  driverContractVersion?: unknown;
   eventType?: unknown;
+  expectedRouteVersionId?: unknown;
   latitude?: unknown;
   longitude?: unknown;
   occurredAt?: unknown;
   routePlanId?: unknown;
+  versionCode?: unknown;
 };
+
+type DriverEventReceiptParams = { clientEventId?: unknown; routePlanId?: unknown };
 
 type DriverDestinationCompletionRequestBody = {
   clientEventId?: unknown;
@@ -273,6 +310,93 @@ export function registerDriverEventRoutes(
   app: FastifyInstance,
   dependencies: DriverApiDependencies
 ): void {
+  const syncHealthService = dependencies.driverSyncHealthService;
+  if (syncHealthService !== undefined) {
+    app.put<{ Body: unknown }>('/driver/sync-health', async (request, reply) => {
+      const authentication = await authenticateDriverRequest(request, dependencies);
+      if (authentication.status !== 'authenticated') {
+        return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
+      }
+      let input: DriverSyncHeartbeatInput;
+      try {
+        input = readDriverSyncHeartbeat(request.body);
+      } catch {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver sync heartbeat'));
+      }
+      const result = await syncHealthService.recordHeartbeat(authentication.context, input);
+      return reply.code(200).send({ data: result, error: null });
+    });
+
+    app.post<{ Body: unknown }>('/driver/sync-health/takeover', async (request, reply) => {
+      const token = extractBearerToken(request.headers.authorization);
+      if (token === null) return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Missing driver account bearer token'));
+      let accountId: string;
+      try {
+        const account = verifyDriverAccountToken(token, { secret: dependencies.jwtSecret, ...(dependencies.now === undefined ? {} : { now: dependencies.now() }) });
+        accountId = account.accountId;
+        if (dependencies.driverTokenAccessRepository !== undefined && !(await dependencies.driverTokenAccessRepository.isDriverAccountAccessTokenActive({ accountId, tokenVersion: account.tokenVersion }))) {
+          return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+        }
+      } catch {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+      }
+      const body = objectOrNull(request.body);
+      const deviceInstanceHash = body === null ? null : readDeviceInstanceHash(body.deviceInstanceHash);
+      const routePlanId = body === null ? null : readUuid(body.routePlanId);
+      const sessionGeneration = body === null ? null : readCanonicalSessionGeneration(body.sessionGeneration);
+      if (deviceInstanceHash === null || routePlanId === null || sessionGeneration === null || Object.keys(body ?? {}).some((key) => !['deviceInstanceHash', 'routePlanId', 'sessionGeneration'].includes(key))) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid sync takeover payload'));
+      }
+      const taken = await syncHealthService.takeover({ accountId, deviceInstanceHash, routePlanId, sessionGeneration });
+      return taken
+        ? reply.code(200).send({ data: { takenOver: true }, error: null })
+        : reply.code(404).send(errorResponse('SYNC_SESSION_NOT_FOUND', 'Driver sync session was not found'));
+    });
+  }
+
+  const driverEventReceiptService = dependencies.driverEventReceiptService;
+  if (driverEventReceiptService !== undefined) {
+    app.get<{ Params: DriverEventReceiptParams }>(
+      '/driver/event-receipts/:routePlanId/:clientEventId',
+      async (request, reply) => {
+        const token = extractBearerToken(request.headers.authorization);
+        if (token === null) return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Missing driver account bearer token'));
+        let accountId: string;
+        try {
+          const now = dependencies.now?.();
+          const account = verifyDriverAccountToken(
+            token,
+            now === undefined ? { secret: dependencies.jwtSecret } : { now, secret: dependencies.jwtSecret }
+          );
+          accountId = account.accountId;
+          if (
+            dependencies.driverTokenAccessRepository !== undefined
+            && !(await dependencies.driverTokenAccessRepository.isDriverAccountAccessTokenActive({
+              accountId,
+              tokenVersion: account.tokenVersion
+            }))
+          ) return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+        } catch {
+          return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+        }
+        try {
+          const receipt = await driverEventReceiptService.lookup({
+            accountId,
+            clientEventId: readRequiredOpaqueIdentifier(request.params.clientEventId),
+            routePlanId: readRequiredString(request.params.routePlanId)
+          });
+          reply.header('Cache-Control', 'private, no-store');
+          return reply.code(200).send({ data: receipt, error: null });
+        } catch (error) {
+          if (error instanceof DriverEventReceiptScopeError) {
+            return reply.code(404).send(errorResponse('DRIVER_EVENT_RECEIPT_NOT_FOUND', 'Driver event receipt was not found'));
+          }
+          throw error;
+        }
+      }
+    );
+  }
+
   const routeAccessService = dependencies.routeAccessService;
   if (routeAccessService !== undefined) {
     app.post<{ Body: DriverRouteAccessRequestBody }>(
@@ -994,7 +1118,7 @@ export function registerDriverEventRoutes(
           return reply.code(statusCode).send(errorResponse(error.code, 'Driver route assignment rejected'));
         }
 
-        request.log.error({ err: error }, 'driver consent recording failed');
+        request.log.error({ ...safeErrorTelemetry(error), errorCode: 'CONSENT_RECORD_FAILED' }, 'driver consent recording failed');
         return reply.code(500).send(errorResponse('CONSENT_RECORD_FAILED', 'Driver consent could not be recorded'));
       }
 
@@ -1059,6 +1183,13 @@ export function registerDriverEventRoutes(
           .send(driverAuthenticationErrorResponse(authentication.status));
       }
       const driverContext = authentication.context;
+      const idempotencyKey = readProofMediaIdempotencyKey(request.headers['idempotency-key']);
+      if (idempotencyKey === null) {
+        return reply.code(400).send(errorResponse(
+          'INVALID_IDEMPOTENCY_KEY',
+          'Proof media idempotency key is invalid'
+        ));
+      }
 
       let uploadInput: Omit<StoreDriverProofMediaInput, 'driverId' | 'shopDomain' | 'shopId'>;
       try {
@@ -1076,6 +1207,7 @@ export function registerDriverEventRoutes(
         const result = await proofMediaService.storeProofMedia({
           ...uploadInput,
           driverId: driverContext.driverId,
+          ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
           shopDomain: driverContext.shopDomain,
           shopId: driverContext.shopId
         });
@@ -1092,6 +1224,18 @@ export function registerDriverEventRoutes(
           return reply
             .code(422)
             .send(errorResponse('PROOF_MEDIA_REJECTED', 'Proof media rejected by safety scan'));
+        }
+        if (error instanceof DriverProofMediaIdempotencyConflictError) {
+          return reply.code(409).send(errorResponse(
+            'PROOF_MEDIA_IDEMPOTENCY_CONFLICT',
+            'Proof media idempotency key conflicts with an existing upload'
+          ));
+        }
+        if (error instanceof DriverProofMediaIdempotencyPendingError) {
+          return reply.code(409).send(errorResponse(
+            'PROOF_MEDIA_UPLOAD_IN_PROGRESS',
+            'Proof media upload is still in progress'
+          ));
         }
         if (isProofMediaStorageUnavailableError(error)) {
           return reply
@@ -1195,13 +1339,62 @@ export function registerDriverEventRoutes(
     }
     const driverContext = authentication.context;
 
+    let admission: { attemptId: string; attemptNumber: number } | null = null;
+    if (isDriverEventContractV2Intent(request.body)) {
+      try {
+        admission = await dependencies.driverEventService.admitDriverEventAttempt(
+          admissionInputFromAuthenticatedRequest(request, driverContext)
+        );
+        logDriverEventContractMetric(request, driverContext, {
+          attemptNumber: admission.attemptNumber,
+          failureStage: 'ADMISSION',
+          outcome: 'accepted'
+        });
+      } catch (error) {
+        if (error instanceof DriverEventAdmissionUnavailableError) {
+          logDriverEventContractMetric(request, driverContext, {
+            failureStage: 'ADMISSION',
+            outcome: 'failed'
+          });
+          return reply.code(503).send(errorResponse(error.code, 'Driver event admission is temporarily unavailable'));
+        }
+        throw error;
+      }
+    }
+
     let eventInput: ReturnType<typeof readDriverEventBody>;
     try {
       eventInput = readDriverEventBody(request.body);
     } catch {
+      if (admission !== null) {
+        await dependencies.driverEventService.finalizeDriverEventAttempt(admission.attemptId, {
+          errorCode: 'BAD_REQUEST',
+          failureStage: 'WIRE_VALIDATION',
+          retryable: false,
+          status: 'REJECTED'
+        });
+        logDriverEventContractMetric(request, driverContext, {
+          attemptNumber: admission.attemptNumber,
+          failureStage: 'WIRE_VALIDATION',
+          outcome: 'rejected'
+        });
+      }
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver event payload'));
     }
     if (eventInput.routePlanId !== null && eventInput.routePlanId !== driverContext.routePlanId) {
+      if (admission !== null) {
+        await dependencies.driverEventService.finalizeDriverEventAttempt(admission.attemptId, {
+          errorCode: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH',
+          failureStage: 'AUTHORIZATION_SCOPE',
+          retryable: false,
+          status: 'REJECTED'
+        });
+        logDriverEventContractMetric(request, driverContext, {
+          attemptNumber: admission.attemptNumber,
+          failureStage: 'AUTHORIZATION_SCOPE',
+          outcome: 'rejected'
+        });
+      }
       return reply
         .code(403)
         .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
@@ -1211,33 +1404,71 @@ export function registerDriverEventRoutes(
     try {
       result = await dependencies.driverEventService.recordDriverEvent({
         ...eventInput,
+        ...(admission === null ? {} : { attemptId: admission.attemptId }),
         driverId: driverContext.driverId,
         payload: request.body,
         routePlanId: driverContext.routePlanId,
+        ...(eventInput.driverContractVersion === 2
+          ? { requestId: request.id }
+          : {}),
         shopDomain: driverContext.shopDomain,
         shopId: driverContext.shopId
       });
     } catch (error) {
+      if (error instanceof DriverEventRouteVersionMismatchError) {
+        logDriverEventContractFailure(request, driverContext, eventInput, error.code, false);
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'CONTRACT_VALIDATION', outcome: 'rejected' });
+        return reply.code(409).send(errorResponse(error.code, 'Route version changed; refresh the assigned route'));
+      }
+      if (error instanceof DriverEventAssignmentChangedError) {
+        logDriverEventContractFailure(request, driverContext, eventInput, error.code, false);
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'CONTRACT_VALIDATION', outcome: 'rejected' });
+        return reply.code(409).send(errorResponse(error.code, 'Route assignment changed; refresh the assigned route'));
+      }
+      if (error instanceof DriverEventAdmissionUnavailableError) {
+        logDriverEventContractFailure(request, driverContext, eventInput, error.code, true);
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'ADMISSION', outcome: 'failed' });
+        return reply.code(503).send(errorResponse(error.code, 'Driver event admission is temporarily unavailable'));
+      }
       if (error instanceof DriverEventContextError) {
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'BUSINESS_VALIDATION', outcome: 'rejected' });
         return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver event route or stop context'));
       }
       if (error instanceof DriverEventRouteNotInProgressError) {
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'BUSINESS_VALIDATION', outcome: 'rejected' });
         return reply.code(409).send(errorResponse('ROUTE_NOT_IN_PROGRESS', 'Route is not in progress'));
       }
       if (error instanceof DriverEventExecutionConflictError) {
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'BUSINESS_VALIDATION', outcome: 'rejected' });
         return reply.code(409).send(errorResponse('ROUTE_EXECUTION_CONFLICT', 'An overlapping route is already in progress'));
       }
       if (error instanceof DriverEventEtaStaleConflictError) {
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'BUSINESS_TRANSACTION', outcome: 'rejected' });
         return reply.code(409).send(errorResponse('ETA_STALE_CONFLICT', 'ETA update is stale'));
       }
+      if (error instanceof DriverEventStopTransitionConflictError) {
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'BUSINESS_VALIDATION', outcome: 'rejected' });
+        return reply.code(409).send(errorResponse(error.code, 'Delivery stop is already terminal'));
+      }
       if (error instanceof DriverEventSellerOrderAssignmentChangedError) {
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'BUSINESS_VALIDATION', outcome: 'rejected' });
         return reply.code(409).send(errorResponse('SELLER_ORDER_ASSIGNMENT_CHANGED', 'Seller order assignment changed'));
       }
       if (error instanceof DriverEventScopeError) {
+        logDriverEventContractMetric(request, driverContext, { failureStage: 'AUTHORIZATION_SCOPE', outcome: 'rejected' });
         return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver event route or stop scope rejected'));
       }
 
+      logDriverEventContractMetric(request, driverContext, { failureStage: 'BUSINESS_TRANSACTION', outcome: 'failed' });
       throw error;
+    }
+
+    if (eventInput.driverContractVersion === 2 && eventInput.eventType !== 'LOCATION_UPDATED') {
+      logDriverEventContractMetric(request, driverContext, {
+        ...(admission === null ? {} : { attemptNumber: admission.attemptNumber }),
+        failureStage: 'COMMITTED',
+        outcome: result.duplicate ? 'duplicate' : 'applied'
+      });
     }
 
     if (
@@ -1252,7 +1483,7 @@ export function registerDriverEventRoutes(
         });
       } catch (error) {
         request.log.warn(
-          { error, eventId: result.eventId, routePlanId: driverContext.routePlanId },
+          { ...safeErrorTelemetry(error), errorCode: 'ROUTE_OPTIMIZATION_SCHEDULE_FAILED', eventId: result.eventId, routePlanId: driverContext.routePlanId },
           'failed to schedule route optimization after dispatch change acknowledgement'
         );
       }
@@ -1276,7 +1507,7 @@ export function registerDriverEventRoutes(
           type: 'driver.stop_sequence_deviated'
         });
       } catch (error) {
-        request.log.warn({ error, eventId: result.eventId }, 'failed to create driver stop sequence notification');
+        request.log.warn({ ...safeErrorTelemetry(error), errorCode: 'DRIVER_STOP_SEQUENCE_NOTIFICATION_FAILED', eventId: result.eventId }, 'failed to create driver stop sequence notification');
       }
     }
 
@@ -1298,7 +1529,7 @@ export function registerDriverEventRoutes(
           type: 'driver.stop_skipped_assignment_error'
         });
       } catch (error) {
-        request.log.warn({ error, eventId: result.eventId }, 'failed to create skipped pickup notification');
+        request.log.warn({ ...safeErrorTelemetry(error), errorCode: 'SKIPPED_PICKUP_NOTIFICATION_FAILED', eventId: result.eventId }, 'failed to create skipped pickup notification');
       }
     }
 
@@ -1671,21 +1902,26 @@ function isDriverConsentType(value: string): value is DriverConsentRecordInput['
 }
 
 function readDriverEventBody(body: DriverEventRequestBody): {
+  appVersion?: string | null;
+  assignmentGeneration?: string | null;
   changeRequestId: string | null;
   clientEventId: string | null;
   deliveryStopId: string | null;
+  driverContractVersion?: number | null;
   eventType: string;
+  expectedRouteVersionId?: string | null;
   latitude: string | null;
   longitude: string | null;
   occurredAt: Date;
   routePlanId: string | null;
+  versionCode?: number | null;
 } {
   const eventType = readRequiredString(body.eventType);
   if (!DRIVER_EVENT_TYPES.has(eventType)) {
     throw new Error('Invalid driver event type');
   }
 
-  const clientEventId = readOptionalString(body.clientEventId);
+  const clientEventId = readOptionalOpaqueIdentifier(body.clientEventId);
   const deliveryStopId = readOptionalString(body.deliveryStopId);
   if (eventType === 'PICKUP_COMPLETED') {
     if (clientEventId === null) {
@@ -1701,6 +1937,17 @@ function readDriverEventBody(body: DriverEventRequestBody): {
     }
   }
   const changeRequestId = readOptionalString(body.changeRequestId);
+  const driverContractVersion = readOptionalPositiveSafeInteger(body.driverContractVersion);
+  const expectedRouteVersionId = readOptionalUuid(body.expectedRouteVersionId);
+  const assignmentGeneration = readOptionalAssignmentGeneration(body.assignmentGeneration);
+  if (driverContractVersion !== null && driverContractVersion > 2 && eventType !== 'LOCATION_UPDATED') {
+    throw new Error('Unsupported driver event contract version');
+  }
+  if (driverContractVersion === 2 && eventType !== 'LOCATION_UPDATED') {
+    if (clientEventId === null || expectedRouteVersionId === null || assignmentGeneration === null) {
+      throw new Error('Versioned ordered event contract fields are required');
+    }
+  }
   if (eventType === 'DISPATCH_CHANGE_ACKNOWLEDGED') {
     if (clientEventId === null || changeRequestId === null || readOptionalString(body.routePlanId) === null) {
       throw new Error('Dispatch change acknowledgement requires clientEventId, changeRequestId, and routePlanId');
@@ -1710,15 +1957,98 @@ function readDriverEventBody(body: DriverEventRequestBody): {
   }
 
   return {
+    ...(body.appVersion === undefined ? {} : { appVersion: readOptionalBoundedText(body.appVersion, { maxLength: 64 }) }),
+    ...(body.assignmentGeneration === undefined ? {} : { assignmentGeneration }),
     changeRequestId,
     clientEventId,
     deliveryStopId,
+    ...(body.driverContractVersion === undefined ? {} : { driverContractVersion }),
     eventType,
+    ...(body.expectedRouteVersionId === undefined ? {} : { expectedRouteVersionId }),
     latitude: readOptionalCoordinate(body.latitude),
     longitude: readOptionalCoordinate(body.longitude),
     occurredAt: readRequiredDate(body.occurredAt),
-    routePlanId: readOptionalString(body.routePlanId)
+    routePlanId: readOptionalString(body.routePlanId),
+    ...(body.versionCode === undefined ? {} : { versionCode: readOptionalPositiveSafeInteger(body.versionCode) })
   };
+}
+
+function readOptionalAssignmentGeneration(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const parsed = readRequiredString(value);
+  if (!/^[1-9]\d*$/u.test(parsed) || BigInt(parsed) > 9223372036854775807n) {
+    throw new Error('Invalid assignmentGeneration');
+  }
+  return parsed;
+}
+
+function readOptionalUuid(value: unknown): string | null {
+  const parsed = readOptionalString(value);
+  if (parsed === null) return null;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(parsed)) {
+    throw new Error('Invalid UUID');
+  }
+  return parsed;
+}
+
+function readOptionalPositiveSafeInteger(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new Error('Invalid positive integer');
+  return value;
+}
+
+function isDriverEventContractV2Intent(body: DriverEventRequestBody | undefined): boolean {
+  return body !== undefined && body.driverContractVersion === 2 && body.eventType !== 'LOCATION_UPDATED';
+}
+
+function admissionInputFromAuthenticatedRequest(
+  request: FastifyRequest<{ Body: DriverEventRequestBody }>,
+  context: DriverRouteAccessScope
+): DriverEventAttemptAdmissionInput {
+  const body = request.body;
+  return {
+    appVersion: safeBoundedText(body.appVersion, 64),
+    assignmentGeneration: safeAssignmentGeneration(body.assignmentGeneration),
+    clientEventId: safeOpaqueIdentifier(body.clientEventId),
+    driverContractVersion: 2,
+    driverId: context.driverId,
+    eventType: safeBoundedText(body.eventType, 64),
+    expectedRouteVersionId: safeUuid(body.expectedRouteVersionId),
+    occurredAt: safeDate(body.occurredAt),
+    requestId: request.id,
+    routePlanId: context.routePlanId,
+    shopId: context.shopId,
+    versionCode: safePositiveInteger(body.versionCode)
+  };
+}
+
+function safeBoundedText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const parsed = value.trim();
+  return parsed !== '' && parsed.length <= maxLength ? parsed : null;
+}
+
+function safeAssignmentGeneration(value: unknown): string | null {
+  const parsed = safeBoundedText(value, 19);
+  if (parsed === null || !/^[1-9]\d*$/u.test(parsed)) return null;
+  return BigInt(parsed) <= 9223372036854775807n ? parsed : null;
+}
+
+function safeUuid(value: unknown): string | null {
+  const parsed = safeBoundedText(value, 36);
+  return parsed !== null && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(parsed)
+    ? parsed
+    : null;
+}
+
+function safeDate(value: unknown): Date | null {
+  if (typeof value !== 'string' && !(value instanceof Date)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function safePositiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : null;
 }
 
 function readDriverDestinationCompletionBody(body: DriverDestinationCompletionRequestBody): {
@@ -1728,7 +2058,7 @@ function readDriverDestinationCompletionBody(body: DriverDestinationCompletionRe
   occurredAt: Date;
   routePlanId: string;
 } {
-  const clientEventId = readRequiredString(body.clientEventId);
+  const clientEventId = readRequiredOpaqueIdentifier(body.clientEventId);
   const destinationId = readRequiredString(body.destinationId);
   const routePlanId = readRequiredString(body.routePlanId);
   if (!Array.isArray(body.deliveryStopIds)) throw new Error('deliveryStopIds are required');
@@ -1858,6 +2188,12 @@ function isProofMediaStorageUnavailableError(error: unknown): boolean {
   return ['EACCES', 'ENOENT', 'ENOTDIR', 'EROFS'].includes(String((error as { code?: unknown }).code));
 }
 
+function readProofMediaIdempotencyKey(value: string | string[] | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') return null;
+  return /^proof-media-v1:[a-f0-9]{32}$/u.test(value) ? value : null;
+}
+
 function extractBearerToken(authorization: string | undefined): string | null {
   if (authorization === undefined) {
     return null;
@@ -1885,6 +2221,25 @@ function readOptionalString(value: unknown): string | null {
   }
 
   return readRequiredString(value);
+}
+
+function readRequiredOpaqueIdentifier(value: unknown): string {
+  const identifier = readRequiredString(value);
+  if (!/^[A-Za-z0-9._:-]{1,120}$/u.test(identifier)) throw new Error('Invalid opaque identifier');
+  return identifier;
+}
+
+function readOptionalOpaqueIdentifier(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  return readRequiredOpaqueIdentifier(value);
+}
+
+function safeOpaqueIdentifier(value: unknown): string | null {
+  try {
+    return readOptionalOpaqueIdentifier(value);
+  } catch {
+    return null;
+  }
 }
 
 function readOptionalObject(value: unknown): Record<string, unknown> | null {
@@ -2031,6 +2386,131 @@ function readDriverDeliverySpaceHandoffDecision(
   };
 }
 
+function readDriverSyncHeartbeat(value: unknown): DriverSyncHeartbeatInput {
+  const body = objectOrNull(value);
+  if (body === null) throw new Error('Heartbeat must be an object');
+  const allowed = new Set([
+    'appVersion', 'clientOccurredAt', 'completedStopCount', 'currentStopSequence', 'deviceInstanceHash',
+    'driverContractVersion', 'finishPending', 'firstErrorCode', 'firstFailedAt', 'heartbeatSequence',
+    'lastAcknowledgedAt', 'lastErrorCode', 'lastRetryAt', 'locallyFinished', 'nextRetryAt', 'oldestQueuedAt',
+    'queueDepth', 'retryCount', 'retryJournal', 'sessionGeneration', 'totalStopCount', 'versionCode'
+  ]);
+  assertOnlyKeys(body, allowed);
+  const appVersion = typeof body.appVersion === 'string' && body.appVersion.trim().length <= 64 ? body.appVersion.trim() : null;
+  const clientOccurredAt = readIsoDate(body.clientOccurredAt);
+  const deviceInstanceHash = readDeviceInstanceHash(body.deviceInstanceHash);
+  const sessionGeneration = readCanonicalSessionGeneration(body.sessionGeneration);
+  const driverContractVersion = readPositiveSafeInteger(body.driverContractVersion);
+  const heartbeatSequence = readPositiveSafeInteger(body.heartbeatSequence);
+  const versionCode = readPositiveSafeInteger(body.versionCode);
+  const retryCount = readNonNegativeSafeInteger(body.retryCount);
+  if (appVersion === null || clientOccurredAt === null || deviceInstanceHash === null || sessionGeneration === null || driverContractVersion === null || heartbeatSequence === null || versionCode === null || retryCount === null || typeof body.finishPending !== 'boolean') {
+    throw new Error('Required heartbeat field is invalid');
+  }
+  const retryJournal = readRetryJournal(body.retryJournal);
+  return {
+    appVersion,
+    clientOccurredAt,
+    completedStopCount: readNullableNonNegativeInteger(body.completedStopCount),
+    currentStopSequence: readNullablePositiveInteger(body.currentStopSequence),
+    deviceInstanceHash,
+    driverContractVersion,
+    finishPending: body.finishPending,
+    firstErrorCode: readNullableStableErrorCode(body.firstErrorCode),
+    firstFailedAt: readNullableIsoDate(body.firstFailedAt),
+    heartbeatSequence,
+    lastAcknowledgedAt: readNullableIsoDate(body.lastAcknowledgedAt),
+    lastErrorCode: readNullableStableErrorCode(body.lastErrorCode),
+    lastRetryAt: readNullableIsoDate(body.lastRetryAt),
+    locallyFinished: body.locallyFinished === null || body.locallyFinished === undefined ? null : requireBoolean(body.locallyFinished),
+    nextRetryAt: readNullableIsoDate(body.nextRetryAt),
+    oldestQueuedAt: readNullableIsoDate(body.oldestQueuedAt),
+    queueDepth: readNullableNonNegativeInteger(body.queueDepth),
+    retryCount,
+    retryJournal,
+    sessionGeneration,
+    totalStopCount: readNullableNonNegativeInteger(body.totalStopCount),
+    versionCode
+  };
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function readDeviceInstanceHash(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value) ? value : null;
+}
+
+function readCanonicalSessionGeneration(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value ? value : null;
+}
+
+function readUuid(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value) ? value : null;
+}
+
+function readIsoDate(value: unknown): Date | null {
+  if (typeof value !== 'string') return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value ? parsed : null;
+}
+
+function readNullableIsoDate(value: unknown): Date | null {
+  if (value === null || value === undefined) return null;
+  const parsed = readIsoDate(value);
+  if (parsed === null) throw new Error('Invalid ISO date');
+  return parsed;
+}
+
+function readPositiveSafeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 2_147_483_647 ? value : null;
+}
+
+function readNonNegativeSafeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647 ? value : null;
+}
+
+function readNullableNonNegativeInteger(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = readNonNegativeSafeInteger(value);
+  if (parsed === null) throw new Error('Invalid non-negative integer');
+  return parsed;
+}
+
+function readNullablePositiveInteger(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = readPositiveSafeInteger(value);
+  if (parsed === null) throw new Error('Invalid positive integer');
+  return parsed;
+}
+
+function readNullableStableErrorCode(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(value)) throw new Error('Invalid stable error code');
+  return value;
+}
+
+function readRetryJournal(value: unknown): Prisma.InputJsonValue | null {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || value.length > 8) throw new Error('Invalid retry journal');
+  return value.map((entry) => {
+    const row = objectOrNull(entry);
+    if (row === null || Object.keys(row).some((key) => !['errorCode', 'observedAt'].includes(key))) throw new Error('Invalid retry journal entry');
+    const errorCode = readNullableStableErrorCode(row.errorCode);
+    const observedAt = readIsoDate(row.observedAt);
+    if (errorCode === null || observedAt === null) throw new Error('Invalid retry journal entry');
+    return { errorCode, observedAt: observedAt.toISOString() };
+  });
+}
+
+function requireBoolean(value: unknown): boolean {
+  if (typeof value !== 'boolean') throw new Error('Invalid boolean');
+  return value;
+}
+
 function assertOnlyKeys(value: unknown, allowedKeys: Set<string>): void {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('Payload must be an object');
@@ -2048,6 +2528,46 @@ function errorResponse(code: string, message: string): { data: null; error: { co
     data: null,
     error: { code, message }
   };
+}
+
+function logDriverEventContractFailure(
+  request: FastifyRequest,
+  context: DriverRouteAccessScope,
+  input: { clientEventId: string | null; eventType: string },
+  code: string,
+  retryable: boolean
+): void {
+  request.log.warn({
+    code,
+    driverId: context.driverId,
+    event: 'driver_event_contract_failure',
+    eventType: input.eventType,
+    requestId: request.id,
+    retryable,
+    routePlanId: context.routePlanId,
+    shopId: context.shopId
+  }, 'driver event contract failure');
+}
+
+function logDriverEventContractMetric(
+  request: FastifyRequest,
+  context: DriverRouteAccessScope,
+  metric: {
+    attemptNumber?: number;
+    failureStage: 'ADMISSION' | 'AUTHORIZATION_SCOPE' | 'BUSINESS_TRANSACTION' | 'BUSINESS_VALIDATION' | 'COMMITTED' | 'CONTRACT_VALIDATION' | 'WIRE_VALIDATION';
+    outcome: 'accepted' | 'applied' | 'duplicate' | 'failed' | 'rejected';
+  }
+): void {
+  request.log.info({
+    ...(metric.attemptNumber === undefined ? {} : { attemptNumber: metric.attemptNumber }),
+    driverId: context.driverId,
+    event: 'driver_event_contract_metric',
+    failureStage: metric.failureStage,
+    outcome: metric.outcome,
+    requestId: request.id,
+    routePlanId: context.routePlanId,
+    shopId: context.shopId
+  }, 'driver event contract metric');
 }
 
 function sendDriverSellerOrderError(

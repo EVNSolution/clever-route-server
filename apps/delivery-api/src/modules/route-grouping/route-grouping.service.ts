@@ -1031,9 +1031,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           const routeIdx = savedRouteIdx ?? await nextGlobalRouteIdx(tx, group.shopId);
           const previousSnapshot = readChildSnapshot(targetChild.snapshot);
           if (targetChild.routePlanId !== null) {
+            const lockedDriverId = await lockRoutePlanAssignment(tx, targetChild.routePlanId, group.shopId);
             await rewriteRoutePlanStops(tx, group.shopId, targetChild.routePlanId, assignments);
             await tx.routePlan.update({
               data: {
+                ...(lockedDriverId === driverId ? {} : { assignmentGeneration: { increment: 1 } }),
                 driverId,
                 ...(route.label === null ? {} : { name: route.label }),
                 ...(route.scheduledStartAt === undefined && route.scheduledStartTimeZone === undefined ? {} : {
@@ -1200,9 +1202,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         }
         const routeIdx = savedRouteIdx ?? await nextGlobalRouteIdx(tx, group.shopId);
         if (targetChild.routePlanId !== null) {
+          const lockedDriverId = await lockRoutePlanAssignment(tx, targetChild.routePlanId, group.shopId);
           await syncRoutePlanStopsPreservingRows(tx, group.shopId, targetChild.routePlanId, assignments);
           await tx.routePlan.update({
             data: {
+              ...(lockedDriverId === driverId ? {} : { assignmentGeneration: { increment: 1 } }),
               driverId,
               ...(route.label === null ? {} : { name: route.label }),
               ...(route.scheduledStartAt === undefined && route.scheduledStartTimeZone === undefined ? {} : {
@@ -1588,9 +1592,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           const existingChildSnapshot = readChildSnapshot(loaded.childVersions.find((child) => child.id === candidate.childId)?.snapshot ?? {});
           const existingChildColor = existingChildSnapshot.color ?? null;
           const existingRouteIdx = existingChildSnapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId);
+          const lockedDriverId = await lockRoutePlanAssignment(tx, candidate.routePlanId, loaded.shopId);
           await rewriteRoutePlanStops(tx, loaded.shopId, candidate.routePlanId, candidate.assignments);
           await tx.routePlan.update({
             data: {
+              ...(lockedDriverId === candidate.driverId ? {} : { assignmentGeneration: { increment: 1 } }),
               constraints: routeConstraints(loaded, candidate.depot),
               driverId: candidate.driverId,
               metrics: routeMetrics(candidate.assignments),
@@ -1946,6 +1952,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   private maxChildRouteStopDistanceFromDepotMeters(): number {
     return this.options.maxChildRouteStopDistanceFromDepotMeters ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS;
   }
+}
+
+async function lockRoutePlanAssignment(tx: Tx, routePlanId: string, shopId: string): Promise<string | null> {
+  const rows = await tx.$queryRaw<Array<{ driverId: string | null }>>`
+    SELECT "driverId"
+    FROM "route_plans"
+    WHERE "id" = ${routePlanId}::uuid
+      AND "shopId" = ${shopId}::uuid
+    FOR UPDATE
+  `;
+  const routePlan = rows[0];
+  if (routePlan === undefined) throw new RouteGroupingValidationError(['route plan changed; reload and retry']);
+  return routePlan.driverId;
 }
 
 

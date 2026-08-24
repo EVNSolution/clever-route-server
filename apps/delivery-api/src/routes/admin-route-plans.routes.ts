@@ -46,8 +46,10 @@ import type {
   RouteTrackingStreamEvent,
   RouteTrackingStreamHub
 } from '../modules/route-tracking/route-tracking.stream.js';
+import type { PrismaRouteOperationalStateService, RouteOperationalStateV1 } from '../modules/route-tracking/route-operational-state.service.js';
 
 export type AdminRoutePlanDependencies = {
+  operationalStateService?: Pick<PrismaRouteOperationalStateService, 'get' | 'getMany'>;
   routePlanService: RoutePlanService;
   routeTrackingService?: RouteTrackingService;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
@@ -121,9 +123,17 @@ export function registerAdminRoutePlanRoutes(
       appId: authenticated.appId,
       shopDomain: authenticated.shopDomain
     });
+    const operationalStates = await dependencies.operationalStateService?.getMany(routePlans.map(({ id }) => id));
 
     return reply.code(200).send({
-      data: { routePlans },
+      data: {
+        routePlans: operationalStates === undefined
+          ? routePlans
+          : routePlans.map((routePlan) => ({
+              ...routePlan,
+              operationalState: operationalStates.get(routePlan.id) ?? null
+            }))
+      },
       error: null
     });
   });
@@ -226,10 +236,25 @@ export function registerAdminRoutePlanRoutes(
       const snapshot = await dependencies.routeTrackingService.getRouteTrackingSnapshot({
         routePlanId: request.params.routePlanId
       });
+      const operationalState = await dependencies.operationalStateService?.get(request.params.routePlanId);
       return reply.code(200).send({
-        data: snapshot,
+        data: operationalState === undefined ? snapshot : { ...snapshot, operationalState },
         error: null
       });
+    }
+  );
+
+  app.get<{ Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/operational-state',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, { log: request.log, surface: 'admin_route_plans' });
+      if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      const exists = await routePlanExistsForAdmin(dependencies, { appId: authenticated.appId, routePlanId: request.params.routePlanId, shopDomain: authenticated.shopDomain });
+      if (!exists) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+      const state = await dependencies.operationalStateService?.get(request.params.routePlanId);
+      if (state === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Operational state is unavailable'));
+      if (state === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+      return reply.code(200).send({ data: { operationalState: state }, error: null });
     }
   );
 
@@ -266,6 +291,7 @@ export function registerAdminRoutePlanRoutes(
       let lastSentPositionEventId: string | null = null;
       let lastSentProgressEventId: string | null = null;
       let lastSentRoadMatchWatermark: string | null = null;
+      let lastSentOperationalState = '';
       const rememberSnapshot = (currentSnapshot: RouteTrackingSnapshotV1) => {
         lastSentPositionEventId = currentSnapshot.latestPosition?.eventId ?? null;
         lastSentProgressEventId = currentSnapshot.progress.latestEvent?.eventId ?? null;
@@ -305,7 +331,12 @@ export function registerAdminRoutePlanRoutes(
       }
       openTrackingStream(reply);
       writeSseRetry(reply, ROUTE_TRACKING_V1_POLICY.streamRetryMs);
-      writeSseEvent(reply, 'tracking_snapshot', snapshot);
+      const initialOperationalState = await dependencies.operationalStateService?.get(routePlanId);
+      const initialStreamSnapshot = initialOperationalState === undefined
+        ? snapshot
+        : { ...snapshot, operationalState: initialOperationalState };
+      writeSseEvent(reply, 'tracking_snapshot', initialStreamSnapshot);
+      lastSentOperationalState = JSON.stringify(initialOperationalState ?? null);
       rememberSnapshot(snapshot);
       isSnapshotSent = true;
       const snapshotEventIds = new Set(snapshot.recentPositions.map((position) => position.eventId));
@@ -322,6 +353,7 @@ export function registerAdminRoutePlanRoutes(
         const reconciliationVersion = streamVersion;
         try {
           const reconciledSnapshot = await dependencies.routeTrackingService!.getRouteTrackingSnapshot({ routePlanId });
+          const reconciledOperationalState = await dependencies.operationalStateService?.get(routePlanId);
           if (
             isCleanedUp
             || request.raw.destroyed
@@ -333,14 +365,23 @@ export function registerAdminRoutePlanRoutes(
           const nextPositionEventId = reconciledSnapshot.latestPosition?.eventId ?? null;
           const nextProgressEventId = reconciledSnapshot.progress.latestEvent?.eventId ?? null;
           const nextRoadMatchWatermark = reconciledSnapshot.roadMatchedPath?.watermark ?? null;
+          const nextOperationalState = JSON.stringify(reconciledOperationalState ?? null);
           if (
             nextPositionEventId === lastSentPositionEventId
             && nextProgressEventId === lastSentProgressEventId
             && nextRoadMatchWatermark === lastSentRoadMatchWatermark
+            && nextOperationalState === lastSentOperationalState
           ) {
             return;
           }
-          writeSseEvent(reply, 'tracking_snapshot', reconciledSnapshot);
+          writeSseEvent(
+            reply,
+            'tracking_snapshot',
+            reconciledOperationalState === undefined
+              ? reconciledSnapshot
+              : { ...reconciledSnapshot, operationalState: reconciledOperationalState }
+          );
+          lastSentOperationalState = nextOperationalState;
           rememberSnapshot(reconciledSnapshot);
         } catch (error) {
           request.log.warn({ err: error, routePlanId }, 'Route tracking stream reconciliation failed');
@@ -767,12 +808,12 @@ function writeSseEvent(
 function writeSseEvent(
   reply: FastifyReply,
   eventName: 'tracking_snapshot',
-  data: RouteTrackingSnapshotV1
+  data: RouteTrackingSnapshotV1 & { operationalState?: RouteOperationalStateV1 | null }
 ): void;
 function writeSseEvent(
   reply: FastifyReply,
   eventName: 'tracking_position' | 'tracking_progress' | 'tracking_snapshot',
-  data: RouteTrackingPositionEventV1 | RouteTrackingProgressEventV1 | RouteTrackingSnapshotV1
+  data: RouteTrackingPositionEventV1 | RouteTrackingProgressEventV1 | (RouteTrackingSnapshotV1 & { operationalState?: RouteOperationalStateV1 | null })
 ): void {
   reply.raw.write(`event: ${eventName}\n`);
   reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);

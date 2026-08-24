@@ -36,6 +36,28 @@ describe('CustomerDeliveryNotificationWorker', () => {
     });
   });
 
+  test('keeps the outbox SENT and leaves durable STARTED evidence for reconciliation when attempt settlement fails', async () => {
+    const { outbox, sender } = createHarness();
+    sender.send.mockResolvedValue({ provider: 'http', providerMessageId: 'provider-id', status: 'SENT' });
+    const attempts = {
+      settle: vi.fn(() => Promise.reject(new Error('attempt settle unavailable'))),
+      startAutomatic: vi.fn(() => Promise.resolve({ attemptId: 'attempt-id', correlationId: 'correlation-id' }))
+    };
+    const logger = { warn: vi.fn() };
+    const worker = new CustomerDeliveryNotificationWorker(outbox as never, sender, { batchSize: 1 }, logger, attempts as never);
+
+    await expect(worker.runDueBatch(now)).resolves.toBe(1);
+    await expect(worker.runDueBatch(now)).resolves.toBe(0);
+    expect(outbox.markSent).toHaveBeenCalledOnce();
+    expect(sender.send).toHaveBeenCalledOnce();
+    expect(attempts.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'SENT' }));
+    expect(logger.warn).toHaveBeenCalledWith({
+      attemptCount: 1,
+      errorCode: 'CUSTOMER_NOTIFICATION_ATTEMPT_RECONCILIATION_REQUIRED',
+      factId: 'fact-id'
+    }, 'customer delivery notification attempt requires reconciliation');
+  });
+
   test('sends customer memo notifications from durable metadata without route payload', async () => {
     const { outbox, sender } = createHarness({
       deliveryStopId: null,
@@ -168,6 +190,43 @@ describe('CustomerDeliveryNotificationWorker', () => {
     expect(runtime.enabled).toBe(false);
     await expect(runtime.start()).resolves.toBeUndefined();
     await expect(runtime.close()).resolves.toBeUndefined();
+  });
+
+  test('redacts hostile iteration errors before external logging', async () => {
+    const logger = { error: vi.fn() };
+    const outbox = {
+      claimNext: vi.fn(() => Promise.reject(new Error('token=secret customer@example.invalid at 99 Private Street')))
+    };
+    const worker = new CustomerDeliveryNotificationWorker(
+      outbox as never,
+      { providerName: 'http', send: vi.fn() },
+      { pollIntervalMs: 60_000 },
+      logger
+    );
+
+    worker.start();
+    await vi.waitFor(() => expect(logger.error).toHaveBeenCalledOnce());
+    await worker.close();
+
+    expect(logger.error).toHaveBeenCalledWith({
+      errorCode: 'CUSTOMER_NOTIFICATION_WORKER_ITERATION_FAILED',
+      errorMessage: '[redacted-secret] [redacted-email] at [redacted-address]'
+    }, 'customer delivery notification worker iteration failed');
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain('customer@example.invalid');
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain('99 Private Street');
+  });
+
+  test('keeps the runtime disabled when the automatic worker flag is false', async () => {
+    const runtime = createCustomerDeliveryNotificationRuntime({
+      env: {
+        CUSTOMER_DELIVERY_NOTIFICATION_URL: 'https://notifications.example.test/customer-delivery',
+        CUSTOMER_DELIVERY_NOTIFICATION_WORKER_ENABLED: 'false'
+      },
+      prisma: {} as never
+    });
+    expect(runtime.enabled).toBe(false);
+    await runtime.start();
+    await runtime.close();
   });
 });
 

@@ -11,11 +11,13 @@ import type {
   OrderCustomerNoteContextResponse,
   OrderMetadataDiagnosticsResponse,
   OrderMutationResponse,
+  OperationalHealthResponse,
   OrdersResponse,
   RouteDeleteResponse,
   RouteOptimizationJobResponse,
   RouteGroupingDetailDto,
   RoutePlanDetailDto,
+  RouteOperationalStateResponse,
   RouteSaveResponse,
   RoutesResponse,
   SettingsResponse,
@@ -57,12 +59,38 @@ export async function getNotifications(
   );
 }
 
+export async function getOperationalHealth(): Promise<OperationalHealthResponse> {
+  return apiGet<OperationalHealthResponse>(
+    "/admin/ui/app/api/runtime-health",
+  );
+}
+
+export async function getRouteOperationalState(
+  routePlanId: string,
+): Promise<RouteOperationalStateResponse> {
+  return apiGet<RouteOperationalStateResponse>(
+    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/operational-state`,
+  );
+}
+
 export async function markNotificationRead(input: {
   csrfToken: string;
   notificationId: string;
 }): Promise<NotificationMutationResponse> {
   return apiMutation<NotificationMutationResponse>(
     `/admin/ui/app/api/notifications/${encodeURIComponent(input.notificationId)}/read`,
+    "PATCH",
+    input.csrfToken,
+    {},
+  );
+}
+
+export async function acknowledgeNotification(input: {
+  csrfToken: string;
+  notificationId: string;
+}): Promise<NotificationMutationResponse> {
+  return apiMutation<NotificationMutationResponse>(
+    `/admin/ui/app/api/notifications/${encodeURIComponent(input.notificationId)}/acknowledge`,
     "PATCH",
     input.csrfToken,
     {},
@@ -87,6 +115,7 @@ type NotificationChangeEventSourceConstructor = new (
 
 export function openNotificationChangeStream(input: {
   onNotificationsChanged: () => void;
+  onReconnected?: () => void;
 }): NotificationChangeStreamSubscription | null {
   const EventSourceConstructor = globalThis.EventSource as
     | NotificationChangeEventSourceConstructor
@@ -97,7 +126,13 @@ export function openNotificationChangeStream(input: {
     withWorkspaceQuery('/admin/ui/app/api/notifications/stream'),
   );
   const onNotificationsChanged = (): void => input.onNotificationsChanged();
+  let opened = false;
+  const onOpen = (): void => {
+    if (opened) input.onReconnected?.();
+    opened = true;
+  };
   eventSource.addEventListener('notifications_changed', onNotificationsChanged);
+  eventSource.addEventListener('open', onOpen);
   eventSource.onerror = () => undefined;
 
   return {
@@ -106,6 +141,7 @@ export function openNotificationChangeStream(input: {
         'notifications_changed',
         onNotificationsChanged,
       );
+      eventSource.removeEventListener('open', onOpen);
       eventSource.close();
     },
   };

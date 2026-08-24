@@ -55,6 +55,7 @@ import { recordInventorySourceItemDeltas } from '../inventory/inventory.service.
 import { isIanaTimezone, localDateTimeInTimeZoneToUtc } from '../driver/driver-route-timezone.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from '../shopify/shopify-api-version.js';
+import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
 const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
@@ -545,9 +546,18 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (shop === null) {
         return false;
       }
+      if (Object.hasOwn(input.payload, 'driverId')) {
+        await tx.$queryRaw`
+          SELECT "id"
+          FROM "route_plans"
+          WHERE "id" = ${input.routePlanId}::uuid
+            AND "shopId" = ${shop.id}::uuid
+          FOR UPDATE
+        `;
+      }
 
       const routePlan = await tx.routePlan.findFirst({
-        select: { id: true },
+        select: { driverId: true, id: true },
         where: {
           id: input.routePlanId,
           shopId: shop.id
@@ -570,10 +580,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       }
 
-      await tx.routePlan.update({
-        data: { driverId },
-        where: { id: routePlan.id }
-      });
+      if (routePlan.driverId !== driverId) {
+        await tx.routePlan.update({
+          data: { assignmentGeneration: { increment: 1 }, driverId },
+          where: { id: routePlan.id }
+        });
+      }
 
       return true;
     });
@@ -652,6 +664,15 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       });
       if (shop === null) {
         return null;
+      }
+      if (Object.hasOwn(input.payload, 'driverId')) {
+        await tx.$queryRaw`
+          SELECT "id"
+          FROM "route_plans"
+          WHERE "id" = ${input.routePlanId}::uuid
+            AND "shopId" = ${shop.id}::uuid
+          FOR UPDATE
+        `;
       }
 
       let routePlan = (await tx.routePlan.findFirst({
@@ -918,7 +939,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           }
 
           await tx.routePlan.update({
-            data: { driverId: nextDriverId },
+            data: { assignmentGeneration: { increment: 1 }, driverId: nextDriverId },
             where: { id: routePlan.id }
           });
           operations.push({ name: 'driver', reason: nextDriverId === null ? 'driver_cleared' : 'driver_changed', status: 'applied' });
@@ -967,6 +988,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     assertNoDuplicateOrderInputs(input.orders);
 
     return this.prisma.$transaction(async (tx) => {
+      await assertShopifyShopPrivacyWriteAllowed(tx, {
+        appId: normalizeShopifyAppId(input.appId),
+        shopDomain
+      });
       const shop = await tx.shop.upsert({
         create: {
           apiVersion: DEFAULT_SHOPIFY_ADMIN_API_VERSION,
