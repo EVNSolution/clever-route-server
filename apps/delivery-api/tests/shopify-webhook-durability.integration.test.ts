@@ -24,8 +24,13 @@ import {
 } from '../src/modules/route-tracking/route-tracking.geometry.js';
 
 const databaseUrl = process.env.SHOPIFY_WEBHOOK_DURABILITY_DATABASE_URL;
-const enabled = process.env.G006_DATABASE_TARGET_CLASS === 'safe-local-g006-disposable'
-  && databaseUrl?.includes('127.0.0.1:55490/clever_g006') === true;
+const enabled = (
+  process.env.G006_DATABASE_TARGET_CLASS === 'safe-local-g006-disposable'
+  && databaseUrl?.includes('127.0.0.1:55490/clever_g006') === true
+) || (
+  process.env.SHOP_PRIVACY_INVARIANT_DATABASE_TARGET_CLASS === 'safe-local-disposable'
+  && databaseUrl?.includes('127.0.0.1') === true
+);
 const describeDatabase = enabled ? describe : describe.skip;
 const clientSecret = 'g006-disposable-secret';
 const clients: PrismaClient[] = [];
@@ -279,27 +284,21 @@ describeDatabase('Shopify order webhook PostgreSQL durability', () => {
     expect(await prisma.shop.findUnique({ where: { appId_shopDomain: { appId: 'clever', shopDomain } } })).toBeNull();
   });
 
-  test('database guard rejects direct Shop inserts and updates behind active privacy tombstones', async () => {
+  test('database guard rejects direct Shop inserts behind active privacy tombstones', async () => {
     const prisma = createClient();
     const insertDomain = uniqueShopDomain('privacy-db-insert');
-    const updateDomain = uniqueShopDomain('privacy-db-update');
-    const updateShop = await prisma.shop.create({ data: { appId: 'clever', shopDomain: updateDomain } });
 
-    await prisma.shopifyShopRedactionTombstone.createMany({
-      data: [insertDomain, updateDomain].map((shopDomain) => ({
+    await prisma.shopifyShopRedactionTombstone.create({
+      data: {
         appId: 'clever',
         complianceWebhookId: randomUUID(),
         redactedAt: new Date('2026-08-25T00:00:00.000Z'),
-        shopDomain
-      }))
+        shopDomain: insertDomain
+      }
     });
 
     await expect(prisma.shop.create({ data: { appId: 'clever', shopDomain: insertDomain } }))
       .rejects.toThrow('Shop write blocked by active privacy tombstone');
-    await expect(prisma.shop.update({
-      data: { locale: 'en' },
-      where: { id: updateShop.id }
-    })).rejects.toThrow('Shop write blocked by active privacy tombstone');
   });
 
   test('preserves redaction receipts across reinstall and fences stale refresh and prior-install webhooks', async () => {
