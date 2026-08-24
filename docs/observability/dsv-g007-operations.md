@@ -45,13 +45,35 @@ compose file does not need to publish API port `3000` on the host. To probe a
 separately exposed endpoint instead, set `ROUTE_OPS_G007_STATUS_BASE_URL` to the
 external base URL.
 
-The JSON status follows this exit policy:
+The JSON status schema is version 2 and follows this exit policy:
 
 | Status | Exit | Meaning |
 | --- | ---: | --- |
-| `ok` | 0 | Health, readiness, migrations, invariants, and legacy usage are within policy. |
+| `ok` | 0 | Health, readiness, migrations, invariants, legacy usage, and customer-email outbox state are within policy. |
+| `warning` | 0 | The automatic customer-email runtime is disabled while queued or retryable work remains. This is operator-visible backlog, not evidence that the deployment or API is unavailable. |
 | `unknown` | 1 | A check could not be read and no critical finding was observed. |
-| `critical` | 2 | Health/readiness failed, the deployed migration manifest is malformed, migration history is pending, incomplete, unresolved, unexpected, or has a current successful-row checksum mismatch, an invariant failed, or legacy read/write usage was observed. |
+| `critical` | 2 | Health/readiness failed, the deployed migration manifest is malformed, migration history is pending, incomplete, unresolved, unexpected, or has a current successful-row checksum mismatch, an invariant failed, legacy read/write usage was observed, email work is stranded/dead, or an enabled email runtime has overdue work. |
+
+The `customerEmailOutbox` check reads every `(app, shop)` database scope, including
+non-default app scopes, but emits anonymous scope ordinals and a `defaultApp`
+boolean only. It never emits app/shop identifiers, recipient data, email content,
+order/customer identifiers, provider messages, or provider error payload text. Counts are split into
+fresh and overdue queued work, retry waits, processing/stale processing, and dead
+letters. The query is read-only and does not update facts or delivery-attempt rows.
+
+When automatic customer delivery email is intentionally paused in an operating
+environment, declare that intent with the exact runtime key:
+
+```dotenv
+CUSTOMER_DELIVERY_NOTIFICATION_WORKER_ENABLED=false
+```
+
+Do not use `CUSTOMER_NOTIFICATION_WORKER_ENABLED`; the runtime does not read that
+shorter name. A missing `CUSTOMER_DELIVERY_NOTIFICATION_URL` already disables the
+sender implicitly, but the explicit worker flag distinguishes deliberate policy
+from an accidentally incomplete sender configuration. This runbook declaration
+does not change the committed example default and does not authorize sending or
+re-sending queued facts.
 
 Migration status reads the authoritative migration names and SHA-256 checksums
 from the deployed API image, then compares them with successful applied rows in
