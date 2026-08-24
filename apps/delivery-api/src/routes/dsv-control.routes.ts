@@ -112,6 +112,8 @@ const apiRoot = '/api/dsv';
 const cookiePath = `${apiRoot}/`;
 const operatorGuideFileName = 'CLEVER_DSV_관제_운영자_사용자_가이드_20260811.pdf';
 const operatorGuidePath = fileURLToPath(new URL(`../../assets/dsv-guides/${operatorGuideFileName}`, import.meta.url));
+const driverGuideFileName = 'CLEVER_Driver_설치_현장교육_가이드_Rev1.0.pdf';
+const driverGuidePath = fileURLToPath(new URL(`../../assets/dsv-guides/${driverGuideFileName}`, import.meta.url));
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const applyCommandIdHeader = 'idempotency-key';
 const assignmentCommandIdHeader = 'idempotency-key';
@@ -467,7 +469,18 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:settings:read']));
 
   app.get<{ Querystring: { download?: string } }>(`${apiRoot}/guides/operator`, async (request, reply) =>
-    withDsvSession(request, reply, dependencies, async () => sendOperatorGuide(request, reply), ['dsv:settings:read']));
+    withDsvSession(request, reply, dependencies, async () => sendGuide(request, reply, {
+      asciiFileName: 'CLEVER_DSV_Operator_User_Guide_20260811.pdf',
+      fileName: operatorGuideFileName,
+      path: operatorGuidePath,
+    }), ['dsv:settings:read']));
+
+  app.get<{ Querystring: { download?: string } }>(`${apiRoot}/guides/driver`, async (request, reply) =>
+    withDsvSession(request, reply, dependencies, async () => sendGuide(request, reply, {
+      asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.0.pdf',
+      fileName: driverGuideFileName,
+      path: driverGuidePath,
+    }), ['dsv:settings:read']));
 
   app.patch(`${apiRoot}/settings/operations`, async (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
@@ -1447,13 +1460,14 @@ function sendData<T>(reply: FastifyReply, data: T, statusCode = 200): unknown {
   return reply.code(statusCode).type('application/json; charset=utf-8').header('Cache-Control', 'private, no-store').send({ data, error: null });
 }
 
-async function sendOperatorGuide(
+async function sendGuide(
   request: FastifyRequest<{ Querystring: { download?: string } }>,
   reply: FastifyReply,
+  guide: { asciiFileName: string; fileName: string; path: string },
 ): Promise<unknown> {
   let size: number;
   try {
-    size = (await stat(operatorGuidePath)).size;
+    size = (await stat(guide.path)).size;
   } catch {
     return sendError(reply, 503, 'DSV_GUIDE_UNAVAILABLE', '사용자 가이드 파일을 사용할 수 없습니다.');
   }
@@ -1464,10 +1478,10 @@ async function sendOperatorGuide(
     .type('application/pdf')
     .header('Accept-Ranges', 'bytes')
     .header('Cache-Control', 'private, no-store')
-    .header('Content-Disposition', `${disposition}; filename="CLEVER_DSV_Operator_User_Guide_20260811.pdf"; filename*=UTF-8''${encodeURIComponent(operatorGuideFileName)}`);
+    .header('Content-Disposition', `${disposition}; filename="${guide.asciiFileName}"; filename*=UTF-8''${encodeURIComponent(guide.fileName)}`);
 
   if (range === null) {
-    return reply.code(200).header('Content-Length', size).send(createReadStream(operatorGuidePath));
+    return reply.code(200).header('Content-Length', size).send(createReadStream(guide.path));
   }
   if (range === 'invalid') {
     return reply.code(416).header('Content-Range', `bytes */${size}`).send();
@@ -1476,7 +1490,7 @@ async function sendOperatorGuide(
     .code(206)
     .header('Content-Length', range.end - range.start + 1)
     .header('Content-Range', `bytes ${range.start}-${range.end}/${size}`)
-    .send(createReadStream(operatorGuidePath, range));
+    .send(createReadStream(guide.path, range));
 }
 
 function parseByteRange(value: string | undefined, size: number): { end: number; start: number } | 'invalid' | null {

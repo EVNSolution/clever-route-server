@@ -98,17 +98,20 @@ describe('DSV control routes', () => {
     }
   });
 
-  test('serves the operator guide only to authenticated settings readers with byte ranges and downloads', async () => {
+  test.each([
+    { fileNamePrefix: 'CLEVER_DSV_', guide: 'operator' },
+    { fileNamePrefix: 'CLEVER_Driver_', guide: 'driver' },
+  ])('serves the $guide guide only to authenticated settings readers with byte ranges and downloads', async ({ fileNamePrefix, guide }) => {
     const { app } = await createHarness();
     try {
-      const unauthorized = await app.inject({ method: 'GET', url: '/api/dsv/guides/operator' });
+      const unauthorized = await app.inject({ method: 'GET', url: `/api/dsv/guides/${guide}` });
       expect(unauthorized.statusCode).toBe(401);
 
       const login = await loginToDsv(app);
       const partial = await app.inject({
         headers: { cookie: login.cookie, range: 'bytes=0-3' },
         method: 'GET',
-        url: '/api/dsv/guides/operator',
+        url: `/api/dsv/guides/${guide}`,
       });
       expect(partial.statusCode).toBe(206);
       expect(partial.headers['accept-ranges']).toBe('bytes');
@@ -120,16 +123,16 @@ describe('DSV control routes', () => {
       const download = await app.inject({
         headers: { cookie: login.cookie, range: 'bytes=-4' },
         method: 'GET',
-        url: '/api/dsv/guides/operator?download=1',
+        url: `/api/dsv/guides/${guide}?download=1`,
       });
       expect(download.statusCode).toBe(206);
       expect(download.headers['content-disposition']).toContain('attachment');
-      expect(download.headers['content-disposition']).toContain("filename*=UTF-8''CLEVER_DSV_");
+      expect(download.headers['content-disposition']).toContain(`filename*=UTF-8''${fileNamePrefix}`);
 
       const invalid = await app.inject({
         headers: { cookie: login.cookie, range: 'bytes=999999999-' },
         method: 'GET',
-        url: '/api/dsv/guides/operator',
+        url: `/api/dsv/guides/${guide}`,
       });
       expect(invalid.statusCode).toBe(416);
       expect(invalid.headers['content-range']).toMatch(/^bytes \*\/\d+$/u);
