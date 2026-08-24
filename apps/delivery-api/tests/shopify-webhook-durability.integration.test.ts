@@ -279,6 +279,29 @@ describeDatabase('Shopify order webhook PostgreSQL durability', () => {
     expect(await prisma.shop.findUnique({ where: { appId_shopDomain: { appId: 'clever', shopDomain } } })).toBeNull();
   });
 
+  test('database guard rejects direct Shop inserts and updates behind active privacy tombstones', async () => {
+    const prisma = createClient();
+    const insertDomain = uniqueShopDomain('privacy-db-insert');
+    const updateDomain = uniqueShopDomain('privacy-db-update');
+    const updateShop = await prisma.shop.create({ data: { appId: 'clever', shopDomain: updateDomain } });
+
+    await prisma.shopifyShopRedactionTombstone.createMany({
+      data: [insertDomain, updateDomain].map((shopDomain) => ({
+        appId: 'clever',
+        complianceWebhookId: randomUUID(),
+        redactedAt: new Date('2026-08-25T00:00:00.000Z'),
+        shopDomain
+      }))
+    });
+
+    await expect(prisma.shop.create({ data: { appId: 'clever', shopDomain: insertDomain } }))
+      .rejects.toThrow('Shop write blocked by active privacy tombstone');
+    await expect(prisma.shop.update({
+      data: { locale: 'en' },
+      where: { id: updateShop.id }
+    })).rejects.toThrow('Shop write blocked by active privacy tombstone');
+  });
+
   test('preserves redaction receipts across reinstall and fences stale refresh and prior-install webhooks', async () => {
     const prisma = createClient();
     const webhooks = new PrismaShopifyWebhookEventRepository(prisma);
@@ -313,9 +336,10 @@ describeDatabase('Shopify order webhook PostgreSQL durability', () => {
       await assertShopifyShopPrivacyWriteAllowed(tx, { appId: 'clever', shopDomain });
       return tx.shop.create({ data: { appId: 'clever', shopDomain } });
     })).rejects.toMatchObject({ code: 'SHOP_PRIVACY_REDACTED' });
-    // Expand migration remains compatible with a previous image during the
-    // rollout window; verified install must still reactivate an unfenced row.
-    await prisma.shop.create({ data: { appId: 'clever', shopDomain } });
+    await expect(prisma.shop.create({ data: { appId: 'clever', shopDomain } }))
+      .rejects.toThrow('Shop write blocked by active privacy tombstone');
+    // Release 1 remains rollback-compatible after the contract migration: its
+    // verified-install path reactivates the tombstone before writing Shop.
     await tokens.upsertShopToken({ ...tokenInput(shopDomain), installedAt: reinstallAt });
     await expect(tokens.updateRefreshedShopToken({
       ...tokenInput(shopDomain),
