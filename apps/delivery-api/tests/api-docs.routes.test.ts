@@ -131,6 +131,8 @@ describe('API documentation routes', () => {
       expect(response.body).toContain('DriverSyncHeartbeatRequest:');
       expect(response.body).toContain('RouteOperationalState:');
       expect(response.body).toContain('EmailRuntimeHealthEnvelope:');
+      expect(response.body).toContain('DriverRouteCompletionInvariantHealth:');
+      expect(response.body).toContain('ROUTE_COMPLETION_INCOMPLETE');
     } finally {
       await app.close();
     }

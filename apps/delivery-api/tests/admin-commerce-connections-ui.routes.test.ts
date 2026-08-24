@@ -147,6 +147,39 @@ describe("Route Ops route list source regressions", () => {
 });
 
 describe("Admin WooCommerce connection UI routes", () => {
+  test("exposes the completion invariant mode only through authenticated runtime health", async () => {
+    const runtimeHealthService = {
+      get: vi.fn(() => Promise.resolve({
+        email: {
+          automatic: { senderConfigured: true, workerEnabled: true },
+          configured: true,
+          manual: { brevoConfigured: true },
+          outbox: { deadLetter: 0, lastErrorCode: null, lastSuccessAt: null, oldestPendingAt: null, pending: 0, processing: 0, retryWait: 0 },
+          state: "HEALTHY" as const
+        },
+        observedAt: "2026-08-25T00:00:00.000Z"
+      }))
+    };
+    const { app } = await createUiHarness({ driverRouteCompletionInvariantMode: "GUARDED", runtimeHealthService });
+    try {
+      const anonymous = await app.inject({ method: "GET", url: "/admin/ui/app/api/runtime-health?shopDomain=tenant-a.example.test" });
+      expect(anonymous.statusCode).toBe(401);
+      const { cookie } = await loginAndReadCsrf(app);
+      const authenticated = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/runtime-health?shopDomain=tenant-a.example.test"
+      });
+      expect(authenticated.statusCode).toBe(200);
+      expect(authenticated.json()).toMatchObject({
+        data: { runtimeHealth: { driverRouteCompletionInvariant: { mode: "GUARDED" } } },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test("does not register UI dependencies without dedicated strong web secrets or through JWT fallback", () => {
     const base = createBaseAdminCommerceDependencies();
 
@@ -7274,6 +7307,7 @@ async function createUiHarness(
     routesAppReleaseRepository: RoutesAppReleaseRepository;
     deliveryCustomerService: AdminCommerceConnectionsUiDependencies["deliveryCustomerService"];
     driverService: AdminCommerceConnectionsUiDependencies["driverService"];
+    driverRouteCompletionInvariantMode: AdminCommerceConnectionsUiDependencies["driverRouteCompletionInvariantMode"];
     geocodingService: AdminCommerceConnectionsUiDependencies["geocodingService"];
     getConnection: ReturnType<typeof vi.fn>;
     listConnections: ReturnType<typeof vi.fn>;
@@ -7281,6 +7315,7 @@ async function createUiHarness(
     orderSyncService: AdminCommerceConnectionsUiDependencies["orderSyncService"];
     notificationService: AdminCommerceConnectionsUiDependencies["notificationService"];
     operationalStateService: AdminCommerceConnectionsUiDependencies["operationalStateService"];
+    runtimeHealthService: AdminCommerceConnectionsUiDependencies["runtimeHealthService"];
     pairingCodeService:
       | AdminCommerceConnectionsUiDependencies["pairingCodeService"]
       | null;
@@ -7390,6 +7425,9 @@ async function createUiHarness(
     ...(overrides.driverService === undefined
       ? {}
       : { driverService: overrides.driverService }),
+    ...(overrides.driverRouteCompletionInvariantMode === undefined
+      ? {}
+      : { driverRouteCompletionInvariantMode: overrides.driverRouteCompletionInvariantMode }),
     ...(overrides.orderIngestAuditService === undefined
       ? {}
       : { orderIngestAuditService: overrides.orderIngestAuditService }),
@@ -7402,6 +7440,9 @@ async function createUiHarness(
     ...(overrides.operationalStateService === undefined
       ? {}
       : { operationalStateService: overrides.operationalStateService }),
+    ...(overrides.runtimeHealthService === undefined
+      ? {}
+      : { runtimeHealthService: overrides.runtimeHealthService }),
     ...(overrides.now === undefined ? {} : { now: overrides.now }),
     publicBaseUrl: "https://clever-route-api.cleversystem.ai",
     ...(overrides.routeOptimizationJobService === undefined

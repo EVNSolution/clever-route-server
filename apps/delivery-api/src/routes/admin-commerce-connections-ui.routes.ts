@@ -146,6 +146,7 @@ import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
 import type { AdminNotificationServiceApi } from "../modules/notifications/admin-notification.service.js";
 import type { PrismaRouteOperationalStateService } from "../modules/route-tracking/route-operational-state.service.js";
 import type { PrismaEmailRuntimeHealthService } from "../modules/customer-email/email-runtime-health.service.js";
+import type { DriverRouteCompletionInvariantMode } from "../modules/driver/driver-route-completion-invariant.js";
 import type { PrismaDeliveryCustomerProfileService } from "../modules/delivery-customer/delivery-customer-profile.service.js";
 import type { RoutesAppReleaseRepository } from "../modules/routes-app/routes-app-release.repository.js";
 import {
@@ -430,6 +431,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "listDrivers"
     | "regenerateInviteCode"
   >;
+  driverRouteCompletionInvariantMode?: DriverRouteCompletionInvariantMode;
   loginSecret: string;
   now?: () => Date;
   onboardingService: Pick<
@@ -786,7 +788,14 @@ export function registerAdminCommerceConnectionsUiRoutes(
     withRouteOpsApi(request, reply, readSession(request, dependencies), async (session) => {
       if (dependencies.runtimeHealthService === undefined) throw new WooCommerceOnboardingError("BAD_REQUEST", "Runtime health is not enabled", 400);
       const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
-      return routeOpsData({ runtimeHealth: await dependencies.runtimeHealthService.get({ shopDomain }) });
+      return routeOpsData({
+        runtimeHealth: {
+          ...await dependencies.runtimeHealthService.get({ shopDomain }),
+          driverRouteCompletionInvariant: {
+            mode: dependencies.driverRouteCompletionInvariantMode ?? 'OBSERVE'
+          }
+        }
+      });
     })
   );
 

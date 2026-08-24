@@ -409,6 +409,7 @@ function repositoryHarness(input: {
       findUnique: vi.fn(() => Promise.resolve(null)),
       update: input.attemptUpdate
     },
+    driverRouteCompletionReview: { create: vi.fn(() => Promise.resolve({ id: 'completion-review-id' })) },
     dsvDispatchChangeRequest: {},
     order: {},
     routePlan: {

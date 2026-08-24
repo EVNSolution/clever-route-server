@@ -4800,7 +4800,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
-          description: Route version or assignment changed after session issue.
+          description: Route version or assignment changed, or ROUTE_COMPLETION_INCOMPLETE rejected a premature completion while leaving the route IN_PROGRESS.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -4870,7 +4870,7 @@ paths:
   /admin/ui/app/api/runtime-health:
     get:
       tags: [Route Operations Admin]
-      summary: Read redacted customer-email runtime and outbox health
+      summary: Read redacted runtime health, including the route-completion invariant mode
       operationId: getRouteOperationsRuntimeHealth
       x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
       responses:
@@ -8793,9 +8793,10 @@ components:
             runtimeHealth:
               type: object
               additionalProperties: false
-              required: [email, observedAt]
+              required: [driverRouteCompletionInvariant, email, observedAt]
               properties:
                 observedAt: { type: string, format: date-time }
+                driverRouteCompletionInvariant: { $ref: '#/components/schemas/DriverRouteCompletionInvariantHealth' }
                 email:
                   type: object
                   additionalProperties: false
@@ -8829,6 +8830,12 @@ components:
                         processing: { type: integer, minimum: 0 }
                         retryWait: { type: integer, minimum: 0 }
         error: { type: 'null' }
+    DriverRouteCompletionInvariantHealth:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode: { type: string, enum: [OBSERVE, GUARDED, FULL] }
     DriverEventEnvelope:
       type: object
       required: [data, error]

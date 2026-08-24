@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { cleanupResolvedDriverEventAttempts } from '../src/modules/driver/driver-event-attempt-retention.js';
 import {
   DriverEventRouteVersionMismatchError,
+  DriverRouteCompletionIncompleteError,
   PrismaDriverEventRepository
 } from '../src/modules/driver/driver-event.repository.js';
 import {
@@ -115,6 +116,29 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
     const routeVersionId = '50000000-0000-4000-8000-000000000010';
     try {
       await seedEvidenceFixture(prisma, { accountA, accountB, driverA, driverB, routePlanId, routeVersionId, shopId });
+      await prisma.$executeRawUnsafe(`INSERT INTO orders
+        (id, "shopId", "shopifyOrderGid", name, "rawPayload", "createdAt", "updatedAt") VALUES
+        ('60000000-0000-4000-8000-000000000010', '${shopId}', 'gid://shopify/Order/completion-invariant', 'Invariant', '{}', now(), now())`);
+      await prisma.$executeRawUnsafe(`INSERT INTO delivery_stops
+        (id, "shopId", "orderId", status, "createdAt", "updatedAt") VALUES
+        ('61000000-0000-4000-8000-000000000010', '${shopId}', '60000000-0000-4000-8000-000000000010', 'ASSIGNED', now(), now())`);
+      await prisma.$executeRawUnsafe(`INSERT INTO route_plan_stops
+        (id, "shopId", "routePlanId", "deliveryStopId", sequence, "createdAt", "updatedAt") VALUES
+        ('62000000-0000-4000-8000-000000000010', '${shopId}', '${routePlanId}', '61000000-0000-4000-8000-000000000010', 1, now(), now())`);
+
+      const guardedRepository = new PrismaDriverEventRepository(prisma, { completionInvariantMode: 'GUARDED' });
+      await expect(guardedRepository.recordDriverEvent({
+        appVersion: '1.2.0', assignmentGeneration: '1', clientEventId: 'guarded-incomplete', deliveryStopId: null,
+        driverContractVersion: 2, driverId: driverA, eventType: 'ROUTE_COMPLETED', expectedRouteVersionId: routeVersionId,
+        latitude: null, longitude: null, occurredAt: new Date('2026-08-24T04:58:00.000Z'), payload: {},
+        requestId: 'request-guarded-incomplete', routePlanId, shopDomain: 'g002-evidence.invalid', shopId, versionCode: 120
+      })).rejects.toBeInstanceOf(DriverRouteCompletionIncompleteError);
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({ status: 'IN_PROGRESS' });
+      expect(await prisma.driverEvent.count({ where: { clientEventId: 'guarded-incomplete' } })).toBe(0);
+      await expect(receipts.lookup({ accountId: accountA, clientEventId: 'guarded-incomplete', routePlanId }))
+        .resolves.toMatchObject({ errorCode: 'ROUTE_COMPLETION_INCOMPLETE', status: 'REJECTED' });
+      expect(await prisma.driverRouteCompletionReview.findFirst({ where: { routePlanId, decision: 'REJECTED' } }))
+        .toMatchObject({ receiptAware: true, totalStopCount: 1, unresolvedStopCount: 1 });
 
       const malformedAdmission = await repository.admitDriverEventAttempt({
         appVersion: null, assignmentGeneration: null, clientEventId: null, driverContractVersion: 2,

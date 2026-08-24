@@ -1020,7 +1020,10 @@ describe('PrismaDriverEventRepository', () => {
     expect(getCreatedDriverEventPayload()).toEqual({
           serverObservation: {
             completionInvariant: {
+              decision: 'PERMITTED',
+              driverContractVersion: null,
               mode: 'OBSERVE',
+              receiptAware: false,
               terminalStatuses: ['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED'],
               totalStopCount: 2,
               unresolvedStopCount: 1,
@@ -1070,6 +1073,62 @@ describe('PrismaDriverEventRepository', () => {
         status: { not: 'CANCELLED' }
       }
     });
+  });
+
+  test('rejects incomplete v2 completion in GUARDED mode and durably rejects its receipt', async () => {
+    const { prisma } = createPrismaHarness({
+      routeEtaInputVersionId: 'route-version-id',
+      routeSequenceStops: [{ deliveryStop: { status: 'ASSIGNED' }, deliveryStopId: 'stop-1', sequence: 1 }]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never, { completionInvariantMode: 'GUARDED' });
+
+    await expect(repository.recordDriverEvent(baseInput({
+      assignmentGeneration: '1',
+      attemptId: 'attempt-id',
+      clientEventId: 'completion-event-id',
+      deliveryStopId: null,
+      driverContractVersion: 2,
+      eventType: 'ROUTE_COMPLETED',
+      expectedRouteVersionId: 'route-version-id',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toMatchObject({ code: 'ROUTE_COMPLETION_INCOMPLETE' });
+
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+    const attemptUpdate = prisma.driverEventAttempt.update.mock.calls[0]?.[0] as {
+      data: { errorCode: string; retryable: boolean; status: string };
+      where: { id: string };
+    };
+    expect(attemptUpdate).toMatchObject({
+      data: { errorCode: 'ROUTE_COMPLETION_INCOMPLETE', retryable: false, status: 'REJECTED' },
+      where: { id: 'attempt-id' }
+    });
+    const reviewCreate = prisma.driverRouteCompletionReview.create.mock.calls[0]?.[0] as {
+      data: { decision: string; receiptAware: boolean; unresolvedStopCount: number };
+    };
+    expect(reviewCreate.data).toMatchObject({ decision: 'REJECTED', receiptAware: true, unresolvedStopCount: 1 });
+  });
+
+  test('rejects incomplete legacy completion in FULL mode without creating a receipt attempt', async () => {
+    const { prisma } = createPrismaHarness({
+      routeStops: [{ deliveryStop: { status: 'ASSIGNED' } }]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never, { completionInvariantMode: 'FULL' });
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_COMPLETED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toMatchObject({ code: 'ROUTE_COMPLETION_INCOMPLETE' });
+
+    expect(prisma.driverEventAttempt.create).not.toHaveBeenCalled();
+    expect(prisma.driverEventAttempt.update).not.toHaveBeenCalled();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+    const reviewCreate = prisma.driverRouteCompletionReview.create.mock.calls[0]?.[0] as {
+      data: { attemptId: string | null; decision: string; receiptAware: boolean };
+    };
+    expect(reviewCreate.data).toMatchObject({ attemptId: null, decision: 'REJECTED', receiptAware: false });
   });
 
   test('records time constraint acknowledgement only for an owned assigned-route stop with current confirmed window', async () => {
@@ -1532,6 +1591,8 @@ function createPrismaHarness(input: {
       findFirst: ReturnType<typeof vi.fn>;
       findUnique: ReturnType<typeof vi.fn>;
     };
+    driverEventAttempt: { create: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+    driverRouteCompletionReview: { create: ReturnType<typeof vi.fn> };
     dsvDispatchChangeRequest: {
       findFirst: ReturnType<typeof vi.fn>;
       updateMany: ReturnType<typeof vi.fn>;
@@ -1586,6 +1647,9 @@ function createPrismaHarness(input: {
       if (text.includes('UPDATE route_plan_stops')) {
         return Promise.resolve(input.routeEtaPersistenceRows ?? [{ id: 'route-plan-stop-id' }]);
       }
+      if (text.includes('FROM "route_plans"')) {
+        return Promise.resolve([{ assignmentGeneration: 1n, driverId: 'driver-id' }]);
+      }
       if (text.includes('FROM route_grouping_child_versions')) {
         return Promise.resolve(input.routeEtaInputVersionId === undefined || input.routeEtaInputVersionId === null
           ? []
@@ -1615,6 +1679,14 @@ function createPrismaHarness(input: {
         return Promise.resolve(input.completionEvent ?? (createdEventType === 'ROUTE_COMPLETED' ? { id: 'driver-event-id' } : null));
       }),
       findUnique: vi.fn(() => Promise.resolve(input.existingEvent ?? null))
+    },
+    driverEventAttempt: {
+      create: vi.fn(() => Promise.resolve({ attemptNumber: 1, id: 'attempt-id' })),
+      findFirst: vi.fn(() => Promise.resolve(null)),
+      update: vi.fn(() => Promise.resolve({ id: 'attempt-id' }))
+    },
+    driverRouteCompletionReview: {
+      create: vi.fn(() => Promise.resolve({ id: 'completion-review-id' }))
     },
     dsvDispatchChangeRequest: {
       findFirst: vi.fn((args: { select?: { id?: boolean } }) => {
@@ -1666,7 +1738,7 @@ function createPrismaHarness(input: {
           ? input.conflictingRoutePlanStop ?? null
           : input.routePlanStop === undefined ? { id: 'route-plan-stop-id' } : input.routePlanStop
       )),
-      findMany: vi.fn((args: { select?: { deliveryStop?: { select?: { status?: boolean } }; durationFromPreviousSeconds?: boolean } }) => (
+      findMany: vi.fn((args: { select?: { deliveryStop?: { select?: { status?: boolean } }; durationFromPreviousSeconds?: boolean; sequence?: boolean } }) => (
         args.select?.durationFromPreviousSeconds === true
           ? Promise.resolve(input.routeEtaStops ?? [
               {
@@ -1678,7 +1750,9 @@ function createPrismaHarness(input: {
                 sequence: 1
               }
             ])
-          : Promise.resolve(input.routeSequenceStops ?? [
+          : args.select?.sequence !== true
+            ? Promise.resolve(input.routeStops ?? [{ deliveryStop: { status: 'ASSIGNED' } }])
+            : Promise.resolve(input.routeSequenceStops ?? [
               { deliveryStop: { status: 'ASSIGNED' }, deliveryStopId: 'stop-id', sequence: 1 }
             ])
       )),

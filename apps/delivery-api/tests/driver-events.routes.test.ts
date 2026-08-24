@@ -5,7 +5,8 @@ import {
   DriverEventContextError,
   DriverEventEtaStaleConflictError,
   DriverEventExecutionConflictError,
-  DriverEventRouteNotInProgressError
+  DriverEventRouteNotInProgressError,
+  DriverRouteCompletionIncompleteError
 } from '../src/modules/driver/driver-event.repository.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
 import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
@@ -826,6 +827,41 @@ describe('Driver events route', () => {
       expect(response.json()).toEqual({
         data: null,
         error: { code: 'ROUTE_NOT_IN_PROGRESS', message: 'Route is not in progress' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps incomplete route completion to stable 409 counts without identifiers', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverRouteCompletionIncompleteError({
+      decision: 'REJECTED',
+      driverContractVersion: 2,
+      mode: 'GUARDED',
+      receiptAware: true,
+      terminalStatuses: ['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED'],
+      totalStopCount: 11,
+      unresolvedStopCount: 10,
+      wouldReject: true
+    }));
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: eventPayload(),
+        url: '/driver/events'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_COMPLETION_INCOMPLETE',
+          details: { totalStopCount: 11, unresolvedStopCount: 10 },
+          message: 'Route completion requires every stop to be terminal'
+        }
       });
     } finally {
       await app.close();
