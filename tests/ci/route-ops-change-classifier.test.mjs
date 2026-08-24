@@ -15,6 +15,11 @@ function deliveryApiJobRunsOnMainPush(files) {
   return (result.api_changed && result.critical_changed) || result.full_required;
 }
 
+function releaseStaticChecksRun(files) {
+  const result = classifyRouteOpsChanges(files);
+  return result.deploy_changed || result.workflow_changed || result.full_required;
+}
+
 check('web-only UI change', ['apps/route-ops-web/src/pages/RoutesPage.tsx', 'apps/route-ops-web/src/styles.css'], {
   web_changed: true,
   api_changed: false,
@@ -104,6 +109,20 @@ check('deploy script only stays deploy-critical without API artifact', ['scripts
   full_required: false,
   web_artifact_required: false,
 });
+
+for (const migrationDeployPath of [
+  'apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh',
+  'tests/deploy/route-ops-prisma-migrate-deploy.test.sh',
+]) {
+  check(`migration deploy contract triggers release checks: ${migrationDeployPath}`, [migrationDeployPath], {
+    deploy_changed: true,
+  });
+  assert.equal(
+    releaseStaticChecksRun([migrationDeployPath]),
+    true,
+    `Route Ops release static checks must run when ${migrationDeployPath} changes`,
+  );
+}
 
 check('edge caddy file stays deploy-critical without API artifact', ['infra/caddy/Caddyfile'], {
   api_changed: false,

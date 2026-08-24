@@ -206,6 +206,19 @@ async function main() {
       );
       return result.rows[0]?.exists === true;
     };
+    const migrationState = async (migrationName) => {
+      if (!(await tableExists('_prisma_migrations'))) return 'UNAPPLIED';
+      const result = await client.query(`
+        SELECT finished_at, rolled_back_at
+          FROM public._prisma_migrations
+         WHERE migration_name = $1
+         ORDER BY started_at
+      `, [migrationName]);
+      if (result.rows.length === 0) return 'UNAPPLIED';
+      if (result.rows.some((row) => row.finished_at && !row.rolled_back_at)) return 'APPLIED';
+      if (result.rows.every((row) => row.rolled_back_at)) return 'UNAPPLIED';
+      return 'INCOMPLETE';
+    };
     const inspectIndex = (name) => client.query(`
       SELECT i.indisready,
              i.indisvalid,
@@ -240,8 +253,19 @@ async function main() {
       ['driver_proof_media_idempotency_scope_key', 'ALTER TABLE driver_proof_media ADD COLUMN IF NOT EXISTS "idempotencyKey" VARCHAR(120)', 'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "driver_proof_media_idempotency_scope_key" ON driver_proof_media("shopId", "driverId", "routePlanId", "deliveryStopId", "idempotencyKey")', 'driver_proof_media', true, ['shopId', 'driverId', 'routePlanId', 'deliveryStopId', 'idempotencyKey']],
     ]) {
       if (!(await tableExists(table))) {
-        process.stdout.write(`dsv-g007-migrate-deploy: online index ${name} deferred until table migration\n`);
-        continue;
+        if (table === 'driver_event_attempts') {
+          const creationMigration = '20260824133000_driver_event_contract_v2';
+          const state = await migrationState(creationMigration);
+          if (state === 'UNAPPLIED') {
+            process.stdout.write(`dsv-g007-migrate-deploy: online index ${name} deferred until table migration\n`);
+            continue;
+          }
+          if (state === 'APPLIED') {
+            throw new Error(`required table ${table} is missing after applied migration ${creationMigration}`);
+          }
+          throw new Error(`required table ${table} is missing with incomplete migration ${creationMigration}`);
+        }
+        throw new Error(`required pre-existing table ${table} is missing`);
       }
       await client.query(alterSql);
       const estimate = await client.query('SELECT reltuples::bigint AS rows FROM pg_class WHERE oid = $1::regclass', [table]);

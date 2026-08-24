@@ -307,10 +307,19 @@ class Client {
       return {
         rows: [{
           exists: !(
-            process.env.FAKE_PG_MISSING_DRIVER_EVENT_ATTEMPTS === '1'
-            && params[0] === 'public.driver_event_attempts'
+            (process.env.FAKE_PG_MISSING_DRIVER_EVENT_ATTEMPTS === '1'
+              && params[0] === 'public.driver_event_attempts')
+            || (process.env.FAKE_PG_MISSING_DRIVER_PROOF_MEDIA === '1'
+              && params[0] === 'public.driver_proof_media')
           ),
         }],
+      };
+    }
+    if (normalizedSql.includes('FROM public._prisma_migrations')) {
+      return {
+        rows: process.env.FAKE_PG_DRIVER_EVENT_CREATION_APPLIED === '1'
+          ? [{ finished_at: new Date('2026-08-24T13:30:00Z'), rolled_back_at: null }]
+          : [],
       };
     }
     if (
@@ -398,6 +407,27 @@ EOF_PG
   grep -Fq 'online index driver_event_attempts_shopId_transportRequestId_createdAt_idx deferred until table migration' "$tmp/missing-table.stdout"
   grep -Fq 'CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "driver_proof_media_idempotency_scope_key"' "$tmp/pg.log"
   grep -Fq -- "--prefix $ROOT/apps/delivery-api run prisma:migrate:deploy" "$tmp/npm.args"
+
+  : > "$tmp/pg.log"
+  rm -f "$tmp/npm.args"
+  run_expect_fail "$tmp" 'required table driver_event_attempts is missing after applied migration 20260824133000_driver_event_contract_v2' env \
+    PATH="$tmp/bin:$PATH" FAKE_NPM_ARGS_FILE="$tmp/npm.args" FAKE_PG_LOG="$tmp/pg.log" \
+    FAKE_PG_MISSING_DRIVER_EVENT_ATTEMPTS='1' FAKE_PG_DRIVER_EVENT_CREATION_APPLIED='1' \
+    NODE_OPTIONS="--require=$tmp/fake-pg.cjs" \
+    DSV_MIGRATION_MODE='production' DSV_MIGRATION_APPROVED='1' \
+    DSV_MIGRATION_MANIFEST_SHA256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    DSV_RESTORE_REHEARSAL_SHA256='abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' \
+    DATABASE_URL="$online_index_database_url" bash "$WRAPPER"
+
+  : > "$tmp/pg.log"
+  rm -f "$tmp/npm.args"
+  run_expect_fail "$tmp" 'required pre-existing table driver_proof_media is missing' env \
+    PATH="$tmp/bin:$PATH" FAKE_NPM_ARGS_FILE="$tmp/npm.args" FAKE_PG_LOG="$tmp/pg.log" \
+    FAKE_PG_MISSING_DRIVER_PROOF_MEDIA='1' NODE_OPTIONS="--require=$tmp/fake-pg.cjs" \
+    DSV_MIGRATION_MODE='production' DSV_MIGRATION_APPROVED='1' \
+    DSV_MIGRATION_MANIFEST_SHA256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    DSV_RESTORE_REHEARSAL_SHA256='abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' \
+    DATABASE_URL="$online_index_database_url" bash "$WRAPPER"
 }
 
 run_production_baseline_contract_case() {

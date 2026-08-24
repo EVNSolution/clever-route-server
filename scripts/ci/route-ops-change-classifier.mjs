@@ -4,7 +4,8 @@ import process from 'node:process';
 
 const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy|edge-caddy-deploy|route-ops-backup)\.yml$/;
 const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
-const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|route-ops-backup|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
+const DELIVERY_API_MIGRATE_DEPLOY_SCRIPT_RE = /^apps\/delivery-api\/scripts\/dsv-g007-migrate-deploy\.sh$/;
+const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|route-ops-backup|route-ops-prisma-db-push-guard|route-ops-prisma-migrate-deploy|monitor-route-ops-production)\.test\.sh$/;
 const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|osrm-ontario|monitor-route-ops-production)\.sh$/;
 const PROOF_READY_CONTRACT_RE = /^apps\/delivery-api\/(?:src\/modules\/(?:driver\/driver-proof-media\.repository|dsv\/dsv-v1-read-query\.service)\.ts|tests\/(?:driver-proof-media-read-inventory|dsv-v1-read-query\.service)\.test\.ts)$/;
 
@@ -74,6 +75,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^infra\/vroom\/config(\.[a-z0-9-]+)?\.yml$/,
     /^infra\/env\/delivery-api\.env\.example$/,
     DEPLOY_SCRIPT_RE,
+    DELIVERY_API_MIGRATE_DEPLOY_SCRIPT_RE,
     DEPLOY_TEST_RE,
     /^docs\/deployment\/(route-ops-simple-ssm-deploy|edge-caddy-deploy|route-ops-osrm-ontario|route-ops-vroom|route-ops-multi-coverage-routing)\.md$/,
   ]);
