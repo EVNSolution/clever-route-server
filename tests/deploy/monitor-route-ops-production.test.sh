@@ -58,7 +58,7 @@ esac
 case "$g007_status" in *"legacyUsage"*) ;; *) echo "G007 JSON status must include legacy usage output" >&2; exit 1 ;; esac
 case "$g007_status" in *"invariantFailures"*) ;; *) echo "G007 JSON status must include invariant output" >&2; exit 1 ;; esac
 case "$g007_status" in *"latestMigration"*) ;; *) echo "G007 JSON status must include migration output" >&2; exit 1 ;; esac
-case "$g007_status" in *"20260731140000_account_scope_driver_push_tokens"*) ;; *) echo "G007 JSON status must require the latest migration" >&2; exit 1 ;; esac
+case "$g007_status" in *"validated_migration_manifest"*) ;; *) echo "G007 JSON status must validate the deployed migration manifest" >&2; exit 1 ;; esac
 case "$g007_status" in *"eta_input_route_version_mismatches"*"route_plan.status NOT IN ('CANCELLED', 'COMPLETED')"*) ;;
   *) echo "G007 invariant must compare active route-plan ETA input versions to the current child version regardless of etaStatus" >&2; exit 1 ;;
 esac
@@ -114,12 +114,13 @@ if not match:
 
 namespace = {
     'Path': Path,
+    're': re,
     'migration_dir': Path('/definitely-missing-clever-route-migrations'),
-    'required_latest_migration': '20260731140000_account_scope_driver_push_tokens',
 }
 exec(match.group('body'), namespace)
 status_from_history = namespace['migration_status_from_history']
 expected_migration_names = namespace['expected_migration_names']
+validated_migration_manifest = namespace['validated_migration_manifest']
 expected = [
     '20260722203000_dsv_import_stage_apply',
     '20260722213000_dsv_assignment_eta_state',
@@ -144,13 +145,38 @@ expected = [
 
 with tempfile.TemporaryDirectory() as tmp:
     migrations = Path(tmp)
-    for name in expected[:-1]:
+    for name in expected:
         migration = migrations / name
         migration.mkdir()
         (migration / 'migration.sql').write_text('-- fixture\n')
     assert expected_migration_names(migrations) == expected
 
+    ignored = migrations / '20260825000000_missing_sql'
+    ignored.mkdir()
+    assert expected_migration_names(migrations) == expected
+
+assert expected_migration_names(Path('/definitely-missing-clever-route-migrations')) == {
+    'status': 'unknown',
+    'error': 'migration directory is missing',
+}
+assert validated_migration_manifest([], source='fixture') == {
+    'status': 'unknown',
+    'error': 'fixture contains no migrations',
+}
+assert validated_migration_manifest(['not-a-migration'], source='fixture') == {
+    'status': 'unknown',
+    'error': 'fixture contains invalid migration names',
+}
+
 repo_expected = expected_migration_names(Path('apps/delivery-api/prisma/migrations'))
+repo_manifest = sorted(
+    child.name
+    for child in Path('apps/delivery-api/prisma/migrations').iterdir()
+    if child.is_dir() and (child / 'migration.sql').is_file()
+)
+assert repo_expected == repo_manifest, (repo_expected, repo_manifest)
+assert len(repo_expected) > len(expected), repo_expected
+assert repo_expected[-1] > expected[-1], repo_expected[-1]
 assert repo_expected.count('20260723170000_add_customer_notification_outbox_worker') == 1, repo_expected
 assert repo_expected.count('20260803090000_orders_async_sync') == 1, repo_expected
 assert repo_expected.count('20260804020000_orders_pagination_selection') == 1, repo_expected
@@ -162,8 +188,6 @@ assert repo_expected.count('20260818170000_add_driver_bundle_handoff_requests') 
 assert repo_expected.count('20260819020000_align_shopify_api_version_default') == 1, repo_expected
 assert repo_expected.count('20260819223000_add_custom_route_stop_source') == 1, repo_expected
 assert repo_expected.count('20260820093000_own_virtual_route_group_orders') == 1, repo_expected
-assert len(repo_expected) == 83, repo_expected
-assert repo_expected[-1] == '20260820093000_own_virtual_route_group_orders', repo_expected[-1]
 assert repo_expected.count('20260722233000_align_migration_history_to_schema') == 1, repo_expected
 
 empty = status_from_history([], expected)

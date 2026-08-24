@@ -137,7 +137,6 @@ from urllib.request import urlopen
 api_container = 'clever-route-clever-route-api-1'
 postgres_container = 'clever-route-postgres-1'
 migration_dir = Path('apps/delivery-api/prisma/migrations')
-required_latest_migration = '20260731140000_account_scope_driver_push_tokens'
 configured_status_base_url = os.environ.get('ROUTE_OPS_G007_STATUS_BASE_URL', '').strip().rstrip('/')
 observation_report_path = os.environ.get('ROUTE_OPS_G007_OBSERVATION_REPORT_PATH', '').strip()
 
@@ -233,23 +232,28 @@ def deployed_migration_names():
     if proc.returncode != 0:
         return {'status': 'unknown', 'error': proc.stderr.strip() or proc.stdout.strip()}
     names = sorted({Path(line.strip()).parent.name for line in proc.stdout.splitlines() if line.strip()})
-    if required_latest_migration not in names:
-        return {'status': 'unknown', 'error': 'deployed image does not contain the required latest migration'}
-    return names
+    return validated_migration_manifest(names, source='deployed image')
 
 
 # BEGIN G007_MIGRATION_POLICY
+def validated_migration_manifest(names, source='migration directory'):
+    manifest = sorted(set(names))
+    if not manifest:
+        return {'status': 'unknown', 'error': f'{source} contains no migrations'}
+    invalid = [name for name in manifest if not re.fullmatch(r'\d{14}_[a-z0-9_]+', name)]
+    if invalid:
+        return {'status': 'unknown', 'error': f'{source} contains invalid migration names'}
+    return manifest
+
+
 def expected_migration_names(path=migration_dir):
-    names = []
-    if path.is_dir():
-        names = sorted(
-            child.name for child in path.iterdir()
-            if child.is_dir() and (child / 'migration.sql').is_file()
-        )
-    if required_latest_migration not in names:
-        names.append(required_latest_migration)
-        names.sort()
-    return names
+    if not path.is_dir():
+        return {'status': 'unknown', 'error': 'migration directory is missing'}
+    names = [
+        child.name for child in path.iterdir()
+        if child.is_dir() and (child / 'migration.sql').is_file()
+    ]
+    return validated_migration_manifest(names)
 
 
 def migration_status_from_history(history, expected=None):

@@ -6,6 +6,7 @@ const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy|ed
 const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
 const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|route-ops-backup|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
 const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|osrm-ontario|monitor-route-ops-production)\.sh$/;
+const PROOF_READY_CONTRACT_RE = /^apps\/delivery-api\/(?:src\/modules\/(?:driver\/driver-proof-media\.repository|dsv\/dsv-v1-read-query\.service)\.ts|tests\/(?:driver-proof-media-read-inventory|dsv-v1-read-query\.service)\.test\.ts)$/;
 
 if (isCliEntryPoint()) {
   const args = new Set(process.argv.slice(2));
@@ -120,6 +121,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
   const webArtifactRequired = force || routeOpsUiApiChanged || (apiChanged && !routeGeometryOnlyApiChanged);
 
   const criticalChanged = any(files, [
+    PROOF_READY_CONTRACT_RE,
     /^package(-lock)?\.json$/,
     /^apps\/delivery-api\/package(-lock)?\.json$/,
     /^apps\/delivery-api\/Dockerfile$/,
