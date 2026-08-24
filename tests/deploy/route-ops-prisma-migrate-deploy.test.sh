@@ -328,7 +328,19 @@ class Client {
     ) {
       throw new Error('relation "driver_event_attempts" does not exist');
     }
-    if (String(sql).includes('FROM pg_index')) return { rows: indexes.has(params[0]) ? [indexes.get(params[0])] : [] };
+    if (String(sql).includes('FROM pg_index')) {
+      const index = indexes.get(params[0]);
+      if (!index) return { rows: [] };
+      return {
+        rows: [{
+          ...index,
+          columns: process.env.FAKE_PG_NAME_ARRAY_STRING === '1'
+            && !normalizedSql.includes('att.attname::text')
+            ? `{${index.columns.join(',')}}`
+            : index.columns,
+        }],
+      };
+    }
     if (String(sql).includes('reltuples')) return { rows: [{ rows: '250000' }] };
     const drop = /DROP INDEX CONCURRENTLY IF EXISTS "([^"]+)"/.exec(String(sql));
     if (drop) indexes.delete(drop[1]);
@@ -377,6 +389,7 @@ EOF_PG
     PATH="$tmp/bin:$PATH" \
     FAKE_NPM_ARGS_FILE="$tmp/npm.args" \
     FAKE_PG_LOG="$tmp/pg.log" \
+    FAKE_PG_NAME_ARRAY_STRING='1' \
     NODE_OPTIONS="--require=$tmp/fake-pg.cjs" \
     DSV_MIGRATION_MODE='production' \
     DSV_MIGRATION_APPROVED='1' \

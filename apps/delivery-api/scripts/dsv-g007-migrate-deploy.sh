@@ -228,7 +228,7 @@ async function main() {
              i.indpred IS NULL AS no_predicate,
              i.indexprs IS NULL AS no_expressions,
              ARRAY(
-               SELECT att.attname
+               SELECT att.attname::text
                  FROM unnest(i.indkey) WITH ORDINALITY AS key(attnum, position)
                  JOIN pg_attribute att ON att.attrelid = i.indrelid AND att.attnum = key.attnum
                 ORDER BY key.position
