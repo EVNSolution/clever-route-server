@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-08-20
+  x-contract-revision: 2026-08-24
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -7365,6 +7365,9 @@ components:
       additionalProperties: false
     AdminRouteStopOverrideRequest:
       type: object
+      dependentRequired:
+        latitude: [longitude]
+        longitude: [latitude]
       properties:
         recipientName: { type: [string, 'null'] }
         phone: { type: [string, 'null'] }
@@ -7373,9 +7376,19 @@ components:
         city: { type: [string, 'null'] }
         province: { type: [string, 'null'] }
         postalCode: { type: [string, 'null'] }
-        countryCode: { type: [string, 'null'] }
-        latitude: { type: [number, 'null'] }
-        longitude: { type: [number, 'null'] }
+        countryCode:
+          type: [string, 'null']
+          pattern: '^[A-Za-z]{2}$'
+        latitude:
+          type: [number, 'null']
+          minimum: -90
+          maximum: 90
+          description: Must be supplied with longitude. The pair 0,0 is rejected as unrouteable.
+        longitude:
+          type: [number, 'null']
+          minimum: -180
+          maximum: 180
+          description: Must be supplied with latitude. The pair 0,0 is rejected as unrouteable.
         timeWindowStart:
           type: [string, 'null']
           pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
@@ -7474,11 +7487,41 @@ components:
             stops:
               type: array
               items:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/RoutePlanDetailStop'
           additionalProperties: true
         error:
           type: 'null'
+    RoutePlanDetailStop:
+      type: object
+      properties:
+        geocodeStatus:
+          type: string
+        locationDiagnostic:
+          $ref: '#/components/schemas/RouteStopLocationDiagnostic'
+      additionalProperties: true
+    RouteStopLocationDiagnostic:
+      type: object
+      required: [issues, routeable, severity]
+      properties:
+        issues:
+          type: array
+          items:
+            type: string
+            enum:
+              - COORDINATES_MISSING
+              - COORDINATES_PARTIAL
+              - COORDINATES_ZERO
+              - COORDINATES_OUT_OF_RANGE
+              - COUNTRY_CODE_INVALID
+              - COORDINATES_OUTSIDE_COUNTRY
+              - COORDINATES_OUTSIDE_PROVINCE
+              - GEOCODE_STATUS_INCONSISTENT
+        routeable:
+          type: boolean
+        severity:
+          type: string
+          enum: [NONE, CRITICAL]
+      additionalProperties: false
     DriverRouteAccessLookupRequest:
       type: object
       properties:

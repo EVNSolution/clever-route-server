@@ -14,6 +14,7 @@ import {
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
   RoutePlanRefreshNotAllowedError,
+  RoutePlanStopOverrideInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../modules/route-plans/route-plan.types.js';
 import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
@@ -614,14 +615,27 @@ export function registerAdminRoutePlanRoutes(
         return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid admin route stop override payload'));
       }
 
-      const result = await dependencies.routePlanService.updateAdminRouteStopOverride({
-        actor: authenticated.subject,
-        appId: authenticated.appId,
-        deliveryStopId: request.params.deliveryStopId,
-        payload,
-        routePlanId: request.params.routePlanId,
-        shopDomain: authenticated.shopDomain
-      });
+      let result;
+      try {
+        result = await dependencies.routePlanService.updateAdminRouteStopOverride({
+          actor: authenticated.subject,
+          appId: authenticated.appId,
+          deliveryStopId: request.params.deliveryStopId,
+          payload,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain
+        });
+      } catch (error) {
+        if (error instanceof RoutePlanStopOverrideInvalidError) {
+          request.log.warn({
+            code: error.code,
+            deliveryStopId: request.params.deliveryStopId,
+            routePlanId: request.params.routePlanId
+          }, 'Rejected invalid admin route stop location override');
+          return reply.code(400).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
       if (result === null) {
         return reply.code(404).send(errorResponse('NOT_FOUND', 'Route stop not found'));
       }
@@ -898,9 +912,26 @@ function readAdminRouteStopOverridePayload(value: unknown): AdminRouteStopOverri
   if ('address1' in object) payload.address1 = readNullableString(object.address1);
   if ('address2' in object) payload.address2 = readNullableString(object.address2);
   if ('city' in object) payload.city = readNullableString(object.city);
-  if ('countryCode' in object) payload.countryCode = readNullableString(object.countryCode);
+  if ('countryCode' in object) payload.countryCode = readNullableString(object.countryCode)?.toUpperCase() ?? null;
   if ('latitude' in object) payload.latitude = readNullableCoordinate(object.latitude);
   if ('longitude' in object) payload.longitude = readNullableCoordinate(object.longitude);
+  if (payload.countryCode !== undefined && payload.countryCode !== null && !/^[A-Za-z]{2}$/u.test(payload.countryCode)) {
+    throw new Error('countryCode must be a two-letter code');
+  }
+  const hasLatitude = 'latitude' in object;
+  const hasLongitude = 'longitude' in object;
+  if (hasLatitude !== hasLongitude) {
+    throw new Error('latitude and longitude must be provided together');
+  }
+  if (payload.latitude !== undefined && payload.latitude !== null && (payload.latitude < -90 || payload.latitude > 90)) {
+    throw new Error('latitude is out of range');
+  }
+  if (payload.longitude !== undefined && payload.longitude !== null && (payload.longitude < -180 || payload.longitude > 180)) {
+    throw new Error('longitude is out of range');
+  }
+  if (payload.latitude === 0 && payload.longitude === 0) {
+    throw new Error('zero coordinates are not routeable');
+  }
   if ('postalCode' in object) payload.postalCode = readNullableString(object.postalCode);
   if ('province' in object) payload.province = readNullableString(object.province);
   if ('recipientName' in object) payload.recipientName = readNullableString(object.recipientName);

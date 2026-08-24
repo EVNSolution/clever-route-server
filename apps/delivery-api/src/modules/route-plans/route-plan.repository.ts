@@ -14,8 +14,10 @@ import {
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
   RoutePlanPublishInvalidError,
+  RoutePlanStopOverrideInvalidError,
   RoutePlanStopUpdateInvalidError
 } from './route-plan.types.js';
+import { diagnoseRouteStopLocation } from './route-stop-location-diagnostic.js';
 import { assertSafeRouteScopeToken } from '../route-ops/route-scope-config.js';
 import type {
   AdminRouteStopOverrideInput,
@@ -128,6 +130,7 @@ type DeliveryStopRecord = {
   city: string | null;
   countryCode: string | null;
   deliveryDate?: Date | null;
+  geocodeStatus?: string;
   id: string;
   latitude: unknown;
   longitude: unknown;
@@ -454,6 +457,35 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       });
       if (routeStop === null) return false;
+
+      if (hasLocationAffectingStopOverride(input.payload)) {
+        const currentStop = await tx.deliveryStop.findFirst({
+          select: {
+            countryCode: true,
+            geocodeStatus: true,
+            latitude: true,
+            longitude: true,
+            province: true
+          },
+          where: { id: input.deliveryStopId, shopId: shop.id }
+        });
+        if (currentStop === null) return false;
+
+        const locationDiagnostic = diagnoseRouteStopLocation({
+          countryCode: input.payload.countryCode === undefined ? currentStop.countryCode : input.payload.countryCode,
+          geocodeStatus: input.payload.latitude === undefined && input.payload.longitude === undefined
+            ? currentStop.geocodeStatus
+            : 'RESOLVED',
+          latitude: input.payload.latitude === undefined ? currentStop.latitude : input.payload.latitude,
+          longitude: input.payload.longitude === undefined ? currentStop.longitude : input.payload.longitude,
+          province: input.payload.province === undefined ? currentStop.province : input.payload.province
+        });
+        if (!locationDiagnostic.routeable) {
+          throw new RoutePlanStopOverrideInvalidError(
+            `Stop location is not routeable: ${locationDiagnostic.issues.join(', ')}`
+          );
+        }
+      }
 
       await tx.deliveryStop.updateMany({
         data: toDeliveryStopOperationalOverrideWrite(input.payload),
@@ -2136,6 +2168,19 @@ function hasGeometryAffectingStopOverride(payload: AdminRouteStopOverrideInput['
   );
 }
 
+function hasLocationAffectingStopOverride(payload: AdminRouteStopOverrideInput['payload']): boolean {
+  return (
+    payload.address1 !== undefined ||
+    payload.address2 !== undefined ||
+    payload.city !== undefined ||
+    payload.countryCode !== undefined ||
+    payload.latitude !== undefined ||
+    payload.longitude !== undefined ||
+    payload.postalCode !== undefined ||
+    payload.province !== undefined
+  );
+}
+
 function normalizeStopUpdateInputs(
   stops: UpdateRoutePlanStopsInput['payload']['stops']
 ): Array<{ deliveryStopId: string | null; sequence: number; shopifyOrderGid: string }> {
@@ -2666,6 +2711,7 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     deliveryStopId: deliveryStop.id,
     financialStatus: order.financialStatus,
     fulfillmentStatus: order.fulfillmentStatus,
+    geocodeStatus: deliveryStop.geocodeStatus ?? 'UNKNOWN',
     items: (order.orderItems ?? []).map((item) => toOrderItemDto(item)),
     customerNoteContext: {
       adminMemo: order.deliveryCustomerProfileLinks?.[0]?.profile.adminMemo ?? null,
@@ -2689,6 +2735,13 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     shippingPriceAmount: readShippingPriceAmount(rawPayload),
     totalPriceAmount: stringOrNull(order.totalPriceAmount),
     orderId: order.id,
+    locationDiagnostic: diagnoseRouteStopLocation({
+      countryCode: deliveryStop.countryCode,
+      geocodeStatus: deliveryStop.geocodeStatus,
+      latitude: deliveryStop.latitude,
+      longitude: deliveryStop.longitude,
+      province: deliveryStop.province
+    }),
     orderName: order.name,
     paymentStatus: order.financialStatus,
     recipientName: deliveryStop.recipientName ?? readString(rawPayload?.recipientName),

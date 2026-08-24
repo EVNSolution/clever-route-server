@@ -8,6 +8,7 @@ import {
   RoutePlanConflictError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanPublishInvalidError,
+  RoutePlanStopOverrideInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../src/modules/route-plans/route-plan.types.js';
 import { RouteExecutionConflictError } from '../src/modules/route-plans/route-execution-ownership.js';
@@ -1364,6 +1365,35 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('admin stop override rejects coordinates outside the stop address region atomically', async () => {
+    const { prisma } = createPrismaHarness({
+      deliveryStopForId: {
+        countryCode: 'CA',
+        geocodeStatus: 'RESOLVED',
+        id: 'stop-1',
+        latitude: '43.6426',
+        longitude: '-79.3871',
+        province: 'ON'
+      },
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { latitude: 0.1, longitude: 0.1 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toBeInstanceOf(RoutePlanStopOverrideInvalidError);
+
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanGeometryCache.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
+  });
+
   test('rejects adding a stop owned by another in-progress route to an in-progress route', async () => {
     const { prisma } = createPrismaHarness({
       conflictingRoutePlanStop: { deliveryStopId: 'stop-1', routePlanId: 'other-route-plan-id' },
@@ -2062,7 +2092,7 @@ function createPrismaHarness(input: {
   adminStopActionAudit?: { deliveryStopId: string; routePlanId: string; shopId: string } | null;
   conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
   customerNotificationStatus?: 'DEAD' | 'PROCESSING' | 'QUEUED' | 'SENT';
-  deliveryStopForId?: { id: string } | null;
+  deliveryStopForId?: Record<string, unknown> | null;
   deliveryFacts?: Array<Record<string, unknown>>;
   driverForAssignment?: { id: string } | null;
   existingRoutePlanStops?: Array<{ deliveryStopId: string }>;
@@ -2454,6 +2484,7 @@ function routePlanStopRecord(input: {
       address2: '#08',
       city: 'Mississauga',
       countryCode: 'CA',
+      geocodeStatus: 'RESOLVED',
       id: input.deliveryStopId,
       latitude: '43.589',
       longitude: '-79.644',

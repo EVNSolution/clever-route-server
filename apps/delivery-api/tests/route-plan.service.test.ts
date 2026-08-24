@@ -260,6 +260,41 @@ describe('RoutePlanAdminService route geometry policy', () => {
     expect(detail?.routeGeometryStatus).toBe('fresh');
   });
 
+  test('shape mutation never sends an unrouteable diagnosed stop to OSRM', async () => {
+    const invalidShapeDetail = detailWithComputedSignature({
+      ...changedShapeDetail,
+      stops: changedShapeDetail.stops.map((stop, index) => index === 0 ? {
+        ...stop,
+        coordinates: { latitude: 0, longitude: 0 },
+        locationDiagnostic: {
+          issues: ['COORDINATES_ZERO', 'GEOCODE_STATUS_INCONSISTENT'],
+          routeable: false,
+          severity: 'CRITICAL'
+        }
+      } : stop)
+    });
+    const { repository, routeGeometryProvider, updateRoutePlanStops, upsertRouteGeometryCache } = createHarness(baseDetail, {
+      updateRoutePlanStopsDetail: invalidShapeDetail
+    });
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    const detail = await service.updateRoutePlanStops({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: {
+        stops: [
+          { shopifyOrderGid: 'gid://shopify/Order/102', sequence: 1 },
+          { shopifyOrderGid: 'gid://shopify/Order/101', sequence: 2 }
+        ]
+      }
+    });
+
+    expect(updateRoutePlanStops).toHaveBeenCalled();
+    expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
+    expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
+    expect(detail?.routeGeometry).toBeNull();
+  });
+
   test('shape endpoint does not refresh geometry when before and after shape signatures match', async () => {
     const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(baseDetail, {
       updateRoutePlanOptionsDetail: baseDetail
@@ -425,6 +460,35 @@ describe('RoutePlanAdminService route geometry policy', () => {
       ]
     });
     const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(incompleteDetail);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    await expect(service.refreshRouteGeometryForRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH'
+    })).rejects.toBeInstanceOf(RoutePlanGeometryRefreshFailedError);
+
+    expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
+    expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('does not route a stop whose resolved coordinates are diagnosed as unrouteable', async () => {
+    const invalidDetail = detailWithComputedSignature({
+      ...baseDetail,
+      stops: [
+        {
+          ...baseDetail.stops[0]!,
+          coordinates: { latitude: 0, longitude: 0 },
+          locationDiagnostic: {
+            issues: ['COORDINATES_ZERO', 'GEOCODE_STATUS_INCONSISTENT'],
+            routeable: false,
+            severity: 'CRITICAL'
+          }
+        },
+        baseDetail.stops[1]!
+      ]
+    });
+    const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(invalidDetail);
     const service = new RoutePlanAdminService(repository, routeGeometryProvider);
 
     await expect(service.refreshRouteGeometryForRoutePlan({
