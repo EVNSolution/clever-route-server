@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { cleanupResolvedDriverEventAttempts, parseRetentionDeadline } from '../modules/driver/driver-event-attempt-retention.js';
 import { cleanupRouteOperationalEvidence } from '../modules/operations/route-operational-evidence-retention.js';
+import { redactTelemetryMessage, safeErrorCode } from '../modules/security/safe-telemetry-redaction.js';
 
 const prisma = new PrismaClient();
 try {
@@ -21,6 +22,13 @@ try {
     || operational.notificationAttemptsContinuationRequired
     || operational.syncContinuationRequired
   ) process.exitCode = 75;
+} catch (error) {
+  process.stderr.write(`${JSON.stringify({
+    code: safeErrorCode(error instanceof Error ? error.name : 'UNKNOWN'),
+    event: 'driver_event_attempt_retention_cleanup_failed',
+    message: redactTelemetryMessage('Driver event attempt retention cleanup failed')
+  })}\n`);
+  process.exitCode = 1;
 } finally {
   await prisma.$disconnect();
 }

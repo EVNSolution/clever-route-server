@@ -12,8 +12,15 @@ describe('package scripts', () => {
       scripts?: Record<string, string>;
     };
 
-    expect(packageJson.scripts?.['driver:proof-media:cleanup']).toBe('tsx src/scripts/cleanup-driver-proof-media.ts');
-    expect(packageJson.scripts?.['shopify:webhook-events:cleanup']).toBe('tsx src/scripts/cleanup-shopify-webhook-events.ts');
+    expect(packageJson.scripts?.['driver:event-attempts:cleanup']).toBe(
+      'node dist/scripts/cleanup-driver-event-attempts.js'
+    );
+    expect(packageJson.scripts?.['driver:proof-media:cleanup']).toBe(
+      'node dist/scripts/cleanup-driver-proof-media.js'
+    );
+    expect(packageJson.scripts?.['shopify:webhook-events:cleanup']).toBe(
+      'node dist/scripts/cleanup-shopify-webhook-events.js'
+    );
     expect(packageJson.scripts?.['driver:proof-media:evidence:seed']).toBe('tsx src/scripts/proof-media-evidence-seed.ts');
     expect(packageJson.scripts?.['woocommerce:connection:bootstrap']).toBe(
       'tsx src/scripts/bootstrap-woocommerce-connection.ts'
