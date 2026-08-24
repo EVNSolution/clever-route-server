@@ -114,7 +114,6 @@ if not match:
 
 namespace = {
     'Path': Path,
-    're': re,
     'migration_dir': Path('/definitely-missing-clever-route-migrations'),
 }
 exec(match.group('body'), namespace)

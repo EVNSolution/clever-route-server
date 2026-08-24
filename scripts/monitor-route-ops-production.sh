@@ -236,6 +236,9 @@ def deployed_migration_names():
 
 
 # BEGIN G007_MIGRATION_POLICY
+import re
+
+
 def validated_migration_manifest(names, source='migration directory'):
     manifest = sorted(set(names))
     if not manifest:
