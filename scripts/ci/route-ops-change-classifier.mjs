@@ -8,6 +8,7 @@ const DELIVERY_API_MIGRATE_DEPLOY_SCRIPT_RE = /^apps\/delivery-api\/scripts\/dsv
 const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|route-ops-backup|route-ops-prisma-db-push-guard|route-ops-prisma-migrate-deploy|monitor-route-ops-production)\.test\.sh$/;
 const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|osrm-ontario|monitor-route-ops-production)\.sh$/;
 const PROOF_READY_CONTRACT_RE = /^apps\/delivery-api\/(?:src\/modules\/(?:driver\/driver-proof-media\.repository|dsv\/dsv-v1-read-query\.service)\.ts|tests\/(?:driver-proof-media-read-inventory|dsv-v1-read-query\.service)\.test\.ts)$/;
+const RETENTION_RUNTIME_CONTRACT_RE = /^(?:scripts\/(?:run|install)-driver-event-attempt-retention\.sh|infra\/systemd\/clever-driver-event-attempt-retention\.(?:service|timer)|tests\/deploy\/route-ops-retention-runtime\.test\.sh|apps\/delivery-api\/(?:Dockerfile|package(?:-lock)?\.json|tsconfig\.build\.json|src\/scripts\/cleanup-(?:driver-event-attempts|shopify-webhook-events|driver-proof-media)\.ts|tests\/(?:driver-event-attempt-retention(?:-script)?|route-operational-evidence-retention|shopify-webhook-retention|driver-proof-media\.cleanup|package-scripts)\.test\.ts|tests\/deploy\/driver-event-attempt-retention-schedule\.test\.sh))$/;
 
 if (isCliEntryPoint()) {
   const args = new Set(process.argv.slice(2));
@@ -77,6 +78,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     DEPLOY_SCRIPT_RE,
     DELIVERY_API_MIGRATE_DEPLOY_SCRIPT_RE,
     DEPLOY_TEST_RE,
+    RETENTION_RUNTIME_CONTRACT_RE,
     /^docs\/deployment\/(route-ops-simple-ssm-deploy|edge-caddy-deploy|route-ops-osrm-ontario|route-ops-vroom|route-ops-multi-coverage-routing)\.md$/,
   ]);
 
@@ -124,6 +126,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
 
   const criticalChanged = any(files, [
     PROOF_READY_CONTRACT_RE,
+    RETENTION_RUNTIME_CONTRACT_RE,
     /^package(-lock)?\.json$/,
     /^apps\/delivery-api\/package(-lock)?\.json$/,
     /^apps\/delivery-api\/Dockerfile$/,

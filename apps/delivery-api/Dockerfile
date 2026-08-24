@@ -17,7 +17,10 @@ COPY apps/delivery-api/scripts ./apps/delivery-api/scripts
 COPY apps/delivery-api/src ./apps/delivery-api/src
 COPY apps/delivery-api/tests ./apps/delivery-api/tests
 RUN npm --prefix apps/delivery-api run prisma:generate \
-  && npm --prefix apps/delivery-api run build
+  && npm --prefix apps/delivery-api run build \
+  && test -f apps/delivery-api/dist/scripts/cleanup-driver-event-attempts.js \
+  && test -f apps/delivery-api/dist/scripts/cleanup-shopify-webhook-events.js \
+  && test -f apps/delivery-api/dist/scripts/cleanup-driver-proof-media.js
 
 FROM build AS pruned
 RUN npm --prefix apps/delivery-api prune --omit=dev

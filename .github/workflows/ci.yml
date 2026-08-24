@@ -93,7 +93,7 @@ jobs:
       - name: Route Ops release static checks
         if: needs.route-ops-changes.outputs.deploy_changed == 'true' || needs.route-ops-changes.outputs.workflow_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true'
         run: |
-          for script in scripts/ssm-simple-route-ops-deploy.sh scripts/ssm-edge-caddy-deploy.sh scripts/backup-route-ops-data.sh scripts/ssm-install-route-ops-backup.sh scripts/osrm-ontario.sh scripts/monitor-route-ops-production.sh apps/delivery-api/scripts/guard-prisma-db-push.sh apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh apps/delivery-api/scripts/dsv-g007-rehearsal.sh tests/deploy/ssm-simple-route-ops-deploy.test.sh tests/deploy/ssm-edge-caddy-deploy.test.sh tests/deploy/route-ops-backup.test.sh tests/deploy/route-ops-prisma-db-push-guard.test.sh tests/deploy/route-ops-prisma-migrate-deploy.test.sh tests/deploy/dsv-g007-rehearsal.test.sh tests/deploy/monitor-route-ops-production.test.sh; do
+          for script in scripts/ssm-simple-route-ops-deploy.sh scripts/ssm-edge-caddy-deploy.sh scripts/backup-route-ops-data.sh scripts/ssm-install-route-ops-backup.sh scripts/osrm-ontario.sh scripts/monitor-route-ops-production.sh apps/delivery-api/scripts/guard-prisma-db-push.sh apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh apps/delivery-api/scripts/dsv-g007-rehearsal.sh tests/deploy/ssm-simple-route-ops-deploy.test.sh tests/deploy/ssm-edge-caddy-deploy.test.sh tests/deploy/route-ops-backup.test.sh tests/deploy/route-ops-prisma-db-push-guard.test.sh tests/deploy/route-ops-prisma-migrate-deploy.test.sh tests/deploy/dsv-g007-rehearsal.test.sh tests/deploy/monitor-route-ops-production.test.sh tests/deploy/route-ops-retention-runtime.test.sh apps/delivery-api/tests/deploy/driver-event-attempt-retention-schedule.test.sh; do
             bash -n "$script"
           done
           tests/deploy/route-ops-prisma-db-push-guard.test.sh
@@ -103,6 +103,8 @@ jobs:
           tests/deploy/ssm-edge-caddy-deploy.test.sh
           tests/deploy/route-ops-backup.test.sh
           tests/deploy/monitor-route-ops-production.test.sh
+          tests/deploy/route-ops-retention-runtime.test.sh
+          apps/delivery-api/tests/deploy/driver-event-attempt-retention-schedule.test.sh
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh preflight
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh prepare
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh smoke
@@ -233,6 +235,15 @@ jobs:
           tests/route-scope-config.test.ts
           tests/prisma-schema.test.ts
           tests/dsv-v1-read-query.service.test.ts
+      - name: Retention runtime tests
+        run: >
+          npm --prefix apps/delivery-api run test --
+          tests/driver-event-attempt-retention.test.ts
+          tests/route-operational-evidence-retention.test.ts
+          tests/shopify-webhook-retention.test.ts
+          tests/driver-proof-media.cleanup.test.ts
+          tests/package-scripts.test.ts
+          tests/driver-event-attempt-retention-script.test.ts
       - name: Build delivery API
         run: npm --prefix apps/delivery-api run build
       - name: Compose config validation with image placeholders

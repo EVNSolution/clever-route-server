@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { classifyRouteOpsChanges } from '../../scripts/ci/route-ops-change-classifier.mjs';
 
 function check(name, files, expected) {
@@ -237,6 +238,64 @@ for (const contractPath of [
     deliveryApiJobRunsOnMainPush([contractPath]),
     true,
     `Delivery API CI job must run when ${contractPath} changes`,
+  );
+}
+
+for (const contractPath of [
+  'apps/delivery-api/package.json',
+  'apps/delivery-api/Dockerfile',
+  'apps/delivery-api/tsconfig.build.json',
+  'apps/delivery-api/src/scripts/cleanup-driver-event-attempts.ts',
+  'apps/delivery-api/src/scripts/cleanup-shopify-webhook-events.ts',
+  'apps/delivery-api/src/scripts/cleanup-driver-proof-media.ts',
+  'apps/delivery-api/tests/package-scripts.test.ts',
+  'apps/delivery-api/tests/driver-event-attempt-retention-script.test.ts',
+  'apps/delivery-api/tests/driver-event-attempt-retention.test.ts',
+  'apps/delivery-api/tests/route-operational-evidence-retention.test.ts',
+  'apps/delivery-api/tests/shopify-webhook-retention.test.ts',
+  'apps/delivery-api/tests/driver-proof-media.cleanup.test.ts',
+  'apps/delivery-api/tests/deploy/driver-event-attempt-retention-schedule.test.sh',
+  'scripts/run-driver-event-attempt-retention.sh',
+  'scripts/install-driver-event-attempt-retention.sh',
+  'infra/systemd/clever-driver-event-attempt-retention.service',
+  'infra/systemd/clever-driver-event-attempt-retention.timer',
+  'tests/deploy/route-ops-retention-runtime.test.sh',
+]) {
+  check(`retention runtime contract triggers image and release checks: ${contractPath}`, [contractPath], {
+    deploy_changed: true,
+    critical_changed: true,
+  });
+  assert.equal(
+    releaseStaticChecksRun([contractPath]),
+    true,
+    `Route Ops release static checks must run when ${contractPath} changes`,
+  );
+  if (contractPath.startsWith('apps/delivery-api/')) {
+    assert.equal(
+      deliveryApiJobRunsOnMainPush([contractPath]),
+      true,
+      `Delivery API build and tests must run when ${contractPath} changes`,
+    );
+  }
+}
+
+const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+const retentionStep = ciWorkflow.match(
+  /- name: Retention runtime tests\n(?<body>[\s\S]*?)(?=\n\s+- name: Build delivery API)/u,
+);
+assert.ok(retentionStep?.groups?.body, 'CI must define a dedicated retention runtime test step');
+const retentionStepTokens = retentionStep.groups.body.trim().split(/\s+/u);
+for (const testPath of [
+  'tests/driver-event-attempt-retention.test.ts',
+  'tests/route-operational-evidence-retention.test.ts',
+  'tests/shopify-webhook-retention.test.ts',
+  'tests/driver-proof-media.cleanup.test.ts',
+  'tests/package-scripts.test.ts',
+  'tests/driver-event-attempt-retention-script.test.ts',
+]) {
+  assert.ok(
+    retentionStepTokens.includes(testPath),
+    `Retention runtime CI step must run ${testPath}`,
   );
 }
 
