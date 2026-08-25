@@ -160,9 +160,14 @@ describe('route membership mutation authority', () => {
       expect(body).toContain('await rebindCurrentOrdersToRouteVersion(');
     }
     const rollbackBody = rebindCallerBodies[3] ?? '';
-    expect(rollbackBody).toContain('const assignments = archivedChildAssignments(loaded, child)');
+    expect(rollbackBody).toContain('assignments: archivedChildAssignments(loaded, child)');
     expect(rollbackBody).toContain('snapshot: canonicalSnapshot');
     expect(rollbackBody).not.toContain('snapshot: { ...snapshot');
+    expect(rollbackBody).toContain('selectTerminalArchivedChildren(archivedCandidates)');
+    expect(rollbackBody).toContain('assertRollbackMembershipDisjoint(rollbackSources)');
+    expect(rollbackBody.indexOf('assertRollbackMembershipDisjoint(rollbackSources)'))
+      .toBeLessThan(rollbackBody.indexOf('await archiveCurrentChildren('));
+    expect(source).toContain("throw new RouteGroupingValidationError(['archived legacy route membership cannot be restored safely'])");
   });
 
   test('locks every completion contract before reading its immutable snapshot', () => {

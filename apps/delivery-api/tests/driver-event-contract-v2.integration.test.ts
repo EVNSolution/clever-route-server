@@ -981,35 +981,163 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       if (preDiscriminatorRoutePlanId === null || preDiscriminatorRoutePlanId === undefined) {
         throw new Error('pre-discriminator rollback route missing');
       }
-      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+      const preDiscriminatorCreatedChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
         where: { id: { not: rollbackSourceChild.id }, status: 'CURRENT', routePlanId: preDiscriminatorRoutePlanId }
-      })).snapshot).toMatchObject({ membershipSchemaVersion: 1 });
+      });
+      expect(preDiscriminatorCreatedChild.snapshot).toMatchObject({ membershipSchemaVersion: 1 });
       await expect(routeGroupingService.createCustomStop({
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
-        stopName: 'Post modern rollback mutation', targetRoutePlanId: preDiscriminatorRoutePlanId
+        stopName: 'Post modern rollback mutation one', targetRoutePlanId: preDiscriminatorRoutePlanId
       })).resolves.not.toBeNull();
-
+      const firstRollbackSuccessor = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId: preDiscriminatorRoutePlanId, status: 'CURRENT', supersededAt: null }
+      });
+      expect(firstRollbackSuccessor.snapshot).toMatchObject({
+        membershipSchemaVersion: 1, predecessorChildVersionId: preDiscriminatorCreatedChild.id
+      });
+      await expect(routeGroupingService.createCustomStop({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
+        stopName: 'Post modern rollback mutation two', targetRoutePlanId: preDiscriminatorRoutePlanId
+      })).resolves.not.toBeNull();
+      const terminalRollbackSuccessor = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId: preDiscriminatorRoutePlanId, status: 'CURRENT', supersededAt: null }
+      });
+      expect(terminalRollbackSuccessor.snapshot).toMatchObject({
+        membershipSchemaVersion: 1, predecessorChildVersionId: firstRollbackSuccessor.id
+      });
       await prisma.routeGroupingChildVersion.update({
-        data: { snapshot: { driverId: driverA, name: 'Known legacy rollback source' } },
-        where: { id: rollbackSourceChild.id }
+        data: { status: 'ARCHIVED', supersededAt: new Date() }, where: { id: terminalRollbackSuccessor.id }
       });
-      const legacyRollback = await routeGroupingService.rollback({
+      const terminalSnapshot = terminalRollbackSuccessor.snapshot;
+      const terminalOrderIds = await prisma.order.findMany({
+        orderBy: { name: 'asc' }, select: { id: true },
+        where: { currentRouteVersionId: terminalRollbackSuccessor.id }
+      });
+      const collapsedRollback = await routeGroupingService.rollback({
         actor: 'route-ops:test', groupingId: priorChild.groupingId,
-        shopDomain: 'g002-evidence.invalid', version: 41
+        shopDomain: 'g002-evidence.invalid', version: preDiscriminatorCreatedChild.version
       });
-      const legacyRollbackChild = legacyRollback?.children.find((child) => child.orderIds.includes(assignedOrder.id));
-      expect(legacyRollbackChild?.orderIds).toEqual([assignedOrder.id]);
-      const legacyRollbackRoutePlanId = legacyRollbackChild?.routePlanId;
-      if (legacyRollbackRoutePlanId === null || legacyRollbackRoutePlanId === undefined) {
-        throw new Error('legacy rollback route missing');
+      const terminalOrderIdSet = new Set(terminalOrderIds.map(({ id }) => id));
+      const collapsedRoutes = (collapsedRollback?.children ?? []).filter((child) => (
+        child.orderIds.length === terminalOrderIdSet.size
+        && child.orderIds.every((orderId) => terminalOrderIdSet.has(orderId))
+      ));
+      expect(collapsedRoutes).toHaveLength(1);
+      const collapsedRoutePlanIdFromResponse = collapsedRoutes[0]?.routePlanId;
+      if (collapsedRoutePlanIdFromResponse === null || collapsedRoutePlanIdFromResponse === undefined) {
+        throw new Error('collapsed rollback response route missing');
       }
-      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
-        where: { status: 'CURRENT', routePlanId: legacyRollbackRoutePlanId }
-      })).snapshot).toMatchObject({ membershipSchemaVersion: 1 });
-      await expect(routeGroupingService.createCustomStop({
-        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
-        stopName: 'Post legacy rollback mutation', targetRoutePlanId: legacyRollbackRoutePlanId
-      })).resolves.not.toBeNull();
+      const collapsedChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId: collapsedRoutePlanIdFromResponse, status: 'CURRENT', supersededAt: null }
+      });
+      const collapsedRoutePlanId = collapsedChild.routePlanId;
+      if (collapsedRoutePlanId === null) throw new Error('collapsed rollback route missing');
+      if (terminalSnapshot === null || Array.isArray(terminalSnapshot) || typeof terminalSnapshot !== 'object') {
+        throw new Error('terminal rollback snapshot missing');
+      }
+      const terminalStops = terminalSnapshot.stops;
+      if (!Array.isArray(terminalStops)) throw new Error('terminal rollback membership missing');
+      expect(collapsedChild.snapshot).toMatchObject({
+        membershipSchemaVersion: 1,
+        stops: terminalStops
+      });
+      expect(await prisma.order.count({
+        where: { currentRouteVersionId: collapsedChild.id, id: { in: terminalOrderIds.map(({ id }) => id) } }
+      })).toBe(terminalOrderIds.length);
+
+      const readRollbackMutationState = async () => ({
+        childCount: await prisma.routeGroupingChildVersion.count({ where: { groupingId: priorChild.groupingId } }),
+        currentChildren: await prisma.routeGroupingChildVersion.findMany({
+          orderBy: { id: 'asc' }, select: { id: true },
+          where: { groupingId: priorChild.groupingId, status: 'CURRENT', supersededAt: null }
+        }),
+        grouping: await prisma.routeGrouping.findUniqueOrThrow({
+          select: { currentVersion: true, status: true }, where: { id: priorChild.groupingId }
+        }),
+        groupingVersionCount: await prisma.routeGroupingVersion.count({ where: { groupingId: priorChild.groupingId } }),
+        orderPointers: await prisma.order.findMany({
+          orderBy: { id: 'asc' }, select: { currentRouteVersionId: true, id: true },
+          where: { routeGroupingOrders: { some: { groupingId: priorChild.groupingId } } }
+        }),
+        routePlanCount: await prisma.routePlan.count({ where: { shopId } }),
+        routePlanStopCount: await prisma.routePlanStop.count({ where: { shopId } })
+      });
+
+      const ambiguousGroupingVersion = await prisma.routeGroupingVersion.create({
+        data: {
+          actor: 'route-ops:test', changeReason: 'ambiguous-rollback-lineage',
+          groupingId: priorChild.groupingId, shopId, status: 'ARCHIVED', version: 77
+        }
+      });
+      for (const suffix of ['a', 'b']) {
+        await prisma.routeGroupingChildVersion.create({
+          data: {
+            driverId: collapsedChild.driverId, groupingId: priorChild.groupingId,
+            groupingVersionId: ambiguousGroupingVersion.id, notificationStatus: 'SKIPPED',
+            routePlanId: collapsedChild.routePlanId, shopId,
+            snapshot: { ...(collapsedChild.snapshot as Prisma.InputJsonObject), predecessorChildVersionId: null, suffix },
+            status: 'ARCHIVED', supersededAt: new Date(), version: 77
+          }
+        });
+      }
+      const beforeAmbiguousRollback = await readRollbackMutationState();
+      await expect(routeGroupingService.rollback({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId,
+        shopDomain: 'g002-evidence.invalid', version: 77
+      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      expect(await readRollbackMutationState()).toEqual(beforeAmbiguousRollback);
+
+      const overlapGroupingVersion = await prisma.routeGroupingVersion.create({
+        data: {
+          actor: 'route-ops:test', changeReason: 'overlap-rollback-membership',
+          groupingId: priorChild.groupingId, shopId, status: 'ARCHIVED', version: 78
+        }
+      });
+      const overlapSnapshot = {
+        driverId: driverA, membershipSchemaVersion: 1, name: 'Overlap rollback source',
+        stops: [{
+          deliveryStopId: '61000000-0000-4000-8000-000000000010', orderId: assignedOrder.id, sequence: 1
+        }]
+      };
+      for (const routePlanIdForOverlap of [rollbackSourceRoute.id, collapsedRoutePlanId]) {
+        await prisma.routeGroupingChildVersion.create({
+          data: {
+            driverId: driverA, groupingId: priorChild.groupingId,
+            groupingVersionId: overlapGroupingVersion.id, notificationStatus: 'SKIPPED',
+            routePlanId: routePlanIdForOverlap, shopId, snapshot: overlapSnapshot,
+            status: 'ARCHIVED', supersededAt: new Date(), version: 78
+          }
+        });
+      }
+      const beforeOverlapRollback = await readRollbackMutationState();
+      await expect(routeGroupingService.rollback({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId,
+        shopDomain: 'g002-evidence.invalid', version: 78
+      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      expect(await readRollbackMutationState()).toEqual(beforeOverlapRollback);
+
+      const legacyGroupingVersion = await prisma.routeGroupingVersion.create({
+        data: {
+          actor: 'route-ops:test', changeReason: 'legacy-shared-route-rollback',
+          groupingId: priorChild.groupingId, shopId, status: 'ARCHIVED', version: 79
+        }
+      });
+      await prisma.routeGroupingChildVersion.create({
+        data: {
+          driverId: collapsedChild.driverId, groupingId: priorChild.groupingId,
+          groupingVersionId: legacyGroupingVersion.id, notificationStatus: 'SKIPPED',
+          routePlanId: collapsedRoutePlanId, shopId,
+          snapshot: { driverId: collapsedChild.driverId, name: 'Legacy shared mutable route' },
+          status: 'ARCHIVED', supersededAt: new Date(), version: 79
+        }
+      });
+      await prisma.routePlanStop.deleteMany({ where: { routePlanId: collapsedRoutePlanId } });
+      const beforeLegacyRollback = await readRollbackMutationState();
+      await expect(routeGroupingService.rollback({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId,
+        shopDomain: 'g002-evidence.invalid', version: 79
+      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      expect(await readRollbackMutationState()).toEqual(beforeLegacyRollback);
 
       await prisma.driverEventAttempt.updateMany({
         data: { retainedUntil: new Date('2026-08-23T00:00:00.000Z') },

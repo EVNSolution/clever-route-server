@@ -160,6 +160,7 @@ type ChildSnapshot = {
   name: string;
   membershipFormat: 'LEGACY' | 'MODERN';
   planDate: string;
+  predecessorChildVersionId: string | null;
   routeIdx?: number;
   sortOrder?: number;
   routeScope: { deliverySession: string | null; routeScopeKey: string | null; serviceType: string | null };
@@ -282,7 +283,7 @@ export async function replaceCurrentRouteGroupingChildVersion(
       publishedAt: input.publishedAt,
       routePlanId: input.routePlanId,
       shopId: input.shopId,
-      snapshot: input.snapshot,
+      snapshot: withChildSnapshotPredecessor(input.snapshot, input.currentChildId),
       status: 'CURRENT',
       supersededAt: null,
       version: input.version
@@ -1887,18 +1888,21 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (group === null) return null;
       const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
       if (loaded === null) return null;
-      const snapshots = loaded.childVersions.filter((child) => child.version === input.version && child.status !== 'CURRENT');
-      if (snapshots.length === 0) throw new RouteGroupingValidationError(['rollback version not found']);
+      const archivedCandidates = loaded.childVersions.filter((child) => child.version === input.version && child.status !== 'CURRENT');
+      if (archivedCandidates.length === 0) throw new RouteGroupingValidationError(['rollback version not found']);
+      const rollbackSources = selectTerminalArchivedChildren(archivedCandidates).map((child) => ({
+        assignments: archivedChildAssignments(loaded, child),
+        snapshot: readChildSnapshot(child.snapshot)
+      }));
+      assertRollbackMembershipDisjoint(rollbackSources);
       await archiveCurrentChildren(tx, loaded, input.actor);
       const nextVersion = loaded.currentVersion + 1;
       const version = await tx.routeGroupingVersion.create({
         data: { actor: input.actor, changeReason: `rollback:${input.version}`, groupingId: loaded.id, shopId: loaded.shopId, status: 'CURRENT', version: nextVersion }
       });
       const childRoutePlanIds: string[] = [];
-      for (const child of snapshots) {
-        const snapshot = readChildSnapshot(child.snapshot);
+      for (const { assignments, snapshot } of rollbackSources) {
         const routeIdx = snapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId);
-        const assignments = archivedChildAssignments(loaded, child);
         const canonicalSnapshot = createChildSnapshot(
           loaded,
           assignments,
@@ -3344,6 +3348,76 @@ function archivedChildAssignments(group: LoadedGrouping, child: LoadedChild): Lo
   return resolveChildSnapshotAssignments(group, child, 'ARCHIVED');
 }
 
+function selectTerminalArchivedChildren(children: LoadedChild[]): LoadedChild[] {
+  const lineages = new Map<string, LoadedChild[]>();
+  for (const child of children) {
+    const snapshot = readChildSnapshot(child.snapshot);
+    const slot = child.routePlanId === null
+      ? snapshot.routeIdx === undefined ? null : `routeIdx:${snapshot.routeIdx}`
+      : `routePlan:${child.routePlanId}`;
+    if (slot === null) {
+      if (children.length === 1) return children;
+      throw new RouteGroupingValidationError(['archived route successor lineage is ambiguous']);
+    }
+    lineages.set(slot, [...(lineages.get(slot) ?? []), child]);
+  }
+
+  const terminals: LoadedChild[] = [];
+  for (const lineage of lineages.values()) {
+    if (lineage.length === 1) {
+      terminals.push(lineage[0]!);
+      continue;
+    }
+    const byId = new Map(lineage.map((child) => [child.id, child]));
+    const referenced = new Set<string>();
+    let rootCount = 0;
+    for (const child of lineage) {
+      const predecessorId = readChildSnapshot(child.snapshot).predecessorChildVersionId;
+      if (predecessorId === null) {
+        rootCount += 1;
+        continue;
+      }
+      if (!byId.has(predecessorId) || referenced.has(predecessorId)) {
+        throw new RouteGroupingValidationError(['archived route successor lineage is ambiguous']);
+      }
+      referenced.add(predecessorId);
+    }
+    const terminalCandidates = lineage.filter((child) => !referenced.has(child.id));
+    if (rootCount !== 1 || terminalCandidates.length !== 1 || referenced.size !== lineage.length - 1) {
+      throw new RouteGroupingValidationError(['archived route successor lineage is ambiguous']);
+    }
+    const terminal = terminalCandidates[0]!;
+    const visited = new Set<string>();
+    let cursor: LoadedChild | undefined = terminal;
+    while (cursor !== undefined && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      const predecessorId: string | null = readChildSnapshot(cursor.snapshot).predecessorChildVersionId;
+      cursor = predecessorId === null ? undefined : byId.get(predecessorId);
+    }
+    if (visited.size !== lineage.length || cursor !== undefined) {
+      throw new RouteGroupingValidationError(['archived route successor lineage is ambiguous']);
+    }
+    terminals.push(terminal);
+  }
+  return terminals;
+}
+
+function assertRollbackMembershipDisjoint(
+  sources: Array<{ assignments: LoadedAssignment[] }>
+): void {
+  const deliveryStopIds = new Set<string>();
+  const orderIds = new Set<string>();
+  for (const { assignments } of sources) {
+    for (const assignment of assignments) {
+      if (deliveryStopIds.has(assignment.deliveryStopId) || orderIds.has(assignment.orderId)) {
+        throw new RouteGroupingValidationError(['rollback route membership overlaps across child routes']);
+      }
+      deliveryStopIds.add(assignment.deliveryStopId);
+      orderIds.add(assignment.orderId);
+    }
+  }
+}
+
 function resolveChildSnapshotAssignments(
   group: LoadedGrouping,
   child: LoadedChild,
@@ -3352,6 +3426,9 @@ function resolveChildSnapshotAssignments(
   const assignmentsByStopId = new Map(group.orders.map((assignment) => [assignment.deliveryStopId, assignment]));
   const snapshot = readChildSnapshot(child.snapshot);
   const modernSnapshot = snapshot.membershipFormat === 'MODERN';
+  if (!modernSnapshot && authority === 'ARCHIVED') {
+    throw new RouteGroupingValidationError(['archived legacy route membership cannot be restored safely']);
+  }
   const orderedSnapshotStops = [...snapshot.stops].sort((left, right) => left.sequence - right.sequence);
   if (modernSnapshot) {
     const validTuples = orderedSnapshotStops.every((stop) => stop.deliveryStopId !== '' && stop.orderId !== '');
@@ -3878,6 +3955,7 @@ function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignmen
     membershipSchemaVersion: 1,
     name,
     planDate: formatDateOnly(group.planDate) ?? '',
+    predecessorChildVersionId: null,
     routeScope: { deliverySession: group.deliverySession, routeScopeKey: group.routeScopeKey, serviceType: group.serviceType },
     stops: assignments.map((assignment, index) => ({ deliveryStopId: assignment.deliveryStopId, orderId: assignment.orderId, sequence: index + 1, sourceOrderId: assignment.order.shopifyOrderGid }))
   };
@@ -3906,6 +3984,9 @@ function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
     membershipSchemaVersion: membershipSchemaVersion === 1 ? 1 : null,
     name: typeof object.name === 'string' ? object.name : 'Rolled back route',
     planDate: typeof object.planDate === 'string' ? object.planDate : '',
+    predecessorChildVersionId: typeof object.predecessorChildVersionId === 'string'
+      ? object.predecessorChildVersionId
+      : null,
     ...(routeIdx === undefined ? {} : { routeIdx }),
     ...(sortOrder === undefined ? {} : { sortOrder }),
     routeScope: { deliverySession: null, routeScopeKey: null, serviceType: null },
@@ -4055,6 +4136,16 @@ function toPolygonDto(polygon: LoadedGrouping['polygons'][number]): RouteGroupin
 
 function toJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function withChildSnapshotPredecessor(
+  value: Prisma.InputJsonValue,
+  predecessorChildVersionId: string
+): Prisma.InputJsonObject {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RouteGroupingValidationError(['route membership successor snapshot root is malformed']);
+  }
+  return { ...(value as Prisma.InputJsonObject), predecessorChildVersionId };
 }
 
 function readOptimizedBranchSnapshot(value: unknown): RouteGroupingBranchDto['optimized'] {
