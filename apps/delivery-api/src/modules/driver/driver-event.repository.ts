@@ -323,6 +323,7 @@ export class PrismaDriverEventRepository {
           };
         }
 
+        await lockRoutePlanForCompletion(transaction, input);
         await validateVersionedOrderedContract(transaction, input);
         await validateDriverEventStateContext(transaction, input, input.shopId);
         const completionInvariant = await evaluateCompletionInvariant(transaction, input, this.completionInvariantMode);
@@ -607,6 +608,22 @@ function requireAssignmentGeneration(input: RecordDriverEventInput): string {
   const parsed = BigInt(value);
   if (parsed > 9223372036854775807n) throw new DriverEventContextError('assignmentGeneration is out of range');
   return value;
+}
+
+async function lockRoutePlanForCompletion(
+  prisma: DriverEventTransactionClient,
+  input: RecordDriverEventInput
+): Promise<void> {
+  if (input.eventType !== 'ROUTE_COMPLETED') return;
+  const routePlanId = requireRoutePlanId(input);
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "route_plans"
+    WHERE "id" = ${routePlanId}::uuid
+      AND "shopId" = ${input.shopId}::uuid
+    FOR UPDATE
+  `);
+  if (rows[0] === undefined) throw new DriverEventAssignmentChangedError();
 }
 
 async function validateVersionedOrderedContract(

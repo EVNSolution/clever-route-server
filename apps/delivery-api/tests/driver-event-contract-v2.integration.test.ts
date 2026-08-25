@@ -127,6 +127,10 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       await prisma.$executeRawUnsafe(`INSERT INTO delivery_stops
         (id, "shopId", "orderId", status, "createdAt", "updatedAt") VALUES
         ('61000000-0000-4000-8000-000000000010', '${shopId}', '60000000-0000-4000-8000-000000000010', 'ASSIGNED', now(), now())`);
+      await prisma.$executeRawUnsafe(`INSERT INTO route_grouping_orders
+        (id, "shopId", "groupingId", "orderId", "deliveryStopId", "assignmentStatus", "sourceSequence", "createdAt", "updatedAt") VALUES
+        ('63000000-0000-4000-8000-000000000010', '${shopId}', '40000000-0000-4000-8000-000000000010',
+         '60000000-0000-4000-8000-000000000010', '61000000-0000-4000-8000-000000000010', 'ASSIGNED', 1, now(), now())`);
       await prisma.$executeRawUnsafe(`INSERT INTO route_plan_stops
         (id, "shopId", "routePlanId", "deliveryStopId", sequence, "createdAt", "updatedAt") VALUES
         ('62000000-0000-4000-8000-000000000010', '${shopId}', '${routePlanId}', '61000000-0000-4000-8000-000000000010', 1, now(), now())`);
@@ -184,6 +188,119 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       }
       expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(1);
       expect(await prisma.routeGrouping.findUnique({ where: { id: '40000000-0000-4000-8000-000000000010' } })).not.toBeNull();
+
+      await prisma.deliveryStop.update({ data: { status: 'DELIVERED' }, where: { id: '61000000-0000-4000-8000-000000000010' } });
+      const completionGate = new pg.Client({ connectionString: databaseUrl });
+      await completionGate.connect();
+      try {
+        await completionGate.query('SELECT pg_advisory_lock(26533001)');
+        await prisma.$executeRawUnsafe(`CREATE FUNCTION block_v2_completion_for_append_race() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN PERFORM pg_advisory_xact_lock(26533001); RETURN NEW; END $$`);
+        await prisma.$executeRawUnsafe(`CREATE TRIGGER block_v2_completion_for_append_race
+          BEFORE INSERT ON driver_events FOR EACH ROW
+          WHEN (NEW."clientEventId" = 'v2-completion-append-race')
+          EXECUTE FUNCTION block_v2_completion_for_append_race()`);
+        const completion = repository.recordDriverEvent({
+          appVersion: '1.2.0', assignmentGeneration: '1', clientEventId: 'v2-completion-append-race', deliveryStopId: null,
+          driverContractVersion: 2, driverId: driverA, eventType: 'ROUTE_COMPLETED', expectedRouteVersionId: routeVersionId,
+          latitude: null, longitude: null, occurredAt: new Date('2026-08-24T04:56:00.000Z'), payload: {},
+          requestId: 'request-v2-completion-append-race', routePlanId, shopDomain: 'g002-evidence.invalid', shopId, versionCode: 120
+        });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        let appendSettled = false;
+        const append = routeGroupingService.createCustomStop({
+          actor: 'route-ops:test', groupingId: '40000000-0000-4000-8000-000000000010',
+          shopDomain: 'g002-evidence.invalid', stopName: 'Completion race append', targetRoutePlanId: routePlanId
+        }).then(
+          (value) => ({ error: null, value }),
+          (error: unknown) => ({ error, value: null })
+        ).finally(() => { appendSettled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        expect(appendSettled).toBe(false);
+        await completionGate.query('SELECT pg_advisory_unlock(26533001)');
+        await expect(completion).resolves.toMatchObject({ duplicate: false });
+        expect((await append).error).toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      } finally {
+        await completionGate.query('SELECT pg_advisory_unlock(26533001)').catch(() => undefined);
+        await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS block_v2_completion_for_append_race ON driver_events');
+        await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS block_v2_completion_for_append_race()');
+        await completionGate.end();
+      }
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({ status: 'COMPLETED' });
+      expect(await prisma.order.count({ where: { name: 'Completion race append', shopId } })).toBe(0);
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(1);
+      await prisma.driverRouteCompletionReview.deleteMany({ where: { routePlanId } });
+      await prisma.driverEvent.deleteMany({ where: { clientEventId: 'v2-completion-append-race', routePlanId } });
+      await prisma.driverEventAttempt.deleteMany({ where: { clientEventId: 'v2-completion-append-race', routePlanId } });
+
+      const customOrderId = '60000000-0000-4000-8000-000000000012';
+      const customStopId = '61000000-0000-4000-8000-000000000012';
+      await prisma.routePlan.update({ data: { status: 'READY' }, where: { id: routePlanId } });
+      await prisma.order.create({ data: {
+        id: customOrderId, name: 'Completion race delete', ownedRouteGroupingId: '40000000-0000-4000-8000-000000000010',
+        rawPayload: {}, shopId, shopifyOrderGid: 'gid://clever/CustomRouteStop/completion-race-delete',
+        sourceOrderId: 'custom-stop:completion-race-delete', sourcePlatform: 'CUSTOM'
+      } });
+      await prisma.deliveryStop.create({ data: { id: customStopId, orderId: customOrderId, shopId, status: 'DELIVERED' } });
+      await prisma.routeGroupingOrder.create({ data: {
+        assignmentStatus: 'ASSIGNED', deliveryStopId: customStopId, groupingId: '40000000-0000-4000-8000-000000000010',
+        orderId: customOrderId, shopId, sourceSequence: 2
+      } });
+      await prisma.routePlanStop.create({ data: { deliveryStopId: customStopId, routePlanId, sequence: 2, shopId } });
+      await prisma.routeGroupingChildVersion.update({
+        data: { snapshot: { stops: [
+          { deliveryStopId: '61000000-0000-4000-8000-000000000010', sequence: 1 },
+          { deliveryStopId: customStopId, sequence: 2 }
+        ] } },
+        where: { id: routeVersionId }
+      });
+
+      const deleteGate = new pg.Client({ connectionString: databaseUrl });
+      await deleteGate.connect();
+      try {
+        await deleteGate.query('SELECT pg_advisory_lock(26533002)');
+        await prisma.$executeRawUnsafe(`CREATE FUNCTION block_custom_delete_before_route_lock() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN PERFORM pg_advisory_xact_lock(26533002); RETURN NEW; END $$`);
+        await prisma.$executeRawUnsafe(`CREATE TRIGGER block_custom_delete_before_route_lock
+          BEFORE UPDATE ON route_groupings FOR EACH ROW
+          WHEN (OLD.id = '40000000-0000-4000-8000-000000000010'::uuid)
+          EXECUTE FUNCTION block_custom_delete_before_route_lock()`);
+        let deleteSettled = false;
+        const deletion = routeGroupingService.deleteCustomStop({
+          deliveryStopId: customStopId, groupingId: '40000000-0000-4000-8000-000000000010', shopDomain: 'g002-evidence.invalid'
+        }).then(
+          (value) => ({ error: null, value }),
+          (error: unknown) => ({ error, value: null })
+        ).finally(() => { deleteSettled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        expect(deleteSettled).toBe(false);
+        await prisma.routePlan.update({ data: { status: 'IN_PROGRESS' }, where: { id: routePlanId } });
+        await expect(repository.recordDriverEvent({
+          clientEventId: 'legacy-completion-delete-race', deliveryStopId: null, driverId: driverA,
+          eventType: 'ROUTE_COMPLETED', latitude: null, longitude: null, occurredAt: new Date('2026-08-24T04:56:30.000Z'),
+          payload: {}, routePlanId, shopDomain: 'g002-evidence.invalid', shopId
+        })).resolves.toMatchObject({ duplicate: false });
+        await deleteGate.query('SELECT pg_advisory_unlock(26533002)');
+        expect((await deletion).error).toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      } finally {
+        await deleteGate.query('SELECT pg_advisory_unlock(26533002)').catch(() => undefined);
+        await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS block_custom_delete_before_route_lock ON route_groupings');
+        await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS block_custom_delete_before_route_lock()');
+        await deleteGate.end();
+      }
+      expect(await prisma.order.findUnique({ where: { id: customOrderId } })).not.toBeNull();
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(2);
+      await prisma.driverRouteCompletionReview.deleteMany({ where: { routePlanId } });
+      await prisma.driverEvent.deleteMany({ where: { clientEventId: 'legacy-completion-delete-race', routePlanId } });
+      await prisma.routePlanStop.deleteMany({ where: { deliveryStopId: customStopId, routePlanId } });
+      await prisma.order.delete({ where: { id: customOrderId } });
+      await prisma.routeGroupingChildVersion.update({
+        data: { snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010', sequence: 1 }] } },
+        where: { id: routeVersionId }
+      });
+      await prisma.deliveryStop.update({ data: { status: 'ASSIGNED' }, where: { id: '61000000-0000-4000-8000-000000000010' } });
+      await prisma.routePlan.update({ data: { status: 'IN_PROGRESS' }, where: { id: routePlanId } });
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(1);
 
       await expect(routePlanRepository.updateRoutePlanStops({
         routePlanId,
@@ -438,6 +555,29 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         .toMatchObject({ status: 'CURRENT' });
       expect(await prisma.order.findUniqueOrThrow({ where: { id: assignedOrder.id } }))
         .toMatchObject({ currentRouteVersionId: nextChildId });
+
+      const addedDraft = await routeGroupingService.createCustomStop({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
+        stopName: 'In-progress draft append'
+      });
+      expect(addedDraft).not.toBeNull();
+      const addedDraftOrder = await prisma.order.findFirstOrThrow({ where: { name: 'In-progress draft append', shopId } });
+      await prisma.$transaction((transaction) => routeGroupingService.saveDraftInTransaction(transaction, {
+        groupingId: priorChild.groupingId,
+        routes: [
+          { branchId: null, orderIds: [assignedOrder.id, addedDraftOrder.id], routePlanId },
+          { branchId: null, orderIds: [], routePlanId: siblingRoutePlanId }
+        ],
+        shopDomain: 'g002-evidence.invalid'
+      }));
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({ status: 'IN_PROGRESS' });
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(2);
+      const savedDraftChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      });
+      expect(savedDraftChild.id).not.toBe(nextChildId);
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: addedDraftOrder.id } }))
+        .toMatchObject({ currentRouteVersionId: savedDraftChild.id });
 
       await prisma.driverEventAttempt.updateMany({
         data: { retainedUntil: new Date('2026-08-23T00:00:00.000Z') },

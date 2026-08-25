@@ -79,17 +79,58 @@ describe('route membership mutation authority', () => {
     const guardedBodies: Array<[string, string]> = [
       [source.slice(source.indexOf('async deleteGrouping('), source.indexOf('async saveDraft(')), 'routePlanStop.deleteMany('],
       [source.slice(source.indexOf('async saveDraft('), source.indexOf('async saveDraftInTransaction(')), 'routePlanStop.deleteMany('],
-      [source.slice(source.indexOf('async saveDraftInTransaction('), source.indexOf('async publishGrouping(')), 'syncRoutePlanStopsPreservingRows('],
       [source.slice(source.indexOf('async function archiveCurrentChildren('), source.indexOf('function assertNoInProgressCurrentChildren(')), 'routePlanStop.deleteMany(']
     ];
     for (const [body, mutation] of guardedBodies) {
       expect(body).toContain('lockRoutePlanAssignment(');
       expect(body.indexOf('lockRoutePlanAssignment(')).toBeLessThan(body.indexOf(mutation));
     }
-    const lock = source.slice(source.indexOf('async function lockRoutePlanAssignment('), source.indexOf('function normalizeDraftRoutes('));
+    const lock = source.slice(source.indexOf('async function lockRoutePlanMembership('), source.indexOf('function normalizeDraftRoutes('));
     expect(lock).toContain('SELECT "driverId", "status"');
     expect(lock).toContain('FOR UPDATE');
     expect(lock).toContain("routePlan.status === 'IN_PROGRESS'");
+    const transactionalDraft = source.slice(source.indexOf('async saveDraftInTransaction('), source.indexOf('async publishGrouping('));
+    expect(transactionalDraft).toContain('await lockRoutePlanMembership(');
+    expect(transactionalDraft.indexOf('await lockRoutePlanMembership('))
+      .toBeLessThan(transactionalDraft.indexOf('syncRoutePlanStopsPreservingRows('));
+    expect(transactionalDraft).toContain("lockedRoutePlan?.status === 'IN_PROGRESS'");
+    expect(transactionalDraft).toContain("lockedRoutePlan.status !== 'READY' && lockedRoutePlan.status !== 'IN_PROGRESS'");
+    expect(transactionalDraft).toContain("throw new RouteGroupingValidationError(['in-progress route drafts may only append orders'])");
+  });
+
+  test('serializes every successor snapshot writer with a post-lock status decision', () => {
+    const source = readFileSync(join(sourceRoot, 'modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const deleteCustomStop = source.slice(
+      source.indexOf('async deleteCustomStop('),
+      source.indexOf('async previewOptimization(')
+    );
+    const appendOrders = source.slice(
+      source.indexOf('async function appendGroupingOrdersToChildRoute('),
+      source.indexOf('async function rewriteRoutePlanStops(')
+    );
+
+    expect(deleteCustomStop).toContain('await lockRoutePlanMembership(');
+    expect(deleteCustomStop.indexOf('await lockRoutePlanMembership('))
+      .toBeLessThan(deleteCustomStop.indexOf('syncRoutePlanStopsPreservingRows('));
+    expect(deleteCustomStop).toContain("lockedRoutePlan.status !== 'READY'");
+    expect(appendOrders).toContain('await lockRoutePlanMembership(');
+    expect(appendOrders.indexOf('await lockRoutePlanMembership('))
+      .toBeLessThan(appendOrders.indexOf('syncRoutePlanStopsPreservingRows('));
+    expect(appendOrders).toContain("lockedRoutePlan.status !== 'READY' && lockedRoutePlan.status !== 'IN_PROGRESS'");
+  });
+
+  test('locks every completion contract before reading its immutable snapshot', () => {
+    const source = readFileSync(join(sourceRoot, 'modules/driver/driver-event.repository.ts'), 'utf8');
+    const transaction = source.slice(
+      source.indexOf('const result = await this.prisma.$transaction('),
+      source.indexOf('const sequenceDeviation = await detectStopSequenceDeviation')
+    );
+
+    expect(transaction).toContain('await lockRoutePlanForCompletion(transaction, input)');
+    expect(transaction.indexOf('await lockRoutePlanForCompletion(transaction, input)'))
+      .toBeLessThan(transaction.indexOf('await validateVersionedOrderedContract(transaction, input)'));
+    expect(transaction.indexOf('await lockRoutePlanForCompletion(transaction, input)'))
+      .toBeLessThan(transaction.indexOf('await evaluateCompletionInvariant(transaction, input'));
   });
 
   test('keeps driver acknowledgement outside direct membership mutation authority', () => {

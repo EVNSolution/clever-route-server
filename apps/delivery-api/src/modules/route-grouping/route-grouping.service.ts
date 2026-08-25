@@ -907,6 +907,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           throw new RouteGroupingValidationError(['custom stops cannot be deleted from an in-progress or completed child route']);
         }
         if (child.routePlanId === null) continue;
+        const lockedRoutePlan = await lockRoutePlanMembership(tx, child.routePlanId, group.shopId);
+        if (lockedRoutePlan.status !== 'READY') {
+          throw new RouteGroupingValidationError(['custom stops cannot be deleted from an in-progress or completed child route']);
+        }
         const remaining = currentAssignments.filter((row) => row.deliveryStopId !== assignment.deliveryStopId);
         await syncRoutePlanStopsPreservingRows(tx, group.shopId, child.routePlanId, remaining);
         await tx.routePlan.update({ data: { metrics: routeMetrics(remaining) }, where: { id: child.routePlanId } });
@@ -1221,8 +1225,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
     const currentChildren = loaded.childVersions.filter((child) => isOperationalCurrentChild(child));
     const currentRoutePlanIds = currentChildren.map((child) => child.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
+    const lockedRoutePlans = new Map<string, { driverId: string | null; status: string }>();
     for (const routePlanId of [...currentRoutePlanIds].sort()) {
-      await lockRoutePlanAssignment(tx, routePlanId, group.shopId);
+      lockedRoutePlans.set(routePlanId, await lockRoutePlanMembership(tx, routePlanId, group.shopId));
     }
     const driverIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
     const vehicleIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
@@ -1241,6 +1246,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     for (const routePlanId of deletedRoutePlanIds) {
       const child = currentChildren.find((candidate) => candidate.routePlanId === routePlanId);
       if (child === undefined) throw new RouteGroupingValidationError(['deleted route plan must belong to the current route grouping']);
+      if (lockedRoutePlans.get(routePlanId)?.status !== 'READY') {
+        throw new RouteGroupingValidationError(['only Ready child routes can be deleted']);
+      }
       await tx.routeGroupingChildVersion.delete({ where: { id: child.id } });
       await clearRouteGroupingChildVersionRoutePlanRefs(tx, {
         routePlanIds: [routePlanId],
@@ -1283,13 +1291,27 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           || (route.color !== undefined && route.color !== (previousSnapshot.color ?? null))
           || (previousSnapshot.sortOrder !== undefined && route.sortOrder !== previousSnapshot.sortOrder);
         if (!assignmentsChanged && !routeDetailsChanged) continue;
+        const lockedRoutePlan = targetChild.routePlanId === null ? null : lockedRoutePlans.get(targetChild.routePlanId);
+        if (lockedRoutePlan !== null && lockedRoutePlan !== undefined
+          && lockedRoutePlan.status !== 'READY' && lockedRoutePlan.status !== 'IN_PROGRESS') {
+          throw new RouteGroupingValidationError(['route membership cannot change after route completion']);
+        }
+        if (lockedRoutePlan?.status === 'IN_PROGRESS') {
+          const currentOrderIds = currentChildAssignments(loaded, targetChild).map((assignment) => assignment.orderId);
+          const onlyAdds = assignmentsChanged
+            && !routeDetailsChanged
+            && currentOrderIds.every((orderId) => assignments.some((assignment) => assignment.orderId === orderId));
+          if (!onlyAdds) {
+            throw new RouteGroupingValidationError(['in-progress route drafts may only append orders']);
+          }
+        }
         const savedRouteIdx = previousSnapshot.routeIdx;
         if (route.routeIdx !== undefined && savedRouteIdx !== undefined && route.routeIdx !== savedRouteIdx) {
           throw new RouteGroupingValidationError(['route draft routeIdx changed; reload and retry']);
         }
         const routeIdx = savedRouteIdx ?? await nextGlobalRouteIdx(tx, group.shopId);
         if (targetChild.routePlanId !== null) {
-          const lockedDriverId = await lockRoutePlanAssignment(tx, targetChild.routePlanId, group.shopId);
+          const lockedDriverId = lockedRoutePlan?.driverId ?? null;
           await syncRoutePlanStopsPreservingRows(tx, group.shopId, targetChild.routePlanId, assignments);
           await tx.routePlan.update({
             data: {
@@ -2037,7 +2059,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   }
 }
 
-async function lockRoutePlanAssignment(tx: Tx, routePlanId: string, shopId: string): Promise<string | null> {
+async function lockRoutePlanMembership(tx: Tx, routePlanId: string, shopId: string): Promise<{ driverId: string | null; status: string }> {
   const rows = await tx.$queryRaw<Array<{ driverId: string | null; status: string }>>`
     SELECT "driverId", "status"
     FROM "route_plans"
@@ -2047,6 +2069,11 @@ async function lockRoutePlanAssignment(tx: Tx, routePlanId: string, shopId: stri
   `;
   const routePlan = rows[0];
   if (routePlan === undefined) throw new RouteGroupingValidationError(['route plan changed; reload and retry']);
+  return routePlan;
+}
+
+async function lockRoutePlanAssignment(tx: Tx, routePlanId: string, shopId: string): Promise<string | null> {
+  const routePlan = await lockRoutePlanMembership(tx, routePlanId, shopId);
   if (routePlan.status === 'IN_PROGRESS') {
     throw new RouteGroupingValidationError(['route membership cannot change after route execution starts']);
   }
@@ -3161,6 +3188,10 @@ async function appendGroupingOrdersToChildRoute(
   if (targetStatus !== 'READY' && targetStatus !== 'IN_PROGRESS') {
     throw new RouteGroupingValidationError(['orders can only be added to a Ready or in-progress child route']);
   }
+  const lockedRoutePlan = await lockRoutePlanMembership(tx, targetRoutePlanId, group.shopId);
+  if (lockedRoutePlan.status !== 'READY' && lockedRoutePlan.status !== 'IN_PROGRESS') {
+    throw new RouteGroupingValidationError(['orders can only be added to a Ready or in-progress child route']);
+  }
 
   const assignmentsByOrderId = new Map(group.orders.map((assignment) => [assignment.orderId, assignment]));
   const additions = orderIds.map((orderId) => assignmentsByOrderId.get(orderId));
@@ -3191,7 +3222,7 @@ async function appendGroupingOrdersToChildRoute(
   await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
   await replaceCurrentRouteGroupingChildVersion(tx, {
     currentChildId: targetChild.id,
-    driverId: targetChild.routePlan.driverId ?? targetChild.driverId,
+    driverId: lockedRoutePlan.driverId ?? targetChild.driverId,
     groupingId: group.id,
     groupingVersionId: targetChild.groupingVersionId,
     notificationStatus: targetChild.notificationStatus,
@@ -3202,7 +3233,7 @@ async function appendGroupingOrdersToChildRoute(
     snapshot: createChildSnapshot(
       group,
       assignments,
-      targetChild.routePlan.driverId ?? targetChild.driverId,
+      lockedRoutePlan.driverId ?? targetChild.driverId,
       childRouteSlotName(targetChild),
       group.currentVersion,
       snapshot.color,
