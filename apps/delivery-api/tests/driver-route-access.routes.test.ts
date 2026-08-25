@@ -37,6 +37,9 @@ const invitedLookup = {
     tokenVersion: 1
   },
   routeAccess: {
+    assignmentGeneration: '1',
+    driverContractVersion: 2 as const,
+    expectedRouteVersionId: '22222222-2222-4222-8222-222222222222',
     nextState: 'consent_required' as const,
     routeContext: 'route-plan-id',
     routePlanId: 'route-plan-id'

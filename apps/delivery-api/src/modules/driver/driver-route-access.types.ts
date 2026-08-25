@@ -33,9 +33,9 @@ export type DriverRouteAccessInvitedRoute = {
   };
   status: 'INVITED';
   routeAccess: {
-    assignmentGeneration?: string;
-    driverContractVersion?: 2;
-    expectedRouteVersionId?: string;
+    assignmentGeneration: string;
+    driverContractVersion: 2;
+    expectedRouteVersionId: string;
     nextState: 'consent_required';
     routeContext: string;
     routePlanId: string;

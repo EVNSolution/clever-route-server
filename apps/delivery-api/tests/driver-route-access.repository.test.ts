@@ -56,6 +56,9 @@ describe('PrismaDriverRouteAccessRepository', () => {
       },
       status: 'INVITED',
       routeAccess: {
+        assignmentGeneration: '1',
+        driverContractVersion: 2,
+        expectedRouteVersionId: '22222222-2222-4222-8222-222222222222',
         nextState: 'consent_required',
         routeContext: routePlanId,
         routePlanId
@@ -165,6 +168,22 @@ describe('PrismaDriverRouteAccessRepository', () => {
       }
     ]);
     expect(JSON.stringify(result)).not.toContain('address1');
+  });
+
+  test('omits legacy route choices without an immutable current version', async () => {
+    const { prisma } = createPrismaHarness({
+      phoneRoutePlans: [
+        routePlanRecord({ assignmentGeneration: 1n, routeVersionId: '22222222-2222-4222-8222-222222222222' }),
+        routePlanRecord({ id: '33333333-3333-4333-8333-333333333333', legacyContract: true })
+      ]
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({
+        status: 'ROUTES_FOUND',
+        routes: [{ routeAccess: { routePlanId: routePlanId } }]
+      });
   });
 
   test('does not issue route access for active drivers that have not verified an invite code', async () => {
@@ -510,6 +529,9 @@ describe('PrismaDriverRouteAccessRepository', () => {
     expect(result).toEqual(expect.objectContaining({
       status: 'INVITED',
       routeAccess: {
+        assignmentGeneration: '1',
+        driverContractVersion: 2,
+        expectedRouteVersionId: '22222222-2222-4222-8222-222222222222',
         nextState: 'consent_required',
         routeContext: '22222222-2222-4222-8222-222222222222',
         routePlanId: '22222222-2222-4222-8222-222222222222'
@@ -608,6 +630,7 @@ function routePlanRecord(
     authSubject?: string | null;
     driverStatus?: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
     id?: string;
+    legacyContract?: boolean;
     name?: string;
     planDate?: string;
     routeVersionId?: string;
@@ -618,7 +641,7 @@ function routePlanRecord(
 ) {
   const shopDomain = overrides.shopDomain ?? 'tomatono.myshopify.com';
   return {
-    ...(overrides.assignmentGeneration === undefined ? {} : { assignmentGeneration: overrides.assignmentGeneration }),
+    ...(overrides.legacyContract === true ? {} : { assignmentGeneration: overrides.assignmentGeneration ?? 1n }),
     constraints: {
       companyDisplayName: shopDomain === 'north-market.myshopify.com' ? 'North Market' : 'Tomatono Toronto',
       driverInstructions: ['Bring insulated bag'],
@@ -643,7 +666,9 @@ function routePlanRecord(
     id: overrides.id ?? routePlanId,
     name: overrides.name ?? 'Tuesday AM Route',
     planDate: new Date(`${overrides.planDate ?? '2026-05-12'}T00:00:00.000Z`),
-    ...(overrides.routeVersionId === undefined ? {} : { routeGroupingChildVersions: [{ id: overrides.routeVersionId }] }),
+    ...(overrides.legacyContract === true
+      ? {}
+      : { routeGroupingChildVersions: [{ id: overrides.routeVersionId ?? '22222222-2222-4222-8222-222222222222' }] }),
     shop: {
       shopDomain
     },
