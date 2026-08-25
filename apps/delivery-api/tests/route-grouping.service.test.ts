@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import {
+  currentRouteBindingAuthorityState,
   PrismaRouteGroupingService,
   newChildRouteName,
   rebindCurrentOrdersToRouteVersion,
@@ -622,6 +623,39 @@ describe('route grouping contracts', () => {
       orderIds: ['order-a', 'order-b'],
       shopId: 'shop-a'
     })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+  });
+
+  test('classifies exact, legacy-unbound, and mismatched route binding authority', () => {
+    const assignments = (bindings: Array<string | null>) => bindings.map((currentRouteVersionId, index) => ({
+      order: { currentRouteVersionId },
+      orderId: `order-${index + 1}`
+    }));
+
+    expect(currentRouteBindingAuthorityState(
+      'child-current',
+      ['order-1', 'order-2'],
+      assignments([null, null])
+    )).toBe('LEGACY_UNBOUND');
+    expect(currentRouteBindingAuthorityState(
+      'child-current',
+      ['order-1', 'order-2'],
+      assignments(['child-current', 'child-current'])
+    )).toBe('EXACT');
+    expect(currentRouteBindingAuthorityState(
+      'child-current',
+      ['order-1', 'order-2'],
+      assignments(['child-current', null])
+    )).toBe('MISMATCH');
+    expect(currentRouteBindingAuthorityState(
+      'child-current',
+      ['order-1', 'order-2'],
+      assignments(['child-foreign', null])
+    )).toBe('MISMATCH');
+    expect(currentRouteBindingAuthorityState(
+      'child-current',
+      ['order-1', 'order-2'],
+      [...assignments([null, null]), { order: { currentRouteVersionId: 'child-current' }, orderId: 'order-extra' }]
+    )).toBe('MISMATCH');
   });
 
   test('rebinds current order ownership across every child-version replacement path', () => {

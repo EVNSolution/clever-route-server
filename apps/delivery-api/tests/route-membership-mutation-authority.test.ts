@@ -139,8 +139,32 @@ describe('route membership mutation authority', () => {
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot is malformed'])");
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot tuple does not match grouping authority'])");
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority'])");
-    expect(assignmentAuthority).toContain('row.order.currentRouteVersionId === child.id');
+    expect(assignmentAuthority).toContain('currentRouteBindingAuthorityState(child.id, snapshotOrderIds, group.orders)');
+    expect(assignmentAuthority).toContain("return resolveChildSnapshotAssignments(group, child, 'CURRENT')");
+    expect(assignmentAuthority).toContain("return resolveChildSnapshotAssignments(group, child, 'CURRENT_READ')");
     expect(assignmentAuthority).not.toContain('.filter((assignment)');
+    const bindingAuthority = source.slice(
+      source.indexOf('export function currentRouteBindingAuthorityState('),
+      source.indexOf('type OptimizedDraftRoute =')
+    );
+    expect(bindingAuthority).toContain('order.currentRouteVersionId === childVersionId');
+    expect(bindingAuthority).toContain('boundOrderIds.length === 0');
+    expect(bindingAuthority).toContain('order.currentRouteVersionId === null');
+    expect(bindingAuthority).toContain("return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH'");
+    expect(source.match(/readCurrentChildAssignments\(/gu)).toHaveLength(3);
+    const childDto = source.slice(source.indexOf('function toChildDto('), source.indexOf('function readChildRouteGeometry('));
+    const childGeometry = source.slice(source.indexOf('function readChildRouteGeometry('), source.indexOf('function readExactChildRouteMetricsFromRoutePlan('));
+    expect(childDto).toContain('const assignments = readCurrentChildAssignments(group, child)');
+    expect(childGeometry).toContain('assignments: readCurrentChildAssignments(group, child)');
+    const archiveCurrent = source.slice(
+      source.indexOf('async function archiveCurrentChildren('),
+      source.indexOf('function assertNoInProgressCurrentChildren(')
+    );
+    expect(archiveCurrent).toContain('for (const child of current) currentChildAssignments(group, child)');
+    expect(archiveCurrent.indexOf('currentChildAssignments(group, child)'))
+      .toBeLessThan(archiveCurrent.indexOf('tx.routePlan.updateMany('));
+    expect(archiveCurrent.indexOf('currentChildAssignments(group, child)'))
+      .toBeLessThan(archiveCurrent.indexOf('tx.routeGroupingChildVersion.update('));
     const rebindAuthority = source.slice(
       source.indexOf('export async function rebindCurrentOrdersToRouteVersion('),
       source.indexOf('export async function replaceCurrentRouteGroupingChildVersion(')

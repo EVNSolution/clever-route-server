@@ -145,6 +145,31 @@ type ChildRouteGeometrySnapshot = {
   routeStopPoints: RoutePlanRouteStopPoint[];
 };
 
+export function currentRouteBindingAuthorityState(
+  childVersionId: string,
+  snapshotOrderIds: string[],
+  assignments: Array<{ orderId: string; order: { currentRouteVersionId: string | null } }>
+): 'EXACT' | 'LEGACY_UNBOUND' | 'MISMATCH' {
+  const snapshotOrderIdSet = new Set(snapshotOrderIds);
+  if (snapshotOrderIdSet.size !== snapshotOrderIds.length) return 'MISMATCH';
+
+  const snapshotAssignments = assignments.filter(({ orderId }) => snapshotOrderIdSet.has(orderId));
+  if (snapshotAssignments.length !== snapshotOrderIds.length) return 'MISMATCH';
+
+  const boundOrderIds = assignments
+    .filter(({ order }) => order.currentRouteVersionId === childVersionId)
+    .map(({ orderId }) => orderId)
+    .sort();
+  const sortedSnapshotOrderIds = [...snapshotOrderIds].sort();
+  const exactBinding = sortedSnapshotOrderIds.length === boundOrderIds.length
+    && sortedSnapshotOrderIds.every((orderId, index) => orderId === boundOrderIds[index]);
+  if (exactBinding) return 'EXACT';
+
+  const entirelyUnbound = boundOrderIds.length === 0
+    && snapshotAssignments.every(({ order }) => order.currentRouteVersionId === null);
+  return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH';
+}
+
 type OptimizedDraftRoute = {
   assignments: LoadedAssignment[];
   routeResult: RoutePlanRouteResult;
@@ -3231,6 +3256,7 @@ async function recomputeAssignments(tx: Tx, groupingId: string): Promise<void> {
 async function archiveCurrentChildren(tx: Tx, group: LoadedGrouping, actor: string): Promise<void> {
   const current = group.childVersions.filter((child) => isOperationalCurrentChild(child));
   assertNoInProgressCurrentChildren(current);
+  for (const child of current) currentChildAssignments(group, child);
   const currentRoutePlanIds = current.map((child) => child.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null).sort();
   for (const routePlanId of currentRoutePlanIds) {
     const lockedRoutePlan = await lockReadyRoutePlanMembership(tx, routePlanId, group.shopId);
@@ -3348,6 +3374,10 @@ function currentChildAssignments(group: LoadedGrouping, child: LoadedChild): Loa
   return resolveChildSnapshotAssignments(group, child, 'CURRENT');
 }
 
+function readCurrentChildAssignments(group: LoadedGrouping, child: LoadedChild): LoadedAssignment[] {
+  return resolveChildSnapshotAssignments(group, child, 'CURRENT_READ');
+}
+
 function archivedChildAssignments(group: LoadedGrouping, child: LoadedChild): LoadedAssignment[] {
   return resolveChildSnapshotAssignments(group, child, 'ARCHIVED');
 }
@@ -3438,7 +3468,7 @@ function assertRollbackMembershipDisjoint(
 function resolveChildSnapshotAssignments(
   group: LoadedGrouping,
   child: LoadedChild,
-  authority: 'ARCHIVED' | 'CURRENT'
+  authority: 'ARCHIVED' | 'CURRENT' | 'CURRENT_READ'
 ): LoadedAssignment[] {
   const assignmentsByStopId = new Map(group.orders.map((assignment) => [assignment.deliveryStopId, assignment]));
   const snapshot = readChildSnapshot(child.snapshot);
@@ -3463,16 +3493,13 @@ function resolveChildSnapshotAssignments(
   const routePlanStopIds = (child.routePlan?.routeStops ?? [])
     .sort((left, right) => left.sequence - right.sequence)
     .map((stop) => stop.deliveryStopId);
-  if (modernSnapshot && authority === 'CURRENT') {
-    const boundOrderIds = group.orders
-      .filter((row) => row.order.currentRouteVersionId === child.id)
-      .map((assignment) => assignment.orderId)
-      .sort();
-    const snapshotOrderIds = orderedSnapshotStops.map((stop) => stop.orderId).sort();
+  if (modernSnapshot && authority !== 'ARCHIVED') {
+    const snapshotOrderIds = orderedSnapshotStops.map((stop) => stop.orderId);
+    const bindingAuthority = currentRouteBindingAuthorityState(child.id, snapshotOrderIds, group.orders);
     if (snapshotStopIds.length !== routePlanStopIds.length
       || snapshotStopIds.some((stopId, index) => stopId !== routePlanStopIds[index])
-      || snapshotOrderIds.length !== boundOrderIds.length
-      || snapshotOrderIds.some((orderId, index) => orderId !== boundOrderIds[index])) {
+      || bindingAuthority === 'MISMATCH'
+      || (authority === 'CURRENT' && bindingAuthority !== 'EXACT')) {
       throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority']);
     }
   }
@@ -4232,7 +4259,7 @@ function toBranchDto(branch: LoadedBranch) {
 
 function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChildDto {
   const snapshot = readChildSnapshot(child.snapshot);
-  const assignments = currentChildAssignments(group, child);
+  const assignments = readCurrentChildAssignments(group, child);
   const stops = assignments.map(toAssignmentDto);
   const childRouteGeometry = readChildRouteGeometry(child, group);
   const childRouteMetrics = childRouteGeometry.routeMetrics;
@@ -4263,7 +4290,7 @@ function readChildRouteGeometry(child: LoadedChild, group: LoadedGrouping): Chil
   if (depot === null) return emptyChildRouteGeometrySnapshot();
 
   const detail = buildChildRouteDetail({
-    assignments: currentChildAssignments(group, child),
+    assignments: readCurrentChildAssignments(group, child),
     depot,
     driverId: child.driverId,
     group,
