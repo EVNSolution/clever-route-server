@@ -964,7 +964,7 @@ describe('route grouping contracts', () => {
     expect(saveDraftBody).toContain('assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt)');
     expect(saveDraftBody).toContain('await readBranchDriverId(tx, group.shopId, route.driverId)');
     expect(saveDraftBody).toContain('driverId,');
-    expect(saveDraftBody).toContain('await tx.routeGroupingChildVersion.delete');
+    expect(saveDraftBody).toContain('await archiveDeletedRouteGroupingChildMembership(tx, child)');
     expect(saveDraftBody).toContain('await tx.routePlan.delete');
     expect(source).toContain("only Ready child routes can be deleted");
   });

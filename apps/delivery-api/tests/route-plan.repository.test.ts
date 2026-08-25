@@ -1915,15 +1915,17 @@ describe('PrismaRoutePlanRepository', () => {
       routePlanId: 'route-plan-id',
       deleted: true
     });
-    expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
+    expect(prisma.routePlan.findFirst).toHaveBeenNthCalledWith(1, {
       select: {
         id: true,
-        status: true,
         routeGroupingChildVersions: {
-          select: { groupingId: true, id: true },
-          where: { status: 'CURRENT' }
+          select: { groupingId: true }
         }
       },
+      where: { id: 'route-plan-id', shopId: 'shop-id' }
+    });
+    expect(prisma.routePlan.findFirst).toHaveBeenNthCalledWith(2, {
+      select: { id: true, status: true },
       where: { id: 'route-plan-id', shopId: 'shop-id' }
     });
     expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
@@ -2109,13 +2111,11 @@ describe('PrismaRoutePlanRepository', () => {
       routePlanId: 'route-plan-id',
       deleted: false
     });
-    expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
+    expect(prisma.routePlan.findFirst).toHaveBeenNthCalledWith(1, {
       select: {
         id: true,
-        status: true,
         routeGroupingChildVersions: {
-          select: { groupingId: true, id: true },
-          where: { status: 'CURRENT' }
+          select: { groupingId: true }
         }
       },
       where: { id: 'route-plan-id', shopId: 'shop-id' }
@@ -2242,7 +2242,9 @@ function createPrismaHarness(input: {
     };
     routeGroupingChildVersion: {
       count: ReturnType<typeof vi.fn>;
+      create: ReturnType<typeof vi.fn>;
       findMany: ReturnType<typeof vi.fn>;
+      update: ReturnType<typeof vi.fn>;
       updateMany: ReturnType<typeof vi.fn>;
     };
     routePlan: {
@@ -2351,7 +2353,27 @@ function createPrismaHarness(input: {
     },
     routeGroupingChildVersion: {
       count: vi.fn(() => Promise.resolve(input.routeGroupingChildVersionCount ?? 0)),
-      findMany: vi.fn(() => Promise.resolve(input.routeGroupingOwnerChildren ?? input.routeGroupingCurrentChildrenAfterDelete ?? [])),
+      create: vi.fn(() => Promise.resolve({ id: 'deletion-tombstone-id' })),
+      findMany: vi.fn((args?: { where?: { groupingId?: string; routePlanId?: string } }) => {
+        if (args?.where?.routePlanId !== undefined) {
+          return Promise.resolve(input.routeGroupingOwnerChildren ?? Array.from(
+            { length: input.routeGroupingChildVersionCount ?? 0 },
+            (_, index) => ({
+              driverId: null,
+              groupingId: 'grouping-id',
+              groupingVersionId: 'grouping-version-id',
+              id: `child-version-${index + 1}`,
+              notificationStatus: 'SKIPPED',
+              publishedAt: null,
+              shopId: 'shop-id',
+              snapshot: { membershipSchemaVersion: 1, routeIdx: index + 1, stops: [] },
+              version: 1
+            })
+          ));
+        }
+        return Promise.resolve(input.routeGroupingCurrentChildrenAfterDelete ?? []);
+      }),
+      update: vi.fn(() => Promise.resolve({ id: 'child-version-1' })),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
     },
     routePlan: {
@@ -2380,7 +2402,7 @@ function createPrismaHarness(input: {
         input.routePlanToDelete !== undefined
           ? input.routePlanToDelete === null
             ? Promise.resolve(null)
-            : Promise.resolve(input.routePlanToDelete)
+            : Promise.resolve({ ...input.routePlanToDelete, routeGroupingChildVersions: [] })
           : Promise.resolve({
               createdAt: new Date('2026-05-07T12:30:00.000Z'),
               depotLatitude: '43.6532',

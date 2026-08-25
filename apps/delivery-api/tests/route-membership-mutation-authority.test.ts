@@ -15,9 +15,8 @@ const reviewedMutationInventory = [
   'modules/driver/driver-event.repository.ts:routePlanStop.update:2',
   'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:1',
-  'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.create:6',
-  'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.delete:2',
-  'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.update:3',
+  'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.create:7',
+  'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.update:4',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.updateMany:2',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.create:1',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.createMany:4',
@@ -182,6 +181,27 @@ describe('route membership mutation authority', () => {
       .toBeLessThan(transaction.indexOf('await validateVersionedOrderedContract(transaction, input)'));
     expect(transaction.indexOf('await lockRoutePlanForCompletion(transaction, input)'))
       .toBeLessThan(transaction.indexOf('await evaluateCompletionInvariant(transaction, input'));
+  });
+
+  test('serializes grouped deletion and preserves canonical grouped stop authority', () => {
+    const groupingSource = readFileSync(join(sourceRoot, 'modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const routePlanSource = readFileSync(join(sourceRoot, 'modules/route-plans/route-plan.repository.ts'), 'utf8');
+    const rollback = groupingSource.slice(groupingSource.indexOf('async rollback('), groupingSource.indexOf('private async refreshChildRouteGeometry'));
+    expect(groupingSource.match(/await archiveDeletedRouteGroupingChildMembership\(tx, child\)/gu)).toHaveLength(2);
+    expect(rollback).toContain('deletedArchivedRouteSlots(loaded.childVersions)');
+    expect(rollback.indexOf('deletedArchivedRouteSlots(loaded.childVersions)'))
+      .toBeLessThan(rollback.indexOf('await archiveCurrentChildren('));
+
+    const deleteRoute = routePlanSource.slice(routePlanSource.indexOf('async deleteRoutePlan('), routePlanSource.indexOf('async updateRoutePlanOptions('));
+    expect(deleteRoute.indexOf('FROM "route_groupings"')).toBeLessThan(deleteRoute.indexOf('FROM "route_plans"'));
+    expect(deleteRoute.indexOf('await archiveDeletedRouteGroupingChildMembership(tx, child)'))
+      .toBeLessThan(deleteRoute.indexOf('await clearRouteGroupingChildVersionRoutePlanRefs(tx, {'));
+    const saveRoute = routePlanSource.slice(routePlanSource.indexOf('async saveRoutePlan('), routePlanSource.indexOf('async deleteRoutePlan('));
+    expect(saveRoute).toContain('hasCurrentRouteGroupingChild(tx, routePlan.id)');
+    const updateStops = routePlanSource.slice(routePlanSource.indexOf('async updateRoutePlanStops('));
+    expect(updateStops).toContain("input.mutationContext?.source !== 'route_optimization_job'");
+    expect(updateStops).toContain('sameUniqueStringSet(boundOrderIds, nextOrderIds)');
+    expect(updateStops).toContain('await replaceCurrentRouteGroupingChildVersion(tx, {');
   });
 
   test('keeps driver acknowledgement outside direct membership mutation authority', () => {

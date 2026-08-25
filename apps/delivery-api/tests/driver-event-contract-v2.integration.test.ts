@@ -938,6 +938,171 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       }
       await prisma.routePlan.update({ data: { status: 'READY' }, where: { id: routePlanId } });
 
+      const directGroupedMutationState = {
+        childId: (await prisma.routeGroupingChildVersion.findFirstOrThrow({
+          where: { routePlanId, status: 'CURRENT', supersededAt: null }
+        })).id,
+        stopIds: (await prisma.routePlanStop.findMany({
+          orderBy: { sequence: 'asc' }, select: { deliveryStopId: true }, where: { routePlanId }
+        })).map(({ deliveryStopId }) => deliveryStopId)
+      };
+      await expect(routePlanRepository.updateRoutePlanStops({
+        payload: { stops: [] }, routePlanId, shopDomain: 'g002-evidence.invalid'
+      })).rejects.toMatchObject({ code: 'ROUTE_STOP_UPDATE_INVALID' });
+      await expect(routePlanRepository.saveRoutePlan({
+        payload: { stops: [] }, routePlanId, shopDomain: 'g002-evidence.invalid'
+      })).rejects.toMatchObject({ code: 'ROUTE_STOP_UPDATE_INVALID' });
+      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      })).id).toBe(directGroupedMutationState.childId);
+      expect((await prisma.routePlanStop.findMany({
+        orderBy: { sequence: 'asc' }, select: { deliveryStopId: true }, where: { routePlanId }
+      })).map(({ deliveryStopId }) => deliveryStopId)).toEqual(directGroupedMutationState.stopIds);
+
+      const ungroupedRoute = await prisma.routePlan.create({ data: {
+        constraints: {}, metrics: { stopsCount: 0 }, name: 'Ungrouped direct mutation',
+        optimizerVersion: 'route-ops:test', planDate: new Date('2026-08-24T00:00:00.000Z'),
+        shopId, status: 'READY'
+      } });
+      await expect(routePlanRepository.updateRoutePlanStops({
+        payload: { stops: [] }, routePlanId: ungroupedRoute.id, shopDomain: 'g002-evidence.invalid'
+      })).resolves.not.toBeNull();
+      await expect(routePlanRepository.saveRoutePlan({
+        payload: { stops: [] }, routePlanId: ungroupedRoute.id, shopDomain: 'g002-evidence.invalid'
+      })).resolves.not.toBeNull();
+
+      const optimizationJob = await prisma.routeOptimizationJob.create({ data: {
+        createdBy: 'route-ops:test', currentStep: 'APPLYING_RESULT', routePlanId,
+        shopId, startedAt: new Date(), status: 'RUNNING', timeoutBudgetMs: 60_000,
+        traceId: 'grouped-successor-regression'
+      } });
+      const groupedStops = await prisma.routePlanStop.findMany({
+        include: { deliveryStop: { include: { order: true } } },
+        orderBy: { sequence: 'desc' }, where: { routePlanId }
+      });
+      await prisma.deliveryStop.updateMany({
+        data: { deliveryDate: new Date('2026-08-24T00:00:00.000Z') },
+        where: { orderId: { in: groupedStops.map((stop) => stop.deliveryStop.order.id) } }
+      });
+      await expect(routePlanRepository.updateRoutePlanStops({
+        mutationContext: { jobId: optimizationJob.id, source: 'route_optimization_job' },
+        payload: { stops: groupedStops.map((stop, index) => ({
+          deliveryStopId: stop.deliveryStopId,
+          sequence: index + 1,
+          shopifyOrderGid: stop.deliveryStop.order.shopifyOrderGid
+        })) },
+        routePlanId, shopDomain: 'g002-evidence.invalid'
+      })).resolves.not.toBeNull();
+      const optimizationSuccessor = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      });
+      expect(optimizationSuccessor.id).not.toBe(directGroupedMutationState.childId);
+      expect(optimizationSuccessor.snapshot).toMatchObject({
+        membershipSchemaVersion: 1, predecessorChildVersionId: directGroupedMutationState.childId
+      });
+      expect(await prisma.order.count({ where: {
+        currentRouteVersionId: optimizationSuccessor.id,
+        id: { in: groupedStops.map((stop) => stop.deliveryStop.order.id) }
+      } })).toBe(groupedStops.length);
+
+      const deletionGrouping = await prisma.routeGrouping.create({ data: {
+        createdBy: 'route-ops:test', name: 'Deletion tombstone regression',
+        planDate: new Date('2026-08-24T00:00:00.000Z'), shopId, status: 'READY'
+      } });
+      const deletionGroupingVersion = await prisma.routeGroupingVersion.create({ data: {
+        actor: 'route-ops:test', groupingId: deletionGrouping.id, shopId, status: 'CURRENT', version: 1
+      } });
+      const createDeletionRoute = async (name: string, routeIdx: number) => {
+        const plan = await prisma.routePlan.create({ data: {
+          constraints: {}, metrics: { stopsCount: 0 }, name, optimizerVersion: 'route-ops:test',
+          planDate: new Date('2026-08-24T00:00:00.000Z'), shopId, status: 'READY'
+        } });
+        const root = await prisma.routeGroupingChildVersion.create({ data: {
+          groupingId: deletionGrouping.id, groupingVersionId: deletionGroupingVersion.id,
+          notificationStatus: 'SKIPPED', routePlanId: plan.id, shopId,
+          snapshot: { membershipDeleted: false, membershipSchemaVersion: 1, name, routeIdx, stops: [] },
+          status: 'CURRENT', version: 1
+        } });
+        await prisma.$transaction((transaction) => replaceCurrentRouteGroupingChildVersion(transaction, {
+          currentChildId: root.id, driverId: null, groupingId: deletionGrouping.id,
+          groupingVersionId: deletionGroupingVersion.id, notificationStatus: 'SKIPPED', orderIds: [],
+          publishedAt: null, routePlanId: plan.id, shopId,
+          snapshot: { membershipDeleted: false, membershipSchemaVersion: 1, name, routeIdx, stops: [] }, version: 1
+        }));
+        return plan.id;
+      };
+      const survivorRouteId = await createDeletionRoute('Deletion survivor', 901);
+      const publicDeletedRouteId = await createDeletionRoute('Public deleted route', 902);
+      const transactionDeletedRouteId = await createDeletionRoute('Transaction deleted route', 903);
+      const directDeletedRouteId = await createDeletionRoute('Direct deleted route', 904);
+      const deletionRaceGate = new pg.Client({ connectionString: databaseUrl });
+      await deletionRaceGate.connect();
+      try {
+        await deletionRaceGate.query('BEGIN');
+        await deletionRaceGate.query('SELECT id FROM route_groupings WHERE id = $1 FOR UPDATE', [deletionGrouping.id]);
+        let successorSettled = false;
+        let deletionSettled = false;
+        const successorRace = routeGroupingService.saveDraft({
+          groupingId: deletionGrouping.id, mode: 'MANUAL_ORDER', routes: [
+            { branchId: null, orderIds: [], routePlanId: survivorRouteId },
+            { branchId: null, orderIds: [], routePlanId: publicDeletedRouteId },
+            { branchId: null, orderIds: [], routePlanId: transactionDeletedRouteId },
+            { branchId: null, orderIds: [], routePlanId: directDeletedRouteId }
+          ], shopDomain: 'g002-evidence.invalid'
+        }).finally(() => { successorSettled = true; });
+        const deletionRace = routePlanRepository.deleteRoutePlan({
+          routePlanId: directDeletedRouteId, shopDomain: 'g002-evidence.invalid'
+        }).finally(() => { deletionSettled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        expect(successorSettled).toBe(false);
+        expect(deletionSettled).toBe(false);
+        await deletionRaceGate.query('COMMIT');
+        await Promise.allSettled([successorRace, deletionRace]);
+      } finally {
+        await deletionRaceGate.query('ROLLBACK').catch(() => undefined);
+        await deletionRaceGate.end();
+      }
+      if (await prisma.routePlan.count({ where: { id: directDeletedRouteId } }) === 1) {
+        await expect(routePlanRepository.deleteRoutePlan({
+          routePlanId: directDeletedRouteId, shopDomain: 'g002-evidence.invalid'
+        })).resolves.toMatchObject({ deleted: true });
+      }
+      expect(await prisma.routeGroupingChildVersion.count({ where: {
+        groupingId: deletionGrouping.id, routePlanId: null, status: 'CURRENT', supersededAt: null
+      } })).toBe(0);
+      await expect(routeGroupingService.saveDraft({
+        deletedRoutePlanIds: [publicDeletedRouteId], groupingId: deletionGrouping.id,
+        mode: 'MANUAL_ORDER', routes: [
+          { branchId: null, orderIds: [], routePlanId: survivorRouteId },
+          { branchId: null, orderIds: [], routePlanId: transactionDeletedRouteId }
+        ], shopDomain: 'g002-evidence.invalid'
+      })).resolves.not.toBeNull();
+      await expect(prisma.$transaction((transaction) => routeGroupingService.saveDraftInTransaction(transaction, {
+        deletedRoutePlanIds: [transactionDeletedRouteId], groupingId: deletionGrouping.id,
+        routes: [{ branchId: null, orderIds: [], routePlanId: survivorRouteId }],
+        shopDomain: 'g002-evidence.invalid'
+      }))).resolves.not.toBeNull();
+      expect(await prisma.routePlan.count({ where: { id: { in: [publicDeletedRouteId, transactionDeletedRouteId] } } })).toBe(0);
+      expect(await prisma.routeGroupingChildVersion.count({ where: {
+        groupingId: deletionGrouping.id, snapshot: { path: ['membershipDeleted'], equals: true }
+      } })).toBe(3);
+      const unrelatedPointersBeforeDeletionRollback = await prisma.order.findMany({
+        orderBy: { id: 'asc' }, select: { currentRouteVersionId: true, id: true }, where: { shopId }
+      });
+      const deletionRollback = await routeGroupingService.rollback({
+        actor: 'route-ops:test', groupingId: deletionGrouping.id,
+        shopDomain: 'g002-evidence.invalid', version: 1
+      });
+      expect(deletionRollback?.children).toHaveLength(1);
+      expect(deletionRollback?.children[0]?.routeIdx).toBe(901);
+      expect(await prisma.routeGroupingChildVersion.count({ where: {
+        groupingId: deletionGrouping.id, status: 'CURRENT', supersededAt: null
+      } })).toBe(1);
+      expect(await prisma.routePlan.count({ where: { id: { in: [publicDeletedRouteId, transactionDeletedRouteId] } } })).toBe(0);
+      expect(await prisma.order.findMany({
+        orderBy: { id: 'asc' }, select: { currentRouteVersionId: true, id: true }, where: { shopId }
+      })).toEqual(unrelatedPointersBeforeDeletionRollback);
+
       const rollbackGroupingVersion = await prisma.routeGroupingVersion.create({
         data: {
           actor: 'route-ops:test', changeReason: 'rollback-schema-regression',
@@ -1086,6 +1251,44 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         shopDomain: 'g002-evidence.invalid', version: 77
       })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
       expect(await readRollbackMutationState()).toEqual(beforeAmbiguousRollback);
+
+      for (const invalidLineage of [
+        {
+          childId: '6f000000-0000-4000-8000-000000000080',
+          predecessorChildVersionId: '6f000000-0000-4000-8000-000000000080',
+          version: 80
+        },
+        {
+          childId: '6f000000-0000-4000-8000-000000000081',
+          predecessorChildVersionId: '6f000000-0000-4000-8000-000000000099',
+          version: 81
+        }
+      ]) {
+        const invalidLineageVersion = await prisma.routeGroupingVersion.create({
+          data: {
+            actor: 'route-ops:test', changeReason: 'invalid-singleton-rollback-lineage',
+            groupingId: priorChild.groupingId, shopId, status: 'ARCHIVED', version: invalidLineage.version
+          }
+        });
+        await prisma.routeGroupingChildVersion.create({
+          data: {
+            driverId: collapsedChild.driverId, groupingId: priorChild.groupingId,
+            groupingVersionId: invalidLineageVersion.id, id: invalidLineage.childId,
+            notificationStatus: 'SKIPPED', routePlanId: collapsedChild.routePlanId, shopId,
+            snapshot: {
+              ...(collapsedChild.snapshot as Prisma.InputJsonObject),
+              predecessorChildVersionId: invalidLineage.predecessorChildVersionId
+            },
+            status: 'ARCHIVED', supersededAt: new Date(), version: invalidLineage.version
+          }
+        });
+        const beforeInvalidSingletonRollback = await readRollbackMutationState();
+        await expect(routeGroupingService.rollback({
+          actor: 'route-ops:test', groupingId: priorChild.groupingId,
+          shopDomain: 'g002-evidence.invalid', version: invalidLineage.version
+        })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+        expect(await readRollbackMutationState()).toEqual(beforeInvalidSingletonRollback);
+      }
 
       const overlapGroupingVersion = await prisma.routeGroupingVersion.create({
         data: {

@@ -56,6 +56,11 @@ import { isIanaTimezone, localDateTimeInTimeZoneToUtc } from '../driver/driver-r
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from '../shopify/shopify-api-version.js';
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
+import {
+  archiveDeletedRouteGroupingChildMembership,
+  replaceCurrentRouteGroupingChildVersion
+} from '../route-grouping/route-grouping.service.js';
+import { RouteGroupingValidationError } from '../route-grouping/route-grouping.types.js';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
 const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
@@ -723,6 +728,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (routePlan.status === 'IN_PROGRESS' && hasStopSequenceChange) {
         throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
       }
+      if (hasStopSequenceChange && await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
+        throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
+      }
 
       if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
         const claimed = await tx.routePlan.updateMany({
@@ -1321,10 +1329,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     const routePlan = await this.prisma.routePlan.findFirst({
       select: {
         id: true,
-        status: true,
         routeGroupingChildVersions: {
-          select: { groupingId: true, id: true },
-          where: { status: 'CURRENT' }
+          select: { groupingId: true }
         }
       },
       where: {
@@ -1336,10 +1342,50 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     if (routePlan === null) {
       return { routePlanId: input.routePlanId, deleted: false };
     }
-    if (routePlan.status === 'IN_PROGRESS') {
-      throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
-    }
+    const preflightGroupingIds = [...new Set(routePlan.routeGroupingChildVersions.map((child) => child.groupingId))].sort();
     await this.prisma.$transaction(async (tx) => {
+      if (preflightGroupingIds.length > 0) {
+        await tx.$queryRaw(Prisma.sql`
+          SELECT "id"
+          FROM "route_groupings"
+          WHERE "id" IN (${Prisma.join(preflightGroupingIds.map((id) => Prisma.sql`${id}::uuid`))})
+          ORDER BY "id"
+          FOR UPDATE
+        `);
+      }
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "route_plans"
+        WHERE "id" = ${input.routePlanId}::uuid AND "shopId" = ${shop.id}::uuid
+        FOR UPDATE
+      `;
+      const lockedRoutePlan = await tx.routePlan.findFirst({
+        select: { id: true, status: true },
+        where: { id: input.routePlanId, shopId: shop.id }
+      });
+      if (lockedRoutePlan === null) throw new RoutePlanDeleteBlockedError('Route changed while deletion was being prepared.');
+      if (lockedRoutePlan.status === 'IN_PROGRESS') {
+        throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
+      }
+      const lockedGroupingRefs = await tx.routeGroupingChildVersion.findMany({
+        select: { groupingId: true },
+        where: { routePlanId: input.routePlanId, shopId: shop.id }
+      });
+      const lockedGroupingIds = [...new Set(lockedGroupingRefs.map((child) => child.groupingId))].sort();
+      if (!sameUniqueStringSet(preflightGroupingIds, lockedGroupingIds)) {
+        throw new RoutePlanDeleteBlockedError('Route grouping membership changed while deletion was being prepared.');
+      }
+      const currentChildren = await tx.routeGroupingChildVersion.findMany({
+        where: { routePlanId: input.routePlanId, shopId: shop.id, status: 'CURRENT', supersededAt: null }
+      });
+      for (const child of currentChildren) {
+        try {
+          await archiveDeletedRouteGroupingChildMembership(tx, child);
+        } catch (error) {
+          if (!(error instanceof RouteGroupingValidationError)) throw error;
+          throw new RoutePlanDeleteBlockedError('Grouped route deletion history is incomplete.');
+        }
+      }
       await tx.routePlanStop.deleteMany({
         where: { routePlanId: input.routePlanId }
       });
@@ -1352,7 +1398,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       });
       if (deleted.count !== 1) throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
       await collapseRouteGroupingSplitAfterChildDelete(tx, {
-        deletedChildVersions: routePlan.routeGroupingChildVersions,
+        deletedChildVersions: currentChildren.map((child) => ({ groupingId: child.groupingId, id: child.id })),
         shopId: shop.id
       });
     });
@@ -1457,6 +1503,11 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       }
       if (routePlan.status === 'IN_PROGRESS') {
         throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
+      }
+
+      const currentGroupingChild = await readCurrentRouteGroupingChild(tx, routePlan.id);
+      if (currentGroupingChild !== null && input.mutationContext?.source !== 'route_optimization_job') {
+        throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
       }
 
       const optimizationJobId =
@@ -1571,6 +1622,18 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         deliveryStopIds.push(deliveryStop.id);
       }
 
+      const orderedOrders = normalizedStops.map((stop) => ordersByGid.get(stop.shopifyOrderGid)!);
+      if (currentGroupingChild !== null) {
+        const boundOrderIds = (await tx.order.findMany({
+          select: { id: true },
+          where: { currentRouteVersionId: currentGroupingChild.id }
+        })).map(({ id }) => id);
+        const nextOrderIds = orderedOrders.map((order) => order.id);
+        if (!sameUniqueStringSet(boundOrderIds, nextOrderIds)) {
+          throw new RoutePlanStopUpdateInvalidError('Grouped route optimization cannot add or remove route membership.');
+        }
+      }
+
       await tx.routePlanStop.deleteMany({
         where: { routePlanId: input.routePlanId }
       });
@@ -1597,6 +1660,35 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         },
         where: { id: input.routePlanId }
       });
+
+      if (currentGroupingChild !== null) {
+        if (currentGroupingChild.snapshot === null || typeof currentGroupingChild.snapshot !== 'object' || Array.isArray(currentGroupingChild.snapshot)) {
+          throw new RoutePlanStopUpdateInvalidError('Grouped route membership snapshot is malformed.');
+        }
+        await replaceCurrentRouteGroupingChildVersion(tx, {
+          currentChildId: currentGroupingChild.id,
+          driverId: currentGroupingChild.driverId,
+          groupingId: currentGroupingChild.groupingId,
+          groupingVersionId: currentGroupingChild.groupingVersionId,
+          notificationStatus: currentGroupingChild.notificationStatus,
+          orderIds: orderedOrders.map((order) => order.id),
+          publishedAt: currentGroupingChild.publishedAt,
+          routePlanId: input.routePlanId,
+          shopId: shop.id,
+          snapshot: {
+            ...(currentGroupingChild.snapshot as Prisma.InputJsonObject),
+            membershipDeleted: false,
+            membershipSchemaVersion: 1,
+            stops: deliveryStopIds.map((deliveryStopId, index) => ({
+              deliveryStopId,
+              orderId: orderedOrders[index]!.id,
+              sequence: index + 1,
+              sourceOrderId: orderedOrders[index]!.shopifyOrderGid
+            }))
+          },
+          version: currentGroupingChild.version
+        });
+      }
 
       if (optimizationJobId !== null && applyingJob !== null) {
         const finishedAt = new Date();
@@ -2383,6 +2475,39 @@ function routeItemDtosFromRouteStops(routeStops: RoutePlanStopRecord[]): OrderIt
   return routeStops.flatMap((routeStop) =>
     (routeStop.deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item))
   );
+}
+
+async function readCurrentRouteGroupingChild(tx: Prisma.TransactionClient, routePlanId: string) {
+  const children = await tx.routeGroupingChildVersion.findMany({
+    select: {
+      driverId: true,
+      groupingId: true,
+      groupingVersionId: true,
+      id: true,
+      notificationStatus: true,
+      publishedAt: true,
+      shopId: true,
+      snapshot: true,
+      version: true
+    },
+    where: { routePlanId, status: 'CURRENT', supersededAt: null }
+  });
+  if (children.length > 1) {
+    throw new RoutePlanStopUpdateInvalidError('Grouped route has ambiguous CURRENT membership authority.');
+  }
+  return children[0] ?? null;
+}
+
+async function hasCurrentRouteGroupingChild(tx: Prisma.TransactionClient, routePlanId: string): Promise<boolean> {
+  return (await readCurrentRouteGroupingChild(tx, routePlanId)) !== null;
+}
+
+function sameUniqueStringSet(left: string[], right: string[]): boolean {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return leftSet.size === left.length && rightSet.size === right.length
+    && leftSet.size === rightSet.size
+    && [...leftSet].every((value) => rightSet.has(value));
 }
 
 async function clearRouteGroupingChildVersionRoutePlanRefs(

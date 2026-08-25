@@ -159,6 +159,7 @@ type ChildSnapshot = {
   membershipSchemaVersion: 1 | null;
   name: string;
   membershipFormat: 'LEGACY' | 'MODERN';
+  membershipDeleted: boolean;
   planDate: string;
   predecessorChildVersionId: string | null;
   routeIdx?: number;
@@ -1120,7 +1121,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         if (lockedRoutePlan.status !== 'READY') {
           throw new RouteGroupingValidationError(['only Ready child routes can be deleted']);
         }
-        await tx.routeGroupingChildVersion.delete({ where: { id: child.id } });
+        await archiveDeletedRouteGroupingChildMembership(tx, child);
         await clearRouteGroupingChildVersionRoutePlanRefs(tx, {
           routePlanIds: [routePlanId],
           shopId: group.shopId
@@ -1328,7 +1329,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (lockedRoutePlan.status !== 'READY') {
         throw new RouteGroupingValidationError(['only Ready child routes can be deleted']);
       }
-      await tx.routeGroupingChildVersion.delete({ where: { id: child.id } });
+      await archiveDeletedRouteGroupingChildMembership(tx, child);
       await clearRouteGroupingChildVersionRoutePlanRefs(tx, {
         routePlanIds: [routePlanId],
         shopId: group.shopId
@@ -1890,10 +1891,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (loaded === null) return null;
       const archivedCandidates = loaded.childVersions.filter((child) => child.version === input.version && child.status !== 'CURRENT');
       if (archivedCandidates.length === 0) throw new RouteGroupingValidationError(['rollback version not found']);
-      const rollbackSources = selectTerminalArchivedChildren(archivedCandidates).map((child) => ({
-        assignments: archivedChildAssignments(loaded, child),
-        snapshot: readChildSnapshot(child.snapshot)
-      }));
+      const deletedRouteSlots = deletedArchivedRouteSlots(loaded.childVersions);
+      const rollbackSources = selectTerminalArchivedChildren(archivedCandidates)
+        .filter((child) => !deletedRouteSlots.has(archivedRouteSlot(child)))
+        .map((child) => ({
+          assignments: archivedChildAssignments(loaded, child),
+          snapshot: readChildSnapshot(child.snapshot)
+        }));
       assertRollbackMembershipDisjoint(rollbackSources);
       await archiveCurrentChildren(tx, loaded, input.actor);
       const nextVersion = loaded.currentVersion + 1;
@@ -3351,12 +3355,8 @@ function archivedChildAssignments(group: LoadedGrouping, child: LoadedChild): Lo
 function selectTerminalArchivedChildren(children: LoadedChild[]): LoadedChild[] {
   const lineages = new Map<string, LoadedChild[]>();
   for (const child of children) {
-    const snapshot = readChildSnapshot(child.snapshot);
-    const slot = child.routePlanId === null
-      ? snapshot.routeIdx === undefined ? null : `routeIdx:${snapshot.routeIdx}`
-      : `routePlan:${child.routePlanId}`;
+    const slot = archivedRouteSlot(child);
     if (slot === null) {
-      if (children.length === 1) return children;
       throw new RouteGroupingValidationError(['archived route successor lineage is ambiguous']);
     }
     lineages.set(slot, [...(lineages.get(slot) ?? []), child]);
@@ -3364,10 +3364,6 @@ function selectTerminalArchivedChildren(children: LoadedChild[]): LoadedChild[] 
 
   const terminals: LoadedChild[] = [];
   for (const lineage of lineages.values()) {
-    if (lineage.length === 1) {
-      terminals.push(lineage[0]!);
-      continue;
-    }
     const byId = new Map(lineage.map((child) => [child.id, child]));
     const referenced = new Set<string>();
     let rootCount = 0;
@@ -3400,6 +3396,27 @@ function selectTerminalArchivedChildren(children: LoadedChild[]): LoadedChild[] 
     terminals.push(terminal);
   }
   return terminals;
+}
+
+function archivedRouteSlot(child: LoadedChild): string | null {
+  const snapshot = readChildSnapshot(child.snapshot);
+  return child.routePlanId === null
+    ? snapshot.routeIdx === undefined ? null : `routeIdx:${snapshot.routeIdx}`
+    : `routePlan:${child.routePlanId}`;
+}
+
+function deletedArchivedRouteSlots(children: LoadedChild[]): Set<string | null> {
+  const deletedSlots = new Set<string | null>();
+  for (const child of children) {
+    const snapshot = readChildSnapshot(child.snapshot);
+    if (!snapshot.membershipDeleted) continue;
+    const slot = archivedRouteSlot(child);
+    if (slot === null || snapshot.predecessorChildVersionId === null) {
+      throw new RouteGroupingValidationError(['archived route deletion lineage is ambiguous']);
+    }
+    deletedSlots.add(slot);
+  }
+  return deletedSlots;
 }
 
 function assertRollbackMembershipDisjoint(
@@ -3951,6 +3968,7 @@ function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignmen
     driverId,
     groupingId: group.id,
     groupingVersion: version,
+    membershipDeleted: false,
     membershipFormat: 'MODERN',
     membershipSchemaVersion: 1,
     name,
@@ -3980,6 +3998,7 @@ function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
     driverId: typeof object.driverId === 'string' ? object.driverId : null,
     groupingId: typeof object.groupingId === 'string' ? object.groupingId : '',
     groupingVersion: typeof object.groupingVersion === 'number' ? object.groupingVersion : 0,
+    membershipDeleted: object.membershipDeleted === true,
     membershipFormat: hasStopsField ? 'MODERN' : 'LEGACY',
     membershipSchemaVersion: membershipSchemaVersion === 1 ? 1 : null,
     name: typeof object.name === 'string' ? object.name : 'Rolled back route',
@@ -4146,6 +4165,46 @@ function withChildSnapshotPredecessor(
     throw new RouteGroupingValidationError(['route membership successor snapshot root is malformed']);
   }
   return { ...(value as Prisma.InputJsonObject), predecessorChildVersionId };
+}
+
+export async function archiveDeletedRouteGroupingChildMembership(
+  tx: Pick<Tx, 'routeGroupingChildVersion'>,
+  child: Pick<LoadedChild,
+    'driverId' | 'groupingId' | 'groupingVersionId' | 'id' | 'notificationStatus' |
+    'publishedAt' | 'shopId' | 'snapshot' | 'version'>
+): Promise<void> {
+  const snapshot = readChildSnapshot(child.snapshot);
+  const routeIdx = snapshot.routeIdx;
+  if (routeIdx === undefined) {
+    throw new RouteGroupingValidationError(['deleted route membership is missing a durable route slot']);
+  }
+  const archivedAt = new Date();
+  await tx.routeGroupingChildVersion.update({
+    data: { status: 'ARCHIVED', supersededAt: archivedAt },
+    where: { id: child.id }
+  });
+  await tx.routeGroupingChildVersion.create({
+    data: {
+      driverId: child.driverId,
+      groupingId: child.groupingId,
+      groupingVersionId: child.groupingVersionId,
+      notificationStatus: child.notificationStatus,
+      publishedAt: child.publishedAt,
+      routePlanId: null,
+      shopId: child.shopId,
+      snapshot: {
+        ...(child.snapshot as Prisma.InputJsonObject),
+        membershipDeleted: true,
+        membershipSchemaVersion: 1,
+        predecessorChildVersionId: child.id,
+        routeIdx,
+        stops: []
+      },
+      status: 'ARCHIVED',
+      supersededAt: archivedAt,
+      version: child.version
+    }
+  });
 }
 
 function readOptimizedBranchSnapshot(value: unknown): RouteGroupingBranchDto['optimized'] {
