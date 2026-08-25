@@ -595,7 +595,7 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const calls = source.match(/await rebindCurrentOrdersToRouteVersion\(tx,/gu) ?? [];
 
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
   });
 
   test('allows draft saves to persist a validated vehicle on child route plans', () => {
@@ -851,6 +851,14 @@ describe('route grouping contracts', () => {
     expect(source).toContain("selected orders are already assigned to another child route");
     expect(source).toContain("targetStatus !== 'READY' && targetStatus !== 'IN_PROGRESS'");
     expect(source).toContain("orders can only be added to a Ready or in-progress child route");
+    const appendBody = source.slice(
+      source.indexOf('async function appendGroupingOrdersToChildRoute'),
+      source.indexOf('async function rewriteRoutePlanStops')
+    );
+    expect(appendBody).toContain("data: { status: 'ARCHIVED', supersededAt: new Date() }");
+    expect(appendBody).toContain('const nextChild = await tx.routeGroupingChildVersion.create');
+    expect(appendBody).toContain('nextRouteVersionId: nextChild.id');
+    expect(appendBody).not.toContain('data: {\n      snapshot: createChildSnapshot');
   });
 
   test('allows additions to in-progress routes but blocks restricted membership changes before inventory sync', () => {

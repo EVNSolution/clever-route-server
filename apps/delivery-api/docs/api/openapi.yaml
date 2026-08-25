@@ -4879,6 +4879,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EmailRuntimeHealthEnvelope' }
+  /admin/ui/app/api/driver-route-completion-reviews:
+    get:
+      tags: [Route Operations Admin]
+      summary: List oldest unreviewed incomplete-completion evidence for the authenticated shop
+      operationId: listUnreviewedDriverRouteCompletionInvariants
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      parameters:
+        - { in: query, name: limit, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200': { description: PII-free review identifiers, route identifiers, mode, timestamps, and stop counts. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /admin/ui/app/api/driver-route-completion-reviews/{reviewId}:
     parameters:
       - { in: path, name: reviewId, required: true, schema: { type: string, format: uuid } }
@@ -4904,6 +4916,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The review was concurrently assessed; reload before retrying. }
   /admin/ui/app/api/routes/{routePlanId}/operational-state:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'

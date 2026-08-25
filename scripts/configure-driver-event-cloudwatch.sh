@@ -6,6 +6,7 @@ LOG_GROUP="${DRIVER_EVENT_CLOUDWATCH_LOG_GROUP:-/clever/route-ops/delivery-api}"
 METRIC_NAMESPACE="${DRIVER_EVENT_CLOUDWATCH_NAMESPACE:-CLEVER/DriverEvents}"
 ALARM_NAME="${DRIVER_EVENT_CLOUDWATCH_ALARM_NAME:-clever-driver-event-failures}"
 COMPLETION_ALARM_NAME="${DRIVER_ROUTE_COMPLETION_CLOUDWATCH_ALARM_NAME:-clever-driver-route-completion-would-reject}"
+COMPLETION_REJECT_ALARM_NAME="${DRIVER_ROUTE_COMPLETION_REJECT_CLOUDWATCH_ALARM_NAME:-clever-driver-route-completion-rejected}"
 RETENTION_DAYS="${DRIVER_EVENT_CLOUDWATCH_RETENTION_DAYS:-90}"
 ALARM_SNS_TOPIC_ARN="${DRIVER_EVENT_CLOUDWATCH_ALARM_SNS_TOPIC_ARN:-}"
 DRY_RUN=0
@@ -48,8 +49,15 @@ run aws logs put-metric-filter \
   --region "$AWS_REGION" \
   --log-group-name "$LOG_GROUP" \
   --filter-name driver-route-completion-would-reject \
-  --filter-pattern '{ $.event = "driver_route_completion_invariant" && $.mode = "OBSERVE" && $.wouldReject = true }' \
+  --filter-pattern '{ $.event = "driver_route_completion_invariant" && $.wouldReject = true }' \
   --metric-transformations "metricName=DriverRouteCompletionWouldReject,metricNamespace=${METRIC_NAMESPACE},metricValue=1"
+
+run aws logs put-metric-filter \
+  --region "$AWS_REGION" \
+  --log-group-name "$LOG_GROUP" \
+  --filter-name driver-route-completion-rejected \
+  --filter-pattern '{ $.event = "driver_route_completion_invariant" && $.decision = "REJECTED" && $.wouldReject = true }' \
+  --metric-transformations "metricName=DriverRouteCompletionRejected,metricNamespace=${METRIC_NAMESPACE},metricValue=1"
 
 alarm_args=(aws cloudwatch put-metric-alarm --region "$AWS_REGION" --alarm-name "$ALARM_NAME"
   --namespace "$METRIC_NAMESPACE" --metric-name DriverEventFailed --statistic Sum --period 300
@@ -65,5 +73,12 @@ completion_alarm_args=(aws cloudwatch put-metric-alarm --region "$AWS_REGION" --
 if [[ -n "$ALARM_SNS_TOPIC_ARN" ]]; then completion_alarm_args+=(--alarm-actions "$ALARM_SNS_TOPIC_ARN"); fi
 run "${completion_alarm_args[@]}"
 
-printf 'driver event CloudWatch configuration ready: group=%s retentionDays=90 namespace=%s alarm=%s completionAlarm=%s\n' \
-  "$LOG_GROUP" "$METRIC_NAMESPACE" "$ALARM_NAME" "$COMPLETION_ALARM_NAME"
+completion_reject_alarm_args=(aws cloudwatch put-metric-alarm --region "$AWS_REGION" --alarm-name "$COMPLETION_REJECT_ALARM_NAME"
+  --namespace "$METRIC_NAMESPACE" --metric-name DriverRouteCompletionRejected --statistic Sum --period 300
+  --evaluation-periods 1 --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold
+  --treat-missing-data notBreaching)
+if [[ -n "$ALARM_SNS_TOPIC_ARN" ]]; then completion_reject_alarm_args+=(--alarm-actions "$ALARM_SNS_TOPIC_ARN"); fi
+run "${completion_reject_alarm_args[@]}"
+
+printf 'driver event CloudWatch configuration ready: group=%s retentionDays=90 namespace=%s alarm=%s completionAlarm=%s rejectionAlarm=%s\n' \
+  "$LOG_GROUP" "$METRIC_NAMESPACE" "$ALARM_NAME" "$COMPLETION_ALARM_NAME" "$COMPLETION_REJECT_ALARM_NAME"

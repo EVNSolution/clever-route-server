@@ -150,6 +150,7 @@ import type { DriverRouteCompletionInvariantMode } from "../modules/driver/drive
 import {
   DRIVER_ROUTE_COMPLETION_REVIEW_OUTCOMES,
   DRIVER_ROUTE_COMPLETION_REVIEW_SOURCES,
+  DriverRouteCompletionReviewConflictError,
   DriverRouteCompletionReviewNotFoundError,
   type DriverRouteCompletionReviewOutcome,
   type DriverRouteCompletionReviewSource,
@@ -440,7 +441,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "regenerateInviteCode"
   >;
   driverRouteCompletionInvariantMode?: DriverRouteCompletionInvariantMode;
-  driverRouteCompletionReviewService?: Pick<PrismaDriverRouteCompletionReviewRepository, "review">;
+  driverRouteCompletionReviewService?: Pick<PrismaDriverRouteCompletionReviewRepository, "listUnreviewed" | "review">;
   loginSecret: string;
   now?: () => Date;
   onboardingService: Pick<
@@ -830,8 +831,28 @@ export function registerAdminCommerceConnectionsUiRoutes(
         if (error instanceof DriverRouteCompletionReviewNotFoundError) {
           throw new WooCommerceOnboardingError("NOT_FOUND", "Completion review was not found", 404);
         }
+        if (error instanceof DriverRouteCompletionReviewConflictError) {
+          throw new WooCommerceOnboardingError("CONFLICT", "Completion review changed; reload and retry", 409);
+        }
         throw error;
       }
+    })
+  );
+
+  app.get<{ Querystring: { limit?: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/driver-route-completion-reviews`,
+    async (request, reply) => withRouteOpsApi(request, reply, readSession(request, dependencies), async (session) => {
+      if (dependencies.driverRouteCompletionReviewService === undefined) {
+        throw new WooCommerceOnboardingError("BAD_REQUEST", "Completion review is not enabled", 400);
+      }
+      const limit = request.query.limit === undefined ? undefined : Number(request.query.limit);
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)) {
+        throw new WooCommerceOnboardingError("BAD_REQUEST", "Completion review limit is invalid", 400);
+      }
+      const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
+      return routeOpsData({ completionReviews: await dependencies.driverRouteCompletionReviewService.listUnreviewed({
+        ...(limit === undefined ? {} : { limit }), shopDomain
+      }) });
     })
   );
 

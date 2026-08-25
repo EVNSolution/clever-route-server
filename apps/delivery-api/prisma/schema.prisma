@@ -2887,12 +2887,14 @@ model DriverRouteCompletionReview {
   reviewSource          String?   @db.Text
   reviewNote            String?   @db.Text
   reviewedAt            DateTime? @db.Timestamptz(6)
+  retainedUntil         DateTime  @db.Timestamptz(6)
   createdAt             DateTime  @default(now()) @db.Timestamptz(6)
   history               DriverRouteCompletionReviewHistory[]
 
   @@index([createdAt, mode, decision])
   @@index([createdAt, receiptAware])
   @@index([createdAt, reviewOutcome])
+  @@index([retainedUntil, reviewedAt])
   @@map("driver_route_completion_reviews")
 }
 
@@ -2905,9 +2907,11 @@ model DriverRouteCompletionReviewHistory {
   actor        String                      @db.Text
   source       String                      @db.Text
   note         String                      @db.Text
+  retainedUntil DateTime                   @db.Timestamptz(6)
   createdAt    DateTime                    @default(now()) @db.Timestamptz(6)
 
   @@index([reviewId, createdAt])
   @@index([createdAt, outcome])
+  @@index([retainedUntil])
   @@map("driver_route_completion_review_history")
 }

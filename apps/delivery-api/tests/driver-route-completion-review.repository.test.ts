@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  DriverRouteCompletionReviewConflictError,
   DriverRouteCompletionReviewNotFoundError,
   PrismaDriverRouteCompletionReviewRepository
 } from '../src/modules/driver/driver-route-completion-review.repository.js';
@@ -9,8 +10,8 @@ describe('PrismaDriverRouteCompletionReviewRepository', () => {
     const reviewedAt = new Date('2026-08-25T01:00:00.000Z');
     const transaction = {
       driverRouteCompletionReview: {
-        findFirst: vi.fn(() => Promise.resolve({ id: 'review-id', reviewOutcome: null })),
-        update: vi.fn(() => Promise.resolve({ id: 'review-id' }))
+        findFirst: vi.fn(() => Promise.resolve({ id: 'review-id', reviewOutcome: null, reviewedAt: null })),
+        updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
       },
       driverRouteCompletionReviewHistory: { create: vi.fn(() => Promise.resolve({ id: 'history-id' })) }
     };
@@ -28,13 +29,13 @@ describe('PrismaDriverRouteCompletionReviewRepository', () => {
     }));
     expect(transaction.driverRouteCompletionReviewHistory.create).toHaveBeenCalledWith({ data: {
       actor: 'operator@example.com', createdAt: reviewedAt, note: 'Observed stop was already terminal.',
-      outcome: 'FALSE_POSITIVE', priorOutcome: null, reviewId: 'review-id', source: 'ROUTE_OPS_UI'
+      outcome: 'FALSE_POSITIVE', priorOutcome: null, retainedUntil: new Date('2027-08-25T01:00:00.000Z'), reviewId: 'review-id', source: 'ROUTE_OPS_UI'
     } });
   });
 
   test('does not create history for an unknown or cross-shop review', async () => {
     const transaction = {
-      driverRouteCompletionReview: { findFirst: vi.fn(() => Promise.resolve(null)), update: vi.fn() },
+      driverRouteCompletionReview: { findFirst: vi.fn(() => Promise.resolve(null)), updateMany: vi.fn() },
       driverRouteCompletionReviewHistory: { create: vi.fn() }
     };
     const repository = new PrismaDriverRouteCompletionReviewRepository({
@@ -45,5 +46,39 @@ describe('PrismaDriverRouteCompletionReviewRepository', () => {
       shopDomain: 'k-food.myshopify.com', source: 'REPORT_RECONCILIATION'
     })).rejects.toBeInstanceOf(DriverRouteCompletionReviewNotFoundError);
     expect(transaction.driverRouteCompletionReviewHistory.create).not.toHaveBeenCalled();
+  });
+
+  test('fails a stale concurrent assessment before appending history', async () => {
+    const transaction = {
+      driverRouteCompletionReview: {
+        findFirst: vi.fn(() => Promise.resolve({ id: 'review-id', reviewOutcome: null, reviewedAt: null })),
+        updateMany: vi.fn(() => Promise.resolve({ count: 0 }))
+      },
+      driverRouteCompletionReviewHistory: { create: vi.fn() }
+    };
+    const repository = new PrismaDriverRouteCompletionReviewRepository({
+      $transaction: vi.fn((callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction))
+    } as never);
+    await expect(repository.review({
+      actor: 'operator', note: 'Reviewed.', outcome: 'CONFIRMED_CORRECT', reviewId: 'review-id',
+      shopDomain: 'k-food.myshopify.com', source: 'REPORT_RECONCILIATION'
+    })).rejects.toBeInstanceOf(DriverRouteCompletionReviewConflictError);
+    expect(transaction.driverRouteCompletionReviewHistory.create).not.toHaveBeenCalled();
+  });
+
+  test('lists oldest unreviewed would-reject cases without PII fields', async () => {
+    const createdAt = new Date('2026-08-24T01:00:00.000Z');
+    const transaction = { driverRouteCompletionReview: { findMany: vi.fn(() => Promise.resolve([{
+      createdAt, id: 'review-id', mode: 'OBSERVE', routePlanId: 'route-id', totalStopCount: 12, unresolvedStopCount: 2
+    }])) } };
+    const repository = new PrismaDriverRouteCompletionReviewRepository({
+      $transaction: vi.fn((callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction))
+    } as never);
+    await expect(repository.listUnreviewed({ shopDomain: 'K-FOOD.MYSHOPIFY.COM' })).resolves.toEqual([{
+      createdAt: createdAt.toISOString(), id: 'review-id', mode: 'OBSERVE', routePlanId: 'route-id', totalStopCount: 12, unresolvedStopCount: 2
+    }]);
+    expect(transaction.driverRouteCompletionReview.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      take: 50, where: { reviewOutcome: null, shop: { shopDomain: 'k-food.myshopify.com' }, wouldReject: true }
+    }));
   });
 });

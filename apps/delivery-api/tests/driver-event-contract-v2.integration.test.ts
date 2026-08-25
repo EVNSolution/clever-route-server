@@ -2,7 +2,9 @@ import pg from 'pg';
 import { describe, expect, test } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { cleanupResolvedDriverEventAttempts } from '../src/modules/driver/driver-event-attempt-retention.js';
+import { cleanupReviewedRouteCompletionEvidence } from '../src/modules/driver/driver-route-completion-review-retention.js';
 import {
+  DriverEventRouteNotInProgressError,
   DriverEventRouteVersionMismatchError,
   DriverRouteCompletionIncompleteError,
   PrismaDriverEventRepository
@@ -131,6 +133,23 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         where: { id: routeVersionId }
       });
 
+      await expect(prisma.routeGroupingChildVersion.create({ data: {
+        driverId: driverA, groupingId: '40000000-0000-4000-8000-000000000010',
+        groupingVersionId: '41000000-0000-4000-8000-000000000010', routePlanId, shopId,
+        snapshot: { stops: [] }, status: 'CURRENT', version: 1
+      } })).rejects.toMatchObject({ code: 'P2002' });
+
+      await prisma.routePlan.update({ data: { status: 'DRAFT' }, where: { id: routePlanId } });
+      await expect(repository.recordDriverEvent({
+        appVersion: '1.2.0', assignmentGeneration: '1', clientEventId: 'draft-completion', deliveryStopId: null,
+        driverContractVersion: 2, driverId: driverA, eventType: 'ROUTE_COMPLETED', expectedRouteVersionId: routeVersionId,
+        latitude: null, longitude: null, occurredAt: new Date('2026-08-24T04:57:00.000Z'), payload: {},
+        requestId: 'request-draft-completion', routePlanId, shopDomain: 'g002-evidence.invalid', shopId, versionCode: 120
+      })).rejects.toBeInstanceOf(DriverEventRouteNotInProgressError);
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({ status: 'DRAFT' });
+      expect(await prisma.driverEvent.count({ where: { clientEventId: 'draft-completion' } })).toBe(0);
+      await prisma.routePlan.update({ data: { status: 'IN_PROGRESS' }, where: { id: routePlanId } });
+
       const guardedRepository = new PrismaDriverEventRepository(prisma, { completionInvariantMode: 'GUARDED' });
       await expect(guardedRepository.recordDriverEvent({
         appVersion: '1.2.0', assignmentGeneration: '1', clientEventId: 'guarded-incomplete', deliveryStopId: null,
@@ -151,6 +170,17 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       });
       expect(await prisma.driverRouteCompletionReviewHistory.findMany({ where: { reviewId: guardedReview.id } }))
         .toEqual([expect.objectContaining({ actor: 'route-ops:test', outcome: 'CONFIRMED_CORRECT', priorOutcome: null })]);
+      await reviewRepository.review({
+        actor: 'route-ops:test', note: 'Adversarial assessment history check.', outcome: 'FALSE_POSITIVE',
+        reviewId: guardedReview.id, shopDomain: 'g002-evidence.invalid', source: 'REPORT_RECONCILIATION'
+      });
+      await reviewRepository.review({
+        actor: 'route-ops:test', note: 'Latest assessment is correct but history remains.', outcome: 'CONFIRMED_CORRECT',
+        reviewId: guardedReview.id, shopDomain: 'g002-evidence.invalid', source: 'REPORT_RECONCILIATION'
+      });
+      expect(await prisma.driverRouteCompletionReview.findUniqueOrThrow({ where: { id: guardedReview.id } }))
+        .toMatchObject({ reviewOutcome: 'CONFIRMED_CORRECT' });
+      expect(await prisma.driverRouteCompletionReviewHistory.count({ where: { reviewId: guardedReview.id, outcome: 'FALSE_POSITIVE' } })).toBe(1);
 
       await prisma.$executeRawUnsafe(`CREATE FUNCTION reject_completion_review_for_fault_test() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'fault-injected completion review failure'; END $$`);
@@ -283,6 +313,13 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.driverEventAttempt.findUnique({ where: { id: rejected.attemptId } })).toBeNull();
       expect(await prisma.driverEventAttempt.findUnique({ where: { id: unresolved.attemptId } })).toMatchObject({ status: 'FAILED' });
       expect(await prisma.driverEventAttempt.findUnique({ where: { id: first.attemptId } })).toMatchObject({ status: 'ACCEPTED' });
+
+      await prisma.driverRouteCompletionReview.update({
+        data: { retainedUntil: new Date('2027-08-25T00:00:00.000Z') }, where: { id: guardedReview.id }
+      });
+      await cleanupReviewedRouteCompletionEvidence(prisma, new Date('2027-08-26T00:00:00.000Z'));
+      expect(await prisma.driverRouteCompletionReview.findUnique({ where: { id: guardedReview.id } })).toBeNull();
+      expect(await prisma.driverRouteCompletionReviewHistory.count({ where: { reviewId: guardedReview.id } })).toBe(0);
     } finally {
       await prisma.$disconnect();
     }

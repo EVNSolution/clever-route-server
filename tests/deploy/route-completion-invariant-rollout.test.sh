@@ -43,7 +43,7 @@ const fs = require('node:fs');
 fs.writeFileSync(process.argv[2], JSON.stringify({
   activeSessions: { adoptionPercent: 100, legacyActiveCount: 0 },
   currentMode: 'OBSERVE', generatedAt: new Date().toISOString(),
-  gate: { consecutiveCleanReviewedDays: 7, falsePositiveCount: 0, recoveryPendingAfterFiveMinutes: 0, unreviewedWouldRejectCount: 0 },
+  gate: { consecutiveCleanReviewedDays: 7, falsePositiveCount: 0, minimumDailySampleCount: 1, recoveryCohortCount: 200, recoveryWithinFiveMinutesPercent: 99.5, unreviewedWouldRejectCount: 0 },
   legacyRetirementVerified: true, recoveryVerified: true,
   sourceSha: '0123456789012345678901234567890123456789'
 }));
@@ -71,9 +71,9 @@ case "$1 $2" in
 esac
 AWS
 chmod +x "$tmp_dir/bin/aws"
-PATH="$tmp_dir/bin:$PATH" ROUTE_COMPLETION_TARGET_MODE=GUARDED ROUTE_COMPLETION_ALARM_NAME=alarm \
+PATH="$tmp_dir/bin:$PATH" ROUTE_COMPLETION_TARGET_MODE=GUARDED ROUTE_COMPLETION_OBSERVE_ALARM_NAME=observe-alarm ROUTE_COMPLETION_REJECT_ALARM_NAME=reject-alarm \
   ROUTE_COMPLETION_ALARM_TOPIC_ARN=arn:aws:sns:ap-northeast-2:123:approved scripts/verify-route-completion-alarm.sh >/dev/null
-if PATH="$tmp_dir/bin:$PATH" MOCK_CONFIRMED_SUBSCRIPTIONS=0 ROUTE_COMPLETION_TARGET_MODE=FULL ROUTE_COMPLETION_ALARM_NAME=alarm \
+if PATH="$tmp_dir/bin:$PATH" MOCK_CONFIRMED_SUBSCRIPTIONS=0 ROUTE_COMPLETION_TARGET_MODE=FULL ROUTE_COMPLETION_OBSERVE_ALARM_NAME=observe-alarm ROUTE_COMPLETION_REJECT_ALARM_NAME=reject-alarm \
   ROUTE_COMPLETION_ALARM_TOPIC_ARN=arn:aws:sns:ap-northeast-2:123:approved scripts/verify-route-completion-alarm.sh >/dev/null 2>&1; then
   echo 'unconfirmed SNS subscription must fail closed' >&2; exit 1
 fi

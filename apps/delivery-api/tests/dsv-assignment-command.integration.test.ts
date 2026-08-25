@@ -707,6 +707,10 @@ async function createFixture(
     driverAId: driverA.id,
     driverBId: driverB.id,
     forceDuplicateOwner: async () => {
+      await prisma.routeGroupingChildVersion.updateMany({
+        data: { status: 'ARCHIVED', supersededAt: new Date() },
+        where: { routePlanId: routeB.id, status: 'CURRENT' }
+      });
       const duplicateVersion = await createChildVersion(prisma, {
         driverId: driverB.id,
         groupingId: grouping.id,

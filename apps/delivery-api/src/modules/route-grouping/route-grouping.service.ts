@@ -3078,7 +3078,18 @@ async function appendGroupingOrdersToChildRoute(
   });
   await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
   await tx.routeGroupingChildVersion.update({
+    data: { status: 'ARCHIVED', supersededAt: new Date() },
+    where: { id: targetChild.id }
+  });
+  const nextChild = await tx.routeGroupingChildVersion.create({
     data: {
+      driverId: targetChild.routePlan.driverId ?? targetChild.driverId,
+      groupingId: targetChild.groupingId,
+      groupingVersionId: targetChild.groupingVersionId,
+      notificationStatus: targetChild.notificationStatus,
+      publishedAt: targetChild.publishedAt,
+      routePlanId: targetRoutePlanId,
+      shopId: group.shopId,
       snapshot: createChildSnapshot(
         group,
         assignments,
@@ -3088,9 +3099,18 @@ async function appendGroupingOrdersToChildRoute(
         snapshot.color,
         snapshot.sortOrder,
         snapshot.routeIdx
-      )
+      ),
+      status: 'CURRENT',
+      supersededAt: null,
+      version: targetChild.version
     },
-    where: { id: targetChild.id }
+    select: { id: true }
+  });
+  await rebindCurrentOrdersToRouteVersion(tx, {
+    groupingId: group.id,
+    nextRouteVersionId: nextChild.id,
+    orderIds: assignments.map((assignment) => assignment.orderId),
+    shopId: group.shopId
   });
 }
 

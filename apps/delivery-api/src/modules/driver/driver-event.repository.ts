@@ -219,8 +219,9 @@ export class PrismaDriverEventRepository {
   private readonly schemaCapabilityLoader: DriverEventSchemaCapabilityLoader;
   private readonly attemptRetentionDays: number;
   private readonly completionInvariantMode: DriverRouteCompletionInvariantMode;
+  private readonly completionReviewRetentionDays: number;
   private readonly completionInvariantMonitor: {
-    recordWouldReject(input: { mode: DriverRouteCompletionInvariantMode; receiptAware: boolean; totalStopCount: number; unresolvedStopCount: number }): void;
+    recordWouldReject(input: { decision: 'PERMITTED' | 'REJECTED'; mode: DriverRouteCompletionInvariantMode; receiptAware: boolean; totalStopCount: number; unresolvedStopCount: number }): void;
   };
   private readonly now: () => Date;
   private readonly finalizationMonitor: {
@@ -231,19 +232,20 @@ export class PrismaDriverEventRepository {
     private readonly prisma: DriverEventPrismaClient,
     options: {
       attemptRetentionDays?: number;
+      completionReviewRetentionDays?: number;
       completionInvariantMode?: DriverRouteCompletionInvariantMode;
-      completionInvariantMonitor?: { recordWouldReject(input: { mode: DriverRouteCompletionInvariantMode; receiptAware: boolean; totalStopCount: number; unresolvedStopCount: number }): void };
+      completionInvariantMonitor?: { recordWouldReject(input: { decision: 'PERMITTED' | 'REJECTED'; mode: DriverRouteCompletionInvariantMode; receiptAware: boolean; totalStopCount: number; unresolvedStopCount: number }): void };
       finalizationMonitor?: { recordFailure(input: { attemptId: string; errorCode: string }): void };
       now?: () => Date;
     } = {}
   ) {
     this.schemaCapabilityLoader = schemaCapabilityLoaderFor(prisma);
     this.attemptRetentionDays = options.attemptRetentionDays ?? 90;
+    this.completionReviewRetentionDays = options.completionReviewRetentionDays ?? 365;
     this.completionInvariantMode = options.completionInvariantMode ?? 'OBSERVE';
     this.completionInvariantMonitor = options.completionInvariantMonitor ?? {
       recordWouldReject: (evidence) => process.stdout.write(`${JSON.stringify({
         ...evidence,
-        decision: 'PERMITTED',
         event: 'driver_route_completion_invariant',
         wouldReject: true
       })}\n`)
@@ -338,7 +340,7 @@ export class PrismaDriverEventRepository {
             });
           }
           await transaction.driverRouteCompletionReview.create({
-            data: completionReviewData(input, attemptId, null, completionInvariant)
+            data: completionReviewData(input, attemptId, null, completionInvariant, this.reviewRetainedUntil())
           });
           return { completionRejected: completionInvariant };
         }
@@ -372,7 +374,7 @@ export class PrismaDriverEventRepository {
 
         if (completionInvariant !== null) {
           await transaction.driverRouteCompletionReview.create({
-            data: completionReviewData(input, attemptId, event.id, completionInvariant)
+            data: completionReviewData(input, attemptId, event.id, completionInvariant, this.reviewRetainedUntil())
           });
         }
 
@@ -399,10 +401,13 @@ export class PrismaDriverEventRepository {
           ...(sequenceDeviation === null ? {} : { sequenceDeviation })
         };
       });
-      const committedCompletionEvidence = 'completionInvariant' in result ? result.completionInvariant : null;
-      if (committedCompletionEvidence?.wouldReject === true && committedCompletionEvidence.decision === 'PERMITTED') {
+      const committedCompletionEvidence = 'completionRejected' in result
+        ? result.completionRejected
+        : 'completionInvariant' in result ? result.completionInvariant : null;
+      if (committedCompletionEvidence?.wouldReject === true) {
         try {
           this.completionInvariantMonitor.recordWouldReject({
+            decision: committedCompletionEvidence.decision,
             mode: committedCompletionEvidence.mode,
             receiptAware: committedCompletionEvidence.receiptAware,
             totalStopCount: committedCompletionEvidence.totalStopCount,
@@ -449,6 +454,10 @@ export class PrismaDriverEventRepository {
 
       throw error;
     }
+  }
+
+  private reviewRetainedUntil(): Date {
+    return new Date(this.now().getTime() + this.completionReviewRetentionDays * 24 * 60 * 60 * 1000);
   }
 
   async admitDriverEventAttempt(input: DriverEventAttemptAdmissionInput): Promise<DriverEventAttemptAdmission> {
@@ -1033,7 +1042,8 @@ function completionReviewData(
   input: RecordDriverEventInput,
   attemptId: string | null,
   driverEventId: string | null,
-  evidence: DriverRouteCompletionInvariantEvidence
+  evidence: DriverRouteCompletionInvariantEvidence,
+  retainedUntil: Date
 ) {
   return {
     attemptId,
@@ -1042,6 +1052,7 @@ function completionReviewData(
     driverEventId,
     mode: evidence.mode,
     receiptAware: evidence.receiptAware,
+    retainedUntil,
     routePlanId: requireRoutePlanId(input),
     routeVersionId: evidence.routeVersionId,
     shopId: input.shopId,
@@ -1269,15 +1280,16 @@ async function applyDriverEventStateTransition(
   }
 
   if (input.eventType === 'ROUTE_COMPLETED') {
-    await prisma.routePlan.updateMany({
+    const completed = await prisma.routePlan.updateMany({
       data: { status: 'COMPLETED' },
       where: {
         driverId: input.driverId,
         id: requireRoutePlanId(input),
         shopId,
-        status: { not: 'CANCELLED' }
+        status: 'IN_PROGRESS'
       }
     });
+    if (completed.count !== 1) throw new DriverEventRouteNotInProgressError('Route must be in progress before completion');
     return {};
   }
 

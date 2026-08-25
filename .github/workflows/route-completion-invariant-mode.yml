@@ -96,7 +96,8 @@ jobs:
           ROUTE_OPS_SSM_TAG_KEY: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_KEY || 'Service' }}
           ROUTE_OPS_SSM_TAG_VALUE: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_VALUE || 'clever-delivery-server' }}
         run: |
-          ROUTE_COMPLETION_ALARM_NAME='${{ vars.ROUTE_COMPLETION_ALARM_NAME }}' \
+          ROUTE_COMPLETION_OBSERVE_ALARM_NAME='${{ vars.ROUTE_COMPLETION_ALARM_NAME }}' \
+          ROUTE_COMPLETION_REJECT_ALARM_NAME='${{ vars.ROUTE_COMPLETION_REJECT_ALARM_NAME }}' \
           ROUTE_COMPLETION_ALARM_TOPIC_ARN='${{ vars.ROUTE_COMPLETION_ALARM_TOPIC_ARN }}' \
             scripts/verify-route-completion-alarm.sh
           scripts/ssm-route-completion-invariant-mode.sh

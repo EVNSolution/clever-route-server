@@ -8,10 +8,14 @@ describe('driver route completion invariant report', () => {
     expect(source).toContain('COUNT(*)');
     expect(source).toContain('FROM driver_sync_sessions');
     expect(source).toContain('"lastObservedAt" >= ${activeSince}');
+    expect(source).toContain('sessions."expiresAt" > ${now}');
+    expect(source).toContain("routes.status = 'IN_PROGRESS'");
+    expect(source).toContain('SELECT DISTINCT ON (sessions."driverId", sessions."routePlanId")');
     expect(source).toContain('generate_series');
-    expect(source).toContain('unresolved_after_five_minutes');
+    expect(source).toContain('driver_route_completion_review_history');
+    expect(source).toContain('resolved_within_five_minutes_count');
     expect(source).toContain('prisma.$queryRaw');
     expect(source).not.toMatch(/\$executeRaw|\.create\(|\.delete|\.update\(/u);
-    expect(source).not.toMatch(/recipient|address|phone|email|customer|driverId|routePlanId|shopId|clientEventId/u);
+    expect(source).not.toMatch(/recipient|address|phone|email|customer/u);
   });
 });

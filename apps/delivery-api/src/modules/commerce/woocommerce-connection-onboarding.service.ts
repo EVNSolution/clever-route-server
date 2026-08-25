@@ -88,7 +88,7 @@ export class WooCommerceOnboardingError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    readonly httpStatus: 400 | 403 | 404 | 422
+    readonly httpStatus: 400 | 403 | 404 | 409 | 422
   ) {
     super(message);
     this.name = 'WooCommerceOnboardingError';

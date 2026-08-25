@@ -963,9 +963,24 @@ describe('PrismaDriverEventRepository', () => {
         driverId: 'driver-id',
         id: 'route-plan-id',
         shopId: 'shop-id',
-        status: { not: 'CANCELLED' }
+        status: 'IN_PROGRESS'
       }
     });
+  });
+
+  test.each(['DRAFT', 'READY'] as const)('does not complete a %s route or commit its event', async (status) => {
+    const { prisma } = createPrismaHarness({
+      routePlan: { id: 'route-plan-id', status },
+      routeStops: [{ deliveryStop: { status: 'DELIVERED' } }]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null, eventType: 'ROUTE_COMPLETED', routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventRouteNotInProgressError);
+
+    const completionUpdate = prisma.routePlan.updateMany.mock.calls[0]?.[0] as { where: { status: string } };
+    expect(completionUpdate.where.status).toBe('IN_PROGRESS');
   });
 
   test('moves an in-progress route back to ready when the driver releases the session', async () => {
@@ -1014,7 +1029,7 @@ describe('PrismaDriverEventRepository', () => {
         driverId: 'driver-id',
         id: 'route-plan-id',
         shopId: 'shop-id',
-        status: { not: 'CANCELLED' }
+        status: 'IN_PROGRESS'
       }
     });
     expect(getCreatedDriverEventPayload()).toEqual({
@@ -1071,7 +1086,7 @@ describe('PrismaDriverEventRepository', () => {
         driverId: 'driver-id',
         id: 'route-plan-id',
         shopId: 'shop-id',
-        status: { not: 'CANCELLED' }
+        status: 'IN_PROGRESS'
       }
     });
   });
@@ -1081,7 +1096,10 @@ describe('PrismaDriverEventRepository', () => {
       routeEtaInputVersionId: 'route-version-id',
       routeSequenceStops: [{ deliveryStop: { status: 'ASSIGNED' }, deliveryStopId: 'stop-1', sequence: 1 }]
     });
-    const repository = new PrismaDriverEventRepository(prisma as never, { completionInvariantMode: 'GUARDED' });
+    const recordWouldReject = vi.fn();
+    const repository = new PrismaDriverEventRepository(prisma as never, {
+      completionInvariantMode: 'GUARDED', completionInvariantMonitor: { recordWouldReject }
+    });
 
     await expect(repository.recordDriverEvent(baseInput({
       assignmentGeneration: '1',
@@ -1108,6 +1126,7 @@ describe('PrismaDriverEventRepository', () => {
       data: { decision: string; receiptAware: boolean; unresolvedStopCount: number };
     };
     expect(reviewCreate.data).toMatchObject({ decision: 'REJECTED', receiptAware: true, unresolvedStopCount: 1 });
+    expect(recordWouldReject).toHaveBeenCalledWith(expect.objectContaining({ decision: 'REJECTED', mode: 'GUARDED' }));
   });
 
   test('uses immutable route-version membership instead of mutable route plan stops', async () => {
@@ -1763,7 +1782,9 @@ function createPrismaHarness(input: {
 
         return Promise.resolve(routePlan);
       }),
-      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+      updateMany: vi.fn((args: { where?: { status?: string } }) => Promise.resolve({
+        count: args.where?.status === 'IN_PROGRESS' && input.routePlan?.status !== undefined && input.routePlan.status !== 'IN_PROGRESS' ? 0 : 1
+      }))
     },
     routePlanGeometryCache: {
       findFirst: vi.fn(() => Promise.resolve(input.routeGeometryCache ?? null))

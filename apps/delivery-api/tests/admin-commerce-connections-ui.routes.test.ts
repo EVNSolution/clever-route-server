@@ -182,7 +182,7 @@ describe("Admin WooCommerce connection UI routes", () => {
 
   test("records completion review decisions with authenticated actor and CSRF", async () => {
     const review = vi.fn(() => Promise.resolve({ outcome: "FALSE_POSITIVE" as const, reviewedAt: "2026-08-25T01:00:00.000Z" }));
-    const { app } = await createUiHarness({ driverRouteCompletionReviewService: { review } });
+    const { app } = await createUiHarness({ driverRouteCompletionReviewService: { listUnreviewed: vi.fn(() => Promise.resolve([])), review } });
     try {
       const { cookie, csrfToken } = await loginAndReadCsrf(app);
       const response = await app.inject({

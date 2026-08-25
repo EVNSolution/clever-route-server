@@ -57,7 +57,7 @@ import { PrismaRoutesAppReleaseRepository } from '../routes-app/routes-app-relea
 import { PrismaEmailRuntimeHealthService } from '../customer-email/email-runtime-health.service.js';
 import { isCustomerDeliveryNotificationWorkerEnabled } from '../route-plans/customer-delivery-notification.runtime.js';
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
-import { loadDriverRouteCompletionInvariantMode } from '../driver/driver-route-completion-invariant.js';
+import { loadDriverRouteCompletionInvariantMode, loadDriverRouteCompletionReviewRetentionDays } from '../driver/driver-route-completion-invariant.js';
 import { PrismaDriverRouteCompletionReviewRepository } from '../driver/driver-route-completion-review.repository.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
@@ -78,6 +78,7 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE'
     | 'DRIVER_APP_DISTRIBUTION_CHANNEL'
     | 'DRIVER_APP_DOWNLOAD_URL'
+    | 'DRIVER_ROUTE_COMPLETION_REVIEW_RETENTION_DAYS'
     | 'DRIVER_ROUTE_COMPLETION_INVARIANT_MODE'
     | 'ROUTES_APP_ANDROID_LATEST_VERSION_CODE'
     | 'ROUTES_APP_ANDROID_LATEST_VERSION_NAME'
@@ -205,7 +206,9 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...(notificationService === undefined ? {} : { notificationService }),
     ...(input.prisma === undefined ? {} : {
       driverRouteCompletionInvariantMode: loadDriverRouteCompletionInvariantMode(input.env),
-      driverRouteCompletionReviewService: new PrismaDriverRouteCompletionReviewRepository(input.prisma),
+      driverRouteCompletionReviewService: new PrismaDriverRouteCompletionReviewRepository(
+        input.prisma, undefined, loadDriverRouteCompletionReviewRetentionDays(input.env)
+      ),
       runtimeHealthService: new PrismaEmailRuntimeHealthService(
         input.prisma,
         {

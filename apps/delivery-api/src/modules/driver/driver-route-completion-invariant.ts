@@ -1,6 +1,19 @@
 export const DRIVER_ROUTE_COMPLETION_INVARIANT_MODES = ['OBSERVE', 'GUARDED', 'FULL'] as const;
 
 export type DriverRouteCompletionInvariantMode = typeof DRIVER_ROUTE_COMPLETION_INVARIANT_MODES[number];
+export const DEFAULT_DRIVER_ROUTE_COMPLETION_REVIEW_RETENTION_DAYS = 365;
+
+export function loadDriverRouteCompletionReviewRetentionDays(
+  env: Partial<Record<'DRIVER_ROUTE_COMPLETION_REVIEW_RETENTION_DAYS', string | undefined>>
+): number {
+  const raw = env.DRIVER_ROUTE_COMPLETION_REVIEW_RETENTION_DAYS?.trim();
+  if (raw === undefined || raw === '') return DEFAULT_DRIVER_ROUTE_COMPLETION_REVIEW_RETENTION_DAYS;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 365 || value > 3650) {
+    throw new Error('DRIVER_ROUTE_COMPLETION_REVIEW_RETENTION_DAYS must be an integer from 365 to 3650');
+  }
+  return value;
+}
 
 export type DriverRouteCompletionInvariantEvidence = {
   decision: 'PERMITTED' | 'REJECTED';
