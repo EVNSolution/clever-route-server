@@ -1375,10 +1375,11 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (!sameUniqueStringSet(preflightGroupingIds, lockedGroupingIds)) {
         throw new RoutePlanDeleteBlockedError('Route grouping membership changed while deletion was being prepared.');
       }
-      const currentChildren = await tx.routeGroupingChildVersion.findMany({
-        where: { routePlanId: input.routePlanId, shopId: shop.id, status: 'CURRENT', supersededAt: null }
+      const routePlanChildren = await tx.routeGroupingChildVersion.findMany({
+        where: { routePlanId: input.routePlanId, shopId: shop.id }
       });
-      for (const child of currentChildren) {
+      const currentChildren = routePlanChildren.filter((child) => child.status === 'CURRENT' && child.supersededAt === null);
+      for (const child of selectRoutePlanDeletionLineageTerminals(routePlanChildren)) {
         try {
           await archiveDeletedRouteGroupingChildMembership(tx, child);
         } catch (error) {
@@ -2508,6 +2509,63 @@ function sameUniqueStringSet(left: string[], right: string[]): boolean {
   return leftSet.size === left.length && rightSet.size === right.length
     && leftSet.size === rightSet.size
     && [...leftSet].every((value) => rightSet.has(value));
+}
+
+function selectRoutePlanDeletionLineageTerminals<Child extends {
+  groupingId: string;
+  id: string;
+  snapshot: Prisma.JsonValue;
+}>(children: Child[]): Child[] {
+  const byGrouping = new Map<string, Child[]>();
+  for (const child of children) {
+    byGrouping.set(child.groupingId, [...(byGrouping.get(child.groupingId) ?? []), child]);
+  }
+  const terminals: Child[] = [];
+  for (const lineage of byGrouping.values()) {
+    const byId = new Map(lineage.map((child) => [child.id, child]));
+    const referenced = new Set<string>();
+    let rootCount = 0;
+    for (const child of lineage) {
+      const predecessorId = readDeletionPredecessorId(child.snapshot);
+      if (predecessorId === null) {
+        rootCount += 1;
+        continue;
+      }
+      if (!byId.has(predecessorId) || referenced.has(predecessorId)) {
+        throw new RoutePlanDeleteBlockedError('Grouped route deletion lineage is ambiguous.');
+      }
+      referenced.add(predecessorId);
+    }
+    const candidates = lineage.filter((child) => !referenced.has(child.id));
+    if (rootCount !== 1 || candidates.length !== 1 || referenced.size !== lineage.length - 1) {
+      throw new RoutePlanDeleteBlockedError('Grouped route deletion lineage is ambiguous.');
+    }
+    const terminal = candidates[0]!;
+    const visited = new Set<string>();
+    let cursor: Child | undefined = terminal;
+    while (cursor !== undefined && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      const predecessorId = readDeletionPredecessorId(cursor.snapshot);
+      cursor = predecessorId === null ? undefined : byId.get(predecessorId);
+    }
+    if (cursor !== undefined || visited.size !== lineage.length) {
+      throw new RoutePlanDeleteBlockedError('Grouped route deletion lineage is ambiguous.');
+    }
+    terminals.push(terminal);
+  }
+  return terminals;
+}
+
+function readDeletionPredecessorId(snapshot: Prisma.JsonValue): string | null {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    throw new RoutePlanDeleteBlockedError('Grouped route deletion history is incomplete.');
+  }
+  const predecessorId = snapshot.predecessorChildVersionId;
+  if (predecessorId === undefined || predecessorId === null) return null;
+  if (typeof predecessorId !== 'string') {
+    throw new RoutePlanDeleteBlockedError('Grouped route deletion lineage is ambiguous.');
+  }
+  return predecessorId;
 }
 
 async function clearRouteGroupingChildVersionRoutePlanRefs(

@@ -194,6 +194,8 @@ describe('route membership mutation authority', () => {
 
     const deleteRoute = routePlanSource.slice(routePlanSource.indexOf('async deleteRoutePlan('), routePlanSource.indexOf('async updateRoutePlanOptions('));
     expect(deleteRoute.indexOf('FROM "route_groupings"')).toBeLessThan(deleteRoute.indexOf('FROM "route_plans"'));
+    expect(deleteRoute).toContain('selectRoutePlanDeletionLineageTerminals(routePlanChildren)');
+    expect(deleteRoute).toContain("routePlanChildren.filter((child) => child.status === 'CURRENT'");
     expect(deleteRoute.indexOf('await archiveDeletedRouteGroupingChildMembership(tx, child)'))
       .toBeLessThan(deleteRoute.indexOf('await clearRouteGroupingChildVersionRoutePlanRefs(tx, {'));
     const saveRoute = routePlanSource.slice(routePlanSource.indexOf('async saveRoutePlan('), routePlanSource.indexOf('async deleteRoutePlan('));

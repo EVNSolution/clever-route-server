@@ -2367,6 +2367,8 @@ function createPrismaHarness(input: {
               publishedAt: null,
               shopId: 'shop-id',
               snapshot: { membershipSchemaVersion: 1, routeIdx: index + 1, stops: [] },
+              status: 'CURRENT',
+              supersededAt: null,
               version: 1
             })
           ));

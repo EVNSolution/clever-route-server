@@ -1035,6 +1035,14 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       const publicDeletedRouteId = await createDeletionRoute('Public deleted route', 902);
       const transactionDeletedRouteId = await createDeletionRoute('Transaction deleted route', 903);
       const directDeletedRouteId = await createDeletionRoute('Direct deleted route', 904);
+      const archivedOnlyDeletedRouteId = await createDeletionRoute('Archived-only deleted route', 905);
+      await prisma.routeGroupingChildVersion.updateMany({
+        data: { status: 'ARCHIVED', supersededAt: new Date() },
+        where: { routePlanId: archivedOnlyDeletedRouteId, status: 'CURRENT' }
+      });
+      await expect(routePlanRepository.deleteRoutePlan({
+        routePlanId: archivedOnlyDeletedRouteId, shopDomain: 'g002-evidence.invalid'
+      })).resolves.toMatchObject({ deleted: true });
       const deletionRaceGate = new pg.Client({ connectionString: databaseUrl });
       await deletionRaceGate.connect();
       try {
@@ -1085,7 +1093,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.routePlan.count({ where: { id: { in: [publicDeletedRouteId, transactionDeletedRouteId] } } })).toBe(0);
       expect(await prisma.routeGroupingChildVersion.count({ where: {
         groupingId: deletionGrouping.id, snapshot: { path: ['membershipDeleted'], equals: true }
-      } })).toBe(3);
+      } })).toBe(4);
       const unrelatedPointersBeforeDeletionRollback = await prisma.order.findMany({
         orderBy: { id: 'asc' }, select: { currentRouteVersionId: true, id: true }, where: { shopId }
       });
@@ -1098,7 +1106,9 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.routeGroupingChildVersion.count({ where: {
         groupingId: deletionGrouping.id, status: 'CURRENT', supersededAt: null
       } })).toBe(1);
-      expect(await prisma.routePlan.count({ where: { id: { in: [publicDeletedRouteId, transactionDeletedRouteId] } } })).toBe(0);
+      expect(await prisma.routePlan.count({ where: {
+        id: { in: [archivedOnlyDeletedRouteId, publicDeletedRouteId, transactionDeletedRouteId] }
+      } })).toBe(0);
       expect(await prisma.order.findMany({
         orderBy: { id: 'asc' }, select: { currentRouteVersionId: true, id: true }, where: { shopId }
       })).toEqual(unrelatedPointersBeforeDeletionRollback);
