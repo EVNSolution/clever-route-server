@@ -5,6 +5,7 @@ import {
   PrismaRouteGroupingService,
   newChildRouteName,
   rebindCurrentOrdersToRouteVersion,
+  replaceCurrentRouteGroupingChildVersion,
   resolveNewChildRouteIdx,
   resolveNextGlobalRouteIdx,
   syncRoutePlanStopsPreservingRows
@@ -563,7 +564,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain("'route draft route keys must be unique'");
   });
 
-  test('rebinds only already-assigned orders when a child route version is replaced', async () => {
+  test('rebinds unassigned or same-group orders without stealing another group assignment', async () => {
     const updates: unknown[] = [];
     const count = await rebindCurrentOrdersToRouteVersion({
       order: {
@@ -583,8 +584,10 @@ describe('route grouping contracts', () => {
     expect(updates).toEqual([{
       data: { currentRouteVersionId: 'version-next' },
       where: {
-        currentRouteVersion: { is: { groupingId: 'grouping-a' } },
-        currentRouteVersionId: { not: null },
+        OR: [
+          { currentRouteVersionId: null },
+          { currentRouteVersion: { is: { groupingId: 'grouping-a' } } }
+        ],
         id: { in: ['order-a', 'order-b'] },
         shopId: 'shop-a'
       }
@@ -593,9 +596,39 @@ describe('route grouping contracts', () => {
 
   test('rebinds current order ownership across every child-version replacement path', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    const calls = source.match(/await rebindCurrentOrdersToRouteVersion\(tx,/gu) ?? [];
+    const calls = source.match(/await replaceCurrentRouteGroupingChildVersion\(tx,/gu) ?? [];
 
     expect(calls).toHaveLength(6);
+    expect(source).not.toMatch(/routeGroupingChildVersion\.update\(\{\s*data:\s*\{\s*(?:driverId|snapshot):/u);
+  });
+
+  test('archives the prior child snapshot before creating and rebinding its immutable successor', async () => {
+    const calls: string[] = [];
+    const oldSnapshot = { stops: [{ orderId: 'order-old' }] };
+    const nextSnapshot = { stops: [{ orderId: 'order-old' }, { orderId: 'order-new' }] };
+    const prisma = {
+      order: { updateMany: vi.fn(() => { calls.push('rebind'); return Promise.resolve({ count: 1 }); }) },
+      routeGroupingChildVersion: {
+        create: vi.fn((...args: [unknown]) => { void args; calls.push('create'); return Promise.resolve({ id: 'child-next' }); }),
+        updateMany: vi.fn((...args: [unknown]) => { void args; calls.push('archive'); return Promise.resolve({ count: 1 }); })
+      }
+    };
+
+    await expect(replaceCurrentRouteGroupingChildVersion(prisma as never, {
+      currentChildId: 'child-old', driverId: 'driver-id', groupingId: 'group-id', groupingVersionId: 'group-version-id',
+      notificationStatus: 'SENT', orderIds: ['order-old', 'order-new'], publishedAt: new Date('2026-08-25T00:00:00Z'),
+      routePlanId: 'route-id', shopId: 'shop-id', snapshot: nextSnapshot, version: 7
+    })).resolves.toBe('child-next');
+
+    expect(calls).toEqual(['archive', 'create', 'rebind']);
+    expect(oldSnapshot).toEqual({ stops: [{ orderId: 'order-old' }] });
+    const archiveCall: unknown = prisma.routeGroupingChildVersion.updateMany.mock.calls[0]?.[0];
+    const createCall: unknown = prisma.routeGroupingChildVersion.create.mock.calls[0]?.[0];
+    expect(archiveCall).toMatchObject({
+      data: { status: 'ARCHIVED' },
+      where: { id: 'child-old', status: 'CURRENT', supersededAt: null }
+    });
+    expect(createCall).toMatchObject({ data: { snapshot: nextSnapshot, status: 'CURRENT', supersededAt: null } });
   });
 
   test('allows draft saves to persist a validated vehicle on child route plans', () => {
@@ -855,9 +888,8 @@ describe('route grouping contracts', () => {
       source.indexOf('async function appendGroupingOrdersToChildRoute'),
       source.indexOf('async function rewriteRoutePlanStops')
     );
-    expect(appendBody).toContain("data: { status: 'ARCHIVED', supersededAt: new Date() }");
-    expect(appendBody).toContain('const nextChild = await tx.routeGroupingChildVersion.create');
-    expect(appendBody).toContain('nextRouteVersionId: nextChild.id');
+    expect(appendBody).toContain('await replaceCurrentRouteGroupingChildVersion(tx, {');
+    expect(appendBody).toContain('currentChildId: targetChild.id');
     expect(appendBody).not.toContain('data: {\n      snapshot: createChildSnapshot');
   });
 
@@ -885,6 +917,8 @@ describe('route grouping contracts', () => {
     expect(guardBody).toContain("displayStatus === 'READY'");
     expect(guardBody).toContain('sameStringSet(currentOrderIds, draftOrderIds)');
     expect(guardBody).toContain("displayStatus === 'IN_PROGRESS'");
+    expect(saveDraftBody).toContain('await replaceCurrentRouteGroupingChildVersion(tx, {');
+    expect(saveDraftBody).toContain('currentChildId: targetChild.id');
     expect(guardBody).toContain('currentOrderIds.every');
     expect(guardBody).toContain('removedOrderIdSet.has(orderId)');
     expect(guardBody).toContain('throw new RouteGroupingStopMembershipConflictError');

@@ -1419,7 +1419,7 @@ export function registerDriverEventRoutes(
       if (error instanceof DriverRouteCompletionIncompleteError) {
         request.log.warn({
           decision: error.evidence.decision,
-          event: 'driver_route_completion_invariant',
+          event: 'driver_route_completion_invariant_http_response',
           mode: error.evidence.mode,
           receiptAware: error.evidence.receiptAware,
           totalStopCount: error.evidence.totalStopCount,

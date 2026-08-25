@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient } from '@prisma/client';
-import { consecutiveCleanReviewedDays, type DailyCompletionReviewAggregate } from '../modules/driver/driver-route-completion-rollout-evidence.js';
+import { consecutiveCleanReviewedDays, meetsRecoveryThreshold, type DailyCompletionReviewAggregate } from '../modules/driver/driver-route-completion-rollout-evidence.js';
 
 const prisma = new PrismaClient();
 const now = new Date();
@@ -19,7 +19,7 @@ try {
         COUNT(*) FILTER (WHERE "wouldReject") AS would_reject_count,
         COUNT(*) FILTER (WHERE decision = 'REJECTED') AS rejected_count,
         COUNT(*) FILTER (WHERE "reviewOutcome" = 'CONFIRMED_CORRECT') AS confirmed_correct_count,
-        (SELECT COUNT(*) FROM driver_route_completion_review_history history
+        (SELECT COUNT(*) FROM driver_route_completion_gate_history history
           WHERE history."createdAt" >= ${since} AND history.outcome = 'FALSE_POSITIVE') AS false_positive_count,
         COUNT(*) FILTER (WHERE "reviewOutcome" IS NULL AND "wouldReject") AS unreviewed_count
       FROM driver_route_completion_reviews WHERE "createdAt" >= ${since}
@@ -36,14 +36,14 @@ try {
       )
       SELECT COUNT(*) AS active_count,
         COUNT(*) FILTER (WHERE "driverContractVersion" >= 2) AS receipt_aware_count,
-        COUNT(*) FILTER (WHERE "driverContractVersion" < 2) AS legacy_count
+        COUNT(*) FILTER (WHERE "driverContractVersion" IS NULL OR "driverContractVersion" < 2) AS legacy_count
       FROM latest
     `),
     prisma.$queryRaw<DailyCompletionReviewAggregate[]>(Prisma.sql`
       SELECT days.day,
         COUNT(reviews.id) AS sample_count,
         COUNT(reviews.id) FILTER (WHERE reviews."wouldReject") AS would_reject_count,
-        (SELECT COUNT(*) FROM driver_route_completion_review_history history
+        (SELECT COUNT(*) FROM driver_route_completion_gate_history history
           WHERE history."createdAt" >= days.day AND history."createdAt" < days.day + interval '1 day'
             AND history.outcome = 'FALSE_POSITIVE') AS false_positive_count,
         COUNT(reviews.id) FILTER (WHERE reviews."wouldReject" AND reviews."reviewOutcome" IS NULL) AS unreviewed_count
@@ -97,7 +97,7 @@ try {
     },
     generatedAt: now.toISOString(),
     legacyRetirementVerified: legacyActiveCount === 0,
-    recoveryVerified: recoveryWithinFiveMinutesPercent !== null && recoveryWithinFiveMinutesPercent >= 99.5,
+    recoveryVerified: meetsRecoveryThreshold(recoveryResolvedWithinFiveMinutesCount, recoveryCohortCount),
     reviews: {
       confirmedCorrect: Number(reviews?.confirmed_correct_count ?? 0n),
       rejected: Number(reviews?.rejected_count ?? 0n),

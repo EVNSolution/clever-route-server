@@ -8,11 +8,15 @@ SERVICE_TAG_VALUE="${ROUTE_OPS_SSM_TAG_VALUE:-clever-delivery-server}"
 SOURCE_SHA="${ROUTE_COMPLETION_SOURCE_SHA:-}"
 TARGET_MODE="${ROUTE_COMPLETION_TARGET_MODE:-}"
 EXPECTED_CURRENT_MODE="${ROUTE_COMPLETION_EXPECTED_CURRENT_MODE:-}"
+EXPECTED_IMAGE_ID="${ROUTE_COMPLETION_EXPECTED_IMAGE_ID:-}"
+EXPECTED_IMAGE_REPO_DIGEST="${ROUTE_COMPLETION_EXPECTED_IMAGE_REPO_DIGEST:-}"
 
 fail() { echo "ssm-route-completion-invariant-mode: $*" >&2; exit 65; }
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'ROUTE_COMPLETION_SOURCE_SHA must be an exact 40-character SHA'
 case "$TARGET_MODE" in OBSERVE|GUARDED|FULL) ;; *) fail 'ROUTE_COMPLETION_TARGET_MODE must be OBSERVE, GUARDED, or FULL' ;; esac
 case "$EXPECTED_CURRENT_MODE" in OBSERVE|GUARDED|FULL) ;; *) fail 'ROUTE_COMPLETION_EXPECTED_CURRENT_MODE must be OBSERVE, GUARDED, or FULL' ;; esac
+[[ "$EXPECTED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'ROUTE_COMPLETION_EXPECTED_IMAGE_ID must be an exact image ID'
+[[ "$EXPECTED_IMAGE_REPO_DIGEST" =~ @sha256:[0-9a-f]{64}$ ]] || fail 'ROUTE_COMPLETION_EXPECTED_IMAGE_REPO_DIGEST must be an exact repo digest'
 
 render_host_script() {
   cat <<EOF_HOST
@@ -21,12 +25,21 @@ APP_DIR='$APP_DIR'
 COMMIT_SHA=$SOURCE_SHA
 TARGET_MODE=$TARGET_MODE
 EXPECTED_CURRENT_MODE=$EXPECTED_CURRENT_MODE
+EXPECTED_IMAGE_ID='$EXPECTED_IMAGE_ID'
+EXPECTED_IMAGE_REPO_DIGEST='$EXPECTED_IMAGE_REPO_DIGEST'
 cd "\$APP_DIR"
 test "\$(sed -n 's/^COMMIT_SHA=//p' .deploy/current-image.env)" = "\$COMMIT_SHA"
 lock_dir=.deploy/route-ops-simple-deploy.lock.d
 if ! mkdir "\$lock_dir" 2>/dev/null; then echo 'shared route-ops deploy lock is held' >&2; exit 65; fi
 cleanup() { rmdir "\$lock_dir" 2>/dev/null || true; }
 trap cleanup EXIT
+container=clever-route-clever-route-api-1
+expected_image="\$(sed -n 's/^DELIVERY_API_IMAGE=//p' .deploy/current-image.env)"
+test "\$(docker inspect "\$container" --format '{{.Image}}')" = "\$EXPECTED_IMAGE_ID"
+test "\$expected_image" = "\$EXPECTED_IMAGE_REPO_DIGEST"
+docker image inspect "\$EXPECTED_IMAGE_REPO_DIGEST" >/dev/null
+test "\$(docker inspect "\$container" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "\$COMMIT_SHA"
+test "\$(docker inspect "\$container" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = 1
 runtime_env=apps/delivery-api/.env
 backup=".deploy/runtime-env.before-route-completion-mode-\$(date -u +%Y%m%dT%H%M%SZ)"
 cp "\$runtime_env" "\$backup"

@@ -8,10 +8,15 @@ if (!modes.includes(expectedCurrentMode) || !modes.includes(targetMode)) fail('v
 const evidence = JSON.parse(await readFile(path, 'utf8'));
 if (evidence.sourceSha !== expectedSha) fail('evidence source SHA mismatch');
 if (evidence.currentMode !== expectedCurrentMode) fail('evidence current mode mismatch');
+if (evidence.runtime?.capabilityVersion !== 1
+  || !/^sha256:[0-9a-f]{64}$/u.test(evidence.runtime?.imageId ?? '')
+  || !/@sha256:[0-9a-f]{64}$/u.test(evidence.runtime?.imageRepoDigest ?? '')
+  || evidence.runtime?.revision !== expectedSha) fail('live runtime digest, image ID, revision, and capability are required');
 if (expectedCurrentMode === 'OBSERVE' && targetMode === 'FULL') fail('OBSERVE to FULL is prohibited');
 if (targetMode === 'OBSERVE') pass();
 if (targetMode === expectedCurrentMode) fail('target mode must differ from current mode');
-if (typeof evidence.generatedAt !== 'string' || Date.parse(evidence.generatedAt) < Date.now() - 24 * 60 * 60 * 1000) fail('evidence is missing or stale');
+const generatedAt = typeof evidence.generatedAt === 'string' ? Date.parse(evidence.generatedAt) : Number.NaN;
+if (!Number.isFinite(generatedAt) || generatedAt < Date.now() - 24 * 60 * 60 * 1000 || generatedAt > Date.now() + 5 * 60 * 1000) fail('evidence is missing, stale, or future-dated');
 const adoption = evidence.activeSessions?.adoptionPercent;
 const gate = evidence.gate ?? {};
 if (typeof adoption !== 'number' || adoption < 95) fail('receipt-aware active-session adoption must be at least 95%');

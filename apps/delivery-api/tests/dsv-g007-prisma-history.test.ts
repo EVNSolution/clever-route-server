@@ -163,7 +163,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(96);
+    expect(migrations).toHaveLength(97);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -378,7 +378,19 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260825120000_enforce_shop_privacy_tombstone')).toBeLessThan(
       migrations.indexOf('20260825130000_driver_route_completion_invariant_rollout')
     );
-    expect(migrations.at(-1)).toBe('20260825130000_driver_route_completion_invariant_rollout');
+    expect(migrations.indexOf('20260825130000_driver_route_completion_invariant_rollout')).toBeLessThan(
+      migrations.indexOf('20260825140000_preserve_route_completion_gate_history')
+    );
+    expect(migrations.at(-1)).toBe('20260825140000_preserve_route_completion_gate_history');
+  });
+
+  test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {
+    const migration = await readFile(new URL('20260825140000_preserve_route_completion_gate_history/migration.sql', migrationsDir), 'utf8');
+    expect(migration).toContain('CREATE TABLE "driver_route_completion_gate_history"');
+    expect(migration).not.toContain('FOREIGN KEY');
+    expect(migration).not.toContain('"shopId"');
+    expect(migration).not.toContain('"routePlanId"');
+    expect(migration).toContain('"retainedUntil"');
   });
 
   test('adds driver destination notes without rewriting existing customer profiles', async () => {

@@ -18,3 +18,12 @@ export function consecutiveCleanReviewedDays(rows: DailyCompletionReviewAggregat
   }
   return count;
 }
+
+export function meetsRecoveryThreshold(resolved: number, cohort: number): boolean {
+  return Number.isSafeInteger(resolved)
+    && Number.isSafeInteger(cohort)
+    && cohort > 0
+    && resolved >= 0
+    && resolved <= cohort
+    && resolved / cohort >= 0.995;
+}

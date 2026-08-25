@@ -118,6 +118,7 @@ build_and_push() {
     --label "org.opencontainers.image.revision=$COMMIT_SHA" \
     --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
     --label "org.clever-route.image-role=runtime" \
+    --label "org.clever-route.route-completion-invariant-capability=1" \
     --cache-from "type=registry,ref=${RUNTIME_IMAGE_REPO}:buildcache" \
     --cache-to "type=registry,ref=${RUNTIME_IMAGE_REPO}:buildcache,mode=max" \
     -t "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}" .
@@ -235,6 +236,7 @@ DSV_PRODUCTION_BASELINE_APPROVED=$DSV_PRODUCTION_BASELINE_APPROVED
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=$DSV_PRODUCTION_BASELINE_MANIFEST_SHA256
 DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE=$([ -n "$PROOF_READY_FILTER_CONTRACT_SHA" ] && echo true || echo false)
 DRIVER_PROOF_MEDIA_READY_FILTER_CONTRACT_SHA=$PROOF_READY_FILTER_CONTRACT_SHA
+ROUTE_COMPLETION_INVARIANT_CAPABILITY_VERSION=1
 EOF_ENV
 HAD_CURRENT_IMAGE_ENV=0
 if [ -f .deploy/current-image.env ]; then
@@ -253,6 +255,15 @@ rollback_ready_filter_compatible="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_READY_FIL
 if [ "$proof_reservations_enabled" = "true" ] && [ "$rollback_ready_filter_compatible" != "true" ]; then
   echo 'proof media reservation rollout blocked: rollback image does not advertise READY-only reads' >&2
   exit 1
+fi
+completion_mode="$(awk -F= '$1 == "DRIVER_ROUTE_COMPLETION_INVARIANT_MODE" {print toupper(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
+completion_mode="${completion_mode:-OBSERVE}"
+rollback_completion_capability="$(awk -F= '$1 == "ROUTE_COMPLETION_INVARIANT_CAPABILITY_VERSION" {print substr($0, index($0, "=") + 1)}' .deploy/simple-rollback-image.env | tail -n 1)"
+rollback_delivery_image="$(awk -F= '$1 == "DELIVERY_API_IMAGE" {print substr($0, index($0, "=") + 1)}' .deploy/simple-rollback-image.env | tail -n 1)"
+if [ "$completion_mode" != "OBSERVE" ]; then
+  [ "$rollback_completion_capability" = "1" ] || { echo 'route completion rollout blocked: rollback image does not advertise invariant capability v1' >&2; exit 1; }
+  [ "$(docker image inspect "$rollback_delivery_image" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = "1" ] \
+    || { echo 'route completion rollout blocked: rollback image capability label is missing' >&2; exit 1; }
 fi
 is_digest_ref() {
   case "$1" in
@@ -440,6 +451,8 @@ printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/de
 token=''
 static_stage_reason="$(should_stage_static)"
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea
+[ "$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = "1" ] \
+  || { echo 'candidate delivery API does not advertise route completion invariant capability v1' >&2; exit 1; }
 if [ "$static_stage_reason" != "unchanged" ]; then
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull route-ops-web-static
 fi

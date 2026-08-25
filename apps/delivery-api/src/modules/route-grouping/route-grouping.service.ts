@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { DriverEventType, type Prisma, type PrismaClient } from '@prisma/client';
+import { DriverEventType, type DriverRouteNotificationStatus, type Prisma, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type {
   DriverPushProvider,
@@ -117,6 +117,13 @@ type CurrentOrderRouteVersionWriter = {
   };
 };
 
+type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
+  routeGroupingChildVersion: {
+    create(args: Prisma.RouteGroupingChildVersionCreateArgs): Promise<{ id: string }>;
+    updateMany(args: Prisma.RouteGroupingChildVersionUpdateManyArgs): Promise<{ count: number }>;
+  };
+};
+
 type LoadedGrouping = Prisma.RouteGroupingGetPayload<{ include: ReturnType<typeof groupingInclude> }>;
 type LoadedChild = LoadedGrouping['childVersions'][number];
 type LoadedAssignment = LoadedGrouping['orders'][number];
@@ -225,13 +232,63 @@ export async function rebindCurrentOrdersToRouteVersion(
   const result = await prisma.order.updateMany({
     data: { currentRouteVersionId: input.nextRouteVersionId },
     where: {
-      currentRouteVersion: { is: { groupingId: input.groupingId } },
-      currentRouteVersionId: { not: null },
+      OR: [
+        { currentRouteVersionId: null },
+        { currentRouteVersion: { is: { groupingId: input.groupingId } } }
+      ],
       id: { in: orderIds },
       shopId: input.shopId
     }
   });
   return result.count;
+}
+
+export async function replaceCurrentRouteGroupingChildVersion(
+  prisma: CurrentChildVersionReplacementWriter,
+  input: {
+    currentChildId: string;
+    driverId: string | null;
+    groupingId: string;
+    groupingVersionId: string;
+    notificationStatus: DriverRouteNotificationStatus;
+    orderIds: string[];
+    publishedAt: Date | null;
+    routePlanId: string | null;
+    shopId: string;
+    snapshot: Prisma.InputJsonValue;
+    version: number;
+  }
+): Promise<string> {
+  const archived = await prisma.routeGroupingChildVersion.updateMany({
+    data: { status: 'ARCHIVED', supersededAt: new Date() },
+    where: { id: input.currentChildId, status: 'CURRENT', supersededAt: null }
+  });
+  if (archived.count !== 1) {
+    throw new RouteGroupingConflictError('route child version changed; reload and retry');
+  }
+  const nextChild = await prisma.routeGroupingChildVersion.create({
+    data: {
+      driverId: input.driverId,
+      groupingId: input.groupingId,
+      groupingVersionId: input.groupingVersionId,
+      notificationStatus: input.notificationStatus,
+      publishedAt: input.publishedAt,
+      routePlanId: input.routePlanId,
+      shopId: input.shopId,
+      snapshot: input.snapshot,
+      status: 'CURRENT',
+      supersededAt: null,
+      version: input.version
+    },
+    select: { id: true }
+  });
+  await rebindCurrentOrdersToRouteVersion(prisma, {
+    groupingId: input.groupingId,
+    nextRouteVersionId: nextChild.id,
+    orderIds: input.orderIds,
+    shopId: input.shopId
+  });
+  return nextChild.id;
 }
 
 export class PrismaRouteGroupingService implements RouteGroupingService {
@@ -845,20 +902,27 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await tx.routePlan.update({ data: { metrics: routeMetrics(remaining) }, where: { id: child.routePlanId } });
         await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
         const snapshot = readChildSnapshot(child.snapshot);
-        await tx.routeGroupingChildVersion.update({
-          data: {
-            snapshot: createChildSnapshot(
-              loaded,
-              remaining,
-              child.routePlan?.driverId ?? child.driverId,
-              childRouteSlotName(child),
-              loaded.currentVersion,
-              snapshot.color,
-              snapshot.sortOrder,
-              snapshot.routeIdx
-            )
-          },
-          where: { id: child.id }
+        await replaceCurrentRouteGroupingChildVersion(tx, {
+          currentChildId: child.id,
+          driverId: child.routePlan?.driverId ?? child.driverId,
+          groupingId: group.id,
+          groupingVersionId: child.groupingVersionId,
+          notificationStatus: child.notificationStatus,
+          orderIds: remaining.map((row) => row.orderId),
+          publishedAt: child.publishedAt,
+          routePlanId: child.routePlanId,
+          shopId: group.shopId,
+          snapshot: createChildSnapshot(
+            loaded,
+            remaining,
+            child.routePlan?.driverId ?? child.driverId,
+            childRouteSlotName(child),
+            loaded.currentVersion,
+            snapshot.color,
+            snapshot.sortOrder,
+            snapshot.routeIdx
+          ),
+          version: child.version
         });
       }
       await syncRouteGroupingInventoryOrders(tx, {
@@ -1055,21 +1119,27 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               await createDraftRouteGeometryCache(tx, targetChild.routePlanId, draftOptimization);
             }
           }
-          await tx.routeGroupingChildVersion.update({
-            data: {
+          await replaceCurrentRouteGroupingChildVersion(tx, {
+            currentChildId: targetChild.id,
+            driverId,
+            groupingId: group.id,
+            groupingVersionId: currentGroupingVersion.id,
+            notificationStatus: targetChild.notificationStatus,
+            orderIds: assignments.map((row) => row.orderId),
+            publishedAt: targetChild.publishedAt,
+            routePlanId: targetChild.routePlanId,
+            shopId: group.shopId,
+            snapshot: createChildSnapshot(
+              loaded,
+              assignments,
               driverId,
-              snapshot: createChildSnapshot(
-                loaded,
-                assignments,
-                driverId,
-                route.label ?? childRouteSlotName(targetChild),
-                loaded.currentVersion,
-                route.color ?? previousSnapshot.color ?? null,
-                route.sortOrder ?? previousSnapshot.sortOrder ?? routeIdx,
-                routeIdx
-              )
-            },
-            where: { id: targetChild.id }
+              route.label ?? childRouteSlotName(targetChild),
+              loaded.currentVersion,
+              route.color ?? previousSnapshot.color ?? null,
+              route.sortOrder ?? previousSnapshot.sortOrder ?? routeIdx,
+              routeIdx
+            ),
+            version: loaded.currentVersion
           });
           if (route.optimized !== undefined && targetChild.routePlanId !== null) {
             logIgnoredExistingRouteOptimizedPayload(group.id, targetChild.routePlanId, route.routeKey ?? null);
@@ -1222,39 +1292,27 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             where: { id: targetChild.routePlanId }
           });
         }
-        await tx.routeGroupingChildVersion.update({
-          data: { status: 'ARCHIVED', supersededAt: new Date() },
-          where: { id: targetChild.id }
-        });
-        const nextChild = await tx.routeGroupingChildVersion.create({
-          data: {
-            driverId,
-            groupingId: group.id,
-            groupingVersionId: currentGroupingVersion.id,
-            notificationStatus: targetChild.notificationStatus,
-            routePlanId: targetChild.routePlanId,
-            shopId: group.shopId,
-            snapshot: createChildSnapshot(
-              loaded,
-              assignments,
-              driverId,
-              route.label ?? childRouteSlotName(targetChild),
-              loaded.currentVersion,
-              route.color ?? previousSnapshot.color ?? null,
-              route.sortOrder ?? previousSnapshot.sortOrder ?? routeIdx,
-              routeIdx
-            ),
-            status: 'CURRENT',
-            supersededAt: null,
-            version: loaded.currentVersion
-          },
-          select: { id: true }
-        });
-        await rebindCurrentOrdersToRouteVersion(tx, {
+        await replaceCurrentRouteGroupingChildVersion(tx, {
+          currentChildId: targetChild.id,
+          driverId,
           groupingId: group.id,
-          nextRouteVersionId: nextChild.id,
+          groupingVersionId: currentGroupingVersion.id,
+          notificationStatus: targetChild.notificationStatus,
           orderIds: assignments.map((assignment) => assignment.orderId),
-          shopId: group.shopId
+          publishedAt: targetChild.publishedAt,
+          routePlanId: targetChild.routePlanId,
+          shopId: group.shopId,
+          snapshot: createChildSnapshot(
+            loaded,
+            assignments,
+            driverId,
+            route.label ?? childRouteSlotName(targetChild),
+            loaded.currentVersion,
+            route.color ?? previousSnapshot.color ?? null,
+            route.sortOrder ?? previousSnapshot.sortOrder ?? routeIdx,
+            routeIdx
+          ),
+          version: loaded.currentVersion
         });
         continue;
       }
@@ -1607,12 +1665,20 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           });
           await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: candidate.routePlanId } });
           await createChildRouteGeometryCache(tx, candidate.routePlanId, candidate);
-          await tx.routeGroupingChildVersion.update({
-            data: {
-              driverId: candidate.driverId,
-              snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion, candidate.color ?? existingChildColor, existingChildSnapshot.sortOrder ?? existingRouteIdx, existingRouteIdx)
-            },
-            where: { id: candidate.childId }
+          const currentChild = loaded.childVersions.find((child) => child.id === candidate.childId);
+          if (currentChild === undefined) throw new RouteGroupingConflictError();
+          await replaceCurrentRouteGroupingChildVersion(tx, {
+            currentChildId: currentChild.id,
+            driverId: candidate.driverId,
+            groupingId: loaded.id,
+            groupingVersionId: currentVersion.id,
+            notificationStatus: currentChild.notificationStatus,
+            orderIds: candidate.assignments.map((assignment) => assignment.orderId),
+            publishedAt: currentChild.publishedAt,
+            routePlanId: candidate.routePlanId,
+            shopId: loaded.shopId,
+            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion, candidate.color ?? existingChildColor, existingChildSnapshot.sortOrder ?? existingRouteIdx, existingRouteIdx),
+            version: loaded.currentVersion
           });
           continue;
         }
@@ -2492,20 +2558,27 @@ async function invalidateCustomStopChildRoutes(tx: Tx, groupingId: string, deliv
     await tx.routePlan.update({ data: { metrics: routeMetrics(assignments) }, where: { id: child.routePlanId } });
     await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
     const snapshot = readChildSnapshot(child.snapshot);
-    await tx.routeGroupingChildVersion.update({
-      data: {
-        snapshot: createChildSnapshot(
-          loaded,
-          assignments,
-          child.routePlan?.driverId ?? child.driverId,
-          childRouteSlotName(child),
-          loaded.currentVersion,
-          snapshot.color,
-          snapshot.sortOrder,
-          snapshot.routeIdx
-        )
-      },
-      where: { id: child.id }
+    await replaceCurrentRouteGroupingChildVersion(tx, {
+      currentChildId: child.id,
+      driverId: child.routePlan?.driverId ?? child.driverId,
+      groupingId: loaded.id,
+      groupingVersionId: child.groupingVersionId,
+      notificationStatus: child.notificationStatus,
+      orderIds: assignments.map((row) => row.orderId),
+      publishedAt: child.publishedAt,
+      routePlanId: child.routePlanId,
+      shopId: loaded.shopId,
+      snapshot: createChildSnapshot(
+        loaded,
+        assignments,
+        child.routePlan?.driverId ?? child.driverId,
+        childRouteSlotName(child),
+        loaded.currentVersion,
+        snapshot.color,
+        snapshot.sortOrder,
+        snapshot.routeIdx
+      ),
+      version: child.version
     });
   }
 }
@@ -3077,40 +3150,27 @@ async function appendGroupingOrdersToChildRoute(
     where: { id: targetRoutePlanId }
   });
   await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
-  await tx.routeGroupingChildVersion.update({
-    data: { status: 'ARCHIVED', supersededAt: new Date() },
-    where: { id: targetChild.id }
-  });
-  const nextChild = await tx.routeGroupingChildVersion.create({
-    data: {
-      driverId: targetChild.routePlan.driverId ?? targetChild.driverId,
-      groupingId: targetChild.groupingId,
-      groupingVersionId: targetChild.groupingVersionId,
-      notificationStatus: targetChild.notificationStatus,
-      publishedAt: targetChild.publishedAt,
-      routePlanId: targetRoutePlanId,
-      shopId: group.shopId,
-      snapshot: createChildSnapshot(
-        group,
-        assignments,
-        targetChild.routePlan.driverId ?? targetChild.driverId,
-        childRouteSlotName(targetChild),
-        group.currentVersion,
-        snapshot.color,
-        snapshot.sortOrder,
-        snapshot.routeIdx
-      ),
-      status: 'CURRENT',
-      supersededAt: null,
-      version: targetChild.version
-    },
-    select: { id: true }
-  });
-  await rebindCurrentOrdersToRouteVersion(tx, {
+  await replaceCurrentRouteGroupingChildVersion(tx, {
+    currentChildId: targetChild.id,
+    driverId: targetChild.routePlan.driverId ?? targetChild.driverId,
     groupingId: group.id,
-    nextRouteVersionId: nextChild.id,
+    groupingVersionId: targetChild.groupingVersionId,
+    notificationStatus: targetChild.notificationStatus,
     orderIds: assignments.map((assignment) => assignment.orderId),
-    shopId: group.shopId
+    publishedAt: targetChild.publishedAt,
+    routePlanId: targetRoutePlanId,
+    shopId: group.shopId,
+    snapshot: createChildSnapshot(
+      group,
+      assignments,
+      targetChild.routePlan.driverId ?? targetChild.driverId,
+      childRouteSlotName(targetChild),
+      group.currentVersion,
+      snapshot.color,
+      snapshot.sortOrder,
+      snapshot.routeIdx
+    ),
+    version: targetChild.version
   });
 }
 

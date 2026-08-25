@@ -92,6 +92,14 @@ export class PrismaDriverRouteCompletionReviewRepository {
           createdAt: reviewedAt
         }
       });
+      await transaction.driverRouteCompletionGateHistory.create({
+        data: {
+          createdAt: reviewedAt,
+          outcome: input.outcome,
+          retainedUntil,
+          source: input.source
+        }
+      });
       return { outcome: input.outcome, reviewedAt: reviewedAt.toISOString() };
     });
   }

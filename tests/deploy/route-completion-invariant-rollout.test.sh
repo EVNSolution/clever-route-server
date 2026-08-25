@@ -9,6 +9,9 @@ grep -Fq 'workflow_dispatch:' .github/workflows/route-completion-invariant-mode.
 grep -Fq 'source_sha:' .github/workflows/route-completion-invariant-mode.yml
 grep -Fq 'target_mode:' .github/workflows/route-completion-invariant-mode.yml
 grep -Fq 'evidence_artifact_id:' .github/workflows/route-completion-invariant-mode.yml
+grep -Fq 'alarm_receipt_artifact_id:' .github/workflows/route-completion-invariant-mode.yml
+grep -Fq 'Route completion alarm canary' .github/workflows/route-completion-alarm-canary.yml
+grep -Fq 'route-completion-alarm-canary-receipt' .github/workflows/route-completion-invariant-mode.yml
 grep -Fq 'Route completion invariant evidence' .github/workflows/route-completion-invariant-evidence.yml
 grep -Fq 'validate-route-completion-rollout-evidence.mjs' .github/workflows/route-completion-invariant-mode.yml
 grep -Fq 'verify-route-completion-alarm.sh' .github/workflows/route-completion-invariant-mode.yml
@@ -17,6 +20,8 @@ grep -Fq 'scripts/ssm-route-completion-invariant-mode.sh' .github/workflows/rout
 bash -n scripts/ssm-route-completion-invariant-mode.sh scripts/verify-route-completion-alarm.sh
 rendered="$(ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 \
   ROUTE_COMPLETION_EXPECTED_CURRENT_MODE=OBSERVE \
+  ROUTE_COMPLETION_EXPECTED_IMAGE_ID=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  ROUTE_COMPLETION_EXPECTED_IMAGE_REPO_DIGEST=ghcr.io/evn/runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
   ROUTE_COMPLETION_TARGET_MODE=GUARDED \
   scripts/ssm-route-completion-invariant-mode.sh --render-host-script)"
 case "$rendered" in
@@ -45,6 +50,7 @@ fs.writeFileSync(process.argv[2], JSON.stringify({
   currentMode: 'OBSERVE', generatedAt: new Date().toISOString(),
   gate: { consecutiveCleanReviewedDays: 7, falsePositiveCount: 0, minimumDailySampleCount: 1, recoveryCohortCount: 200, recoveryWithinFiveMinutesPercent: 99.5, unreviewedWouldRejectCount: 0 },
   legacyRetirementVerified: true, recoveryVerified: true,
+  runtime: { capabilityVersion: 1, imageId: `sha256:${'a'.repeat(64)}`, imageRepoDigest: `ghcr.io/evn/runtime@sha256:${'b'.repeat(64)}`, revision: '0123456789012345678901234567890123456789' },
   sourceSha: '0123456789012345678901234567890123456789'
 }));
 NODE
@@ -65,15 +71,33 @@ cat > "$tmp_dir/bin/aws" <<'AWS'
 #!/usr/bin/env bash
 case "$1 $2" in
   'cloudwatch describe-alarms')
-    if [[ "$*" == *ActionsEnabled* ]]; then echo True; else echo "$ROUTE_COMPLETION_ALARM_TOPIC_ARN"; fi ;;
+    if [[ "$*" == *observe-alarm* ]]; then metric=DriverRouteCompletionWouldReject; alarm=observe-alarm; else metric=DriverRouteCompletionRejected; alarm=reject-alarm; fi
+    printf '{"AlarmName":"%s","ActionsEnabled":true,"Namespace":"CLEVER/DriverEvents","MetricName":"%s","Statistic":"Sum","Period":300,"EvaluationPeriods":1,"DatapointsToAlarm":1,"Threshold":1,"ComparisonOperator":"GreaterThanOrEqualToThreshold","TreatMissingData":"notBreaching","AlarmActions":["%s"]}\n' "$alarm" "$metric" "$ROUTE_COMPLETION_ALARM_TOPIC_ARN" ;;
   'sns list-subscriptions-by-topic') echo "${MOCK_CONFIRMED_SUBSCRIPTIONS:-1}" ;;
   *) exit 2 ;;
 esac
 AWS
 chmod +x "$tmp_dir/bin/aws"
+node - "$tmp_dir/alarm-receipt.json" <<'NODE'
+const fs = require('node:fs'); const sha = '0123456789012345678901234567890123456789';
+fs.writeFileSync(process.argv[2], JSON.stringify({schemaVersion:1, sourceSha:sha, topicArn:'arn:aws:sns:ap-northeast-2:123:approved', generatedAt:new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z'), deliveries:[
+  {alarmName:'observe-alarm',metricName:'DriverRouteCompletionWouldReject',deliveryStatus:'DELIVERED',correlationToken:`${sha}:observe`,receivedAt:new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z')},
+  {alarmName:'reject-alarm',metricName:'DriverRouteCompletionRejected',deliveryStatus:'DELIVERED',correlationToken:`${sha}:reject`,receivedAt:new Date().toISOString().replace(/\.\d{3}Z$/u, 'Z')}
+]}));
+NODE
 PATH="$tmp_dir/bin:$PATH" ROUTE_COMPLETION_TARGET_MODE=GUARDED ROUTE_COMPLETION_OBSERVE_ALARM_NAME=observe-alarm ROUTE_COMPLETION_REJECT_ALARM_NAME=reject-alarm \
+  ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 ROUTE_COMPLETION_ALARM_RECEIPT_PATH="$tmp_dir/alarm-receipt.json" \
   ROUTE_COMPLETION_ALARM_TOPIC_ARN=arn:aws:sns:ap-northeast-2:123:approved scripts/verify-route-completion-alarm.sh >/dev/null
+node - "$tmp_dir/alarm-receipt.json" "$tmp_dir/wrong-sha-receipt.json" <<'NODE'
+const fs = require('node:fs'); const value = JSON.parse(fs.readFileSync(process.argv[2])); value.sourceSha = 'f'.repeat(40); fs.writeFileSync(process.argv[3], JSON.stringify(value));
+NODE
+if PATH="$tmp_dir/bin:$PATH" ROUTE_COMPLETION_TARGET_MODE=GUARDED ROUTE_COMPLETION_OBSERVE_ALARM_NAME=observe-alarm ROUTE_COMPLETION_REJECT_ALARM_NAME=reject-alarm \
+  ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 ROUTE_COMPLETION_ALARM_RECEIPT_PATH="$tmp_dir/wrong-sha-receipt.json" \
+  ROUTE_COMPLETION_ALARM_TOPIC_ARN=arn:aws:sns:ap-northeast-2:123:approved scripts/verify-route-completion-alarm.sh >/dev/null 2>&1; then
+  echo 'alarm receipt from another SHA must fail closed' >&2; exit 1
+fi
 if PATH="$tmp_dir/bin:$PATH" MOCK_CONFIRMED_SUBSCRIPTIONS=0 ROUTE_COMPLETION_TARGET_MODE=FULL ROUTE_COMPLETION_OBSERVE_ALARM_NAME=observe-alarm ROUTE_COMPLETION_REJECT_ALARM_NAME=reject-alarm \
+  ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 ROUTE_COMPLETION_ALARM_RECEIPT_PATH="$tmp_dir/alarm-receipt.json" \
   ROUTE_COMPLETION_ALARM_TOPIC_ARN=arn:aws:sns:ap-northeast-2:123:approved scripts/verify-route-completion-alarm.sh >/dev/null 2>&1; then
   echo 'unconfirmed SNS subscription must fail closed' >&2; exit 1
 fi

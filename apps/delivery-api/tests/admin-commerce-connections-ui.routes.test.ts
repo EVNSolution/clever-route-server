@@ -172,7 +172,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(authenticated.statusCode).toBe(200);
       expect(authenticated.json()).toMatchObject({
-        data: { runtimeHealth: { driverRouteCompletionInvariant: { mode: "GUARDED" } } },
+        data: { runtimeHealth: { driverRouteCompletionInvariant: { capabilityVersion: 1, mode: "GUARDED", supportedModes: ["OBSERVE", "GUARDED", "FULL"] } } },
         error: null
       });
     } finally {

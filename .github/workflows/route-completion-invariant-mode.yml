@@ -14,6 +14,9 @@ on:
       evidence_artifact_id:
         description: Artifact ID containing route-completion-rollout-evidence.json
         required: true
+      alarm_receipt_artifact_id:
+        description: Exact-SHA Route completion alarm canary receipt artifact ID
+        required: false
 
 permissions:
   actions: read
@@ -81,7 +84,32 @@ jobs:
           evidence_path="$(find evidence -type f -name route-completion-rollout-evidence.json)"
           current_mode="$(jq -er '.currentMode' "$evidence_path")"
           node scripts/validate-route-completion-rollout-evidence.mjs "$evidence_path" "$SOURCE_SHA" "$current_mode" "$TARGET_MODE"
-          echo "current_mode=$current_mode" >> "$GITHUB_OUTPUT"
+          {
+            echo "current_mode=$current_mode"
+            echo "image_id=$(jq -er '.runtime.imageId' "$evidence_path")"
+            echo "image_repo_digest=$(jq -er '.runtime.imageRepoDigest' "$evidence_path")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Verify alarm canary artifact provenance
+        if: inputs.target_mode != 'OBSERVE'
+        env:
+          ARTIFACT_ID: ${{ inputs.alarm_receipt_artifact_id }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          artifact="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID")"
+          test "$(jq -r '.expired' <<<"$artifact")" = false
+          test "$(jq -r '.name' <<<"$artifact")" = route-completion-alarm-canary-receipt
+          run_id="$(jq -r '.workflow_run.id' <<<"$artifact")"
+          test "$(jq -r '.workflow_run.head_sha' <<<"$artifact")" = "$SOURCE_SHA"
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id")"
+          test "$(jq -r '.conclusion' <<<"$run")" = success
+          test "$(jq -r '.event' <<<"$run")" = workflow_dispatch
+          test "$(jq -r '.path' <<<"$run")" = .github/workflows/route-completion-alarm-canary.yml
+          mkdir alarm-receipt
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > alarm-receipt.zip
+          unzip -q alarm-receipt.zip -d alarm-receipt
+          test "$(find alarm-receipt -type f -name route-completion-alarm-canary-receipt.json | wc -l | tr -d ' ')" = 1
       - name: Configure AWS credentials through OIDC
         uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
         with:
@@ -91,13 +119,18 @@ jobs:
         env:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
           ROUTE_COMPLETION_SOURCE_SHA: ${{ inputs.source_sha }}
+          ROUTE_COMPLETION_EXPECTED_IMAGE_ID: ${{ steps.evidence.outputs.image_id }}
+          ROUTE_COMPLETION_EXPECTED_IMAGE_REPO_DIGEST: ${{ steps.evidence.outputs.image_repo_digest }}
           ROUTE_COMPLETION_EXPECTED_CURRENT_MODE: ${{ steps.evidence.outputs.current_mode }}
           ROUTE_COMPLETION_TARGET_MODE: ${{ inputs.target_mode }}
           ROUTE_OPS_SSM_TAG_KEY: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_KEY || 'Service' }}
           ROUTE_OPS_SSM_TAG_VALUE: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_VALUE || 'clever-delivery-server' }}
         run: |
-          ROUTE_COMPLETION_OBSERVE_ALARM_NAME='${{ vars.ROUTE_COMPLETION_ALARM_NAME }}' \
-          ROUTE_COMPLETION_REJECT_ALARM_NAME='${{ vars.ROUTE_COMPLETION_REJECT_ALARM_NAME }}' \
-          ROUTE_COMPLETION_ALARM_TOPIC_ARN='${{ vars.ROUTE_COMPLETION_ALARM_TOPIC_ARN }}' \
-            scripts/verify-route-completion-alarm.sh
+          if [ '${{ inputs.target_mode }}' != OBSERVE ]; then
+            ROUTE_COMPLETION_OBSERVE_ALARM_NAME='${{ vars.ROUTE_COMPLETION_ALARM_NAME }}' \
+            ROUTE_COMPLETION_REJECT_ALARM_NAME='${{ vars.ROUTE_COMPLETION_REJECT_ALARM_NAME }}' \
+            ROUTE_COMPLETION_ALARM_TOPIC_ARN='${{ vars.ROUTE_COMPLETION_ALARM_TOPIC_ARN }}' \
+            ROUTE_COMPLETION_ALARM_RECEIPT_PATH="$(find alarm-receipt -type f -name route-completion-alarm-canary-receipt.json)" \
+              scripts/verify-route-completion-alarm.sh
+          fi
           scripts/ssm-route-completion-invariant-mode.sh

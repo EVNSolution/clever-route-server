@@ -2915,3 +2915,17 @@ model DriverRouteCompletionReviewHistory {
   @@index([retainedUntil])
   @@map("driver_route_completion_review_history")
 }
+
+/// PII-free rollout-gate ledger intentionally has no tenant or route foreign key so
+/// tenant erasure cannot hide a historical false-positive inside its retention window.
+model DriverRouteCompletionGateHistory {
+  id            String   @id @default(uuid()) @db.Uuid
+  outcome       String   @db.Text
+  source        String   @db.Text
+  retainedUntil DateTime @db.Timestamptz(6)
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([createdAt, outcome])
+  @@index([retainedUntil])
+  @@map("driver_route_completion_gate_history")
+}

@@ -10,6 +10,18 @@ export async function cleanupReviewedRouteCompletionEvidence(
   const batchSize = positiveInteger(options.batchSize, 1_000);
   const maxRows = positiveInteger(options.maxRows, 10_000);
   let deletedCount = 0;
+  const gateDeleted = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    WITH candidates AS (
+      SELECT "id" FROM "driver_route_completion_gate_history"
+      WHERE "retainedUntil" < ${now}
+      ORDER BY "retainedUntil" ASC, "id" ASC
+      LIMIT ${maxRows}
+      FOR UPDATE SKIP LOCKED
+    )
+    DELETE FROM "driver_route_completion_gate_history" target
+    USING candidates WHERE target."id" = candidates."id"
+    RETURNING target."id"
+  `);
   while (deletedCount < maxRows) {
     const take = Math.min(batchSize, maxRows - deletedCount);
     const deleted = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -27,7 +39,7 @@ export async function cleanupReviewedRouteCompletionEvidence(
       RETURNING target."id"
     `);
     deletedCount += deleted.length;
-    if (deleted.length < take) return { continuationRequired: false, deletedCount };
+    if (deleted.length < take) return { continuationRequired: gateDeleted.length === maxRows, deletedCount };
   }
   const remaining = await prisma.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
     SELECT EXISTS (
@@ -35,7 +47,7 @@ export async function cleanupReviewedRouteCompletionEvidence(
       WHERE "reviewedAt" IS NOT NULL AND "retainedUntil" < ${now}
     ) AS "exists"
   `);
-  return { continuationRequired: remaining[0]?.exists === true, deletedCount };
+  return { continuationRequired: gateDeleted.length === maxRows || remaining[0]?.exists === true, deletedCount };
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

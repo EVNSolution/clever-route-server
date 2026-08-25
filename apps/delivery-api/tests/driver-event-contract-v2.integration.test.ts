@@ -13,6 +13,7 @@ import {
   DriverEventReceiptScopeError,
   PrismaDriverEventReceiptRepository
 } from '../src/modules/driver/driver-event-receipt.repository.js';
+import { replaceCurrentRouteGroupingChildVersion } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import { PrismaDriverRouteCompletionReviewRepository } from '../src/modules/driver/driver-route-completion-review.repository.js';
 
@@ -181,6 +182,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.driverRouteCompletionReview.findUniqueOrThrow({ where: { id: guardedReview.id } }))
         .toMatchObject({ reviewOutcome: 'CONFIRMED_CORRECT' });
       expect(await prisma.driverRouteCompletionReviewHistory.count({ where: { reviewId: guardedReview.id, outcome: 'FALSE_POSITIVE' } })).toBe(1);
+      expect(await prisma.driverRouteCompletionGateHistory.count({ where: { outcome: 'FALSE_POSITIVE' } })).toBe(1);
 
       await prisma.$executeRawUnsafe(`CREATE FUNCTION reject_completion_review_for_fault_test() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'fault-injected completion review failure'; END $$`);
@@ -297,6 +299,29 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       await expect(receipts.lookup({ accountId: accountA, clientEventId: 'unknown-event', routePlanId }))
         .resolves.toMatchObject({ errorCode: null, status: 'UNKNOWN' });
 
+      const priorChild = await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: routeVersionId } });
+      const priorSnapshot = structuredClone(priorChild.snapshot);
+      const assignedOrder = await prisma.order.findFirstOrThrow({ where: { deliveryStops: { some: { id: '61000000-0000-4000-8000-000000000010' } } } });
+      const nextChildId = await prisma.$transaction((transaction) => replaceCurrentRouteGroupingChildVersion(transaction, {
+        currentChildId: priorChild.id,
+        driverId: priorChild.driverId,
+        groupingId: priorChild.groupingId,
+        groupingVersionId: priorChild.groupingVersionId,
+        notificationStatus: priorChild.notificationStatus,
+        orderIds: [assignedOrder.id],
+        publishedAt: priorChild.publishedAt,
+        routePlanId: priorChild.routePlanId,
+        shopId: priorChild.shopId,
+        snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010' }], immutableSuccessor: true },
+        version: priorChild.version
+      }));
+      expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: routeVersionId } }))
+        .toMatchObject({ snapshot: priorSnapshot, status: 'ARCHIVED' });
+      expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: nextChildId } }))
+        .toMatchObject({ status: 'CURRENT' });
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: assignedOrder.id } }))
+        .toMatchObject({ currentRouteVersionId: nextChildId });
+
       await prisma.driverEventAttempt.updateMany({
         data: { retainedUntil: new Date('2026-08-23T00:00:00.000Z') },
         where: { id: { in: [rejected.attemptId, unresolved.attemptId, first.attemptId] } }
@@ -317,9 +342,13 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       await prisma.driverRouteCompletionReview.update({
         data: { retainedUntil: new Date('2027-08-25T00:00:00.000Z') }, where: { id: guardedReview.id }
       });
+      await prisma.driverRouteCompletionReview.delete({ where: { id: guardedReview.id } });
+      expect(await prisma.driverRouteCompletionReviewHistory.count({ where: { reviewId: guardedReview.id } })).toBe(0);
+      expect(await prisma.driverRouteCompletionGateHistory.count({ where: { outcome: 'FALSE_POSITIVE' } })).toBe(1);
       await cleanupReviewedRouteCompletionEvidence(prisma, new Date('2027-08-26T00:00:00.000Z'));
       expect(await prisma.driverRouteCompletionReview.findUnique({ where: { id: guardedReview.id } })).toBeNull();
       expect(await prisma.driverRouteCompletionReviewHistory.count({ where: { reviewId: guardedReview.id } })).toBe(0);
+      expect(await prisma.driverRouteCompletionGateHistory.count()).toBe(0);
     } finally {
       await prisma.$disconnect();
     }

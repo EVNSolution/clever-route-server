@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import { buildApp } from '../src/app.js';
 import {
@@ -867,6 +868,14 @@ describe('Driver events route', () => {
     } finally {
       await app.close();
     }
+  });
+
+  test('keeps the HTTP rejection log outside the canonical invariant metric event', () => {
+    const source = readFileSync(new URL('../src/routes/driver-events.routes.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('if (error instanceof DriverRouteCompletionIncompleteError)');
+    const rejectionCatch = source.slice(start, source.indexOf('return reply.code(409)', start));
+    expect(rejectionCatch).toContain("event: 'driver_route_completion_invariant_http_response'");
+    expect(rejectionCatch).not.toContain("event: 'driver_route_completion_invariant',");
   });
 
   test('maps overlapping active route ownership to a deterministic conflict response', async () => {

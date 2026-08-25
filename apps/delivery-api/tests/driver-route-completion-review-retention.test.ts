@@ -4,6 +4,7 @@ import { cleanupReviewedRouteCompletionEvidence } from '../src/modules/driver/dr
 describe('driver route completion review retention', () => {
   test('deletes only expired reviewed evidence and leaves unreviewed cases open', async () => {
     const queryRaw = vi.fn()
+      .mockResolvedValueOnce([{ id: 'gate-id' }])
       .mockResolvedValueOnce([{ id: 'review-id' }])
       .mockResolvedValueOnce([]);
 
@@ -13,6 +14,7 @@ describe('driver route completion review retention', () => {
     const calls = queryRaw.mock.calls as unknown as Array<[{ strings: readonly string[] }]>;
     const sql = calls.map(([query]) => query.strings.join('?')).join('\n');
     expect(sql).toContain('"reviewedAt" IS NOT NULL AND "retainedUntil" <');
+    expect(sql).toContain('DELETE FROM "driver_route_completion_gate_history"');
     expect(sql).toContain('FOR UPDATE SKIP LOCKED');
     expect(sql).not.toContain('"reviewedAt" IS NULL');
   });

@@ -146,7 +146,11 @@ import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
 import type { AdminNotificationServiceApi } from "../modules/notifications/admin-notification.service.js";
 import type { PrismaRouteOperationalStateService } from "../modules/route-tracking/route-operational-state.service.js";
 import type { PrismaEmailRuntimeHealthService } from "../modules/customer-email/email-runtime-health.service.js";
-import type { DriverRouteCompletionInvariantMode } from "../modules/driver/driver-route-completion-invariant.js";
+import {
+  DRIVER_ROUTE_COMPLETION_INVARIANT_CAPABILITY_VERSION,
+  DRIVER_ROUTE_COMPLETION_INVARIANT_MODES,
+  type DriverRouteCompletionInvariantMode
+} from "../modules/driver/driver-route-completion-invariant.js";
 import {
   DRIVER_ROUTE_COMPLETION_REVIEW_OUTCOMES,
   DRIVER_ROUTE_COMPLETION_REVIEW_SOURCES,
@@ -802,7 +806,9 @@ export function registerAdminCommerceConnectionsUiRoutes(
         runtimeHealth: {
           ...await dependencies.runtimeHealthService.get({ shopDomain }),
           driverRouteCompletionInvariant: {
-            mode: dependencies.driverRouteCompletionInvariantMode ?? 'OBSERVE'
+            capabilityVersion: DRIVER_ROUTE_COMPLETION_INVARIANT_CAPABILITY_VERSION,
+            mode: dependencies.driverRouteCompletionInvariantMode ?? 'OBSERVE',
+            supportedModes: DRIVER_ROUTE_COMPLETION_INVARIANT_MODES
           }
         }
       });

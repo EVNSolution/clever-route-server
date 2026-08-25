@@ -68,14 +68,14 @@ run "${alarm_args[@]}"
 
 completion_alarm_args=(aws cloudwatch put-metric-alarm --region "$AWS_REGION" --alarm-name "$COMPLETION_ALARM_NAME"
   --namespace "$METRIC_NAMESPACE" --metric-name DriverRouteCompletionWouldReject --statistic Sum --period 300
-  --evaluation-periods 1 --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold
+  --evaluation-periods 1 --datapoints-to-alarm 1 --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold
   --treat-missing-data notBreaching)
 if [[ -n "$ALARM_SNS_TOPIC_ARN" ]]; then completion_alarm_args+=(--alarm-actions "$ALARM_SNS_TOPIC_ARN"); fi
 run "${completion_alarm_args[@]}"
 
 completion_reject_alarm_args=(aws cloudwatch put-metric-alarm --region "$AWS_REGION" --alarm-name "$COMPLETION_REJECT_ALARM_NAME"
   --namespace "$METRIC_NAMESPACE" --metric-name DriverRouteCompletionRejected --statistic Sum --period 300
-  --evaluation-periods 1 --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold
+  --evaluation-periods 1 --datapoints-to-alarm 1 --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold
   --treat-missing-data notBreaching)
 if [[ -n "$ALARM_SNS_TOPIC_ARN" ]]; then completion_reject_alarm_args+=(--alarm-actions "$ALARM_SNS_TOPIC_ARN"); fi
 run "${completion_reject_alarm_args[@]}"

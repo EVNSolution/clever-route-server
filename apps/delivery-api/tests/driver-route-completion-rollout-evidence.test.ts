@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { consecutiveCleanReviewedDays } from '../src/modules/driver/driver-route-completion-rollout-evidence.js';
+import { consecutiveCleanReviewedDays, meetsRecoveryThreshold } from '../src/modules/driver/driver-route-completion-rollout-evidence.js';
 
 const now = new Date('2026-08-25T12:00:00.000Z');
 
@@ -23,6 +23,11 @@ describe('route completion rollout review continuity', () => {
     expect(consecutiveCleanReviewedDays([
       day('2026-08-24'), day('2026-08-23'), day('2026-08-22')
     ], now)).toBe(3);
+  });
+
+  test('uses the raw recovery fraction at the 99.5 percent gate', () => {
+    expect(meetsRecoveryThreshold(199, 200)).toBe(true);
+    expect(meetsRecoveryThreshold(198, 199)).toBe(false);
   });
 });
 
