@@ -318,6 +318,9 @@ function mapRoutePlan(
   }
 
   const currentRouteVersion = routePlan.routeGroupingChildVersions?.[0];
+  if (currentRouteVersion === undefined || routePlan.assignmentGeneration === undefined) {
+    return { status: 'NOT_FOUND' };
+  }
 
   return {
     driverContext: {
@@ -327,13 +330,9 @@ function mapRoutePlan(
     },
     status: 'INVITED',
     routeAccess: {
-      ...(currentRouteVersion === undefined || routePlan.assignmentGeneration === undefined
-        ? {}
-        : {
-            assignmentGeneration: routePlan.assignmentGeneration.toString(),
-            driverContractVersion: 2 as const,
-            expectedRouteVersionId: currentRouteVersion.id
-          }),
+      assignmentGeneration: routePlan.assignmentGeneration.toString(),
+      driverContractVersion: 2,
+      expectedRouteVersionId: currentRouteVersion.id,
       nextState: 'consent_required',
       routeContext: input.routeContext,
       routePlanId: routePlan.id
