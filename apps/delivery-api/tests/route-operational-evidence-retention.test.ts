@@ -68,6 +68,8 @@ describe('route operational evidence retention', () => {
     await expect(cleanupRouteOperationalEvidence(prisma as never, now)).resolves.toEqual({
       alertCycles: 3,
       alertCyclesContinuationRequired: false,
+      emailReconciliationAudits: 1,
+      emailReconciliationAuditsContinuationRequired: false,
       locationEvents: 6,
       locationContinuationRequired: false,
       notificationAttempts: 4,

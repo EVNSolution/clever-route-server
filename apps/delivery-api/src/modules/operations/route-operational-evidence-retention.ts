@@ -38,6 +38,8 @@ export async function cleanupRouteOperationalEvidence(
 ): Promise<{
   alertCycles: number;
   alertCyclesContinuationRequired: boolean;
+  emailReconciliationAudits: number;
+  emailReconciliationAuditsContinuationRequired: boolean;
   locationEvents: number;
   notificationAttempts: number;
   notificationAttemptsContinuationRequired: boolean;
@@ -174,9 +176,16 @@ export async function cleanupRouteOperationalEvidence(
     deadlineAt,
     maxRows: options.terminalMaxRows ?? TERMINAL_EVIDENCE_MAX_ROWS
   });
+  const emailReconciliationAudits = await cleanupEmailReconciliationAudits(prisma, now, {
+    batchSize: options.terminalBatchSize ?? TERMINAL_EVIDENCE_BATCH_SIZE,
+    deadlineAt,
+    maxRows: options.terminalMaxRows ?? TERMINAL_EVIDENCE_MAX_ROWS
+  });
   return {
     alertCycles: terminal.alertCycles,
     alertCyclesContinuationRequired: terminal.alertCyclesContinuationRequired,
+    emailReconciliationAudits: emailReconciliationAudits.deleted,
+    emailReconciliationAuditsContinuationRequired: emailReconciliationAudits.continuationRequired,
     ...locationEvidence,
     notificationAttempts: terminal.notificationAttempts,
     notificationAttemptsContinuationRequired: terminal.notificationAttemptsContinuationRequired,
@@ -186,6 +195,40 @@ export async function cleanupRouteOperationalEvidence(
     syncHeartbeats,
     syncSessions
   };
+}
+
+async function cleanupEmailReconciliationAudits(
+  prisma: OperationalEvidencePrisma,
+  now: Date,
+  options: { batchSize: number; deadlineAt: number; maxRows: number }
+): Promise<{ continuationRequired: boolean; deleted: number }> {
+  let deleted = 0;
+  while (deleted < options.maxRows && Date.now() < options.deadlineAt) {
+    const take = Math.min(options.batchSize, options.maxRows - deleted);
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      WITH candidates AS (
+        SELECT "id"
+        FROM "customer_email_operator_reconciliations"
+        WHERE "retainedUntil" < ${now}
+        ORDER BY "retainedUntil" ASC, "id" ASC
+        LIMIT ${take}
+        FOR UPDATE SKIP LOCKED
+      )
+      DELETE FROM "customer_email_operator_reconciliations" target
+      USING candidates
+      WHERE target."id" = candidates."id"
+      RETURNING target."id"
+    `);
+    deleted += rows.length;
+    if (rows.length < take) break;
+  }
+  const remaining = await prisma.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
+    SELECT EXISTS (
+      SELECT 1 FROM "customer_email_operator_reconciliations"
+      WHERE "retainedUntil" < ${now}
+    ) AS "exists"
+  `);
+  return { continuationRequired: remaining[0]?.exists === true, deleted };
 }
 
 async function reconcileSentNotificationAttempts(

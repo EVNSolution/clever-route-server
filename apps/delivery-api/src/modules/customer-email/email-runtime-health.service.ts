@@ -64,12 +64,20 @@ export class PrismaEmailRuntimeHealthService {
       this.prisma.customerRouteNotificationFact.count({ where: { ...scope, attemptCount: 0, status: 'QUEUED' } }),
       this.prisma.customerRouteNotificationFact.count({ where: { ...scope, status: 'PROCESSING' } }),
       this.prisma.customerRouteNotificationFact.count({ where: { ...scope, attemptCount: { gt: 0 }, status: 'QUEUED' } }),
-      this.prisma.customerRouteNotificationFact.count({ where: { ...scope, status: 'DEAD' } }),
+      this.prisma.customerRouteNotificationFact.count({ where: {
+        ...scope,
+        OR: [{ errorCode: null }, { errorCode: { not: 'OPERATOR_DO_NOT_SEND' } }],
+        status: 'DEAD'
+      } }),
       this.prisma.customerRouteNotificationFact.findFirst({ orderBy: { occurredAt: 'asc' }, select: { occurredAt: true }, where: { ...scope, attemptCount: 0, status: 'QUEUED' } }),
       this.prisma.customerRouteNotificationFact.findFirst({ orderBy: { occurredAt: 'asc' }, select: { occurredAt: true }, where: { ...scope, attemptCount: { gt: 0 }, status: 'QUEUED' } }),
       this.prisma.customerRouteNotificationFact.findFirst({ orderBy: { updatedAt: 'asc' }, select: { updatedAt: true }, where: { ...scope, status: 'PROCESSING' } }),
       this.prisma.customerRouteNotificationFact.findFirst({ orderBy: { sentAt: 'desc' }, select: { sentAt: true }, where: { ...scope, sentAt: { not: null }, status: 'SENT' } }),
-      this.prisma.customerRouteNotificationFact.findFirst({ orderBy: { updatedAt: 'desc' }, select: { errorCode: true, updatedAt: true }, where: { ...scope, errorCode: { not: null } } })
+      this.prisma.customerRouteNotificationFact.findFirst({
+        orderBy: { updatedAt: 'desc' },
+        select: { errorCode: true, updatedAt: true },
+        where: { ...scope, errorCode: { not: null }, NOT: { errorCode: 'OPERATOR_DO_NOT_SEND' } }
+      })
     ]);
     const configured = this.config.automaticSenderConfigured && this.config.automaticWorkerEnabled;
     const unresolvedLastError = lastError !== null

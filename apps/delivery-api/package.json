@@ -25,6 +25,7 @@
     "driver:event-contract:verify": "tsx src/scripts/verify-driver-event-contract.ts",
     "driver:event-attempts:cleanup": "node dist/scripts/cleanup-driver-event-attempts.js",
     "driver:route-completion-invariant:report": "tsx src/scripts/report-driver-route-completion-invariant.ts",
+    "customer-email:reconcile": "node dist/scripts/reconcile-customer-email.js",
     "driver:proof-media:evidence:seed": "tsx src/scripts/proof-media-evidence-seed.ts",
     "driver:proof-media:evidence:verify": "tsx src/scripts/proof-media-evidence-verify.ts",
     "dsv:dispatch-demo:seed": "tsx src/scripts/seed-dsv-dispatch-demo.ts",

@@ -12,6 +12,7 @@ const expected = {
   'driver:event-attempts:cleanup': 'node dist/scripts/cleanup-driver-event-attempts.js',
   'shopify:webhook-events:cleanup': 'node dist/scripts/cleanup-shopify-webhook-events.js',
   'driver:proof-media:cleanup': 'node dist/scripts/cleanup-driver-proof-media.js',
+  'customer-email:reconcile': 'node dist/scripts/reconcile-customer-email.js',
 };
 for (const [name, command] of Object.entries(expected)) {
   if (packageJson.scripts?.[name] !== command) {
@@ -24,7 +25,8 @@ grep -Fq 'npm --prefix apps/delivery-api prune --omit=dev' apps/delivery-api/Doc
 for script in \
   cleanup-driver-event-attempts.js \
   cleanup-shopify-webhook-events.js \
-  cleanup-driver-proof-media.js
+  cleanup-driver-proof-media.js \
+  reconcile-customer-email.js
 do
   grep -Fq "test -f apps/delivery-api/dist/scripts/${script}" apps/delivery-api/Dockerfile
 done

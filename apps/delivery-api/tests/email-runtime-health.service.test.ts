@@ -158,7 +158,11 @@ describe('email runtime health', () => {
     }));
     expect(prisma.customerRouteNotificationFact.count).toHaveBeenCalledTimes(4);
     expect(prisma.customerRouteNotificationFact.count).toHaveBeenNthCalledWith(1, { where: { attemptCount: 0, shopId: 'shop-id', status: 'QUEUED' } });
-    expect(prisma.customerRouteNotificationFact.count).toHaveBeenNthCalledWith(4, { where: { shopId: 'shop-id', status: 'DEAD' } });
+    expect(prisma.customerRouteNotificationFact.count).toHaveBeenNthCalledWith(4, { where: {
+      OR: [{ errorCode: null }, { errorCode: { not: 'OPERATOR_DO_NOT_SEND' } }],
+      shopId: 'shop-id',
+      status: 'DEAD'
+    } });
   });
 
   test('never reports a disabled automatic worker healthy when manual Brevo is configured', async () => {

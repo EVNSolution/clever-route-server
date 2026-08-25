@@ -332,6 +332,7 @@ WITH scope_counts AS (
     ) AS "overdueRetryWait",
     COUNT(fact.id) FILTER (
       WHERE fact.status = 'DEAD'
+        AND fact."errorCode" IS DISTINCT FROM 'OPERATOR_DO_NOT_SEND'
     ) AS "deadLetter"
   FROM shops AS s
   LEFT JOIN customer_route_notification_facts AS fact ON fact."shopId" = s.id

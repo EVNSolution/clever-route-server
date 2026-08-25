@@ -21,6 +21,9 @@ describe('package scripts', () => {
     expect(packageJson.scripts?.['shopify:webhook-events:cleanup']).toBe(
       'node dist/scripts/cleanup-shopify-webhook-events.js'
     );
+    expect(packageJson.scripts?.['customer-email:reconcile']).toBe(
+      'node dist/scripts/reconcile-customer-email.js'
+    );
     expect(packageJson.scripts?.['driver:proof-media:evidence:seed']).toBe('tsx src/scripts/proof-media-evidence-seed.ts');
     expect(packageJson.scripts?.['woocommerce:connection:bootstrap']).toBe(
       'tsx src/scripts/bootstrap-woocommerce-connection.ts'

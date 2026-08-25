@@ -1,7 +1,65 @@
 import { spawnSync } from 'node:child_process';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
+
+const cleanupMocks = vi.hoisted(() => ({
+  cleanupOperational: vi.fn(),
+  cleanupResolvedAttempts: vi.fn(),
+  cleanupRouteCompletion: vi.fn(),
+  disconnect: vi.fn()
+}));
+
+vi.mock('@prisma/client', () => ({
+  PrismaClient: class {
+    $disconnect = cleanupMocks.disconnect;
+  }
+}));
+
+vi.mock('../src/modules/driver/driver-event-attempt-retention.js', () => ({
+  cleanupResolvedDriverEventAttempts: cleanupMocks.cleanupResolvedAttempts,
+  parseRetentionDeadline: vi.fn(() => undefined)
+}));
+
+vi.mock('../src/modules/driver/driver-route-completion-review-retention.js', () => ({
+  cleanupReviewedRouteCompletionEvidence: cleanupMocks.cleanupRouteCompletion
+}));
+
+vi.mock('../src/modules/operations/route-operational-evidence-retention.js', () => ({
+  cleanupRouteOperationalEvidence: cleanupMocks.cleanupOperational
+}));
 
 describe('driver event attempt retention script', () => {
+  test('requests immediate continuation when email reconciliation audit cleanup has more work', async () => {
+    cleanupMocks.cleanupResolvedAttempts.mockResolvedValue({ continuationRequired: false, deletedCount: 0 });
+    cleanupMocks.cleanupRouteCompletion.mockResolvedValue({ continuationRequired: false, deletedCount: 0 });
+    cleanupMocks.cleanupOperational.mockResolvedValue({
+      alertCycles: 0,
+      alertCyclesContinuationRequired: false,
+      emailReconciliationAudits: 10_000,
+      emailReconciliationAuditsContinuationRequired: true,
+      locationContinuationRequired: false,
+      locationEvents: 0,
+      notificationAttemptReconciliationContinuationRequired: false,
+      notificationAttempts: 0,
+      notificationAttemptsContinuationRequired: false,
+      notificationAttemptsReconciled: 0,
+      routeTrackingGeometries: 0,
+      syncContinuationRequired: false,
+      syncHeartbeats: 0,
+      syncSessions: 0
+    });
+    const previousExitCode = process.exitCode;
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      process.exitCode = undefined;
+      await import('../src/scripts/cleanup-driver-event-attempts.js');
+      expect(process.exitCode).toBe(75);
+      expect(cleanupMocks.disconnect).toHaveBeenCalledOnce();
+    } finally {
+      stdout.mockRestore();
+      process.exitCode = previousExitCode;
+    }
+  });
+
   test('fails with stable redacted telemetry when the database is unavailable', () => {
     const hostileEmail = ['retention.customer', 'invalid.test'].join('@');
     const hostileToken = ['token', 'super-secret-value'].join('=');

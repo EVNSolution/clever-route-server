@@ -23,6 +23,7 @@ type CustomerDeliveryNotificationOutboxPrismaClient = Pick<
 >;
 
 const claimableWhere = (now: Date): Prisma.CustomerRouteNotificationFactWhereInput => ({
+  reconciliationTombstones: { none: { disposition: 'DO_NOT_SEND' } },
   OR: [
     {
       nextAttemptAt: { lte: now },
