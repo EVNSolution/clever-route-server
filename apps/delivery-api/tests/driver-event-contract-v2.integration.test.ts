@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { describe, expect, test } from 'vitest';
 import { PrismaClient } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { cleanupResolvedDriverEventAttempts } from '../src/modules/driver/driver-event-attempt-retention.js';
 import { cleanupReviewedRouteCompletionEvidence } from '../src/modules/driver/driver-route-completion-review-retention.js';
 import {
@@ -595,7 +596,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         publishedAt: priorChild.publishedAt,
         routePlanId: priorChild.routePlanId,
         shopId: priorChild.shopId,
-        snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010' }], immutableSuccessor: true },
+        snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010', orderId: assignedOrder.id }], immutableSuccessor: true },
         version: priorChild.version
       }));
       expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: routeVersionId } }))
@@ -652,6 +653,29 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         shopId: unresolvedMembership.shopId,
         sourceSequence: unresolvedMembership.sourceSequence
       } });
+      await prisma.routeGroupingChildVersion.update({
+        data: { snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010', orderId: addedDraftOrder.id }] } },
+        where: { id: savedDraftChild.id }
+      });
+      await expect(routeGroupingService.createCustomStop({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
+        stopName: 'Must roll back tuple mismatch', targetRoutePlanId: routePlanId
+      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      expect(await prisma.order.count({ where: { name: 'Must roll back tuple mismatch', shopId } })).toBe(0);
+      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      })).id).toBe(savedDraftChild.id);
+      await prisma.routeGroupingChildVersion.update({
+        data: { snapshot: { stops: { deliveryStopId: 'not-an-array' } } }, where: { id: savedDraftChild.id }
+      });
+      await expect(routeGroupingService.createCustomStop({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
+        stopName: 'Must roll back malformed snapshot', targetRoutePlanId: routePlanId
+      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      expect(await prisma.order.count({ where: { name: 'Must roll back malformed snapshot', shopId } })).toBe(0);
+      await prisma.routeGroupingChildVersion.update({
+        data: { snapshot: savedDraftChild.snapshot as Prisma.InputJsonValue }, where: { id: savedDraftChild.id }
+      });
 
       const publicDraft = await routeGroupingService.createCustomStop({
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
@@ -722,12 +746,16 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.order.findUniqueOrThrow({ where: { id: publicDraftOrder.id } }))
         .toMatchObject({ currentRouteVersionId: publicSavedChild.id });
 
+      const optimizedRouteEndModes: string[] = [];
+      const geometryRouteEndModes: string[] = [];
       const reOptimizationService = new PrismaRouteGroupingService(
         prisma,
         new FakeDriverPushProvider(),
         undefined,
         {
-          optimizeStopOrder: ({ detail }) => Promise.resolve({
+          optimizeStopOrder: ({ detail }) => {
+            optimizedRouteEndModes.push(detail.routePlan.routeEndMode);
+            return Promise.resolve({
             missingCoordinateStops: 0,
             source: 'vroom',
             stops: [...detail.stops].reverse().map((stop, index) => ({
@@ -735,14 +763,18 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
               sequence: index + 1,
               shopifyOrderGid: stop.shopifyOrderGid
             }))
-          })
+            });
+          }
         },
         {
-          buildRoute: () => Promise.resolve({
+          buildRoute: (detail) => {
+            geometryRouteEndModes.push(detail.routePlan.routeEndMode);
+            return Promise.resolve({
             routeGeometry: { coordinates: [[-80.49, 43.45], [-80.48, 43.46]], type: 'LineString' },
             routeMetrics: { distanceMeters: 1, durationSeconds: 1 },
             routeStopPoints: []
-          })
+            });
+          }
         }
       );
       await expect(reOptimizationService.reOptimizeRoutes({
@@ -770,7 +802,8 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
           [routePlanId, 'Concurrent authoritative name', JSON.stringify({
             departureTime: '08:30',
             scheduledStartAt: '2026-08-24T12:30:00.000Z',
-            scheduledStartTimeZone: 'America/Toronto'
+            scheduledStartTimeZone: 'America/Toronto',
+            routeEndMode: 'END_AT_LAST_STOP'
           })]
         );
         const concurrentAssignment = routePlanRepository.assignRoutePlanDriver({
@@ -781,11 +814,14 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         const reOptimization = reOptimizationService.reOptimizeRoutes({
           actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid'
         }).finally(() => { reOptimizationSettled = true; });
+        const reOptimizationRejection = expect(reOptimization).rejects.toMatchObject({
+          code: 'ROUTE_GROUPING_STALE_WRITE'
+        });
         await new Promise((resolve) => setTimeout(resolve, 75));
         expect(reOptimizationSettled).toBe(false);
         await reOptimizationGate.query('COMMIT');
         await expect(concurrentAssignment).resolves.toMatchObject({ routePlan: { driverId: driverA } });
-        await expect(reOptimization).resolves.not.toBeNull();
+        await reOptimizationRejection;
       } finally {
         await reOptimizationGate.query('ROLLBACK').catch(() => undefined);
         await reOptimizationGate.end();
@@ -795,17 +831,29 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         constraints: {
           departureTime: '08:30',
           scheduledStartAt: '2026-08-24T12:30:00.000Z',
-          scheduledStartTimeZone: 'America/Toronto'
+          scheduledStartTimeZone: 'America/Toronto',
+          routeEndMode: 'END_AT_LAST_STOP'
         },
         driverId: driverA,
         name: 'Concurrent authoritative name',
         status: 'READY'
       });
+      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      })).id).toBe(publicSavedChild.id);
+      await expect(reOptimizationService.reOptimizeRoutes({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid'
+      })).resolves.not.toBeNull();
       const reOptimizedChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
         where: { routePlanId, status: 'CURRENT', supersededAt: null }
       });
       expect(reOptimizedChild).toMatchObject({ driverId: driverA });
       expect(reOptimizedChild.snapshot).toMatchObject({ name: 'Concurrent authoritative name' });
+      expect(optimizedRouteEndModes.at(-1)).toBe('END_AT_LAST_STOP');
+      expect(geometryRouteEndModes.at(-1)).toBe('END_AT_LAST_STOP');
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({
+        constraints: { routeEndMode: 'END_AT_LAST_STOP', scheduledStartAt: '2026-08-24T12:30:00.000Z' }
+      });
 
       for (const status of ['COMPLETED', 'CANCELLED'] as const) {
         await prisma.routePlan.update({ data: { status }, where: { id: routePlanId } });
@@ -851,7 +899,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
     } finally {
       await prisma.$disconnect();
     }
-  });
+  }, 15_000);
 });
 
 function admissionInput(input: { clientEventId: string; driverId: string; requestId: string; routePlanId: string; shopId: string }) {

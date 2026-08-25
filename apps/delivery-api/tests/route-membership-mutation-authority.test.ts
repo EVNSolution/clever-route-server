@@ -137,6 +137,8 @@ describe('route membership mutation authority', () => {
     expect(groupingOrders.indexOf('assertLockedRoutePlanSuccessorPolicy({')).toBeLessThan(groupingOrders.indexOf('routeGroupingOrder.deleteMany('));
     const assignmentAuthority = source.slice(source.indexOf('function currentChildAssignments('), source.indexOf('async function appendGroupingOrdersToChildRoute('));
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot could not be resolved'])");
+    expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot is malformed'])");
+    expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot tuple does not match grouping authority'])");
     expect(assignmentAuthority).not.toContain('.filter((assignment)');
   });
 
