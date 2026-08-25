@@ -21,7 +21,7 @@ const reviewedMutationInventory = [
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.updateMany:2',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.create:1',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.createMany:4',
-  'modules/route-grouping/route-grouping.service.ts:routePlanStop.deleteMany:5',
+  'modules/route-grouping/route-grouping.service.ts:routePlanStop.deleteMany:4',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:2',
   'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.updateMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.createMany:4',
@@ -78,45 +78,54 @@ describe('route membership mutation authority', () => {
     const source = readFileSync(join(sourceRoot, 'modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const guardedBodies: Array<[string, string]> = [
       [source.slice(source.indexOf('async deleteGrouping('), source.indexOf('async saveDraft(')), 'routePlanStop.deleteMany('],
-      [source.slice(source.indexOf('async saveDraft('), source.indexOf('async saveDraftInTransaction(')), 'routePlanStop.deleteMany('],
       [source.slice(source.indexOf('async function archiveCurrentChildren('), source.indexOf('function assertNoInProgressCurrentChildren(')), 'routePlanStop.deleteMany(']
     ];
     for (const [body, mutation] of guardedBodies) {
-      expect(body).toContain('lockRoutePlanAssignment(');
-      expect(body.indexOf('lockRoutePlanAssignment(')).toBeLessThan(body.indexOf(mutation));
+      expect(body).toContain('lockReadyRoutePlanMembership(');
+      expect(body.indexOf('lockReadyRoutePlanMembership(')).toBeLessThan(body.indexOf(mutation));
     }
     const lock = source.slice(source.indexOf('async function lockRoutePlanMembership('), source.indexOf('function normalizeDraftRoutes('));
-    expect(lock).toContain('SELECT "driverId", "status"');
-    expect(lock).toContain('FOR UPDATE');
-    expect(lock).toContain("routePlan.status === 'IN_PROGRESS'");
+    expect(lock).toContain('currentRouteVersionId');
+    expect(lock).toContain('route_plan."constraints"');
+    expect(lock).toContain('route_plan."name"');
+    expect(lock).toContain('route_plan."updatedAt"');
+    expect(lock).toContain('route_plan."vehicleId"');
+    expect(lock).toContain('FOR UPDATE OF route_plan');
+    expect(lock).toContain("routePlan.status !== 'READY'");
     const transactionalDraft = source.slice(source.indexOf('async saveDraftInTransaction('), source.indexOf('async publishGrouping('));
     expect(transactionalDraft).toContain('await lockRoutePlanMembership(');
     expect(transactionalDraft.indexOf('await lockRoutePlanMembership('))
       .toBeLessThan(transactionalDraft.indexOf('syncRoutePlanStopsPreservingRows('));
-    expect(transactionalDraft).toContain("lockedRoutePlan?.status === 'IN_PROGRESS'");
-    expect(transactionalDraft).toContain("lockedRoutePlan.status !== 'READY' && lockedRoutePlan.status !== 'IN_PROGRESS'");
-    expect(transactionalDraft).toContain("throw new RouteGroupingValidationError(['in-progress route drafts may only append orders'])");
+    expect(transactionalDraft).toContain('assertLockedRoutePlanChildAuthority(lockedRoutePlan, targetChild.id, route.expectedRoutePlanUpdatedAt)');
+    expect(transactionalDraft).toContain('assertLockedRoutePlanSuccessorPolicy({');
+    expect(transactionalDraft).toContain('lockedRoutePlan?.constraints ?? targetChild.routePlan?.constraints');
   });
 
-  test('serializes every successor snapshot writer with a post-lock status decision', () => {
+  test('inventories every immutable successor caller and pins its lock policy', () => {
     const source = readFileSync(join(sourceRoot, 'modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    const deleteCustomStop = source.slice(
-      source.indexOf('async deleteCustomStop('),
-      source.indexOf('async previewOptimization(')
-    );
-    const appendOrders = source.slice(
-      source.indexOf('async function appendGroupingOrdersToChildRoute('),
-      source.indexOf('async function rewriteRoutePlanStops(')
-    );
-
-    expect(deleteCustomStop).toContain('await lockRoutePlanMembership(');
-    expect(deleteCustomStop.indexOf('await lockRoutePlanMembership('))
-      .toBeLessThan(deleteCustomStop.indexOf('syncRoutePlanStopsPreservingRows('));
-    expect(deleteCustomStop).toContain("lockedRoutePlan.status !== 'READY'");
-    expect(appendOrders).toContain('await lockRoutePlanMembership(');
-    expect(appendOrders.indexOf('await lockRoutePlanMembership('))
-      .toBeLessThan(appendOrders.indexOf('syncRoutePlanStopsPreservingRows('));
-    expect(appendOrders).toContain("lockedRoutePlan.status !== 'READY' && lockedRoutePlan.status !== 'IN_PROGRESS'");
+    expect(callSiteInventory(source, 'replaceCurrentRouteGroupingChildVersion')).toEqual([
+      'PrismaRouteGroupingService.deleteCustomStop',
+      'PrismaRouteGroupingService.reOptimizeRoutes',
+      'PrismaRouteGroupingService.saveDraft',
+      'PrismaRouteGroupingService.saveDraftInTransaction',
+      'appendGroupingOrdersToChildRoute',
+      'invalidateCustomStopChildRoutes'
+    ]);
+    const policies: Array<[string, string, string]> = [
+      ['async deleteCustomStop(', 'async previewOptimization(', 'lockReadyRoutePlanMembership('],
+      ['async saveDraft(', 'async saveDraftInTransaction(', 'assertLockedRoutePlanSuccessorPolicy({'],
+      ['async saveDraftInTransaction(', 'async publishGrouping(', 'assertLockedRoutePlanSuccessorPolicy({'],
+      ['async reOptimizeRoutes(', 'private async prepareDraftRouteOptimizations(', 'assertLockedRoutePlanSuccessorPolicy({'],
+      ['async function invalidateCustomStopChildRoutes(', 'function groupingInclude(', 'lockReadyRoutePlanMembership('],
+      ['async function appendGroupingOrdersToChildRoute(', 'async function rewriteRoutePlanStops(', 'assertLockedRoutePlanChildAuthority(lockedRoutePlan, targetChild.id)']
+    ];
+    for (const [start, end, policy] of policies) {
+      const body = source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+      expect(body).toContain(policy);
+      expect(body.indexOf(policy)).toBeLessThan(body.indexOf('replaceCurrentRouteGroupingChildVersion(tx, {'));
+    }
+    const publicDraft = source.slice(source.indexOf('async saveDraft('), source.indexOf('async saveDraftInTransaction('));
+    expect(publicDraft).toContain("draftOptimization !== undefined && input.mode !== 'MANUAL_ORDER'");
   });
 
   test('locks every completion contract before reading its immutable snapshot', () => {
@@ -182,4 +191,24 @@ function mutationInventory(models: string[], requireAssignmentPointer = false): 
     visit(sourceFile);
     return [...counts].map(([operation, count]) => `${relative(sourceRoot, file)}:${operation}:${count}`);
   }).sort();
+}
+
+function callSiteInventory(source: string, calleeName: string): string[] {
+  const sourceFile = ts.createSourceFile('route-grouping.service.ts', source, ts.ScriptTarget.Latest, true);
+  const callers = new Set<string>();
+  const visit = (node: ts.Node, scope: string | null): void => {
+    let nextScope = scope;
+    if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
+      nextScope = `PrismaRouteGroupingService.${node.name.text}`;
+    } else if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
+      nextScope = node.name.text;
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === calleeName) {
+      if (nextScope === null) throw new Error(`Unscoped ${calleeName} call`);
+      callers.add(nextScope);
+    }
+    node.forEachChild((child) => visit(child, nextScope));
+  };
+  visit(sourceFile, null);
+  return [...callers].sort();
 }
