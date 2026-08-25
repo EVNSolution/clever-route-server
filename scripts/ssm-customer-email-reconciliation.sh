@@ -42,16 +42,20 @@ esac
 if [ "$SMOKE_COMPILED_CLI" = true ]; then
   compiled_cli="$(cd "$(dirname "$0")/.." && pwd)/apps/delivery-api/dist/scripts/reconcile-customer-email.js"
   [ -f "$compiled_cli" ] || { echo "customer-email-reconciliation: compiled CLI is missing" >&2; exit 66; }
+  smoke_dir="$(mktemp -d)"
+  trap 'rm -rf "$smoke_dir"' EXIT
+  cat >"$smoke_dir/manifest.json" <<'JSON'
+{"schema":"customer_email_reconciliation_manifest_v1","changeControlRef":"EVNSolution/clever-change-control#265","disposition":"DO_NOT_SEND","generatedAt":"2026-08-25T00:00:00.000Z","items":[{"kind":"FACT","id":"00000000-0000-4000-8000-000000000001","stateSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","updatedAt":"2026-08-25T00:00:00.000Z"}],"reasonCode":"CONTRACT_SMOKE","scope":{"appId":"clever","shopId":"00000000-0000-4000-8000-000000000002"}}
+JSON
   set +e
-  smoke_output="$(node "$compiled_cli" --apply --fact-id wrapper-contract-smoke 2>&1)"
-  smoke_status=$?
+  dry_output="$(node "$compiled_cli" --fact-id 00000000-0000-4000-8000-000000000001 --change-control-ref EVNSolution/clever-change-control#265 --reason-code CONTRACT_SMOKE --app-id clever --shop-id 00000000-0000-4000-8000-000000000002 --disposition unsupported 2>&1)"
+  dry_status=$?
+  apply_output="$(node "$compiled_cli" --apply --manifest "$smoke_dir/manifest.json" --reviewed-manifest-sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --change-control-ref EVNSolution/clever-change-control#265 --reason-code CONTRACT_SMOKE --app-id clever --shop-id 00000000-0000-4000-8000-000000000002 --disposition do-not-send 2>&1)"
+  apply_status=$?
   set -e
-  [ "$smoke_status" -eq 2 ] || { echo "customer-email-reconciliation: compiled CLI refusal smoke failed" >&2; exit 1; }
-  [ "$smoke_output" = '{"errorCode":"CUSTOMER_EMAIL_RECONCILIATION_FAILED"}' ] || {
-    echo "customer-email-reconciliation: compiled CLI emitted unexpected smoke output" >&2
-    exit 1
-  }
-  echo 'compiled customer email reconciliation CLI smoke passed'
+  [ "$dry_status" -eq 2 ] && [ "$dry_output" = '{"errorCode":"DISPOSITION_UNSUPPORTED"}' ] || { echo "customer-email-reconciliation: compiled dry-run smoke failed" >&2; exit 1; }
+  [ "$apply_status" -eq 2 ] && [ "$apply_output" = '{"errorCode":"CUSTOMER_EMAIL_RECONCILIATION_FAILED"}' ] || { echo "customer-email-reconciliation: compiled apply smoke failed" >&2; exit 1; }
+  echo 'compiled customer email reconciliation dry-run/apply smoke passed'
   exit 0
 fi
 
@@ -210,7 +214,11 @@ COMMAND_ID_PARAMETER="/clever/route-ops/reconciliation/$(python3 -c 'import uuid
 aws ssm put-parameter --region "$AWS_REGION" --name "$COMMAND_ID_PARAMETER" --type String --value pending >/dev/null
 
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
+cleanup_local() {
+  aws ssm delete-parameter --region "$AWS_REGION" --name "$COMMAND_ID_PARAMETER" >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
+}
+trap cleanup_local EXIT
 host_script >"$tmp_dir/host.sh"
 encoded="$(base64 <"$tmp_dir/host.sh" | tr -d '\n')"
 python3 - "$tmp_dir/parameters.json" "$encoded" <<'PY'
@@ -239,5 +247,4 @@ lines = [line for line in value.get('StandardOutputContent', '').splitlines() if
 if not lines or json.loads(lines[-1]).get('mode') not in {'apply', 'dry-run'}:
     raise SystemExit('reconciliation result evidence is missing')
 PY
-aws ssm delete-parameter --region "$AWS_REGION" --name "$COMMAND_ID_PARAMETER"
 echo "SSM_RECONCILIATION_COMMAND_ID=$command_id"
