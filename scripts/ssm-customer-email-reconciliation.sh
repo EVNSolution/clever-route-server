@@ -4,6 +4,9 @@ set -euo pipefail
 AWS_REGION="${AWS_REGION:-ap-northeast-2}"
 INSTANCE_ID="${CUSTOMER_EMAIL_RECONCILIATION_INSTANCE_ID:-}"
 IMAGE="${CUSTOMER_EMAIL_RECONCILIATION_IMAGE:-}"
+RELEASE_SHA="${CUSTOMER_EMAIL_RECONCILIATION_RELEASE_SHA:-}"
+CHANGE_CONTROL_REF="${CUSTOMER_EMAIL_RECONCILIATION_CHANGE_CONTROL_REF:-}"
+MANIFEST_SHA256="${CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_SHA256:-}"
 MANIFEST_PATH="${CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_PATH:-}"
 CLI_ARGS_B64="${CUSTOMER_EMAIL_RECONCILIATION_ARGS_B64:-}"
 RENDER_HOST_SCRIPT=false
@@ -46,10 +49,12 @@ if [ "$SMOKE_COMPILED_CLI" = true ]; then
   exit 0
 fi
 
-[[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] || {
+[[ "$IMAGE" =~ ^ghcr\.io/evnsolution/clever-route-server-delivery-api@sha256:[0-9a-f]{64}$ ]] || {
   echo "customer-email-reconciliation: a digest-pinned image is required" >&2
   exit 64
 }
+[[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "customer-email-reconciliation: exact release SHA is required" >&2; exit 64; }
+[[ "$CHANGE_CONTROL_REF" =~ ^EVNSolution/clever-change-control#[1-9][0-9]*$ ]] || { echo "customer-email-reconciliation: change-control binding is required" >&2; exit 64; }
 [ -n "$CLI_ARGS_B64" ] || { echo "customer-email-reconciliation: encoded argument array is required" >&2; exit 64; }
 if [ -n "$MANIFEST_PATH" ] && [[ "$MANIFEST_PATH" != /srv/clever-route-server/operator/reconciliation/* ]]; then
   echo "customer-email-reconciliation: manifest path is outside the approved directory" >&2
@@ -65,10 +70,15 @@ set -euo pipefail
 IMAGE=$(shell_quote "$IMAGE")
 ARGS_B64=$(shell_quote "$CLI_ARGS_B64")
 MANIFEST_PATH=$(shell_quote "$MANIFEST_PATH")
+RELEASE_SHA=$(shell_quote "$RELEASE_SHA")
+CHANGE_CONTROL_REF=$(shell_quote "$CHANGE_CONTROL_REF")
+MANIFEST_SHA256=$(shell_quote "$MANIFEST_SHA256")
 HOST
   cat <<'HOST'
 cd /srv/clever-route-server
-python3 - "$ARGS_B64" <<'PY' >/tmp/customer-email-reconciliation-args
+args_file="$(mktemp /tmp/customer-email-reconciliation-args.XXXXXX)"
+trap 'rm -f "$args_file"' EXIT
+python3 - "$ARGS_B64" "$CHANGE_CONTROL_REF" "$MANIFEST_SHA256" <<'PY' >"$args_file"
 import base64, json, sys
 args = json.loads(base64.b64decode(sys.argv[1], validate=True))
 if not isinstance(args, list) or not args or not all(isinstance(v, str) for v in args):
@@ -82,13 +92,29 @@ if is_apply and (has_fact or not has_manifest):
     raise SystemExit('apply requires a manifest and forbids FACT IDs')
 if not is_apply and (not has_fact or has_manifest):
     raise SystemExit('dry-run requires FACT IDs and forbids a manifest')
+def value(flag):
+    return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else None
+if value('--change-control-ref') != sys.argv[2]:
+    raise SystemExit('change-control binding mismatch')
+if is_apply and value('--reviewed-manifest-sha256') != sys.argv[3]:
+    raise SystemExit('reviewed manifest binding mismatch')
 for value in args:
     if '\0' in value or '\n' in value or '\r' in value:
         raise SystemExit('invalid control character in argument')
 print('\0'.join(args), end='')
 PY
-mapfile -d '' -t args </tmp/customer-email-reconciliation-args
-rm -f /tmp/customer-email-reconciliation-args
+mapfile -d '' -t args <"$args_file"
+
+python3 - "$IMAGE" "$RELEASE_SHA" <<'PY'
+import json, pathlib, subprocess, sys
+image, release_sha = sys.argv[1:]
+if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != release_sha:
+    raise SystemExit('checked-out source SHA mismatch')
+history = pathlib.Path('.deploy/deploy-history.jsonl')
+record = json.loads(history.read_text(encoding='utf-8').splitlines()[-1])
+if record.get('commitSha') != release_sha or record.get('deliveryApiImage') != image:
+    raise SystemExit('deployed release provenance mismatch')
+PY
 
 compose=(docker compose -p clever-route -f infra/compose/docker-compose.prod.yml run --rm --no-deps)
 if [[ " ${args[*]} " == *" --apply "* ]]; then

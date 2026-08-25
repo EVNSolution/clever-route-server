@@ -8,6 +8,7 @@ import {
 } from '../src/modules/customer-email/customer-email-reconciliation.js';
 import { PrismaEmailRuntimeHealthService } from '../src/modules/customer-email/email-runtime-health.service.js';
 import { cleanupRouteOperationalEvidence } from '../src/modules/operations/route-operational-evidence-retention.js';
+import { PrismaCustomerDeliveryNotificationOutbox } from '../src/modules/route-plans/customer-delivery-notification.outbox.js';
 
 const databaseUrl = process.env.EMAIL_RECONCILIATION_DATABASE_URL ?? '';
 const live = databaseUrl === '' ? test.skip : test;
@@ -78,6 +79,22 @@ describe('customer email reconciliation PostgreSQL contract', () => {
       }, undefined, () => now).get({ shopDomain: 'email-reconciliation-70.invalid' });
       expect(runtimeHealth.email.outbox).toMatchObject({ deadLetter: 0, lastErrorCode: null });
       expect(runtimeHealth.email.state, JSON.stringify(runtimeHealth.email)).toBe('HEALTHY');
+      await prisma.customerRouteNotificationFact.updateMany({
+        data: { nextAttemptAt: new Date(now.getTime() + 86_400_000) },
+        where: { id: { in: fixture.eligibleFactIds.filter((id) => id !== firstEligibleFactId) } }
+      });
+      await prisma.customerRouteNotificationFact.update({
+        data: { nextAttemptAt: now, status: 'QUEUED' },
+        where: { id: firstEligibleFactId }
+      });
+      await expect(new PrismaCustomerDeliveryNotificationOutbox(prisma).claimNext({ leaseMs: 60_000, now }))
+        .resolves.toBeNull();
+      expect(await prisma.customerRouteNotificationFact.findUniqueOrThrow({ where: { id: firstEligibleFactId } }))
+        .toMatchObject({ attemptCount: 0, status: 'QUEUED' });
+      await prisma.customerRouteNotificationFact.update({
+        data: { errorCode: 'OPERATOR_DO_NOT_SEND', nextAttemptAt: null, status: 'DEAD' },
+        where: { id: firstEligibleFactId }
+      });
 
       const stale = await service.dryRun({
         ...decision,

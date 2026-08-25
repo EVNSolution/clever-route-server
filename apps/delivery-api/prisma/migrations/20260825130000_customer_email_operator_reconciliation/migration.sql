@@ -48,6 +48,8 @@ CREATE TABLE "customer_email_reconciliation_tombstones" (
   CONSTRAINT "customer_email_reconciliation_tombstones_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "customer_email_reconciliation_tombstones_shop_fkey"
     FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE,
+  CONSTRAINT "customer_email_reconciliation_tombstones_target_fkey"
+    FOREIGN KEY ("targetId") REFERENCES "customer_route_notification_facts"("id") ON DELETE RESTRICT,
   CONSTRAINT "customer_email_reconciliation_tombstones_disposition_check"
     CHECK ("disposition" = 'DO_NOT_SEND'),
   CONSTRAINT "customer_email_reconciliation_tombstones_cc_check"
@@ -60,5 +62,7 @@ CREATE TABLE "customer_email_reconciliation_tombstones" (
 
 CREATE UNIQUE INDEX "customer_email_reconciliation_tombstones_correlation_idx"
   ON "customer_email_reconciliation_tombstones"("correlationId");
+CREATE UNIQUE INDEX "customer_email_reconciliation_tombstones_shop_target_idx"
+  ON "customer_email_reconciliation_tombstones"("shopId", "targetId");
 CREATE INDEX "customer_email_reconciliation_tombstones_shop_created_idx"
   ON "customer_email_reconciliation_tombstones"("shopId", "createdAt");

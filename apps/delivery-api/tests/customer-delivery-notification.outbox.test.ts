@@ -46,6 +46,7 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
     expect(claimed?.leaseToken).toEqual(expect.any(String));
     expect(customerRouteNotificationFact.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {
+        reconciliationTombstones: { none: { disposition: 'DO_NOT_SEND' } },
         OR: [
           {
             nextAttemptAt: { lte: now },
@@ -68,6 +69,7 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
     });
     expect(claimUpdate?.where.id).toBe('fact-id');
     expect(Array.isArray(claimUpdate?.where.OR)).toBe(true);
+    expect(claimUpdate?.where.reconciliationTombstones).toEqual({ none: { disposition: 'DO_NOT_SEND' } });
   });
 
   test('returns no job when another worker wins the compare-and-set claim', async () => {

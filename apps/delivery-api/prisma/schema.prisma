@@ -2029,34 +2029,35 @@ model DriverRouteNotificationAttempt {
 }
 
 model CustomerRouteNotificationFact {
-  id                     String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId                 String                                @db.Uuid
-  shop                   Shop                                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  orderId                String                                @db.Uuid
-  order                  Order                                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  routePlanId            String?                               @db.Uuid
-  deliveryStopId         String?                               @db.Uuid
-  recipientEmailSnapshot String?                               @db.Text
-  requestedUiStatus      String?                               @db.Text
-  idempotencyKey         String?                               @db.Text
-  source                 String                                @db.Text
-  status                 CustomerRouteNotificationStatus
-  attemptCount           Int                                   @default(0)
-  nextAttemptAt          DateTime?                             @default(now()) @db.Timestamptz(6)
-  processingStartedAt    DateTime?                             @db.Timestamptz(6)
-  leaseToken             String?                               @db.Text
-  leaseExpiresAt         DateTime?                             @db.Timestamptz(6)
-  provider               String?                               @db.Text
-  providerMessageId      String?                               @db.Text
-  errorCode              String?                               @db.Text
-  errorMessage           String?                               @db.Text
-  sentAt                 DateTime?                             @db.Timestamptz(6)
-  deadAt                 DateTime?                             @db.Timestamptz(6)
-  metadata               Json?
-  occurredAt             DateTime                              @default(now()) @db.Timestamptz(6)
-  createdAt              DateTime                              @default(now()) @db.Timestamptz(6)
-  updatedAt              DateTime                              @default(now()) @updatedAt @db.Timestamptz(6)
-  attempts               CustomerDeliveryNotificationAttempt[]
+  id                       String                                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                   String                                 @db.Uuid
+  shop                     Shop                                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId                  String                                 @db.Uuid
+  order                    Order                                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  routePlanId              String?                                @db.Uuid
+  deliveryStopId           String?                                @db.Uuid
+  recipientEmailSnapshot   String?                                @db.Text
+  requestedUiStatus        String?                                @db.Text
+  idempotencyKey           String?                                @db.Text
+  source                   String                                 @db.Text
+  status                   CustomerRouteNotificationStatus
+  attemptCount             Int                                    @default(0)
+  nextAttemptAt            DateTime?                              @default(now()) @db.Timestamptz(6)
+  processingStartedAt      DateTime?                              @db.Timestamptz(6)
+  leaseToken               String?                                @db.Text
+  leaseExpiresAt           DateTime?                              @db.Timestamptz(6)
+  provider                 String?                                @db.Text
+  providerMessageId        String?                                @db.Text
+  errorCode                String?                                @db.Text
+  errorMessage             String?                                @db.Text
+  sentAt                   DateTime?                              @db.Timestamptz(6)
+  deadAt                   DateTime?                              @db.Timestamptz(6)
+  metadata                 Json?
+  occurredAt               DateTime                               @default(now()) @db.Timestamptz(6)
+  createdAt                DateTime                               @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                               @default(now()) @updatedAt @db.Timestamptz(6)
+  attempts                 CustomerDeliveryNotificationAttempt[]
+  reconciliationTombstones CustomerEmailReconciliationTombstone[]
 
   @@unique([idempotencyKey])
   @@index([shopId, orderId, status])
@@ -2284,6 +2285,44 @@ model CustomerDeliveryNotificationAttempt {
   @@index([shopId, createdAt])
   @@index([retainedUntil])
   @@map("customer_delivery_notification_attempts")
+}
+
+model CustomerEmailOperatorReconciliation {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId           String   @db.Uuid
+  shop             Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  targetKind       String   @db.Text
+  targetId         String   @db.Uuid
+  disposition      String   @db.Text
+  actor            String   @db.Text
+  changeControlRef String   @db.Text
+  reasonCode       String   @db.Text
+  manifestSha256   String   @db.Text
+  correlationId    String   @unique @db.Text
+  retainedUntil    DateTime @db.Timestamptz(6)
+  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([shopId, createdAt])
+  @@index([retainedUntil])
+  @@map("customer_email_operator_reconciliations")
+}
+
+model CustomerEmailReconciliationTombstone {
+  id               String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId           String                        @db.Uuid
+  shop             Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  targetId         String                        @db.Uuid
+  fact             CustomerRouteNotificationFact @relation(fields: [targetId], references: [id], onDelete: Restrict)
+  disposition      String                        @db.Text
+  changeControlRef String                        @db.Text
+  reasonCode       String                        @db.Text
+  manifestSha256   String                        @db.Text
+  correlationId    String                        @unique @db.Text
+  createdAt        DateTime                      @default(now()) @db.Timestamptz(6)
+
+  @@unique([shopId, targetId])
+  @@index([shopId, createdAt])
+  @@map("customer_email_reconciliation_tombstones")
 }
 
 model AdminRouteStopActionAudit {
