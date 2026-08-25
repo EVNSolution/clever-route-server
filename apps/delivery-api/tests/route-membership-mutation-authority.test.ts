@@ -139,6 +139,8 @@ describe('route membership mutation authority', () => {
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot could not be resolved'])");
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot is malformed'])");
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot tuple does not match grouping authority'])");
+    expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority'])");
+    expect(assignmentAuthority).toContain('row.order.currentRouteVersionId === child.id');
     expect(assignmentAuthority).not.toContain('.filter((assignment)');
   });
 

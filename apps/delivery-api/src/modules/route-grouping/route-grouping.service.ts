@@ -156,7 +156,9 @@ type ChildSnapshot = {
   driverId: string | null;
   groupingId: string;
   groupingVersion: number;
+  membershipSchemaVersion: 1 | null;
   name: string;
+  membershipFormat: 'LEGACY' | 'MODERN';
   planDate: string;
   routeIdx?: number;
   sortOrder?: number;
@@ -3324,29 +3326,44 @@ function childRouteSlotName(child: LoadedChild): string {
 function currentChildAssignments(group: LoadedGrouping, child: LoadedChild): LoadedAssignment[] {
   const assignmentsByStopId = new Map(group.orders.map((assignment) => [assignment.deliveryStopId, assignment]));
   const snapshot = readChildSnapshot(child.snapshot);
+  const modernSnapshot = snapshot.membershipFormat === 'MODERN';
   const orderedSnapshotStops = [...snapshot.stops].sort((left, right) => left.sequence - right.sequence);
-  if (orderedSnapshotStops.length > 0) {
+  if (modernSnapshot) {
     const validTuples = orderedSnapshotStops.every((stop) => stop.deliveryStopId !== '' && stop.orderId !== '');
     const validSequences = orderedSnapshotStops.every((stop) => Number.isInteger(stop.sequence) && stop.sequence > 0);
     if (!validTuples
       || !validSequences
       || new Set(orderedSnapshotStops.map(({ deliveryStopId }) => deliveryStopId)).size !== orderedSnapshotStops.length
       || new Set(orderedSnapshotStops.map(({ orderId }) => orderId)).size !== orderedSnapshotStops.length
-      || new Set(orderedSnapshotStops.map(({ sequence }) => sequence)).size !== orderedSnapshotStops.length) {
+      || new Set(orderedSnapshotStops.map(({ sequence }) => sequence)).size !== orderedSnapshotStops.length
+      || orderedSnapshotStops.some((stop, index) => stop.sequence !== index + 1)) {
       throw new RouteGroupingValidationError(['current route membership snapshot is malformed']);
     }
   }
-  const snapshotStops = orderedSnapshotStops.map((stop) => stop.deliveryStopId);
-  const routePlanStops = (child.routePlan?.routeStops ?? [])
+  const snapshotStopIds = orderedSnapshotStops.map((stop) => stop.deliveryStopId);
+  const routePlanStopIds = (child.routePlan?.routeStops ?? [])
     .sort((left, right) => left.sequence - right.sequence)
     .map((stop) => stop.deliveryStopId);
-  const stopIds = snapshotStops.length > 0 ? snapshotStops : routePlanStops;
+  if (modernSnapshot) {
+    const boundOrderIds = group.orders
+      .filter((row) => row.order.currentRouteVersionId === child.id)
+      .map((assignment) => assignment.orderId)
+      .sort();
+    const snapshotOrderIds = orderedSnapshotStops.map((stop) => stop.orderId).sort();
+    if (snapshotStopIds.length !== routePlanStopIds.length
+      || snapshotStopIds.some((stopId, index) => stopId !== routePlanStopIds[index])
+      || snapshotOrderIds.length !== boundOrderIds.length
+      || snapshotOrderIds.some((orderId, index) => orderId !== boundOrderIds[index])) {
+      throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority']);
+    }
+  }
+  const stopIds = modernSnapshot ? snapshotStopIds : routePlanStopIds;
 
   const assignments = stopIds.map((deliveryStopId) => assignmentsByStopId.get(deliveryStopId) ?? null);
   if (assignments.some((assignment) => assignment === null)) {
     throw new RouteGroupingValidationError(['current route membership snapshot could not be resolved']);
   }
-  if (orderedSnapshotStops.length > 0 && assignments.some((assignment, index) => assignment?.orderId !== orderedSnapshotStops[index]?.orderId)) {
+  if (modernSnapshot && assignments.some((assignment, index) => assignment?.orderId !== orderedSnapshotStops[index]?.orderId)) {
     throw new RouteGroupingValidationError(['current route membership snapshot tuple does not match grouping authority']);
   }
   return assignments as LoadedAssignment[];
@@ -3832,6 +3849,8 @@ function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignmen
     driverId,
     groupingId: group.id,
     groupingVersion: version,
+    membershipFormat: 'MODERN',
+    membershipSchemaVersion: 1,
     name,
     planDate: formatDateOnly(group.planDate) ?? '',
     routeScope: { deliverySession: group.deliverySession, routeScopeKey: group.routeScopeKey, serviceType: group.serviceType },
@@ -3840,8 +3859,17 @@ function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignmen
 }
 
 function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
-  const object = value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-  const stops = Array.isArray(object.stops) ? object.stops : object.stops === undefined ? [] : [null];
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RouteGroupingValidationError(['current route membership snapshot root is malformed']);
+  }
+  const object = value as Record<string, unknown>;
+  const hasStopsField = Object.prototype.hasOwnProperty.call(object, 'stops');
+  const membershipSchemaVersion = object.membershipSchemaVersion;
+  if ((membershipSchemaVersion !== undefined && membershipSchemaVersion !== 1)
+    || (membershipSchemaVersion === 1 && !hasStopsField)) {
+    throw new RouteGroupingValidationError(['current route membership snapshot schema is malformed']);
+  }
+  const stops = Array.isArray(object.stops) ? object.stops : hasStopsField ? [null] : [];
   const routeIdx = typeof object.routeIdx === 'number' && Number.isInteger(object.routeIdx) ? object.routeIdx : undefined;
   const sortOrder = typeof object.sortOrder === 'number' && Number.isInteger(object.sortOrder) ? object.sortOrder : undefined;
   return {
@@ -3849,17 +3877,19 @@ function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
     driverId: typeof object.driverId === 'string' ? object.driverId : null,
     groupingId: typeof object.groupingId === 'string' ? object.groupingId : '',
     groupingVersion: typeof object.groupingVersion === 'number' ? object.groupingVersion : 0,
+    membershipFormat: hasStopsField ? 'MODERN' : 'LEGACY',
+    membershipSchemaVersion: membershipSchemaVersion === 1 ? 1 : null,
     name: typeof object.name === 'string' ? object.name : 'Rolled back route',
     planDate: typeof object.planDate === 'string' ? object.planDate : '',
     ...(routeIdx === undefined ? {} : { routeIdx }),
     ...(sortOrder === undefined ? {} : { sortOrder }),
     routeScope: { deliverySession: null, routeScopeKey: null, serviceType: null },
-    stops: stops.map((entry, index) => {
+    stops: stops.map((entry) => {
       const row = entry !== null && typeof entry === 'object' && !Array.isArray(entry) ? entry as Record<string, unknown> : {};
       return {
         deliveryStopId: readOptionalSnapshotString(row.deliveryStopId),
         orderId: readOptionalSnapshotString(row.orderId),
-        sequence: Number(row.sequence ?? index + 1),
+        sequence: typeof row.sequence === 'number' ? row.sequence : Number.NaN,
         sourceOrderId: readOptionalSnapshotString(row.sourceOrderId)
       };
     })

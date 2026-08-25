@@ -596,7 +596,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         publishedAt: priorChild.publishedAt,
         routePlanId: priorChild.routePlanId,
         shopId: priorChild.shopId,
-        snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010', orderId: assignedOrder.id }], immutableSuccessor: true },
+        snapshot: { membershipSchemaVersion: 1, stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010', orderId: assignedOrder.id, sequence: 1 }], immutableSuccessor: true },
         version: priorChild.version
       }));
       expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: routeVersionId } }))
@@ -653,26 +653,50 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         shopId: unresolvedMembership.shopId,
         sourceSequence: unresolvedMembership.sourceSequence
       } });
+      const addedDraftDeliveryStop = await prisma.deliveryStop.findFirstOrThrow({ where: { orderId: addedDraftOrder.id } });
+      const completeMembership = [
+        { deliveryStopId: '61000000-0000-4000-8000-000000000010', orderId: assignedOrder.id, sequence: 1 },
+        { deliveryStopId: addedDraftDeliveryStop.id, orderId: addedDraftOrder.id, sequence: 2 }
+      ];
       await prisma.routeGroupingChildVersion.update({
-        data: { snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010', orderId: addedDraftOrder.id }] } },
-        where: { id: savedDraftChild.id }
+        data: { snapshot: { name: 'Known legacy route without embedded membership' } }, where: { id: savedDraftChild.id }
       });
-      await expect(routeGroupingService.createCustomStop({
-        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
-        stopName: 'Must roll back tuple mismatch', targetRoutePlanId: routePlanId
-      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
-      expect(await prisma.order.count({ where: { name: 'Must roll back tuple mismatch', shopId } })).toBe(0);
-      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
-        where: { routePlanId, status: 'CURRENT', supersededAt: null }
-      })).id).toBe(savedDraftChild.id);
-      await prisma.routeGroupingChildVersion.update({
-        data: { snapshot: { stops: { deliveryStopId: 'not-an-array' } } }, where: { id: savedDraftChild.id }
+      const legacyGrouping = await routeGroupingService.getGrouping({
+        groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid'
       });
-      await expect(routeGroupingService.createCustomStop({
-        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
-        stopName: 'Must roll back malformed snapshot', targetRoutePlanId: routePlanId
-      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
-      expect(await prisma.order.count({ where: { name: 'Must roll back malformed snapshot', shopId } })).toBe(0);
+      expect(legacyGrouping?.children.find((child) => child.routePlanId === routePlanId)?.orderIds)
+        .toEqual([assignedOrder.id, addedDraftOrder.id]);
+
+      const invalidMembershipSnapshots: Array<{ name: string; snapshot: Prisma.InputJsonValue }> = [
+        { name: 'truncated snapshot', snapshot: { membershipSchemaVersion: 1, stops: completeMembership.slice(0, 1) } },
+        { name: 'missing sequence', snapshot: { membershipSchemaVersion: 1, stops: [
+          { deliveryStopId: completeMembership[0]!.deliveryStopId, orderId: completeMembership[0]!.orderId },
+          completeMembership[1]!
+        ] } },
+        { name: 'string sequence', snapshot: { membershipSchemaVersion: 1, stops: completeMembership.map((stop) => ({ ...stop, sequence: String(stop.sequence) })) } },
+        { name: 'duplicate sequence', snapshot: { membershipSchemaVersion: 1, stops: completeMembership.map((stop) => ({ ...stop, sequence: 1 })) } },
+        { name: 'tuple mismatch', snapshot: { membershipSchemaVersion: 1, stops: [
+          { ...completeMembership[0]!, orderId: addedDraftOrder.id },
+          { ...completeMembership[1]!, orderId: assignedOrder.id }
+        ] } },
+        { name: 'non-array stops', snapshot: { membershipSchemaVersion: 1, stops: { deliveryStopId: 'not-an-array' } } },
+        { name: 'malformed root', snapshot: 'not-an-object' }
+      ];
+      for (const invalid of invalidMembershipSnapshots) {
+        await prisma.routeGroupingChildVersion.update({
+          data: { snapshot: invalid.snapshot }, where: { id: savedDraftChild.id }
+        });
+        const stopName = `Must roll back ${invalid.name}`;
+        await expect(routeGroupingService.createCustomStop({
+          actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
+          stopName, targetRoutePlanId: routePlanId
+        })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+        expect(await prisma.order.count({ where: { name: stopName, shopId } })).toBe(0);
+        expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(2);
+        expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+          where: { routePlanId, status: 'CURRENT', supersededAt: null }
+        })).id).toBe(savedDraftChild.id);
+      }
       await prisma.routeGroupingChildVersion.update({
         data: { snapshot: savedDraftChild.snapshot as Prisma.InputJsonValue }, where: { id: savedDraftChild.id }
       });
