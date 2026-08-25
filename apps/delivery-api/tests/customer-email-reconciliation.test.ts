@@ -16,6 +16,7 @@ import {
 const now = new Date('2026-08-25T08:00:00.000Z');
 const scope = { appId: 'clever', shopId: '81000000-0000-4000-8000-000000000001' };
 const decision = { changeControlRef: 'EVNSolution/clever-change-control#265', reasonCode: 'HISTORICAL_DO_NOT_SEND' };
+const operatorEvidence = { actor: 'aws-1234567890abcdef', approvalRef: 'EVNSolution/clever-change-control#265:comment-123', releaseImageDigest: `ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:${'a'.repeat(64)}`, ssmCommandId: '11111111-1111-4111-8111-111111111111' };
 
 describe('customer email reconciliation', () => {
   test('creates a seven-row PII-free dry-run manifest without mutation', async () => {
@@ -44,7 +45,7 @@ describe('customer email reconciliation', () => {
     store.change(factId(1));
 
     await expect(service(store).apply({
-      actor: 'ops-cc265',
+      operatorEvidence,
       ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: scope,
@@ -85,7 +86,7 @@ describe('customer email reconciliation', () => {
       selections: [{ id: factId(1), kind: 'FACT' }]
     });
     const input: Parameters<CustomerEmailReconciliationService['apply']>[0] = {
-      actor: 'ops-cc265',
+      operatorEvidence,
       ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: scope,
@@ -96,7 +97,7 @@ describe('customer email reconciliation', () => {
     await expect(reconciliation.apply(input)).resolves.toMatchObject({ appliedItems: 1, alreadyAppliedItems: 0, auditRows: 1 });
     await expect(reconciliation.apply(input)).resolves.toMatchObject({ appliedItems: 0, alreadyAppliedItems: 1, auditRows: 0 });
     expect(store.mutations).toHaveLength(1);
-    expect(store.audits).toEqual([{ actor: 'ops-cc265', disposition: 'DO_NOT_SEND', manifestSha256: dryRun.manifestSha256 }]);
+    expect(store.audits).toEqual([{ actor: operatorEvidence.actor, disposition: 'DO_NOT_SEND', manifestSha256: dryRun.manifestSha256 }]);
     expect(JSON.stringify({ audits: store.audits, result: await reconciliation.apply(input) }))
       .not.toMatch(/customer@example\.com|Secret delivery text|recipient|subject|body/iu);
   });
@@ -111,7 +112,7 @@ describe('customer email reconciliation', () => {
       selections: [{ id: factId(1), kind: 'FACT' }]
     });
     await expect(reconciliation.apply({
-      actor: 'operator@example.com',
+      operatorEvidence: { ...operatorEvidence, actor: 'operator@example.com' },
       ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: scope,
@@ -119,7 +120,7 @@ describe('customer email reconciliation', () => {
       reviewedManifestSha256: dryRun.manifestSha256
     })).rejects.toMatchObject({ code: 'ACTOR_INVALID' });
     await expect(reconciliation.apply({
-      actor: 'ops-cc265',
+      operatorEvidence,
       ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: { ...scope, shopId: '81000000-0000-4000-8000-000000000002' },
@@ -127,7 +128,7 @@ describe('customer email reconciliation', () => {
       reviewedManifestSha256: dryRun.manifestSha256
     })).rejects.toMatchObject({ code: 'WRONG_SCOPE' });
     await expect(reconciliation.apply({
-      actor: 'ops-cc265',
+      operatorEvidence,
       ...decision,
       disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
       expectedScope: scope,
@@ -191,7 +192,7 @@ class InMemoryReconciliationStore implements CustomerEmailReconciliationStore {
   }
 
   applyDoNotSend(input: {
-    actor: string;
+    operatorEvidence: typeof operatorEvidence;
     manifest: CustomerEmailReconciliationManifest;
     manifestSha256: string;
     now: Date;
@@ -213,7 +214,7 @@ class InMemoryReconciliationStore implements CustomerEmailReconciliationStore {
       }
       row.appliedManifestSha256 = input.manifestSha256;
       this.mutations.push(key(row));
-      this.audits.push({ actor: input.actor, disposition: input.manifest.disposition, manifestSha256: input.manifestSha256 });
+      this.audits.push({ actor: input.operatorEvidence.actor, disposition: input.manifest.disposition, manifestSha256: input.manifestSha256 });
       appliedItems += 1;
     }
     return Promise.resolve({

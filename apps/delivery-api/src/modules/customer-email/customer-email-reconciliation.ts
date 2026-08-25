@@ -47,9 +47,16 @@ export type CustomerEmailReconciliationApplyResult = {
   mode: 'apply';
 };
 
+export type CustomerEmailOperatorEvidence = {
+  actor: string;
+  approvalRef: string;
+  releaseImageDigest: string;
+  ssmCommandId: string;
+};
+
 export interface CustomerEmailReconciliationStore {
   applyDoNotSend(input: {
-    actor: string;
+    operatorEvidence: CustomerEmailOperatorEvidence;
     manifest: CustomerEmailReconciliationManifest;
     manifestSha256: string;
     now: Date;
@@ -119,7 +126,7 @@ export class CustomerEmailReconciliationService {
   }
 
   async apply(input: {
-    actor: string;
+    operatorEvidence: CustomerEmailOperatorEvidence;
     changeControlRef: string;
     disposition: CustomerEmailReconciliationDisposition;
     expectedScope: CustomerEmailReconciliationScope;
@@ -127,7 +134,7 @@ export class CustomerEmailReconciliationService {
     reasonCode: string;
     reviewedManifestSha256: string;
   }): Promise<CustomerEmailReconciliationApplyResult> {
-    assertActor(input.actor);
+    assertOperatorEvidence(input.operatorEvidence, input.changeControlRef);
     assertDecisionBinding(input.changeControlRef, input.reasonCode);
     assertDisposition(input.disposition);
     assertScope(input.expectedScope);
@@ -149,7 +156,7 @@ export class CustomerEmailReconciliationService {
       throw new CustomerEmailReconciliationRefusalError('REVIEWED_MANIFEST_SHA256_MISMATCH');
     }
     return this.store.applyDoNotSend({
-      actor: input.actor,
+      operatorEvidence: input.operatorEvidence,
       manifest: input.manifest,
       manifestSha256,
       now: this.now()
@@ -171,7 +178,7 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
   }
 
   async applyDoNotSend(input: {
-    actor: string;
+    operatorEvidence: CustomerEmailOperatorEvidence;
     manifest: CustomerEmailReconciliationManifest;
     manifestSha256: string;
     now: Date;
@@ -211,7 +218,7 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
           continue;
         }
         auditRows += await this.cancelFact(tx, item.manifestItem, {
-          actor: input.actor,
+          operatorEvidence: input.operatorEvidence,
           changeControlRef: input.manifest.changeControlRef,
           manifestSha256: input.manifestSha256,
           now: input.now,
@@ -312,7 +319,7 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
   private async cancelFact(
     tx: Prisma.TransactionClient,
     item: CustomerEmailReconciliationManifest['items'][number],
-    input: { actor: string; changeControlRef: string; manifestSha256: string; now: Date; reasonCode: string; shopId: string }
+    input: { operatorEvidence: CustomerEmailOperatorEvidence; changeControlRef: string; manifestSha256: string; now: Date; reasonCode: string; shopId: string }
   ): Promise<number> {
     const updated = await tx.customerRouteNotificationFact.updateMany({
       data: {
@@ -349,7 +356,7 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
     if (updated.count !== 1) throw new CustomerEmailReconciliationRefusalError('CHANGED_SINCE_MANIFEST', item);
     await tx.customerEmailOperatorReconciliation.create({
       data: reconciliationAuditData({
-        actor: input.actor,
+        operatorEvidence: input.operatorEvidence,
         changeControlRef: input.changeControlRef,
         item,
         manifestSha256: input.manifestSha256,
@@ -389,7 +396,7 @@ export class PrismaCustomerEmailReconciliationStore implements CustomerEmailReco
 }
 
 function reconciliationAuditData(input: {
-  actor: string;
+  operatorEvidence: CustomerEmailOperatorEvidence;
   changeControlRef: string;
   item: CustomerEmailReconciliationSelection;
   manifestSha256: string;
@@ -398,16 +405,19 @@ function reconciliationAuditData(input: {
   shopId: string;
 }): Prisma.CustomerEmailOperatorReconciliationUncheckedCreateInput {
   return {
-    actor: input.actor,
+    actor: input.operatorEvidence.actor,
+    approvalRef: input.operatorEvidence.approvalRef,
     changeControlRef: input.changeControlRef,
     correlationId: reconciliationCorrelationId(input.manifestSha256, input.item),
     disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
     manifestSha256: input.manifestSha256,
     reasonCode: input.reasonCode,
+    releaseImageDigest: input.operatorEvidence.releaseImageDigest,
     retainedUntil: new Date(input.now.getTime() + 180 * 24 * 60 * 60 * 1000),
     shopId: input.shopId,
     targetId: input.item.id,
-    targetKind: input.item.kind
+    targetKind: input.item.kind,
+    ssmCommandId: input.operatorEvidence.ssmCommandId
   };
 }
 
@@ -490,6 +500,18 @@ function assertManifest(manifest: CustomerEmailReconciliationManifest): void {
 function assertActor(actor: string): void {
   if (!/^[a-z0-9][a-z0-9._/-]{2,79}$/u.test(actor)) {
     throw new CustomerEmailReconciliationRefusalError('ACTOR_INVALID');
+  }
+}
+
+function assertOperatorEvidence(evidence: CustomerEmailOperatorEvidence, changeControlRef: string): void {
+  assertActor(evidence.actor);
+  if (!/^[a-f0-9-]{36}$/u.test(evidence.ssmCommandId)) throw new CustomerEmailReconciliationRefusalError('SSM_COMMAND_ID_INVALID');
+  if (!/^ghcr\.io\/evnsolution\/clever-route-server-delivery-api@sha256:[a-f0-9]{64}$/u.test(evidence.releaseImageDigest)) {
+    throw new CustomerEmailReconciliationRefusalError('RELEASE_IMAGE_DIGEST_INVALID');
+  }
+  if (evidence.approvalRef !== `${changeControlRef}:comment-${evidence.approvalRef.split(':comment-')[1] ?? ''}`
+    || !/:comment-[1-9][0-9]*$/u.test(evidence.approvalRef)) {
+    throw new CustomerEmailReconciliationRefusalError('APPROVAL_REF_INVALID');
   }
 }
 

@@ -20,7 +20,12 @@ try {
     const manifestDocument = JSON.parse(await readFile(required(flags.manifestPath, 'manifest'), 'utf8')) as unknown;
     const manifest = parseCustomerEmailReconciliationManifest(readManifestPayload(manifestDocument));
     const result = await service.apply({
-      actor: required(flags.actor, 'actor'),
+      operatorEvidence: {
+        actor: required(flags.operatorActor, 'operator-actor'),
+        approvalRef: required(flags.approvalRef, 'approval-ref'),
+        releaseImageDigest: required(flags.releaseImageDigest, 'release-image-digest'),
+        ssmCommandId: required(flags.ssmCommandId, 'ssm-command-id')
+      },
       changeControlRef: required(flags.changeControlRef, 'change-control-ref'),
       disposition: readDisposition(required(flags.disposition, 'disposition')),
       expectedScope: {
@@ -59,7 +64,10 @@ try {
 }
 
 type ParsedFlags = {
-  actor?: string;
+  operatorActor?: string;
+  approvalRef?: string;
+  releaseImageDigest?: string;
+  ssmCommandId?: string;
   appId?: string;
   apply: boolean;
   changeControlRef?: string;
@@ -83,7 +91,10 @@ function parseFlags(args: string[]): ParsedFlags {
     if (value === undefined || value.startsWith('--')) throw new Error(`Missing value for ${flag ?? 'flag'}`);
     index += 1;
     switch (flag) {
-      case '--actor': flags.actor = value; break;
+      case '--operator-actor': flags.operatorActor = value; break;
+      case '--approval-ref': flags.approvalRef = value; break;
+      case '--release-image-digest': flags.releaseImageDigest = value; break;
+      case '--ssm-command-id': flags.ssmCommandId = value; break;
       case '--app-id': flags.appId = value; break;
       case '--change-control-ref': flags.changeControlRef = value; break;
       case '--disposition': flags.disposition = value; break;
@@ -98,7 +109,7 @@ function parseFlags(args: string[]): ParsedFlags {
   if (flags.apply && flags.factIds.length > 0) {
     throw new Error('Apply selections must come from the reviewed manifest only.');
   }
-  if (!flags.apply && (flags.actor !== undefined || flags.manifestPath !== undefined || flags.reviewedManifestSha256 !== undefined)) {
+  if (!flags.apply && (flags.operatorActor !== undefined || flags.approvalRef !== undefined || flags.releaseImageDigest !== undefined || flags.ssmCommandId !== undefined || flags.manifestPath !== undefined || flags.reviewedManifestSha256 !== undefined)) {
     throw new Error('Apply-only flags require --apply.');
   }
   return flags;

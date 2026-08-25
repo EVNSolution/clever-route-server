@@ -23,6 +23,8 @@ describe('disposable DB integration runner', () => {
     expect(script).toContain('dsv-v1-read-query.integration.test.ts');
     expect(script).toContain('shopify-webhook-durability.integration.test.ts');
     expect(script).toContain('customer-email-reconciliation.integration.test.ts');
+    expect(script).toContain('127.0.0.1:55491/clever_email_reconciliation');
+    expect(script).toContain('EMAIL_RECONCILIATION_DATABASE_URL="$email_reconciliation_url"');
     expect(script).toContain('trap cleanup EXIT');
     expect(script).not.toContain(':55444');
     expect(script).not.toContain(':55455');

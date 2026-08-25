@@ -16,6 +16,7 @@ const now = new Date('2026-08-25T08:00:00.000Z');
 const shopId = '91000000-0000-4000-8000-000000000070';
 const otherShopId = '91000000-0000-4000-8000-000000000071';
 const decision = { changeControlRef: 'EVNSolution/clever-change-control#265', reasonCode: 'HISTORICAL_DO_NOT_SEND' };
+const operatorEvidence = { actor: 'aws-1234567890abcdef', approvalRef: 'EVNSolution/clever-change-control#265:comment-123', releaseImageDigest: `ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:${'a'.repeat(64)}`, ssmCommandId: '11111111-1111-4111-8111-111111111111' };
 
 describe('customer email reconciliation PostgreSQL contract', () => {
   live('keeps dry-run mutation-free, refuses unsafe rows, and applies one PII-free cancellation idempotently', async () => {
@@ -54,7 +55,7 @@ describe('customer email reconciliation PostgreSQL contract', () => {
       });
       const firstEligibleFactId = fixture.eligibleFactIds[0]!;
       const applyInput: Parameters<CustomerEmailReconciliationService['apply']>[0] = {
-        actor: 'ops-cc265',
+        operatorEvidence,
         ...decision,
         disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
         expectedScope: { appId: 'clever', shopId },
@@ -69,7 +70,7 @@ describe('customer email reconciliation PostgreSQL contract', () => {
       expect(await prisma.customerRouteNotificationFact.findUniqueOrThrow({ where: { id: firstEligibleFactId } }))
         .toMatchObject({ errorCode: 'OPERATOR_DO_NOT_SEND', metadata: null, provider: null, recipientEmailSnapshot: null, status: 'DEAD' });
       expect(auditAfterFirstApply).toMatchObject({
-        actor: 'ops-cc265',
+        actor: operatorEvidence.actor,
         disposition: 'DO_NOT_SEND',
         targetKind: 'FACT'
       });
@@ -246,11 +247,9 @@ async function seed(prisma: PrismaClient) {
 }
 
 function assertDisposableDatabase(): void {
-  const standardHarness = process.env.G002_DATABASE_TARGET_CLASS === 'safe-local-g002-disposable'
-    && databaseUrl.includes('127.0.0.1:55488/clever_g002');
   const isolatedHarness = process.env.EMAIL_RECONCILIATION_DATABASE_TARGET_CLASS === 'safe-local-email-reconciliation-disposable'
-    && databaseUrl.includes('127.0.0.1:55498/clever_email_reconciliation');
-  if (!standardHarness && !isolatedHarness) {
+    && databaseUrl.includes('127.0.0.1:55491/clever_email_reconciliation');
+  if (!isolatedHarness) {
     throw new Error('Refusing non-disposable database');
   }
 }

@@ -5,6 +5,9 @@ CREATE TABLE "customer_email_operator_reconciliations" (
   "targetId" UUID NOT NULL,
   "disposition" TEXT NOT NULL,
   "actor" TEXT NOT NULL,
+  "ssmCommandId" TEXT NOT NULL,
+  "releaseImageDigest" TEXT NOT NULL,
+  "approvalRef" TEXT NOT NULL,
   "changeControlRef" TEXT NOT NULL,
   "reasonCode" TEXT NOT NULL,
   "manifestSha256" TEXT NOT NULL,
@@ -20,6 +23,12 @@ CREATE TABLE "customer_email_operator_reconciliations" (
     CHECK ("disposition" = 'DO_NOT_SEND'),
   CONSTRAINT "customer_email_operator_reconciliations_actor_check"
     CHECK ("actor" ~ '^[a-z0-9][a-z0-9._/-]{2,79}$'),
+  CONSTRAINT "customer_email_operator_reconciliations_ssm_command_check"
+    CHECK ("ssmCommandId" ~ '^[a-f0-9-]{36}$'),
+  CONSTRAINT "customer_email_operator_reconciliations_release_digest_check"
+    CHECK ("releaseImageDigest" ~ '^ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:[a-f0-9]{64}$'),
+  CONSTRAINT "customer_email_operator_reconciliations_approval_check"
+    CHECK ("approvalRef" ~ '^EVNSolution/clever-change-control#[1-9][0-9]*:comment-[1-9][0-9]*$'),
   CONSTRAINT "customer_email_operator_reconciliations_cc_check"
     CHECK ("changeControlRef" ~ '^EVNSolution/clever-change-control#[1-9][0-9]*$'),
   CONSTRAINT "customer_email_operator_reconciliations_reason_check"

@@ -7,6 +7,9 @@ IMAGE="${CUSTOMER_EMAIL_RECONCILIATION_IMAGE:-}"
 RELEASE_SHA="${CUSTOMER_EMAIL_RECONCILIATION_RELEASE_SHA:-}"
 CHANGE_CONTROL_REF="${CUSTOMER_EMAIL_RECONCILIATION_CHANGE_CONTROL_REF:-}"
 MANIFEST_SHA256="${CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_SHA256:-}"
+APPROVAL_REF="${CUSTOMER_EMAIL_RECONCILIATION_APPROVAL_REF:-}"
+CALLER_ARN="${CUSTOMER_EMAIL_RECONCILIATION_CALLER_ARN:-}"
+EVIDENCE_COMMAND_ID="${CUSTOMER_EMAIL_RECONCILIATION_EVIDENCE_COMMAND_ID:-}"
 MANIFEST_PATH="${CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_PATH:-}"
 CLI_ARGS_B64="${CUSTOMER_EMAIL_RECONCILIATION_ARGS_B64:-}"
 RENDER_HOST_SCRIPT=false
@@ -55,6 +58,7 @@ fi
 }
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "customer-email-reconciliation: exact release SHA is required" >&2; exit 64; }
 [[ "$CHANGE_CONTROL_REF" =~ ^EVNSolution/clever-change-control#[1-9][0-9]*$ ]] || { echo "customer-email-reconciliation: change-control binding is required" >&2; exit 64; }
+[[ "$APPROVAL_REF" =~ ^${CHANGE_CONTROL_REF}:comment-[1-9][0-9]*$ ]] || { echo "customer-email-reconciliation: exact approval reference is required" >&2; exit 64; }
 [ -n "$CLI_ARGS_B64" ] || { echo "customer-email-reconciliation: encoded argument array is required" >&2; exit 64; }
 if [ -n "$MANIFEST_PATH" ] && [[ "$MANIFEST_PATH" != /srv/clever-route-server/operator/reconciliation/* ]]; then
   echo "customer-email-reconciliation: manifest path is outside the approved directory" >&2
@@ -73,6 +77,9 @@ MANIFEST_PATH=$(shell_quote "$MANIFEST_PATH")
 RELEASE_SHA=$(shell_quote "$RELEASE_SHA")
 CHANGE_CONTROL_REF=$(shell_quote "$CHANGE_CONTROL_REF")
 MANIFEST_SHA256=$(shell_quote "$MANIFEST_SHA256")
+APPROVAL_REF=$(shell_quote "$APPROVAL_REF")
+CALLER_ARN=$(shell_quote "$CALLER_ARN")
+EVIDENCE_COMMAND_ID=$(shell_quote "$EVIDENCE_COMMAND_ID")
 HOST
   cat <<'HOST'
 cd /srv/clever-route-server
@@ -88,6 +95,8 @@ has_fact = '--fact-id' in args
 has_manifest = '--manifest' in args
 if '--dispatch-id' in args:
     raise SystemExit('dispatch IDs are forbidden')
+if any(flag in args for flag in ('--operator-actor', '--ssm-command-id', '--release-image-digest', '--approval-ref')):
+    raise SystemExit('operator evidence is injected by SSM and cannot be supplied')
 if is_apply and (has_fact or not has_manifest):
     raise SystemExit('apply requires a manifest and forbids FACT IDs')
 if not is_apply and (not has_fact or has_manifest):
@@ -104,6 +113,9 @@ for value in args:
 print('\0'.join(args), end='')
 PY
 mapfile -d '' -t args <"$args_file"
+operator_actor="aws-$(printf '%s' "$CALLER_ARN" | sha256sum | cut -c1-24)"
+[[ "$EVIDENCE_COMMAND_ID" =~ ^[a-f0-9-]{36}$ ]] || { echo 'SSM evidence command identity is unavailable' >&2; exit 65; }
+args+=(--operator-actor "$operator_actor" --ssm-command-id "$EVIDENCE_COMMAND_ID" --release-image-digest "$IMAGE" --approval-ref "$APPROVAL_REF")
 
 python3 - "$IMAGE" "$RELEASE_SHA" <<'PY'
 import json, pathlib, subprocess, sys
@@ -128,16 +140,22 @@ HOST
 }
 
 if [ "$RENDER_HOST_SCRIPT" = true ]; then
+  [[ "$EVIDENCE_COMMAND_ID" =~ ^[a-f0-9-]{36}$ ]] || { echo "customer-email-reconciliation: render requires an evidence command id" >&2; exit 64; }
   host_script
   exit 0
 fi
 
 command -v aws >/dev/null || { echo "customer-email-reconciliation: aws is required" >&2; exit 127; }
 command -v python3 >/dev/null || { echo "customer-email-reconciliation: python3 is required" >&2; exit 127; }
+CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text)"
+[ -n "$CALLER_ARN" ] && [ "$CALLER_ARN" != "None" ] || { echo "customer-email-reconciliation: AWS caller identity is unavailable" >&2; exit 65; }
 [ -n "$INSTANCE_ID" ] || {
   echo "customer-email-reconciliation: explicit SSM instance id is required" >&2
   exit 64
 }
+
+EVIDENCE_COMMAND_ID="$(aws ssm send-command --region "$AWS_REGION" --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript --comment "Authorize ${APPROVAL_REF}" --parameters 'commands=true' --query 'Command.CommandId' --output text)"
+aws ssm wait command-executed --region "$AWS_REGION" --command-id "$EVIDENCE_COMMAND_ID" --instance-id "$INSTANCE_ID"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT

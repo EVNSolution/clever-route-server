@@ -2288,19 +2288,22 @@ model CustomerDeliveryNotificationAttempt {
 }
 
 model CustomerEmailOperatorReconciliation {
-  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId           String   @db.Uuid
-  shop             Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  targetKind       String   @db.Text
-  targetId         String   @db.Uuid
-  disposition      String   @db.Text
-  actor            String   @db.Text
-  changeControlRef String   @db.Text
-  reasonCode       String   @db.Text
-  manifestSha256   String   @db.Text
-  correlationId    String   @unique @db.Text
-  retainedUntil    DateTime @db.Timestamptz(6)
-  createdAt        DateTime @default(now()) @db.Timestamptz(6)
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId             String   @db.Uuid
+  shop               Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  targetKind         String   @db.Text
+  targetId           String   @db.Uuid
+  disposition        String   @db.Text
+  actor              String   @db.Text
+  ssmCommandId       String   @db.Text
+  releaseImageDigest String   @db.Text
+  approvalRef        String   @db.Text
+  changeControlRef   String   @db.Text
+  reasonCode         String   @db.Text
+  manifestSha256     String   @db.Text
+  correlationId      String   @unique @db.Text
+  retainedUntil      DateTime @db.Timestamptz(6)
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([shopId, createdAt])
   @@index([retainedUntil])

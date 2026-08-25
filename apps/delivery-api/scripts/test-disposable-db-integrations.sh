@@ -7,6 +7,7 @@ if [[ "${1:-}" == "--plan" ]]; then
     'G003 populated upgrade: 127.0.0.1:55434 / clever_g003_upgrade' \
     'G002: 127.0.0.1:55488 / clever_g002' \
     'G002 populated upgrade: 127.0.0.1:55489 / clever_g002_upgrade' \
+    'Email reconciliation: 127.0.0.1:55491 / clever_email_reconciliation' \
     'G010: 127.0.0.1:55477 / clever_g007_g010_eta' \
     'G005: 127.0.0.1:55466 / clever_g005' \
     'G006: 127.0.0.1:55490 / clever_g006'
@@ -63,6 +64,7 @@ start_postgres() {
 g003_container="clever-api-audit-g003-${audit_suffix}"
 g003_upgrade_container="clever-api-audit-g003-upgrade-${audit_suffix}"
 g002_container="clever-api-audit-g002-${audit_suffix}"
+email_reconciliation_container="clever-api-audit-email-reconciliation-${audit_suffix}"
 g002_upgrade_container="clever-api-audit-g002-upgrade-${audit_suffix}"
 g010_container="clever-api-audit-g010-${audit_suffix}"
 g005_container="clever-api-audit-g005-${audit_suffix}"
@@ -70,6 +72,7 @@ g006_container="clever-api-audit-g006-${audit_suffix}"
 
 g003_url='postgresql://clever_g003:clever_g003@127.0.0.1:55433/clever_g003?schema=public'
 g002_url='postgresql://clever_g002:clever_g002@127.0.0.1:55488/clever_g002?schema=public'
+email_reconciliation_url='postgresql://clever_email_reconciliation:clever_email_reconciliation@127.0.0.1:55491/clever_email_reconciliation?schema=public'
 g010_url='postgresql://clever_g007:clever_g007@127.0.0.1:55477/clever_g007_g010_eta?schema=public'
 g005_url='postgresql://clever_g005:clever_g005@127.0.0.1:55466/clever_g005?schema=public'
 g006_url='postgresql://clever_g006:clever_g006@127.0.0.1:55490/clever_g006?schema=public'
@@ -77,6 +80,7 @@ g006_url='postgresql://clever_g006:clever_g006@127.0.0.1:55490/clever_g006?schem
 start_postgres "$g003_container" 55433 clever_g003 clever_g003 clever_g003
 start_postgres "$g003_upgrade_container" 55434 clever_g003_upgrade clever_g003_upgrade clever_g003_upgrade
 start_postgres "$g002_container" 55488 clever_g002 clever_g002 clever_g002
+start_postgres "$email_reconciliation_container" 55491 clever_email_reconciliation clever_email_reconciliation clever_email_reconciliation
 start_postgres "$g002_upgrade_container" 55489 clever_g002_upgrade clever_g002_upgrade clever_g002_upgrade
 start_postgres "$g010_container" 55477 clever_g007_g010_eta clever_g007 clever_g007
 start_postgres "$g005_container" 55466 clever_g005 clever_g005 clever_g005
@@ -215,16 +219,20 @@ g003_upgrade_manifest="$(docker exec "$g003_upgrade_container" psql -At -U cleve
 [[ "$(printf '%s\n' "$g003_upgrade_manifest" | wc -l | tr -d ' ')" == '2' ]] || { echo 'Missing per-shop G003 migration manifest' >&2; exit 1; }
 printf 'G003 populated migration upgrade: PASS\n%s\n' "$g003_upgrade_manifest"
 
-for database_url in "$g002_url" "$g003_url" "$g010_url" "$g005_url" "$g006_url"; do
+for database_url in "$g002_url" "$email_reconciliation_url" "$g003_url" "$g010_url" "$g005_url" "$g006_url"; do
   DATABASE_URL="$database_url" npm run prisma:migrate:deploy
 done
 
 G002_DATABASE_TARGET_CLASS='safe-local-g002-disposable' \
 DATABASE_URL="$g002_url" \
 DRIVER_EVENT_CONTRACT_V2_DATABASE_URL="$g002_url" \
-EMAIL_RECONCILIATION_DATABASE_URL="$g002_url" \
 ROUTE_OPERATIONAL_HEALTH_DATABASE_URL="$g002_url" \
-npm test -- customer-email-reconciliation.integration.test.ts driver-event-contract-v2.integration.test.ts route-operational-health.integration.test.ts
+npm test -- driver-event-contract-v2.integration.test.ts route-operational-health.integration.test.ts
+
+DATABASE_URL="$email_reconciliation_url" \
+EMAIL_RECONCILIATION_DATABASE_TARGET_CLASS='safe-local-email-reconciliation-disposable' \
+EMAIL_RECONCILIATION_DATABASE_URL="$email_reconciliation_url" \
+npm test -- customer-email-reconciliation.integration.test.ts
 
 G003_DATABASE_TARGET_CLASS='safe-local-g003-temp-cluster' \
 DATABASE_URL="$g003_url" \
