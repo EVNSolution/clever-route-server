@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 
-import { OsrmRouteGeometryProvider } from '../modules/route-plans/osrm-route-geometry.client.js';
 import { PrismaRoutePlanRepository } from '../modules/route-plans/route-plan.repository.js';
+import { createAdminRouteGeometryProvider } from '../modules/route-plans/route-plan.dependencies.js';
 import { RoutePlanAdminService } from '../modules/route-plans/route-plan.service.js';
 import type { RoutePlanDetail } from '../modules/route-plans/route-plan.types.js';
 
@@ -68,8 +68,10 @@ async function main(): Promise<void> {
 
     let after: RoutePlanDetail = before;
     if (args.apply) {
-      const osrmBaseUrl = readOsrmBaseUrl(process.env.OSRM_BASE_URL);
-      const routeGeometryProvider = new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl });
+      const routeGeometryProvider = createAdminRouteGeometryProvider(process.env);
+      if (routeGeometryProvider === undefined) {
+        throw new Error('An OSRM route geometry provider is required when --apply is used.');
+      }
       const service = new RoutePlanAdminService(repository, routeGeometryProvider);
       const refreshed = await service.refreshRouteGeometryForRoutePlan({
         routePlanId: args.routePlanId,
@@ -115,13 +117,6 @@ function readRequired(values: Map<string, string>, key: string): string {
     throw new Error(`Missing required argument: ${key}`);
   }
   return value;
-}
-
-function readOsrmBaseUrl(value: string | undefined): string {
-  if (value === undefined || value.trim() === '') {
-    throw new Error('OSRM_BASE_URL is required when --apply is used.');
-  }
-  return value.trim();
 }
 
 function computeMaxSegmentMeters(coordinates: Array<[number, number]>): number | null {

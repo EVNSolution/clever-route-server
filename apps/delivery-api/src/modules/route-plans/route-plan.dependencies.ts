@@ -4,7 +4,10 @@ import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../sho
 import { ShopifySessionTokenVerifier } from '../shopify/session-token-verifier.js';
 import { OsrmRouteGeometryProvider } from './osrm-route-geometry.client.js';
 import {
+  CoverageAwareRouteGeometryProvider,
+  hasExplicitCoverageUrls,
   readConfiguredCoverageBaseUrls,
+  readDefaultRouteEngineCoverage,
   type RouteEngineRuntimeEnv,
 } from './route-engine-coverage.js';
 import { PrismaRouteOptimizationJobRepository } from './route-optimization-job.repository.js';
@@ -34,9 +37,7 @@ export function loadAdminRoutePlanDependencies(input: {
   }
 
   const repository = new PrismaRoutePlanRepository(input.prisma);
-  const osrmBaseUrl = readOptional(input.env.OSRM_BASE_URL);
-  const routeGeometryProvider =
-    osrmBaseUrl === undefined ? undefined : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl });
+  const routeGeometryProvider = createAdminRouteGeometryProvider(input.env);
   const routeOptimizationJobService = new RouteOptimizationJobService(
     new PrismaRouteOptimizationJobRepository(input.prisma)
   );
@@ -55,6 +56,26 @@ export function loadAdminRoutePlanDependencies(input: {
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
+}
+
+export function createAdminRouteGeometryProvider(env: AdminRoutePlanRuntimeEnv) {
+  if (hasExplicitCoverageUrls(env, 'OSRM')) {
+    const providers = Object.fromEntries(
+      Object.entries(readConfiguredCoverageBaseUrls(env, 'OSRM')).map(([coverage, baseUrl]) => [
+        coverage,
+        new OsrmRouteGeometryProvider({ baseUrl, ...optionalTimeout(env.OSRM_TIMEOUT_MS) }),
+      ]),
+    ) as ConstructorParameters<typeof CoverageAwareRouteGeometryProvider>[0]['providers'];
+    return new CoverageAwareRouteGeometryProvider({
+      defaultCoverage: readDefaultRouteEngineCoverage(env),
+      providers,
+    });
+  }
+
+  const osrmBaseUrl = readOptional(env.OSRM_BASE_URL);
+  return osrmBaseUrl === undefined
+    ? undefined
+    : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl, ...optionalTimeout(env.OSRM_TIMEOUT_MS) });
 }
 
 function createRouteTrackingRoadMatchProvider(env: AdminRoutePlanRuntimeEnv): OsrmRouteTrackingRoadMatchProvider | undefined {
