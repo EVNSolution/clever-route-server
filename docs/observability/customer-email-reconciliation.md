@@ -115,7 +115,10 @@ in the hashed approval snapshot stored with the audit. Approval authority comes
 from the repository collaborator-permission API (`admin` or `maintain`), never a
 caller-supplied allowlist. Apply evidence is a root-owned, read-only envelope at
 the fixed private entrypoint path; individual evidence environment variables are
-not accepted. The wrapper accepts
+not accepted. The approval body must contain exactly five normalized nonblank
+lines: the affirmative approval token followed by the CC reference, manifest
+SHA, release SHA, and image digest bindings. Negated, quoted, duplicated, or
+annotated approval templates are rejected. The wrapper accepts
 success only after SSM reports `Success`, response code `0`, and one framed,
 valid dry-run or apply JSON result. Record only the PII-free result, image
 digest, reviewed hash, derived actor token, reason, and SSM command evidence.

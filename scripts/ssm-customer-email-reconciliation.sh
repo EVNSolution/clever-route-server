@@ -339,12 +339,20 @@ issue_url = data['issue_url']
 if permission.get('permission') != 'admin' and permission.get('role_name') not in {'admin', 'maintain'}:
     raise SystemExit('approval author lacks trusted repository authority')
 change_control_ref = 'EVNSolution/clever-change-control#265'
-required = ['APPROVED CUSTOMER EMAIL DO-NOT-SEND', f'change-control-ref: {change_control_ref}', f'manifest-sha256: {manifest}', f'release-sha: {release}', f'image-digest: {image}']
-if any(value not in body for value in required):
-    raise SystemExit('approval body binding mismatch')
+expected_lines = [
+    'APPROVED CUSTOMER EMAIL DO-NOT-SEND',
+    f'change-control-ref: {change_control_ref}',
+    f'manifest-sha256: {manifest}',
+    f'release-sha: {release}',
+    f'image-digest: {image}',
+]
+normalized_lines = [line.strip() for line in body.replace('\r\n', '\n').replace('\r', '\n').split('\n') if line.strip()]
+if normalized_lines != expected_lines:
+    raise SystemExit('approval body must match the exact affirmative schema')
+normalized_body = '\n'.join(normalized_lines)
 snapshot = {
     'author': author,
-    'body': body,
+    'body': normalized_body,
     'commentId': data.get('id'),
     'changeControlRef': change_control_ref,
     'htmlUrl': data.get('html_url'),
