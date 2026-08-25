@@ -3493,7 +3493,7 @@ function resolveChildSnapshotAssignments(
   const routePlanStopIds = (child.routePlan?.routeStops ?? [])
     .sort((left, right) => left.sequence - right.sequence)
     .map((stop) => stop.deliveryStopId);
-  if (modernSnapshot && authority !== 'ARCHIVED') {
+  if (modernSnapshot && authority === 'CURRENT') {
     const snapshotOrderIds = orderedSnapshotStops.map((stop) => stop.orderId);
     const bindingAuthority = currentRouteBindingAuthorityState(child.id, snapshotOrderIds, group.orders);
     if (snapshotStopIds.length !== routePlanStopIds.length
