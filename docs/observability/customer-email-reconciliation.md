@@ -23,7 +23,9 @@ The maximum explicit batch is 100 facts.
 - Dry-run is the default and reports `mutationCount: 0`.
 - Both dry-run and apply require a canonical change-control reference and a
   PII-free reason code. The reviewed hash proves manifest integrity; it is not
-  approval. Apply still requires the recorded change-control decision.
+  approval. This historical tool accepts only
+  `EVNSolution/clever-change-control#265`; apply still requires that exact
+  recorded change-control decision.
 - Apply additionally requires `--apply`, an SSM-derived PII-free actor token,
   exact app/shop
   scope, the read-only reviewed manifest, its exact SHA-256, and

@@ -92,6 +92,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$MOCK_AWS_LOG"
 case "$1 ${2:-}" in
   'sts get-caller-identity') printf '%s\n' 'arn:aws:sts::123456789012:assumed-role/route-ops/reviewer-session' ;;
+  'ssm get-parameter') printf '%s\n' '11111111-1111-4111-8111-111111111111' ;;
   'ssm send-command')
     while [ "$#" -gt 0 ]; do
       if [ "$1" = '--parameters' ]; then cp "${2#file://}" "$MOCK_CAPTURED_PARAMETERS"; break; fi
@@ -151,6 +152,7 @@ print(json.dumps({
     'user': {'login': os.environ['MOCK_APPROVAL_AUTHOR']},
     'body': '\n'.join([
         'APPROVED CUSTOMER EMAIL DO-NOT-SEND',
+        'change-control-ref: EVNSolution/clever-change-control#265',
         f"manifest-sha256: {os.environ['MOCK_MANIFEST_SHA256']}",
         f"release-sha: {os.environ['MOCK_RELEASE_SHA']}",
         f"image-digest: {os.environ['MOCK_IMAGE']}",
@@ -161,6 +163,7 @@ MOCK_GH
 chmod +x "$mock_dir/aws" "$mock_dir/gh"
 
 run_mocked_wrapper() {
+  local requested_ref="${9:-EVNSolution/clever-change-control#265}"
   PATH="$mock_dir:$PATH" \
   MOCK_AWS_LOG="$mock_log" \
   MOCK_CAPTURED_PARAMETERS="$mock_dir/parameters.json" \
@@ -177,9 +180,9 @@ run_mocked_wrapper() {
   CUSTOMER_EMAIL_RECONCILIATION_IMAGE="$digest" \
   CUSTOMER_EMAIL_RECONCILIATION_ARGS_B64="${7:-$args_b64}" \
   CUSTOMER_EMAIL_RECONCILIATION_RELEASE_SHA="$release_sha" \
-  CUSTOMER_EMAIL_RECONCILIATION_CHANGE_CONTROL_REF='EVNSolution/clever-change-control#265' \
+  CUSTOMER_EMAIL_RECONCILIATION_CHANGE_CONTROL_REF="$requested_ref" \
   CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_SHA256="$(printf 'a%.0s' {1..64})" \
-  CUSTOMER_EMAIL_RECONCILIATION_APPROVAL_REF='EVNSolution/clever-change-control#265:comment-123' \
+  CUSTOMER_EMAIL_RECONCILIATION_APPROVAL_REF="$requested_ref:comment-123" \
   CUSTOMER_EMAIL_RECONCILIATION_INSTANCE_ID='i-local-test' \
   CUSTOMER_EMAIL_RECONCILIATION_CALLER_ARN='caller-spoof-must-be-ignored' \
   CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_PATH=/srv/clever-route-server/operator/reconciliation/reviewed.json \
@@ -204,6 +207,15 @@ grep -Fq 'CALLER_ARN=arn:aws:sts::123456789012:assumed-role/route-ops/reviewer-s
 : >"$mock_log"
 if run_mocked_wrapper unapproved-user valid Success 265 apply write >/dev/null 2>&1; then
   echo 'unapproved GitHub comment author was accepted' >&2
+  exit 1
+fi
+! grep -Fq 'ssm send-command' "$mock_log"
+
+: >"$mock_log"
+wrong_cc_args="${args//EVNSolution\/clever-change-control#265/EVNSolution\/clever-change-control#999}"
+wrong_cc_args_b64="$(printf '%s' "$wrong_cc_args" | base64 | tr -d '\n')"
+if run_mocked_wrapper release-manager valid Success 265 apply admin "$wrong_cc_args_b64" none 'EVNSolution/clever-change-control#999' >/dev/null 2>&1; then
+  echo 'CC#265 approval comment was reused for a CC#999 request' >&2
   exit 1
 fi
 ! grep -Fq 'ssm send-command' "$mock_log"
@@ -248,5 +260,110 @@ if run_mocked_wrapper release-manager valid Success 265 dry-run admin "$args_b64
   echo 'SSM result mode different from requested mode was accepted' >&2
   exit 1
 fi
+
+host_runtime="$mock_dir/host-runtime"
+mkdir -p "$host_runtime/.deploy"
+host_manifest="$host_runtime/reviewed.json"
+cat >"$host_manifest" <<'JSON'
+{"schema":"customer_email_reconciliation_manifest_v1","changeControlRef":"EVNSolution/clever-change-control#265","disposition":"DO_NOT_SEND","generatedAt":"2026-08-25T00:00:00.000Z","items":[{"kind":"FACT","id":"00000000-0000-4000-8000-000000000001","stateSha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","updatedAt":"2026-08-25T00:00:00.000Z"}],"reasonCode":"HISTORICAL_DO_NOT_SEND","scope":{"appId":"clever","shopId":"00000000-0000-0000-0000-000000000001"}}
+JSON
+host_manifest_sha="$(python3 - "$host_manifest" <<'PY'
+import hashlib, json, sys
+value = json.load(open(sys.argv[1], encoding='utf-8'))
+print(hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+PY
+)"
+host_apply_args="$(printf '[\"--apply\",\"--manifest\",\"/run/reconciliation/manifest.json\",\"--reviewed-manifest-sha256\",\"%s\",\"--expected-item-count\",\"1\",\"--change-control-ref\",\"EVNSolution/clever-change-control#265\",\"--reason-code\",\"HISTORICAL_DO_NOT_SEND\",\"--app-id\",\"clever\",\"--shop-id\",\"00000000-0000-0000-0000-000000000001\",\"--disposition\",\"do-not-send\"]' "$host_manifest_sha")"
+host_apply_args_b64="$(printf '%s' "$host_apply_args" | base64 | tr -d '\n')"
+cat >"$mock_dir/git" <<'MOCK_GIT'
+#!/usr/bin/env bash
+printf '%s\n' "$MOCK_RELEASE_SHA"
+MOCK_GIT
+cat >"$mock_dir/docker" <<'MOCK_DOCKER'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  ps) printf '%s\n' mock-api-container ;;
+  inspect) printf '%s\n' 'DATABASE_URL=postgresql://isolated:test@127.0.0.1:1/unused' ;;
+  compose)
+    compose_file="$3"
+    grep -Fq 'customer-email-reconciliation:' "$compose_file"
+    ! grep -Eq 'firebase|driver|customer-email-assets|env_file|secrets:' "$compose_file"
+    evidence_source=''
+    is_apply=false
+    while [ "$#" -gt 0 ]; do
+      [ "$1" = '--apply' ] && is_apply=true
+      if [ "$1" = '-v' ] && [[ "$2" == *':/run/reconciliation/operator-evidence.json:ro' ]]; then
+        evidence_source="${2%%:*}"
+      fi
+      shift
+    done
+    if [ "$is_apply" = true ]; then
+      [ "$(stat -f '%Lp' "$evidence_source")" = 444 ]
+      python3 - "$evidence_source" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding='utf-8'))
+assert value['ssmCommandId'] == '11111111-1111-4111-8111-111111111111'
+assert value['changeControlRef'] == 'EVNSolution/clever-change-control#265'
+PY
+      printf '{"mode":"apply","manifestSha256":"%s","disposition":"DO_NOT_SEND","appliedItems":1,"alreadyAppliedItems":0,"auditRows":1}\n' "$MOCK_HOST_MANIFEST_SHA"
+    else
+      MOCK_HOST_MANIFEST_SHA="$MOCK_HOST_MANIFEST_SHA" python3 - <<'PY'
+import hashlib, json, os
+manifest = {
+    'changeControlRef': 'EVNSolution/clever-change-control#265',
+    'disposition': 'DO_NOT_SEND',
+    'generatedAt': '2026-08-25T00:00:00.000Z',
+    'items': [{'kind': 'FACT', 'id': '00000000-0000-4000-8000-000000000001', 'stateSha256': 'd' * 64, 'updatedAt': '2026-08-25T00:00:00.000Z'}],
+    'reasonCode': 'HISTORICAL_DO_NOT_SEND',
+    'schema': 'customer_email_reconciliation_manifest_v1',
+    'scope': {'appId': 'clever', 'shopId': '00000000-0000-0000-0000-000000000001'},
+}
+digest = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+print(json.dumps({'manifest': manifest, 'manifestSha256': digest, 'mode': 'dry-run', 'mutationCount': 0}, indent=2))
+PY
+    fi
+    ;;
+esac
+MOCK_DOCKER
+chmod +x "$mock_dir/git" "$mock_dir/docker"
+printf '{"commitSha":"%s","deliveryApiImage":"%s"}\n' "$release_sha" "$digest" >"$host_runtime/.deploy/deploy-history.jsonl"
+
+render_host_e2e() {
+  local encoded_args="$1"
+  local manifest_path="$2"
+  CUSTOMER_EMAIL_RECONCILIATION_IMAGE="$digest" \
+  CUSTOMER_EMAIL_RECONCILIATION_ARGS_B64="$encoded_args" \
+  CUSTOMER_EMAIL_RECONCILIATION_RELEASE_SHA="$release_sha" \
+  CUSTOMER_EMAIL_RECONCILIATION_CHANGE_CONTROL_REF='EVNSolution/clever-change-control#265' \
+  CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_SHA256="$host_manifest_sha" \
+  CUSTOMER_EMAIL_RECONCILIATION_APPROVAL_REF='EVNSolution/clever-change-control#265:comment-123' \
+  CUSTOMER_EMAIL_RECONCILIATION_CALLER_ARN='arn:aws:sts::123456789012:assumed-role/route-ops/reviewer-session' \
+  CUSTOMER_EMAIL_RECONCILIATION_APPROVAL_SNAPSHOT_SHA256="$(printf 'e%.0s' {1..64})" \
+  CUSTOMER_EMAIL_RECONCILIATION_COMMAND_ID_PARAMETER='/local/test/command-id' \
+  CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_PATH="$manifest_path" \
+  "$wrapper" --render-host-script
+}
+
+execute_host_e2e() {
+  local rendered_host="$1"
+  local output_path="$2"
+  python3 - "$rendered_host" "$output_path" "$host_runtime" "$host_manifest" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')
+source = source.replace('cd /srv/clever-route-server', f'cd {sys.argv[3]}')
+source = source.replace('/srv/clever-route-server/operator/reconciliation/reviewed.json', sys.argv[4])
+source = source.replace('mapfile -d \'\' -t args <"$args_file"', 'args=(); while IFS= read -r -d \'\' value; do args+=("$value"); done <"$args_file"')
+pathlib.Path(sys.argv[2]).write_text(source, encoding='utf-8')
+PY
+  PATH="$mock_dir:$PATH" MOCK_AWS_LOG="$mock_log" MOCK_RELEASE_SHA="$release_sha" MOCK_HOST_MANIFEST_SHA="$host_manifest_sha" bash "$output_path"
+}
+
+render_host_e2e "$host_apply_args_b64" /srv/clever-route-server/operator/reconciliation/reviewed.json >"$mock_dir/host-apply-rendered.sh"
+apply_host_output="$(execute_host_e2e "$mock_dir/host-apply-rendered.sh" "$mock_dir/host-apply.sh")"
+grep -Fq 'CUSTOMER_EMAIL_RECONCILIATION_RESULT_B64=' <<<"$apply_host_output"
+render_host_e2e "$dry_args_b64" '' >"$mock_dir/host-dry-rendered.sh"
+dry_host_output="$(execute_host_e2e "$mock_dir/host-dry-rendered.sh" "$mock_dir/host-dry.sh")"
+grep -Fq 'CUSTOMER_EMAIL_RECONCILIATION_RESULT_B64=' <<<"$dry_host_output"
 
 echo 'ssm customer email reconciliation wrapper checks passed'

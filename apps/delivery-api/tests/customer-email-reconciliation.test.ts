@@ -19,6 +19,18 @@ const decision = { changeControlRef: 'EVNSolution/clever-change-control#265', re
 const operatorEvidence = { actor: 'aws-1234567890abcdef', approvalRef: 'EVNSolution/clever-change-control#265:comment-123', approvalSnapshotSha256: 'b'.repeat(64), releaseImageDigest: `ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:${'a'.repeat(64)}`, ssmCommandId: '11111111-1111-4111-8111-111111111111' };
 
 describe('customer email reconciliation', () => {
+  test('refuses any change-control reference other than the approved CC#265 contract', async () => {
+    const store = new InMemoryReconciliationStore(scope, sevenFacts().slice(0, 1));
+    await expect(service(store).dryRun({
+      changeControlRef: 'EVNSolution/clever-change-control#999',
+      disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
+      reasonCode: decision.reasonCode,
+      scope,
+      selections: [{ id: factId(1), kind: 'FACT' }]
+    })).rejects.toMatchObject({ code: 'CHANGE_CONTROL_REF_INVALID' });
+    expect(store.mutations).toHaveLength(0);
+  });
+
   test('creates a seven-row PII-free dry-run manifest without mutation', async () => {
     const store = new InMemoryReconciliationStore(scope, sevenFacts());
     const result = await service(store).dryRun({

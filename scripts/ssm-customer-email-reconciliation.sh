@@ -66,7 +66,7 @@ fi
   exit 64
 }
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "customer-email-reconciliation: exact release SHA is required" >&2; exit 64; }
-[[ "$CHANGE_CONTROL_REF" =~ ^EVNSolution/clever-change-control#[1-9][0-9]*$ ]] || { echo "customer-email-reconciliation: change-control binding is required" >&2; exit 64; }
+[ "$CHANGE_CONTROL_REF" = 'EVNSolution/clever-change-control#265' ] || { echo "customer-email-reconciliation: exact CC#265 binding is required" >&2; exit 64; }
 [[ "$APPROVAL_REF" =~ ^${CHANGE_CONTROL_REF}:comment-[1-9][0-9]*$ ]] || { echo "customer-email-reconciliation: exact approval reference is required" >&2; exit 64; }
 [ -n "$CLI_ARGS_B64" ] || { echo "customer-email-reconciliation: encoded argument array is required" >&2; exit 64; }
 if [ -n "$MANIFEST_PATH" ] && [[ "$MANIFEST_PATH" != /srv/clever-route-server/operator/reconciliation/* ]]; then
@@ -338,13 +338,15 @@ body = data.get('body', '')
 issue_url = data['issue_url']
 if permission.get('permission') != 'admin' and permission.get('role_name') not in {'admin', 'maintain'}:
     raise SystemExit('approval author lacks trusted repository authority')
-required = ['APPROVED CUSTOMER EMAIL DO-NOT-SEND', f'manifest-sha256: {manifest}', f'release-sha: {release}', f'image-digest: {image}']
+change_control_ref = 'EVNSolution/clever-change-control#265'
+required = ['APPROVED CUSTOMER EMAIL DO-NOT-SEND', f'change-control-ref: {change_control_ref}', f'manifest-sha256: {manifest}', f'release-sha: {release}', f'image-digest: {image}']
 if any(value not in body for value in required):
     raise SystemExit('approval body binding mismatch')
 snapshot = {
     'author': author,
     'body': body,
     'commentId': data.get('id'),
+    'changeControlRef': change_control_ref,
     'htmlUrl': data.get('html_url'),
     'issueNumber': 265,
     'issueUrl': issue_url,

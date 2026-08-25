@@ -4,6 +4,7 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 
 export const CUSTOMER_EMAIL_RECONCILIATION_SCHEMA = 'customer_email_reconciliation_manifest_v1';
 export const CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION = 'DO_NOT_SEND';
+export const CUSTOMER_EMAIL_RECONCILIATION_CHANGE_CONTROL_REF = 'EVNSolution/clever-change-control#265';
 
 export type CustomerEmailReconciliationDisposition = typeof CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION;
 export type CustomerEmailReconciliationItemKind = 'FACT';
@@ -519,7 +520,7 @@ function assertOperatorEvidence(evidence: CustomerEmailOperatorEvidence, changeC
 }
 
 function assertDecisionBinding(changeControlRef: string, reasonCode: string): void {
-  if (!/^EVNSolution\/clever-change-control#[1-9][0-9]*$/u.test(changeControlRef)) {
+  if (changeControlRef !== CUSTOMER_EMAIL_RECONCILIATION_CHANGE_CONTROL_REF) {
     throw new CustomerEmailReconciliationRefusalError('CHANGE_CONTROL_REF_INVALID');
   }
   if (!/^[A-Z][A-Z0-9_]{2,63}$/u.test(reasonCode)) {
