@@ -37,7 +37,9 @@ done
 emergency_rendered="$(ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 \
   ROUTE_COMPLETION_EMERGENCY_ROLLBACK=true ROUTE_COMPLETION_TARGET_MODE=OBSERVE \
   scripts/ssm-route-completion-invariant-mode.sh --render-host-script)"
-for contract in 'EMERGENCY_ROLLBACK=true' 'GUARDED|FULL' 'live_image_id' 'live_revision'; do
+# Contracts intentionally contain host-side variable references.
+# shellcheck disable=SC2016
+for contract in 'EMERGENCY_ROLLBACK=true' 'GUARDED|FULL' 'API_RUNTIME_REVISION' 'api_runtime_revision' 'live_image_id' 'live_revision' 'resolved_image_id' 'live_config_image' 'test "$live_image_id" = "$resolved_image_id"' 'test "$live_config_image" = "$expected_image"' 'test "$live_revision" = "$api_runtime_revision"'; do
   grep -Fq "$contract" <<<"$emergency_rendered" || { echo 'emergency OBSERVE rollback must use live elevated runtime identity' >&2; exit 1; }
 done
 case "$rendered" in

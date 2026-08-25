@@ -1397,7 +1397,7 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
   });
 
-  test('rejects an in-progress stop replacement before execution ownership lookup', async () => {
+  test('locks execution ownership before rejecting an in-progress stop replacement', async () => {
     const { prisma } = createPrismaHarness({
       conflictingRoutePlanStop: { deliveryStopId: 'stop-1', routePlanId: 'other-route-plan-id' },
       routePlanFindFirst: routePlanRecord({ status: 'IN_PROGRESS' })
@@ -1412,7 +1412,7 @@ describe('PrismaRoutePlanRepository', () => {
       payload: { stops: [{ deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 1 }] }
     })).rejects.toBeInstanceOf(RoutePlanStopUpdateInvalidError);
 
-    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
     expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
   });
 
@@ -2010,7 +2010,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
     expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
       data: { status: 'CANCELLED' },
-      where: { id: { in: ['remaining-route-plan-id'] }, shopId: 'shop-id' }
+      where: { id: { in: ['remaining-route-plan-id'] }, shopId: 'shop-id', status: { not: 'IN_PROGRESS' } }
     });
     expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { groupingId: 'grouping-id', shopId: 'shop-id', status: 'CURRENT' }
@@ -2021,6 +2021,51 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routeGroupingBranch.deleteMany).toHaveBeenCalledWith({
       where: { groupingId: 'grouping-id', shopId: 'shop-id' }
     });
+  });
+
+  test('fails closed instead of collapsing a split whose remaining sibling is in progress', async () => {
+    const { prisma } = createPrismaHarness({
+      routeGroupingChildVersionCount: 1,
+      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'remaining-route-plan-id' }],
+      routePlansForCollapse: [{ id: 'remaining-route-plan-id', status: 'IN_PROGRESS' }]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
+
+    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalledWith({
+      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
+    });
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: { status: 'CANCELLED' }
+    }));
+    expect(prisma.routeGroupingBranch.deleteMany).not.toHaveBeenCalled();
+  });
+
+  test('rolls back split collapse when a sibling starts execution during the guarded cancellation', async () => {
+    const { prisma } = createPrismaHarness({
+      routeGroupingChildVersionCount: 1,
+      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'remaining-route-plan-id' }],
+      routePlanUpdateManyCount: 0
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
+
+    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalledWith({
+      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
+    });
+    expect(prisma.routeGroupingBranch.deleteMany).not.toHaveBeenCalled();
   });
 
   test('keeps a parent grouping split when deleting a child still leaves multiple child routes', async () => {
@@ -2114,10 +2159,14 @@ describe('PrismaRoutePlanRepository', () => {
 
     expect(saveBody).toContain(guard);
     expect(updateStopsBody).toContain(guard);
+    expect(saveBody).toContain('FOR UPDATE');
+    expect(updateStopsBody).toContain('FOR UPDATE');
     expect(saveBody.split(mutation)).toHaveLength(2);
     expect(updateStopsBody.split(mutation)).toHaveLength(2);
     expect(saveBody.indexOf(guard)).toBeLessThan(saveBody.indexOf(mutation));
     expect(updateStopsBody.indexOf(guard)).toBeLessThan(updateStopsBody.indexOf(mutation));
+    expect(saveBody.indexOf('FOR UPDATE')).toBeLessThan(saveBody.indexOf(mutation));
+    expect(updateStopsBody.indexOf('FOR UPDATE')).toBeLessThan(updateStopsBody.indexOf(mutation));
   });
 });
 
@@ -2148,6 +2197,8 @@ function createPrismaHarness(input: {
   routePlanProjection?: Record<string, unknown> | null;
   routePlanStopFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string; status?: string } | null;
+  routePlansForCollapse?: Array<{ id: string; status: string }>;
+  routePlanUpdateManyCount?: number;
   routeGroupingChildVersionCount?: number;
   routeGroupingCurrentChildrenAfterDelete?: Array<{ routePlanId: string | null }>;
   routeGroupingOwnerChildren?: Array<{ groupingId: string }>;
@@ -2353,9 +2404,16 @@ function createPrismaHarness(input: {
             })
       ),
       findUnique: vi.fn(() => Promise.resolve(input.routePlanProjection ?? null)),
-      findMany: vi.fn(() => Promise.resolve([])),
+      findMany: vi.fn((args?: { where?: { id?: { in?: string[] } } }) => {
+        const ids = args?.where?.id?.in;
+        if (ids !== undefined) {
+          return Promise.resolve(input.routePlansForCollapse
+            ?? ids.map((id) => ({ id, status: 'DRAFT' })));
+        }
+        return Promise.resolve([]);
+      }),
       update: vi.fn(() => Promise.resolve({ id: 'route-plan-id' })),
-      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      updateMany: vi.fn(() => Promise.resolve({ count: input.routePlanUpdateManyCount ?? 1 })),
       delete: vi.fn(() =>
         Promise.resolve({
           createdAt: new Date('2026-05-07T12:30:00.000Z'),

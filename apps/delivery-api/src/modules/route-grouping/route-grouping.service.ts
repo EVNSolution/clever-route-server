@@ -563,6 +563,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       ];
       if (blockers.length > 0) throw new RouteGroupingDeleteBlockedError(blockers);
       if (childRoutePlanIds.length > 0) {
+        for (const routePlanId of [...childRoutePlanIds].sort()) {
+          await lockRoutePlanAssignment(tx, routePlanId, group.shopId);
+        }
         await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: childRoutePlanIds } } });
         await clearRouteGroupingChildVersionRoutePlanRefs(tx, {
           routePlanIds: childRoutePlanIds,
@@ -1043,6 +1046,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
       const currentChildren = loaded.childVersions.filter((child) => isOperationalCurrentChild(child));
       const currentRoutePlanIds = currentChildren.map((child) => child.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
+      for (const routePlanId of [...currentRoutePlanIds].sort()) {
+        await lockRoutePlanAssignment(tx, routePlanId, group.shopId);
+      }
       const driverIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
       const vehicleIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
       for (const route of routes) {
@@ -1214,6 +1220,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     }
 
     const currentChildren = loaded.childVersions.filter((child) => isOperationalCurrentChild(child));
+    const currentRoutePlanIds = currentChildren.map((child) => child.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
+    for (const routePlanId of [...currentRoutePlanIds].sort()) {
+      await lockRoutePlanAssignment(tx, routePlanId, group.shopId);
+    }
     const driverIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
     const vehicleIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
     for (const route of routes) {
@@ -2028,8 +2038,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 }
 
 async function lockRoutePlanAssignment(tx: Tx, routePlanId: string, shopId: string): Promise<string | null> {
-  const rows = await tx.$queryRaw<Array<{ driverId: string | null }>>`
-    SELECT "driverId"
+  const rows = await tx.$queryRaw<Array<{ driverId: string | null; status: string }>>`
+    SELECT "driverId", "status"
     FROM "route_plans"
     WHERE "id" = ${routePlanId}::uuid
       AND "shopId" = ${shopId}::uuid
@@ -2037,6 +2047,9 @@ async function lockRoutePlanAssignment(tx: Tx, routePlanId: string, shopId: stri
   `;
   const routePlan = rows[0];
   if (routePlan === undefined) throw new RouteGroupingValidationError(['route plan changed; reload and retry']);
+  if (routePlan.status === 'IN_PROGRESS') {
+    throw new RouteGroupingValidationError(['route membership cannot change after route execution starts']);
+  }
   return routePlan.driverId;
 }
 
@@ -3007,9 +3020,12 @@ async function recomputeAssignments(tx: Tx, groupingId: string): Promise<void> {
 async function archiveCurrentChildren(tx: Tx, group: LoadedGrouping, actor: string): Promise<void> {
   const current = group.childVersions.filter((child) => isOperationalCurrentChild(child));
   assertNoInProgressCurrentChildren(current);
+  const currentRoutePlanIds = current.map((child) => child.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null).sort();
+  for (const routePlanId of currentRoutePlanIds) {
+    await lockRoutePlanAssignment(tx, routePlanId, group.shopId);
+  }
   for (const child of current) {
     if (child.routePlanId !== null) {
-      await tx.routePlanStop.deleteMany({ where: { routePlanId: child.routePlanId } });
       const cancelled = await tx.routePlan.updateMany({
         data: { status: 'CANCELLED' },
         where: { id: child.routePlanId, status: { not: 'IN_PROGRESS' } }
@@ -3017,6 +3033,7 @@ async function archiveCurrentChildren(tx: Tx, group: LoadedGrouping, actor: stri
       if (cancelled.count !== 1) {
         throw new RouteGroupingValidationError(['in-progress child routes cannot be archived or deleted']);
       }
+      await tx.routePlanStop.deleteMany({ where: { routePlanId: child.routePlanId } });
     }
     await tx.routeGroupingChildVersion.update({ data: { status: 'ARCHIVED', supersededAt: new Date() }, where: { id: child.id } });
   }

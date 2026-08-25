@@ -100,7 +100,7 @@ The EC2 host does not build. A real deploy does this in order:
 
 1. Takes `.deploy/route-ops-simple-deploy.lock.d`.
 2. Writes the reviewed `infra/compose/docker-compose.prod.yml` and VROOM config files from the workflow checkout onto the host, so compose/VROOM config/script-only changes can deploy through SSM without image builds. It does **not** write or reload Caddy.
-3. Writes `.deploy/simple-candidate-image.env` with digest-addressable image refs.
+3. Writes `.deploy/simple-candidate-image.env` with digest-addressable image refs. `COMMIT_SHA` remains the selected release source, while `API_RUNTIME_REVISION` is replaced after pull with the selected delivery API image's exact OCI revision; a web-only deploy therefore cannot mislabel a reused API image.
 4. Copies existing `.deploy/current-image.env` to `.deploy/simple-rollback-image.env`.
 5. Validates compose config with `--profile osrm --profile vroom --profile korea`.
 6. Rewrites optimizer env to legacy Ontario URLs plus explicit Ontario/Korea OSRM/VROOM URLs and `OSRM_DEFAULT_COVERAGE=korea`.

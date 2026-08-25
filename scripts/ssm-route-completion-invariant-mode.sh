@@ -42,18 +42,26 @@ cleanup() { rmdir "\$lock_dir" 2>/dev/null || true; }
 trap cleanup EXIT
 container=clever-route-clever-route-api-1
 expected_image="\$(sed -n 's/^DELIVERY_API_IMAGE=//p' .deploy/current-image.env)"
+api_runtime_revision="\$(sed -n 's/^API_RUNTIME_REVISION=//p' .deploy/current-image.env)"
+api_runtime_revision="\${api_runtime_revision:-\$COMMIT_SHA}"
 live_image_id="\$(docker inspect "\$container" --format '{{.Image}}')"
+live_config_image="\$(docker inspect "\$container" --format '{{.Config.Image}}')"
 live_revision="\$(docker inspect "\$container" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+resolved_image_id="\$(docker image inspect "\$expected_image" --format '{{.Id}}')"
+test "\$live_config_image" = "\$expected_image"
+test "\$live_image_id" = "\$resolved_image_id"
 if [ "\$EMERGENCY_ROLLBACK" = true ]; then
   [[ "\$live_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
   [[ "\$expected_image" =~ @sha256:[0-9a-f]{64}$ ]]
-  test "\$live_revision" = "\$COMMIT_SHA"
+  test "\$live_revision" = "\$api_runtime_revision"
 else
   test "\$live_image_id" = "\$EXPECTED_IMAGE_ID"
   test "\$expected_image" = "\$EXPECTED_IMAGE_REPO_DIGEST"
+  test "\$resolved_image_id" = "\$EXPECTED_IMAGE_ID"
+  test "\$api_runtime_revision" = "\$COMMIT_SHA"
 fi
 docker image inspect "\$expected_image" >/dev/null
-test "\$live_revision" = "\$COMMIT_SHA"
+test "\$live_revision" = "\$api_runtime_revision"
 test "\$(docker inspect "\$container" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = 1
 runtime_env=apps/delivery-api/.env
 backup=".deploy/runtime-env.before-route-completion-mode-\$(date -u +%Y%m%dT%H%M%SZ)"

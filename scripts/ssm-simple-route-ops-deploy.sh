@@ -224,6 +224,7 @@ chmod 0750 .deploy/candidate-retention/run-driver-event-attempt-retention.sh .de
 cat > .deploy/simple-candidate-image.env <<EOF_ENV
 IMAGE_TAG=$CHANNEL_TAG
 COMMIT_SHA=$COMMIT_SHA
+API_RUNTIME_REVISION=$COMMIT_SHA
 DELIVERY_API_IMAGE=$DELIVERY_API_IMAGE
 ROUTE_OPS_WEB_STATIC_IMAGE=$ROUTE_OPS_WEB_STATIC_IMAGE
 ROUTE_OPS_WEB_STATIC_VOLUME=$ROUTE_OPS_WEB_STATIC_VOLUME
@@ -451,6 +452,10 @@ printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/de
 token=''
 static_stage_reason="$(should_stage_static)"
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea
+runtime_revision="$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+[[ "$runtime_revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate delivery API image revision is invalid' >&2; exit 1; }
+sed -i.bak "s/^API_RUNTIME_REVISION=.*/API_RUNTIME_REVISION=$runtime_revision/" .deploy/simple-candidate-image.env
+rm -f .deploy/simple-candidate-image.env.bak
 [ "$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = "1" ] \
   || { echo 'candidate delivery API does not advertise route completion invariant capability v1' >&2; exit 1; }
 if [ "$static_stage_reason" != "unchanged" ]; then
@@ -486,7 +491,7 @@ if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE="$APP_DIR/.deploy/candidate-retention/
   exit 1
 fi
 .deploy/route-ops-docker-cleanup.sh --enforce
-printf '{"ts":"%s","commitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","commitSha":"%s","runtimeCommitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$runtime_revision" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
 printf 'simple deploy completed: commit=%s channel=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG"
 HOST_SCRIPT
   python3 - "$path" "$inner_path" <<'PY'

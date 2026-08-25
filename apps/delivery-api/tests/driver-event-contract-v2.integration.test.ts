@@ -137,6 +137,54 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       await prisma.order.update({ data: { currentRouteVersionId: routeVersionId }, where: { id: '60000000-0000-4000-8000-000000000010' } });
 
       const routePlanRepository = new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true });
+      await prisma.routePlan.update({ data: { status: 'READY' }, where: { id: routePlanId } });
+      const routeStart = new pg.Client({ connectionString: databaseUrl });
+      await routeStart.connect();
+      try {
+        await routeStart.query('BEGIN');
+        await routeStart.query('UPDATE route_plans SET status = \'IN_PROGRESS\' WHERE id = $1', [routePlanId]);
+        let stopReplacementSettled = false;
+        const stopReplacement = routePlanRepository.updateRoutePlanStops({
+          routePlanId, shopDomain: 'g002-evidence.invalid', payload: { stops: [] }
+        }).then(
+          (value) => ({ error: null, value }),
+          (error: unknown) => ({ error, value: null })
+        ).finally(() => { stopReplacementSettled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        expect(stopReplacementSettled).toBe(false);
+        await routeStart.query('COMMIT');
+        expect((await stopReplacement).error).toMatchObject({ code: 'ROUTE_STOP_UPDATE_INVALID' });
+      } finally {
+        await routeStart.query('ROLLBACK').catch(() => undefined);
+        await routeStart.end();
+      }
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(1);
+
+      await prisma.routePlan.update({ data: { status: 'READY' }, where: { id: routePlanId } });
+      const groupingDeleteRace = new pg.Client({ connectionString: databaseUrl });
+      const routeGroupingService = new PrismaRouteGroupingService(prisma, {} as never);
+      await groupingDeleteRace.connect();
+      try {
+        await groupingDeleteRace.query('BEGIN');
+        await groupingDeleteRace.query('UPDATE route_plans SET status = \'IN_PROGRESS\' WHERE id = $1', [routePlanId]);
+        let groupingDeleteSettled = false;
+        const groupingDelete = routeGroupingService.deleteGrouping({
+          groupingId: '40000000-0000-4000-8000-000000000010', shopDomain: 'g002-evidence.invalid'
+        }).then(
+          (value) => ({ error: null, value }),
+          (error: unknown) => ({ error, value: null })
+        ).finally(() => { groupingDeleteSettled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        expect(groupingDeleteSettled).toBe(false);
+        await groupingDeleteRace.query('COMMIT');
+        expect((await groupingDelete).error).toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      } finally {
+        await groupingDeleteRace.query('ROLLBACK').catch(() => undefined);
+        await groupingDeleteRace.end();
+      }
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(1);
+      expect(await prisma.routeGrouping.findUnique({ where: { id: '40000000-0000-4000-8000-000000000010' } })).not.toBeNull();
+
       await expect(routePlanRepository.updateRoutePlanStops({
         routePlanId,
         shopDomain: 'g002-evidence.invalid',
@@ -151,9 +199,25 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.routeGroupingChildVersion.findMany({
         where: { routePlanId, status: 'CURRENT', supersededAt: null }
       })).toEqual([expect.objectContaining({ id: routeVersionId })]);
+      const siblingRoutePlanId = '30000000-0000-4000-8000-000000000011';
+      const siblingVersionId = '50000000-0000-4000-8000-000000000011';
+      await prisma.routePlan.create({ data: {
+        constraints: {}, id: siblingRoutePlanId, metrics: {}, name: 'Disposable sibling',
+        optimizerVersion: 'test', planDate: new Date('2026-08-24T00:00:00.000Z'), shopId
+      } });
+      await prisma.routeGroupingChildVersion.create({ data: {
+        groupingId: '40000000-0000-4000-8000-000000000010',
+        groupingVersionId: '41000000-0000-4000-8000-000000000010', id: siblingVersionId,
+        routePlanId: siblingRoutePlanId, shopId, snapshot: { stops: [] }, status: 'CURRENT', version: 2
+      } });
+      await expect(routePlanRepository.deleteRoutePlan({ routePlanId: siblingRoutePlanId, shopDomain: 'g002-evidence.invalid' }))
+        .rejects.toMatchObject({ code: 'ROUTE_DELETE_BLOCKED' });
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: siblingRoutePlanId } })).toMatchObject({ status: 'READY' });
+      expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: siblingVersionId } }))
+        .toMatchObject({ routePlanId: siblingRoutePlanId, status: 'CURRENT', supersededAt: null });
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(1);
       await expect(routePlanRepository.deleteRoutePlan({ routePlanId, shopDomain: 'g002-evidence.invalid' }))
         .rejects.toMatchObject({ code: 'ROUTE_DELETE_BLOCKED' });
-      const routeGroupingService = new PrismaRouteGroupingService(prisma, {} as never);
       await expect(routeGroupingService.deleteGrouping({
         groupingId: '40000000-0000-4000-8000-000000000010', shopDomain: 'g002-evidence.invalid'
       })).rejects.toThrow('in-progress child routes cannot be archived or deleted');

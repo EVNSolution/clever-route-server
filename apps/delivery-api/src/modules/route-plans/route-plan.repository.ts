@@ -665,7 +665,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (shop === null) {
         return null;
       }
-      if (Object.hasOwn(input.payload, 'driverId')) {
+      if (Object.hasOwn(input.payload, 'driverId') || normalizedStops !== undefined) {
         await tx.$queryRaw`
           SELECT "id"
           FROM "route_plans"
@@ -1436,6 +1436,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (shop === null) {
         return false;
       }
+
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "route_plans"
+        WHERE "id" = ${input.routePlanId}::uuid
+          AND "shopId" = ${shop.id}::uuid
+        FOR UPDATE
+      `;
 
       const routePlan = (await tx.routePlan.findFirst({
         include: routePlanInclude(),
@@ -2412,8 +2420,21 @@ async function collapseRouteGroupingSplitAfterChildDelete(
     if (remainingRoutePlanIds.length > 1) continue;
 
     if (remainingRoutePlanIds.length > 0) {
+      const remainingRoutes = await tx.routePlan.findMany({
+        select: { id: true, status: true },
+        where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId }
+      });
+      if (remainingRoutes.length !== remainingRoutePlanIds.length || remainingRoutes.some((route) => route.status === 'IN_PROGRESS')) {
+        throw new RoutePlanDeleteBlockedError('In-progress split siblings cannot be collapsed.');
+      }
+      const cancelled = await tx.routePlan.updateMany({
+        data: { status: 'CANCELLED' },
+        where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId, status: { not: 'IN_PROGRESS' } }
+      });
+      if (cancelled.count !== remainingRoutePlanIds.length) {
+        throw new RoutePlanDeleteBlockedError('In-progress split siblings cannot be collapsed.');
+      }
       await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: remainingRoutePlanIds } } });
-      await tx.routePlan.updateMany({ data: { status: 'CANCELLED' }, where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId } });
     }
     await tx.routeGroupingChildVersion.updateMany({
       data: { status: 'ARCHIVED', supersededAt: new Date() },

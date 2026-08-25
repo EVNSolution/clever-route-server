@@ -190,6 +190,7 @@ jobs:
                   key, value = line.split('=', 1)
                   values[key] = value
           print(f"deployed_commit={values.get('COMMIT_SHA', '')}")
+          print(f"runtime_commit={values.get('API_RUNTIME_REVISION', values.get('COMMIT_SHA', ''))}")
           print(f"delivery_api_image={values.get('DELIVERY_API_IMAGE', '')}")
           print(f"route_ops_web_static_image={values.get('ROUTE_OPS_WEB_STATIC_IMAGE', '')}")
           PY
