@@ -628,6 +628,31 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.order.findUniqueOrThrow({ where: { id: addedDraftOrder.id } }))
         .toMatchObject({ currentRouteVersionId: savedDraftChild.id });
 
+      const unresolvedMembership = await prisma.routeGroupingOrder.findUniqueOrThrow({
+        where: { groupingId_orderId: { groupingId: priorChild.groupingId, orderId: assignedOrder.id } }
+      });
+      await prisma.routeGroupingOrder.delete({ where: { id: unresolvedMembership.id } });
+      await expect(routeGroupingService.createCustomStop({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
+        stopName: 'Must roll back unresolved membership', targetRoutePlanId: routePlanId
+      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      expect(await prisma.order.count({ where: { name: 'Must roll back unresolved membership', shopId } })).toBe(0);
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(2);
+      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      })).id).toBe(savedDraftChild.id);
+      await prisma.routeGroupingOrder.create({ data: {
+        assignedDriverId: unresolvedMembership.assignedDriverId,
+        assignedPolygonId: unresolvedMembership.assignedPolygonId,
+        assignmentStatus: unresolvedMembership.assignmentStatus,
+        deliveryStopId: unresolvedMembership.deliveryStopId,
+        groupingId: unresolvedMembership.groupingId,
+        id: unresolvedMembership.id,
+        orderId: unresolvedMembership.orderId,
+        shopId: unresolvedMembership.shopId,
+        sourceSequence: unresolvedMembership.sourceSequence
+      } });
+
       const publicDraft = await routeGroupingService.createCustomStop({
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
         stopName: 'Public draft append after driver change'
@@ -741,8 +766,12 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       try {
         await reOptimizationGate.query('BEGIN');
         await reOptimizationGate.query(
-          'UPDATE route_plans SET name = $2 WHERE id = $1',
-          [routePlanId, 'Concurrent authoritative name']
+          'UPDATE route_plans SET name = $2, constraints = $3::jsonb WHERE id = $1',
+          [routePlanId, 'Concurrent authoritative name', JSON.stringify({
+            departureTime: '08:30',
+            scheduledStartAt: '2026-08-24T12:30:00.000Z',
+            scheduledStartTimeZone: 'America/Toronto'
+          })]
         );
         const concurrentAssignment = routePlanRepository.assignRoutePlanDriver({
           payload: { driverId: driverA }, routePlanId, shopDomain: 'g002-evidence.invalid'
@@ -763,6 +792,11 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       }
       expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({
         assignmentGeneration: 3n,
+        constraints: {
+          departureTime: '08:30',
+          scheduledStartAt: '2026-08-24T12:30:00.000Z',
+          scheduledStartTimeZone: 'America/Toronto'
+        },
         driverId: driverA,
         name: 'Concurrent authoritative name',
         status: 'READY'

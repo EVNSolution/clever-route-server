@@ -1781,7 +1781,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           await rewriteRoutePlanStops(tx, loaded.shopId, candidate.routePlanId, candidate.assignments);
           await tx.routePlan.update({
             data: {
-              constraints: routeConstraints(loaded, candidate.depot),
+              constraints: mergeRouteConstraintsForReoptimization(
+                lockedRoutePlan.constraints,
+                routeConstraints(loaded, candidate.depot)
+              ),
               driverId: authoritativeCandidate.driverId,
               metrics: routeMetrics(candidate.assignments),
               name: authoritativeCandidate.name,
@@ -3311,9 +3314,11 @@ function currentChildAssignments(group: LoadedGrouping, child: LoadedChild): Loa
     .map((stop) => stop.deliveryStopId);
   const stopIds = snapshotStops.length > 0 ? snapshotStops : routePlanStops;
 
-  return stopIds
-    .map((deliveryStopId) => assignmentsByStopId.get(deliveryStopId) ?? null)
-    .filter((assignment): assignment is LoadedAssignment => assignment !== null);
+  const assignments = stopIds.map((deliveryStopId) => assignmentsByStopId.get(deliveryStopId) ?? null);
+  if (assignments.some((assignment) => assignment === null)) {
+    throw new RouteGroupingValidationError(['current route membership snapshot could not be resolved']);
+  }
+  return assignments as LoadedAssignment[];
 }
 
 async function appendGroupingOrdersToChildRoute(
@@ -3840,6 +3845,16 @@ function routeConstraints(group: LoadedGrouping, depot?: DepotCoordinates | null
     routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
     routeScope: { deliveryDate: formatDateOnly(group.planDate), deliverySession: group.deliverySession, routeScopeKey: group.routeScopeKey, serviceType: group.serviceType }
   };
+}
+
+function mergeRouteConstraintsForReoptimization(
+  lockedConstraints: Prisma.JsonValue,
+  optimizedConstraints: Prisma.InputJsonObject
+): Prisma.InputJsonObject {
+  const current = lockedConstraints !== null && typeof lockedConstraints === 'object' && !Array.isArray(lockedConstraints)
+    ? lockedConstraints
+    : {};
+  return toJson({ ...current, ...optimizedConstraints }) as Prisma.InputJsonObject;
 }
 
 function routeMetrics(assignments: LoadedAssignment[]): Prisma.InputJsonObject {

@@ -561,7 +561,8 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("const DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE = 'RETURN_TO_DEPOT'");
     expect(source).toContain('routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE');
-    expect(source).toContain('constraints: routeConstraints(loaded, candidate.depot)');
+    expect(source).toContain('constraints: mergeRouteConstraintsForReoptimization(');
+    expect(source).toContain('routeConstraints(loaded, candidate.depot)');
   });
 
   test('leaves generated child start date and time unset until explicitly saved', () => {

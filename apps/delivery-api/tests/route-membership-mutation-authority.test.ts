@@ -129,10 +129,15 @@ describe('route membership mutation authority', () => {
     const reOptimization = source.slice(source.indexOf('async reOptimizeRoutes('), source.indexOf('private maxChildRouteStopDistanceFromDepotMeters('));
     expect(reOptimization).toContain('driverId: lockedRoutePlan.driverId');
     expect(reOptimization).toContain('name: lockedRoutePlan.name');
+    expect(reOptimization).toContain('mergeRouteConstraintsForReoptimization(');
+    expect(reOptimization).toContain('lockedRoutePlan.constraints');
     expect(reOptimization).not.toContain('assignmentGeneration: { increment: 1 }');
     const groupingOrders = source.slice(source.indexOf('async updateGroupingOrders('), source.indexOf('async createCustomStop('));
     expect(groupingOrders.indexOf('await lockRoutePlanMembership(')).toBeLessThan(groupingOrders.indexOf('routeGroupingOrder.deleteMany('));
     expect(groupingOrders.indexOf('assertLockedRoutePlanSuccessorPolicy({')).toBeLessThan(groupingOrders.indexOf('routeGroupingOrder.deleteMany('));
+    const assignmentAuthority = source.slice(source.indexOf('function currentChildAssignments('), source.indexOf('async function appendGroupingOrdersToChildRoute('));
+    expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot could not be resolved'])");
+    expect(assignmentAuthority).not.toContain('.filter((assignment)');
   });
 
   test('locks every completion contract before reading its immutable snapshot', () => {
