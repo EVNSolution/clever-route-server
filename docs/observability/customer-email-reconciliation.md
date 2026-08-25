@@ -38,6 +38,9 @@ The maximum explicit batch is 100 facts.
   PII-free reconciliation audit is retained for 180 days, and a PII-free
   idempotency tombstone remains after audit cleanup so the same manifest cannot
   mutate or create evidence twice.
+- The tombstone fences only the automatic FACT outbox sender while its shop and
+  fact exist. It is PII-free and cascades with privacy deletion; it is not a
+  global recipient/order policy for manual or test send paths.
 - `OPERATOR_DO_NOT_SEND` facts are excluded from runtime dead-letter and last
   provider-error health classification. They do not make a healthy sender
   permanently degraded.

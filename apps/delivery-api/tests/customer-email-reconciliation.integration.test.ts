@@ -16,7 +16,7 @@ const now = new Date('2026-08-25T08:00:00.000Z');
 const shopId = '91000000-0000-4000-8000-000000000070';
 const otherShopId = '91000000-0000-4000-8000-000000000071';
 const decision = { changeControlRef: 'EVNSolution/clever-change-control#265', reasonCode: 'HISTORICAL_DO_NOT_SEND' };
-const operatorEvidence = { actor: 'aws-1234567890abcdef', approvalRef: 'EVNSolution/clever-change-control#265:comment-123', releaseImageDigest: `ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:${'a'.repeat(64)}`, ssmCommandId: '11111111-1111-4111-8111-111111111111' };
+const operatorEvidence = { actor: 'aws-1234567890abcdef', approvalRef: 'EVNSolution/clever-change-control#265:comment-123', approvalSnapshotSha256: 'b'.repeat(64), releaseImageDigest: `ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:${'a'.repeat(64)}`, ssmCommandId: '11111111-1111-4111-8111-111111111111' };
 
 describe('customer email reconciliation PostgreSQL contract', () => {
   live('keeps dry-run mutation-free, refuses unsafe rows, and applies one PII-free cancellation idempotently', async () => {

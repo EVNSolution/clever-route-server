@@ -16,7 +16,7 @@ import {
 const now = new Date('2026-08-25T08:00:00.000Z');
 const scope = { appId: 'clever', shopId: '81000000-0000-4000-8000-000000000001' };
 const decision = { changeControlRef: 'EVNSolution/clever-change-control#265', reasonCode: 'HISTORICAL_DO_NOT_SEND' };
-const operatorEvidence = { actor: 'aws-1234567890abcdef', approvalRef: 'EVNSolution/clever-change-control#265:comment-123', releaseImageDigest: `ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:${'a'.repeat(64)}`, ssmCommandId: '11111111-1111-4111-8111-111111111111' };
+const operatorEvidence = { actor: 'aws-1234567890abcdef', approvalRef: 'EVNSolution/clever-change-control#265:comment-123', approvalSnapshotSha256: 'b'.repeat(64), releaseImageDigest: `ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:${'a'.repeat(64)}`, ssmCommandId: '11111111-1111-4111-8111-111111111111' };
 
 describe('customer email reconciliation', () => {
   test('creates a seven-row PII-free dry-run manifest without mutation', async () => {

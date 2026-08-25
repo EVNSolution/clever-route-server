@@ -8,6 +8,7 @@ CREATE TABLE "customer_email_operator_reconciliations" (
   "ssmCommandId" TEXT NOT NULL,
   "releaseImageDigest" TEXT NOT NULL,
   "approvalRef" TEXT NOT NULL,
+  "approvalSnapshotSha256" TEXT NOT NULL,
   "changeControlRef" TEXT NOT NULL,
   "reasonCode" TEXT NOT NULL,
   "manifestSha256" TEXT NOT NULL,
@@ -29,6 +30,8 @@ CREATE TABLE "customer_email_operator_reconciliations" (
     CHECK ("releaseImageDigest" ~ '^ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:[a-f0-9]{64}$'),
   CONSTRAINT "customer_email_operator_reconciliations_approval_check"
     CHECK ("approvalRef" ~ '^EVNSolution/clever-change-control#[1-9][0-9]*:comment-[1-9][0-9]*$'),
+  CONSTRAINT "customer_email_operator_reconciliations_approval_snapshot_check"
+    CHECK ("approvalSnapshotSha256" ~ '^[a-f0-9]{64}$'),
   CONSTRAINT "customer_email_operator_reconciliations_cc_check"
     CHECK ("changeControlRef" ~ '^EVNSolution/clever-change-control#[1-9][0-9]*$'),
   CONSTRAINT "customer_email_operator_reconciliations_reason_check"
@@ -58,7 +61,7 @@ CREATE TABLE "customer_email_reconciliation_tombstones" (
   CONSTRAINT "customer_email_reconciliation_tombstones_shop_fkey"
     FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE,
   CONSTRAINT "customer_email_reconciliation_tombstones_target_fkey"
-    FOREIGN KEY ("targetId") REFERENCES "customer_route_notification_facts"("id") ON DELETE RESTRICT,
+    FOREIGN KEY ("targetId") REFERENCES "customer_route_notification_facts"("id") ON DELETE CASCADE,
   CONSTRAINT "customer_email_reconciliation_tombstones_disposition_check"
     CHECK ("disposition" = 'DO_NOT_SEND'),
   CONSTRAINT "customer_email_reconciliation_tombstones_cc_check"

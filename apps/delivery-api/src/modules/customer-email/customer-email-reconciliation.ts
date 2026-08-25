@@ -50,6 +50,7 @@ export type CustomerEmailReconciliationApplyResult = {
 export type CustomerEmailOperatorEvidence = {
   actor: string;
   approvalRef: string;
+  approvalSnapshotSha256: string;
   releaseImageDigest: string;
   ssmCommandId: string;
 };
@@ -407,6 +408,7 @@ function reconciliationAuditData(input: {
   return {
     actor: input.operatorEvidence.actor,
     approvalRef: input.operatorEvidence.approvalRef,
+    approvalSnapshotSha256: input.operatorEvidence.approvalSnapshotSha256,
     changeControlRef: input.changeControlRef,
     correlationId: reconciliationCorrelationId(input.manifestSha256, input.item),
     disposition: CUSTOMER_EMAIL_RECONCILIATION_DISPOSITION,
@@ -513,6 +515,7 @@ function assertOperatorEvidence(evidence: CustomerEmailOperatorEvidence, changeC
     || !/:comment-[1-9][0-9]*$/u.test(evidence.approvalRef)) {
     throw new CustomerEmailReconciliationRefusalError('APPROVAL_REF_INVALID');
   }
+  if (!/^[a-f0-9]{64}$/u.test(evidence.approvalSnapshotSha256)) throw new CustomerEmailReconciliationRefusalError('APPROVAL_SNAPSHOT_INVALID');
 }
 
 function assertDecisionBinding(changeControlRef: string, reasonCode: string): void {

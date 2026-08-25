@@ -10,6 +10,9 @@ MANIFEST_SHA256="${CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_SHA256:-}"
 APPROVAL_REF="${CUSTOMER_EMAIL_RECONCILIATION_APPROVAL_REF:-}"
 CALLER_ARN="${CUSTOMER_EMAIL_RECONCILIATION_CALLER_ARN:-}"
 EVIDENCE_COMMAND_ID="${CUSTOMER_EMAIL_RECONCILIATION_EVIDENCE_COMMAND_ID:-}"
+APPROVAL_SNAPSHOT_SHA256="${CUSTOMER_EMAIL_RECONCILIATION_APPROVAL_SNAPSHOT_SHA256:-}"
+COMMAND_ID_PARAMETER="${CUSTOMER_EMAIL_RECONCILIATION_COMMAND_ID_PARAMETER:-}"
+APPROVER_LOGINS="${CUSTOMER_EMAIL_RECONCILIATION_APPROVER_LOGINS:-}"
 MANIFEST_PATH="${CUSTOMER_EMAIL_RECONCILIATION_MANIFEST_PATH:-}"
 CLI_ARGS_B64="${CUSTOMER_EMAIL_RECONCILIATION_ARGS_B64:-}"
 RENDER_HOST_SCRIPT=false
@@ -80,6 +83,8 @@ MANIFEST_SHA256=$(shell_quote "$MANIFEST_SHA256")
 APPROVAL_REF=$(shell_quote "$APPROVAL_REF")
 CALLER_ARN=$(shell_quote "$CALLER_ARN")
 EVIDENCE_COMMAND_ID=$(shell_quote "$EVIDENCE_COMMAND_ID")
+APPROVAL_SNAPSHOT_SHA256=$(shell_quote "$APPROVAL_SNAPSHOT_SHA256")
+COMMAND_ID_PARAMETER=$(shell_quote "$COMMAND_ID_PARAMETER")
 HOST
   cat <<'HOST'
 cd /srv/clever-route-server
@@ -113,9 +118,9 @@ for value in args:
 print('\0'.join(args), end='')
 PY
 mapfile -d '' -t args <"$args_file"
+is_apply=false
+[[ " ${args[*]} " == *" --apply "* ]] && is_apply=true
 operator_actor="aws-$(printf '%s' "$CALLER_ARN" | sha256sum | cut -c1-24)"
-[[ "$EVIDENCE_COMMAND_ID" =~ ^[a-f0-9-]{36}$ ]] || { echo 'SSM evidence command identity is unavailable' >&2; exit 65; }
-args+=(--operator-actor "$operator_actor" --ssm-command-id "$EVIDENCE_COMMAND_ID" --release-image-digest "$IMAGE" --approval-ref "$APPROVAL_REF")
 
 python3 - "$IMAGE" "$RELEASE_SHA" <<'PY'
 import json, pathlib, subprocess, sys
@@ -128,25 +133,55 @@ if record.get('commitSha') != release_sha or record.get('deliveryApiImage') != i
     raise SystemExit('deployed release provenance mismatch')
 PY
 
-compose=(docker compose -p clever-route -f infra/compose/docker-compose.prod.yml run --rm --no-deps)
-if [[ " ${args[*]} " == *" --apply "* ]]; then
+api_container="$(docker ps --filter label=com.docker.compose.project=clever-route --filter label=com.docker.compose.service=clever-route-api --format '{{.ID}}')"
+[[ "$api_container" != *$'\n'* && -n "$api_container" ]] || { echo 'expected exactly one deployed API container' >&2; exit 65; }
+database_url="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$api_container" | sed -n 's/^DATABASE_URL=//p')"
+[ -n "$database_url" ] || { echo 'deployed DATABASE_URL is unavailable' >&2; exit 65; }
+compose_file="$(mktemp /tmp/customer-email-reconciliation-compose.XXXXXX.yml)"
+trap 'rm -f "$args_file" "$compose_file"' EXIT
+cat >"$compose_file" <<'YAML'
+services:
+  customer-email-reconciliation:
+    image: ${RECONCILIATION_IMAGE:?}
+    environment:
+      DATABASE_URL: ${RECONCILIATION_DATABASE_URL:?}
+    networks:
+      - runtime
+networks:
+  runtime:
+    external: true
+    name: clever-route_default
+YAML
+compose=(docker compose -f "$compose_file" run --rm --no-deps)
+if [ "$is_apply" = true ]; then
   [ -n "$MANIFEST_PATH" ] || { echo 'apply requires an approved manifest path' >&2; exit 64; }
   [ -f "$MANIFEST_PATH" ] || { echo 'approved manifest is missing' >&2; exit 66; }
+  for _ in $(seq 1 60); do
+    EVIDENCE_COMMAND_ID="$(aws ssm get-parameter --name "$COMMAND_ID_PARAMETER" --query Parameter.Value --output text 2>/dev/null || true)"
+    [[ "$EVIDENCE_COMMAND_ID" =~ ^[a-f0-9-]{36}$ ]] && break
+    sleep 1
+  done
+  [[ "$EVIDENCE_COMMAND_ID" =~ ^[a-f0-9-]{36}$ ]] || { echo 'actual SSM command identity is unavailable' >&2; exit 65; }
+  compose+=(-e "CUSTOMER_EMAIL_OPERATOR_ACTOR=$operator_actor")
+  compose+=(-e "CUSTOMER_EMAIL_SSM_COMMAND_ID=$EVIDENCE_COMMAND_ID")
+  compose+=(-e "CUSTOMER_EMAIL_RELEASE_IMAGE_DIGEST=$IMAGE")
+  compose+=(-e "CUSTOMER_EMAIL_APPROVAL_REF=$APPROVAL_REF")
+  compose+=(-e "CUSTOMER_EMAIL_APPROVAL_SNAPSHOT_SHA256=$APPROVAL_SNAPSHOT_SHA256")
   compose+=(-v "$MANIFEST_PATH:/run/reconciliation/manifest.json:ro")
 fi
-DELIVERY_API_IMAGE="$IMAGE" "${compose[@]}" clever-route-api \
+RECONCILIATION_IMAGE="$IMAGE" RECONCILIATION_DATABASE_URL="$database_url" "${compose[@]}" customer-email-reconciliation \
   node dist/scripts/reconcile-customer-email.js "${args[@]}"
 HOST
 }
 
 if [ "$RENDER_HOST_SCRIPT" = true ]; then
-  [[ "$EVIDENCE_COMMAND_ID" =~ ^[a-f0-9-]{36}$ ]] || { echo "customer-email-reconciliation: render requires an evidence command id" >&2; exit 64; }
   host_script
   exit 0
 fi
 
 command -v aws >/dev/null || { echo "customer-email-reconciliation: aws is required" >&2; exit 127; }
 command -v python3 >/dev/null || { echo "customer-email-reconciliation: python3 is required" >&2; exit 127; }
+command -v gh >/dev/null || { echo "customer-email-reconciliation: gh is required" >&2; exit 127; }
 CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text)"
 [ -n "$CALLER_ARN" ] && [ "$CALLER_ARN" != "None" ] || { echo "customer-email-reconciliation: AWS caller identity is unavailable" >&2; exit 65; }
 [ -n "$INSTANCE_ID" ] || {
@@ -154,8 +189,25 @@ CALLER_ARN="$(aws sts get-caller-identity --query Arn --output text)"
   exit 64
 }
 
-EVIDENCE_COMMAND_ID="$(aws ssm send-command --region "$AWS_REGION" --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript --comment "Authorize ${APPROVAL_REF}" --parameters 'commands=true' --query 'Command.CommandId' --output text)"
-aws ssm wait command-executed --region "$AWS_REGION" --command-id "$EVIDENCE_COMMAND_ID" --instance-id "$INSTANCE_ID"
+comment_id="${APPROVAL_REF##*:comment-}"
+approval_json="$(gh api "repos/EVNSolution/clever-change-control/issues/comments/$comment_id")"
+APPROVAL_SNAPSHOT_SHA256="$(APPROVAL_JSON="$approval_json" python3 - "$APPROVER_LOGINS" "$MANIFEST_SHA256" "$RELEASE_SHA" "$IMAGE" <<'PY'
+import hashlib, json, os, sys
+allowed, manifest, release, image = sys.argv[1:]
+data = json.loads(os.environ['APPROVAL_JSON'])
+author = data.get('user', {}).get('login', '')
+body = data.get('body', '')
+if author not in {v.strip() for v in allowed.split(',') if v.strip()}:
+    raise SystemExit('approval author is not authorized')
+required = ['APPROVED CUSTOMER EMAIL DO-NOT-SEND', f'manifest-sha256: {manifest}', f'release-sha: {release}', f'image-digest: {image}']
+if any(value not in body for value in required):
+    raise SystemExit('approval body binding mismatch')
+snapshot = {'author': author, 'body': body, 'commentId': data.get('id'), 'htmlUrl': data.get('html_url')}
+print(hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+PY
+)"
+COMMAND_ID_PARAMETER="/clever/route-ops/reconciliation/$(python3 -c 'import uuid; print(uuid.uuid4())')"
+aws ssm put-parameter --region "$AWS_REGION" --name "$COMMAND_ID_PARAMETER" --type String --value pending >/dev/null
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -167,11 +219,25 @@ with open(sys.argv[1], 'w', encoding='utf-8') as fh:
     json.dump({'commands': [f"printf '%s' '{sys.argv[2]}' | base64 -d | bash"]}, fh)
 PY
 
-aws ssm send-command \
+command_id="$(aws ssm send-command \
   --region "$AWS_REGION" \
   --instance-ids "$INSTANCE_ID" \
   --document-name AWS-RunShellScript \
   --comment 'CC-approved customer email fact reconciliation' \
   --parameters "file://$tmp_dir/parameters.json" \
   --query 'Command.CommandId' \
-  --output text
+  --output text)"
+aws ssm put-parameter --region "$AWS_REGION" --name "$COMMAND_ID_PARAMETER" --type String --overwrite --value "$command_id" >/dev/null
+aws ssm wait command-executed --region "$AWS_REGION" --command-id "$command_id" --instance-id "$INSTANCE_ID"
+invocation="$(aws ssm get-command-invocation --region "$AWS_REGION" --command-id "$command_id" --instance-id "$INSTANCE_ID" --output json)"
+INVOCATION_JSON="$invocation" python3 - <<'PY'
+import json, os
+value = json.loads(os.environ['INVOCATION_JSON'])
+if value.get('Status') != 'Success' or value.get('ResponseCode') != 0:
+    raise SystemExit('reconciliation command did not succeed')
+lines = [line for line in value.get('StandardOutputContent', '').splitlines() if line.startswith('{')]
+if not lines or json.loads(lines[-1]).get('mode') not in {'apply', 'dry-run'}:
+    raise SystemExit('reconciliation result evidence is missing')
+PY
+aws ssm delete-parameter --region "$AWS_REGION" --name "$COMMAND_ID_PARAMETER"
+echo "SSM_RECONCILIATION_COMMAND_ID=$command_id"

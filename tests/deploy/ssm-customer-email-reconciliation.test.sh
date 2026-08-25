@@ -30,6 +30,12 @@ grep -Fq 'deployed release provenance mismatch' <<<"$rendered"
 grep -Fq 'mktemp /tmp/customer-email-reconciliation-args.XXXXXX' <<<"$rendered"
 grep -Fq 'operator evidence is injected by SSM and cannot be supplied' <<<"$rendered"
 grep -Fq 'EVIDENCE_COMMAND_ID' <<<"$rendered"
+grep -Fq 'CUSTOMER_EMAIL_OPERATOR_ACTOR=' <<<"$rendered"
+grep -Fq 'CUSTOMER_EMAIL_SSM_COMMAND_ID=' <<<"$rendered"
+grep -Fq 'customer-email-reconciliation:' <<<"$rendered"
+grep -Fq 'RECONCILIATION_DATABASE_URL' <<<"$rendered"
+! grep -Fq 'docker-compose.prod.yml run' <<<"$rendered"
+! grep -Eq 'firebase-fcm|driver-proof-media|customer-email-assets' <<<"$rendered"
 ! grep -Eq 'tsx|npm run' <<<"$rendered"
 
 "$wrapper" --smoke-compiled-cli >/dev/null
