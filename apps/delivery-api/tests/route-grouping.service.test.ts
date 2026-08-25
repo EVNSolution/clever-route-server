@@ -613,6 +613,15 @@ describe('route grouping contracts', () => {
         shopId: 'shop-a'
       }
     }]);
+
+    await expect(rebindCurrentOrdersToRouteVersion({
+      order: { updateMany: () => Promise.resolve({ count: 1 }) }
+    }, {
+      groupingId: 'grouping-a',
+      nextRouteVersionId: 'version-next',
+      orderIds: ['order-a', 'order-b'],
+      shopId: 'shop-a'
+    })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
   });
 
   test('rebinds current order ownership across every child-version replacement path', () => {
@@ -628,7 +637,7 @@ describe('route grouping contracts', () => {
     const oldSnapshot = { stops: [{ orderId: 'order-old' }] };
     const nextSnapshot = { stops: [{ orderId: 'order-old' }, { orderId: 'order-new' }] };
     const prisma = {
-      order: { updateMany: vi.fn(() => { calls.push('rebind'); return Promise.resolve({ count: 1 }); }) },
+      order: { updateMany: vi.fn(() => { calls.push('rebind'); return Promise.resolve({ count: 2 }); }) },
       routeGroupingChildVersion: {
         create: vi.fn((...args: [unknown]) => { void args; calls.push('create'); return Promise.resolve({ id: 'child-next' }); }),
         updateMany: vi.fn((...args: [unknown]) => { void args; calls.push('archive'); return Promise.resolve({ count: 1 }); })
@@ -759,7 +768,9 @@ describe('route grouping contracts', () => {
     const rollbackBody = source.slice(source.indexOf('async rollback('), source.indexOf('private async refreshChildRouteGeometry'));
 
     expect(rollbackBody).toContain('const routeIdx = snapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId)');
-    expect(rollbackBody).toContain('snapshot: { ...snapshot, groupingVersion: nextVersion, routeIdx, stops: assignments }');
+    expect(rollbackBody).toContain('const assignments = archivedChildAssignments(loaded, child)');
+    expect(rollbackBody).toContain('const canonicalSnapshot = createChildSnapshot(');
+    expect(rollbackBody).toContain('snapshot: canonicalSnapshot');
   });
 
   test('persists global routeIdx separately from editable names', () => {

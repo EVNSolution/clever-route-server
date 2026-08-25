@@ -142,6 +142,27 @@ describe('route membership mutation authority', () => {
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority'])");
     expect(assignmentAuthority).toContain('row.order.currentRouteVersionId === child.id');
     expect(assignmentAuthority).not.toContain('.filter((assignment)');
+    const rebindAuthority = source.slice(
+      source.indexOf('export async function rebindCurrentOrdersToRouteVersion('),
+      source.indexOf('export async function replaceCurrentRouteGroupingChildVersion(')
+    );
+    expect(rebindAuthority).toContain('if (result.count !== orderIds.length)');
+    expect(source.match(/await rebindCurrentOrdersToRouteVersion\(/gu)).toHaveLength(5);
+    const rebindCallerBodies = [
+      source.slice(source.indexOf('export async function replaceCurrentRouteGroupingChildVersion('), source.indexOf('export class PrismaRouteGroupingService')),
+      source.slice(source.indexOf('async generateChildRoutes('), source.indexOf('async reOptimizeRoutes(')),
+      source.slice(source.indexOf('async reOptimizeRoutes('), source.indexOf('async deleteBranch(')),
+      source.slice(source.indexOf('async rollback('), source.indexOf('private async refreshChildRouteGeometry(')),
+      source.slice(source.indexOf('async function createDraftChildRoutePlan('), source.indexOf('async function createChildRoutePlan('))
+    ];
+    for (const body of rebindCallerBodies) {
+      expect(body).toContain('routeGroupingChildVersion.create(');
+      expect(body).toContain('await rebindCurrentOrdersToRouteVersion(');
+    }
+    const rollbackBody = rebindCallerBodies[3] ?? '';
+    expect(rollbackBody).toContain('const assignments = archivedChildAssignments(loaded, child)');
+    expect(rollbackBody).toContain('snapshot: canonicalSnapshot');
+    expect(rollbackBody).not.toContain('snapshot: { ...snapshot');
   });
 
   test('locks every completion contract before reading its immutable snapshot', () => {

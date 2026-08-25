@@ -629,6 +629,51 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(await prisma.order.findUniqueOrThrow({ where: { id: addedDraftOrder.id } }))
         .toMatchObject({ currentRouteVersionId: savedDraftChild.id });
 
+      const foreignGrouping = await prisma.routeGrouping.create({
+        data: { name: 'Foreign rebind owner', planDate: new Date('2026-08-24T00:00:00.000Z'), shopId, status: 'READY' }
+      });
+      const foreignGroupingVersion = await prisma.routeGroupingVersion.create({
+        data: { actor: 'route-ops:test', changeReason: 'partial-rebind-regression', groupingId: foreignGrouping.id, shopId, status: 'CURRENT', version: 1 }
+      });
+      const foreignChild = await prisma.routeGroupingChildVersion.create({
+        data: {
+          groupingId: foreignGrouping.id, groupingVersionId: foreignGroupingVersion.id,
+          notificationStatus: 'SKIPPED', shopId, snapshot: { membershipSchemaVersion: 1, stops: [] },
+          status: 'CURRENT', version: 1
+        }
+      });
+      await prisma.order.update({
+        data: { currentRouteVersionId: foreignChild.id }, where: { id: addedDraftOrder.id }
+      });
+      const childCountBeforePartialRebind = await prisma.routeGroupingChildVersion.count({
+        where: { groupingId: priorChild.groupingId }
+      });
+      await expect(prisma.$transaction((transaction) => replaceCurrentRouteGroupingChildVersion(transaction, {
+        currentChildId: savedDraftChild.id,
+        driverId: savedDraftChild.driverId,
+        groupingId: priorChild.groupingId,
+        groupingVersionId: savedDraftChild.groupingVersionId,
+        notificationStatus: savedDraftChild.notificationStatus,
+        orderIds: [assignedOrder.id, addedDraftOrder.id],
+        publishedAt: savedDraftChild.publishedAt,
+        routePlanId,
+        shopId,
+        snapshot: savedDraftChild.snapshot as Prisma.InputJsonValue,
+        version: savedDraftChild.version
+      }))).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+      expect(await prisma.routeGroupingChildVersion.count({ where: { groupingId: priorChild.groupingId } }))
+        .toBe(childCountBeforePartialRebind);
+      expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: savedDraftChild.id } }))
+        .toMatchObject({ status: 'CURRENT', supersededAt: null });
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: assignedOrder.id } }))
+        .toMatchObject({ currentRouteVersionId: savedDraftChild.id });
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: addedDraftOrder.id } }))
+        .toMatchObject({ currentRouteVersionId: foreignChild.id });
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(2);
+      await prisma.order.update({
+        data: { currentRouteVersionId: savedDraftChild.id }, where: { id: addedDraftOrder.id }
+      });
+
       const unresolvedMembership = await prisma.routeGroupingOrder.findUniqueOrThrow({
         where: { groupingId_orderId: { groupingId: priorChild.groupingId, orderId: assignedOrder.id } }
       });
@@ -891,7 +936,80 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
           shopDomain: 'g002-evidence.invalid'
         })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
       }
-      await prisma.routePlan.update({ data: { status: 'IN_PROGRESS' }, where: { id: routePlanId } });
+      await prisma.routePlan.update({ data: { status: 'READY' }, where: { id: routePlanId } });
+
+      const rollbackGroupingVersion = await prisma.routeGroupingVersion.create({
+        data: {
+          actor: 'route-ops:test', changeReason: 'rollback-schema-regression',
+          groupingId: priorChild.groupingId, shopId, status: 'ARCHIVED', version: 41
+        }
+      });
+      const rollbackSourceRoute = await prisma.routePlan.create({
+        data: {
+          constraints: {}, driverId: driverA, metrics: { stopsCount: 1 }, name: 'Rollback source',
+          optimizerVersion: 'route-ops:test', planDate: new Date('2026-08-24T00:00:00.000Z'),
+          shopId, status: 'READY'
+        }
+      });
+      await prisma.routePlanStop.create({
+        data: {
+          deliveryStopId: '61000000-0000-4000-8000-000000000010',
+          routePlanId: rollbackSourceRoute.id, sequence: 1, shopId
+        }
+      });
+      const rollbackSourceChild = await prisma.routeGroupingChildVersion.create({
+        data: {
+          driverId: driverA, groupingId: priorChild.groupingId, groupingVersionId: rollbackGroupingVersion.id,
+          notificationStatus: 'SKIPPED', routePlanId: rollbackSourceRoute.id, shopId,
+          snapshot: {
+            driverId: driverA, name: 'Pre-discriminator rollback source',
+            stops: [{
+              deliveryStopId: '61000000-0000-4000-8000-000000000010',
+              orderId: assignedOrder.id, sequence: 1
+            }]
+          },
+          status: 'ARCHIVED', supersededAt: new Date(), version: 41
+        }
+      });
+      const preDiscriminatorRollback = await routeGroupingService.rollback({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId,
+        shopDomain: 'g002-evidence.invalid', version: 41
+      });
+      const preDiscriminatorChild = preDiscriminatorRollback?.children.find((child) => child.orderIds.includes(assignedOrder.id));
+      expect(preDiscriminatorChild?.orderIds).toEqual([assignedOrder.id]);
+      const preDiscriminatorRoutePlanId = preDiscriminatorChild?.routePlanId;
+      if (preDiscriminatorRoutePlanId === null || preDiscriminatorRoutePlanId === undefined) {
+        throw new Error('pre-discriminator rollback route missing');
+      }
+      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { id: { not: rollbackSourceChild.id }, status: 'CURRENT', routePlanId: preDiscriminatorRoutePlanId }
+      })).snapshot).toMatchObject({ membershipSchemaVersion: 1 });
+      await expect(routeGroupingService.createCustomStop({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
+        stopName: 'Post modern rollback mutation', targetRoutePlanId: preDiscriminatorRoutePlanId
+      })).resolves.not.toBeNull();
+
+      await prisma.routeGroupingChildVersion.update({
+        data: { snapshot: { driverId: driverA, name: 'Known legacy rollback source' } },
+        where: { id: rollbackSourceChild.id }
+      });
+      const legacyRollback = await routeGroupingService.rollback({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId,
+        shopDomain: 'g002-evidence.invalid', version: 41
+      });
+      const legacyRollbackChild = legacyRollback?.children.find((child) => child.orderIds.includes(assignedOrder.id));
+      expect(legacyRollbackChild?.orderIds).toEqual([assignedOrder.id]);
+      const legacyRollbackRoutePlanId = legacyRollbackChild?.routePlanId;
+      if (legacyRollbackRoutePlanId === null || legacyRollbackRoutePlanId === undefined) {
+        throw new Error('legacy rollback route missing');
+      }
+      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { status: 'CURRENT', routePlanId: legacyRollbackRoutePlanId }
+      })).snapshot).toMatchObject({ membershipSchemaVersion: 1 });
+      await expect(routeGroupingService.createCustomStop({
+        actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
+        stopName: 'Post legacy rollback mutation', targetRoutePlanId: legacyRollbackRoutePlanId
+      })).resolves.not.toBeNull();
 
       await prisma.driverEventAttempt.updateMany({
         data: { retainedUntil: new Date('2026-08-23T00:00:00.000Z') },

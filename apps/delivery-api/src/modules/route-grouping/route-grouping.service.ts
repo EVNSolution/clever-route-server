@@ -244,6 +244,9 @@ export async function rebindCurrentOrdersToRouteVersion(
       shopId: input.shopId
     }
   });
+  if (result.count !== orderIds.length) {
+    throw new RouteGroupingConflictError('route order ownership changed; reload and retry');
+  }
   return result.count;
 }
 
@@ -1895,8 +1898,18 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       for (const child of snapshots) {
         const snapshot = readChildSnapshot(child.snapshot);
         const routeIdx = snapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId);
-        const assignments = snapshot.stops.map((stop) => ({ deliveryStopId: stop.deliveryStopId, orderId: stop.orderId, sourceSequence: stop.sequence }));
-        const routePlan = await createChildRoutePlanFromSnapshot(tx, loaded, snapshot, input.actor);
+        const assignments = archivedChildAssignments(loaded, child);
+        const canonicalSnapshot = createChildSnapshot(
+          loaded,
+          assignments,
+          snapshot.driverId,
+          snapshot.name,
+          nextVersion,
+          snapshot.color,
+          snapshot.sortOrder,
+          routeIdx
+        );
+        const routePlan = await createChildRoutePlanFromSnapshot(tx, loaded, canonicalSnapshot, input.actor);
         childRoutePlanIds.push(routePlan.id);
         const childVersion = await tx.routeGroupingChildVersion.create({
           data: {
@@ -1906,7 +1919,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             notificationStatus: 'SKIPPED',
             routePlanId: routePlan.id,
             shopId: loaded.shopId,
-            snapshot: { ...snapshot, groupingVersion: nextVersion, routeIdx, stops: assignments },
+            snapshot: canonicalSnapshot,
             status: 'CURRENT',
             version: nextVersion
           },
@@ -3324,6 +3337,18 @@ function childRouteSlotName(child: LoadedChild): string {
 }
 
 function currentChildAssignments(group: LoadedGrouping, child: LoadedChild): LoadedAssignment[] {
+  return resolveChildSnapshotAssignments(group, child, 'CURRENT');
+}
+
+function archivedChildAssignments(group: LoadedGrouping, child: LoadedChild): LoadedAssignment[] {
+  return resolveChildSnapshotAssignments(group, child, 'ARCHIVED');
+}
+
+function resolveChildSnapshotAssignments(
+  group: LoadedGrouping,
+  child: LoadedChild,
+  authority: 'ARCHIVED' | 'CURRENT'
+): LoadedAssignment[] {
   const assignmentsByStopId = new Map(group.orders.map((assignment) => [assignment.deliveryStopId, assignment]));
   const snapshot = readChildSnapshot(child.snapshot);
   const modernSnapshot = snapshot.membershipFormat === 'MODERN';
@@ -3344,7 +3369,7 @@ function currentChildAssignments(group: LoadedGrouping, child: LoadedChild): Loa
   const routePlanStopIds = (child.routePlan?.routeStops ?? [])
     .sort((left, right) => left.sequence - right.sequence)
     .map((stop) => stop.deliveryStopId);
-  if (modernSnapshot) {
+  if (modernSnapshot && authority === 'CURRENT') {
     const boundOrderIds = group.orders
       .filter((row) => row.order.currentRouteVersionId === child.id)
       .map((assignment) => assignment.orderId)
