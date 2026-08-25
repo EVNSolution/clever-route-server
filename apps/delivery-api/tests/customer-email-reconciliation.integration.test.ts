@@ -82,7 +82,7 @@ describe('customer email reconciliation PostgreSQL contract', () => {
       expect(runtimeHealth.email.state, JSON.stringify(runtimeHealth.email)).toBe('HEALTHY');
       await prisma.customerRouteNotificationFact.updateMany({
         data: { nextAttemptAt: new Date(now.getTime() + 86_400_000) },
-        where: { id: { in: fixture.eligibleFactIds.filter((id) => id !== firstEligibleFactId) } }
+        where: { id: { not: firstEligibleFactId }, shopId }
       });
       await prisma.customerRouteNotificationFact.update({
         data: { nextAttemptAt: now, status: 'QUEUED' },

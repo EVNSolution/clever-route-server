@@ -24,7 +24,8 @@ The maximum explicit batch is 100 facts.
 - Both dry-run and apply require a canonical change-control reference and a
   PII-free reason code. The reviewed hash proves manifest integrity; it is not
   approval. Apply still requires the recorded change-control decision.
-- Apply additionally requires `--apply`, a PII-free actor token, exact app/shop
+- Apply additionally requires `--apply`, an SSM-derived PII-free actor token,
+  exact app/shop
   scope, the read-only reviewed manifest, its exact SHA-256, and
   `--disposition do-not-send`.
 - Any success, send attempt, provider result, provider/error residue, processing
@@ -92,7 +93,6 @@ node dist/scripts/reconcile-customer-email.js \
   --apply \
   --manifest /run/reconciliation/manifest.json \
   --reviewed-manifest-sha256 <64-character-sha256> \
-  --actor <pseudonymous-operator-token> \
   --change-control-ref EVNSolution/clever-change-control#265 \
   --reason-code HISTORICAL_DO_NOT_SEND \
   --app-id clever \
@@ -100,8 +100,12 @@ node dist/scripts/reconcile-customer-email.js \
   --disposition do-not-send
 ```
 
-Record only the PII-free result, image digest, reviewed hash, actor token,
-reason, and SSM command evidence. Never record recipient/content/provider
+The wrapper rejects caller-supplied operator evidence. It derives the actor from
+the AWS caller ARN and injects a successful authorization SSM command ID, the
+deployed release digest, and the exact approved change-control comment
+reference into the audit. Record only the PII-free result, image digest,
+reviewed hash, derived actor token, reason, and SSM command evidence. Never
+record recipient/content/provider
 payloads. The runtime environment remains the source of database credentials;
 do not put credentials on the command line or in the manifest.
 
