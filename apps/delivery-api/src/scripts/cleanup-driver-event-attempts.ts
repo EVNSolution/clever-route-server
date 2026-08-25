@@ -21,6 +21,7 @@ try {
     result.continuationRequired
     || completionReviews.continuationRequired
     || operational.alertCyclesContinuationRequired
+    || operational.emailReconciliationAuditsContinuationRequired
     || operational.locationContinuationRequired
     || operational.notificationAttemptReconciliationContinuationRequired
     || operational.notificationAttemptsContinuationRequired
