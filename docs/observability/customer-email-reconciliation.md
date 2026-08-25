@@ -96,6 +96,7 @@ node dist/scripts/reconcile-customer-email.js \
   --apply \
   --manifest /run/reconciliation/manifest.json \
   --reviewed-manifest-sha256 <64-character-sha256> \
+  --expected-item-count <reviewed-manifest-item-count> \
   --change-control-ref EVNSolution/clever-change-control#265 \
   --reason-code HISTORICAL_DO_NOT_SEND \
   --app-id clever \
@@ -104,11 +105,19 @@ node dist/scripts/reconcile-customer-email.js \
 ```
 
 The wrapper rejects caller-supplied operator evidence. It derives the actor from
-the AWS caller ARN and injects a successful authorization SSM command ID, the
-deployed release digest, and the exact approved change-control comment
-reference into the audit. Record only the PII-free result, image digest,
-reviewed hash, derived actor token, reason, and SSM command evidence. Never
-record recipient/content/provider
+the AWS caller ARN and records the actual apply SSM command ID, deployed release
+digest, and exact approved change-control comment reference. The GitHub API
+response must identify `EVNSolution/clever-change-control#265`; that issue URL,
+issue number, repository, comment ID, author, URL, and approved body are included
+in the hashed approval snapshot stored with the audit. Approval authority comes
+from the repository collaborator-permission API (`admin` or `maintain`), never a
+caller-supplied allowlist. Apply evidence is a root-owned, read-only envelope at
+the fixed private entrypoint path; individual evidence environment variables are
+not accepted. The wrapper accepts
+success only after SSM reports `Success`, response code `0`, and one framed,
+valid dry-run or apply JSON result. Record only the PII-free result, image
+digest, reviewed hash, derived actor token, reason, and SSM command evidence.
+Never record recipient/content/provider
 payloads. The runtime environment remains the source of database credentials;
 do not put credentials on the command line or in the manifest.
 
