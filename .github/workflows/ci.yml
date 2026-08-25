@@ -4,6 +4,16 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ci.yml"
+      - "apps/delivery-api/src/modules/customer-email/customer-email-reconciliation.ts"
+      - "apps/delivery-api/src/scripts/reconcile-customer-email.ts"
+      - "scripts/ssm-customer-email-reconciliation.sh"
+      - "tests/deploy/ssm-customer-email-reconciliation.test.sh"
+      - "tests/fixtures/customer-email-reconciliation-host/**"
   workflow_dispatch:
     inputs:
       full_verify:
@@ -108,6 +118,32 @@ jobs:
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh preflight
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh prepare
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh smoke
+
+  customer-email-reconciliation-wrapper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    needs:
+      - route-ops-changes
+      - route-ops-hygiene
+    if: >-
+      github.event_name == 'pull_request' ||
+      needs.route-ops-changes.outputs.deploy_changed == 'true' ||
+      needs.route-ops-changes.outputs.full_required == 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/delivery-api/package-lock.json
+      - name: Install delivery API dependencies
+        run: npm --prefix apps/delivery-api ci
+      - name: Build compiled reconciliation CLI
+        run: |
+          npm --prefix apps/delivery-api run prisma:generate
+          npm --prefix apps/delivery-api run build
+      - name: Test customer email reconciliation wrapper
+        run: tests/deploy/ssm-customer-email-reconciliation.test.sh
 
   route-ops-web:
     runs-on: ubuntu-latest

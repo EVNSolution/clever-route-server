@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 wrapper="$repo_root/scripts/ssm-customer-email-reconciliation.sh"
 compiled_source="$repo_root/apps/delivery-api/src/scripts/reconcile-customer-email.ts"
+host_runner_dockerfile="$repo_root/tests/fixtures/customer-email-reconciliation-host/Dockerfile"
+host_runner_image='clever-route-customer-email-reconciliation-host-test:local'
 digest="ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:$(printf 'a%.0s' {1..64})"
 release_sha="$(printf 'b%.0s' {1..40})"
 reviewed_sha="$(python3 - <<'PY'
@@ -90,7 +92,11 @@ if CUSTOMER_EMAIL_RECONCILIATION_IMAGE="$digest" \
 fi
 
 mock_dir="$(mktemp -d "$repo_root/.customer-email-reconciliation-test.XXXXXX")"
-trap 'rm -rf "$mock_dir"' EXIT
+cleanup_test_runtime() {
+  docker image rm "$host_runner_image" >/dev/null 2>&1 || true
+  rm -rf "$mock_dir"
+}
+trap cleanup_test_runtime EXIT
 mock_log="$mock_dir/aws.log"
 cat >"$mock_dir/aws" <<'MOCK_AWS'
 #!/usr/bin/env bash
@@ -367,9 +373,10 @@ execute_captured_host() {
     -e MOCK_AWS_LOG=/mocks/aws.log \
     -e MOCK_RELEASE_SHA="$release_sha" \
     -e MOCK_HOST_MANIFEST_SHA="$host_manifest_sha" \
-    06_project-web:latest "/mocks/$captured_name"
+    "$host_runner_image" "/mocks/$captured_name"
 }
 
+docker build --pull -t "$host_runner_image" -f "$host_runner_dockerfile" "$(dirname "$host_runner_dockerfile")" >/dev/null
 apply_host_output="$(execute_captured_host captured-apply-host.sh)"
 grep -Fq 'CUSTOMER_EMAIL_RECONCILIATION_RESULT_B64=' <<<"$apply_host_output"
 dry_host_output="$(execute_captured_host captured-dry-host.sh)"
