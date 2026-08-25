@@ -1,0 +1,74 @@
+name: Route completion alarm canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact deployed main SHA whose alarm path is being approved
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require main SHA and approved actor
+        env:
+          DEPLOY_ALLOWED_ACTORS: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_SHA" = "$SOURCE_SHA"
+          test "$SOURCE_SHA" = "$(printf '%s' "$SOURCE_SHA" | grep -E '^[0-9a-f]{40}$')"
+          case ",${DEPLOY_ALLOWED_ACTORS// /}," in *",$GITHUB_ACTOR,"*) ;; *) exit 1 ;; esac
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+      - name: Exercise alarm actions and require subscriber receipts
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+          OBSERVE_ALARM: ${{ vars.ROUTE_COMPLETION_ALARM_NAME }}
+          RECEIPT_TOKEN: ${{ secrets.ROUTE_COMPLETION_ALARM_CANARY_RECEIPT_TOKEN }}
+          RECEIPT_URL: ${{ vars.ROUTE_COMPLETION_ALARM_CANARY_RECEIPT_URL }}
+          REJECT_ALARM: ${{ vars.ROUTE_COMPLETION_REJECT_ALARM_NAME }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TOPIC_ARN: ${{ vars.ROUTE_COMPLETION_ALARM_TOPIC_ARN }}
+        run: |
+          set -euo pipefail
+          : "${OBSERVE_ALARM:?}" "${RECEIPT_TOKEN:?}" "${RECEIPT_URL:?}" "${REJECT_ALARM:?}" "${TOPIC_ARN:?}"
+          tmp_dir="$(mktemp -d)"
+          trap 'aws cloudwatch set-alarm-state --region "$AWS_REGION" --alarm-name "$OBSERVE_ALARM" --state-value INSUFFICIENT_DATA --state-reason "canary complete" >/dev/null 2>&1 || true; aws cloudwatch set-alarm-state --region "$AWS_REGION" --alarm-name "$REJECT_ALARM" --state-value INSUFFICIENT_DATA --state-reason "canary complete" >/dev/null 2>&1 || true; rm -rf "$tmp_dir"' EXIT
+          exercise() {
+            alarm_name="$1" metric_name="$2" token="${SOURCE_SHA}:$(cat /proc/sys/kernel/random/uuid)"
+            aws cloudwatch set-alarm-state --region "$AWS_REGION" --alarm-name "$alarm_name" --state-value INSUFFICIENT_DATA \
+              --state-reason "prepare approved route completion canary $token"
+            aws cloudwatch set-alarm-state --region "$AWS_REGION" --alarm-name "$alarm_name" --state-value ALARM \
+              --state-reason "approved route completion canary $token" --state-reason-data "{\"correlationToken\":\"$token\",\"sourceSha\":\"$SOURCE_SHA\"}"
+            for attempt in $(seq 1 18); do
+              if curl -fsS --get -H "Authorization: Bearer $RECEIPT_TOKEN" --data-urlencode "correlationToken=$token" "$RECEIPT_URL" > "$tmp_dir/receipt.json" \
+                && jq -e --arg alarm "$alarm_name" --arg metric "$metric_name" --arg sha "$SOURCE_SHA" --arg token "$token" --arg topic "$TOPIC_ARN" \
+                  '.alarmName == $alarm and .metricName == $metric and .sourceSha == $sha and .correlationToken == $token and .topicArn == $topic and .deliveryStatus == "DELIVERED"' "$tmp_dir/receipt.json" >/dev/null; then
+                jq -c '{alarmName, correlationToken, deliveryStatus, metricName, receivedAt}' "$tmp_dir/receipt.json"
+                return 0
+              fi
+              test "$attempt" -lt 18 || return 1
+              sleep 5
+            done
+          }
+          exercise "$OBSERVE_ALARM" DriverRouteCompletionWouldReject > "$tmp_dir/observe.json"
+          exercise "$REJECT_ALARM" DriverRouteCompletionRejected > "$tmp_dir/reject.json"
+          jq -n --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$SOURCE_SHA" --arg topic "$TOPIC_ARN" \
+            --slurpfile observe "$tmp_dir/observe.json" --slurpfile reject "$tmp_dir/reject.json" \
+            '{schemaVersion:1, sourceSha:$sha, topicArn:$topic, generatedAt:$generatedAt, deliveries:($observe + $reject)}' > route-completion-alarm-canary-receipt.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: route-completion-alarm-canary-receipt
+          path: route-completion-alarm-canary-receipt.json
+          if-no-files-found: error
+          retention-days: 1

@@ -232,9 +232,15 @@ jobs:
           tests/woocommerce-order-sync.service.test.ts
           tests/route-plan.repository.test.ts
           tests/route-plan.service.test.ts
+          tests/route-membership-mutation-authority.test.ts
           tests/route-scope-config.test.ts
           tests/prisma-schema.test.ts
           tests/dsv-v1-read-query.service.test.ts
+      - name: Completion invariant disposable PostgreSQL tests
+        if: needs.route-ops-changes.outputs.api_test_profile != 'route_geometry' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          CLEVER_RUN_DISPOSABLE_DB_TESTS: "1"
+        run: npm --prefix apps/delivery-api run test:db:disposable
       - name: Retention runtime tests
         run: >
           npm --prefix apps/delivery-api run test --

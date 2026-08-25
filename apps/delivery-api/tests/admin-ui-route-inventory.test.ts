@@ -31,6 +31,8 @@ const expectedRouteRegistrations: RouteRegistration[] = [
   { line: 600, method: "GET", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/new`" },
   { line: 606, method: "GET", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/:routePlanId`" },
   { line: 0, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/runtime-health`" },
+  { line: 0, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/driver-route-completion-reviews/:reviewId`" },
+  { line: 0, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/driver-route-completion-reviews`" },
   { line: 615, method: "GET", pathExpression: "`${ADMIN_UI_APP_ROUTE_GROUPS_PATH}/:routeGroupId`" },
   { line: 615, method: "POST", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/create`" },
   { line: 624, method: "POST", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/:routePlanId/stops`" },
@@ -227,6 +229,8 @@ describe("admin UI route inventory", () => {
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/notifications/:notificationId/acknowledge`");
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/operational-state`");
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/runtime-health`");
+    expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/driver-route-completion-reviews/:reviewId`");
+    expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/driver-route-completion-reviews`");
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/order-ingest-audit`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/orders/bulk-geocode`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/orders/:orderId/customer-note-context`");
@@ -244,6 +248,6 @@ describe("admin UI route inventory", () => {
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/:jobId`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/publish`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/settings`");
-    expect(expectedRouteRegistrations).toHaveLength(111);
+    expect(expectedRouteRegistrations).toHaveLength(113);
   });
 });

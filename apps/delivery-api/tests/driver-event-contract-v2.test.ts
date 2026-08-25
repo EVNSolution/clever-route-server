@@ -394,7 +394,7 @@ function repositoryHarness(input: {
       input.operations.push('business:transaction');
       return callback(prisma);
     }),
-    deliveryStop: { updateMany: vi.fn() },
+    deliveryStop: { findMany: vi.fn(() => Promise.resolve([])), updateMany: vi.fn() },
     driverEvent: {
       create: vi.fn(() => Promise.resolve({ createdAt: now, id: 'event-id' })),
       findFirst: vi.fn(() => Promise.resolve(null)),
@@ -409,8 +409,12 @@ function repositoryHarness(input: {
       findUnique: vi.fn(() => Promise.resolve(null)),
       update: input.attemptUpdate
     },
+    driverRouteCompletionReview: { create: vi.fn(() => Promise.resolve({ id: 'completion-review-id' })) },
     dsvDispatchChangeRequest: {},
     order: {},
+    routeGroupingChildVersion: {
+      findFirst: vi.fn(() => Promise.resolve({ id: currentVersion, snapshot: { stops: [] } }))
+    },
     routePlan: {
       findFirst: vi.fn(() => Promise.resolve({ id: 'route-plan-id', status: 'IN_PROGRESS' })),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))

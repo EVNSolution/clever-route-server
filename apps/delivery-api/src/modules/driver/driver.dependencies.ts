@@ -4,6 +4,7 @@ import { PrismaDriverAssignedRouteRepository } from './driver-assigned-route.rep
 import { PrismaDriverDestinationNotesRepository } from './driver-destination-notes.repository.js';
 import { PrismaDriverConsentRepository } from './driver-consent.repository.js';
 import { PrismaDriverEventRepository } from './driver-event.repository.js';
+import { loadDriverRouteCompletionInvariantMode, loadDriverRouteCompletionReviewRetentionDays } from './driver-route-completion-invariant.js';
 import { PrismaDriverEventReceiptRepository } from './driver-event-receipt.repository.js';
 import { PrismaDriverProofMediaRepository } from './driver-proof-media.repository.js';
 import { PrismaDriverRouteAccessRepository } from './driver-route-access.repository.js';
@@ -61,6 +62,8 @@ export const DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND = 'none';
 
 export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS'
+  | 'DRIVER_ROUTE_COMPLETION_INVARIANT_MODE'
+  | 'DRIVER_ROUTE_COMPLETION_REVIEW_RETENTION_DAYS'
   | 'DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED'
   | 'DRIVER_EVENT_ATTEMPT_RETENTION_DAYS'
   | 'DRIVER_PROOF_MEDIA_RETENTION_DAYS'
@@ -119,6 +122,7 @@ type LoadDriverApiDependenciesInput = {
 export function loadDriverApiDependencies(
   input: LoadDriverApiDependenciesInput
 ): DriverApiDependencies | undefined {
+  const completionInvariantMode = loadDriverRouteCompletionInvariantMode(input.env);
   const jwtSecret = readOptional(input.env.JWT_SECRET);
   if (jwtSecret === undefined) {
     return undefined;
@@ -151,7 +155,9 @@ export function loadDriverApiDependencies(
     driverDestinationNotesService: new PrismaDriverDestinationNotesRepository(input.prisma),
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma, {
-      attemptRetentionDays: loadDriverEventAttemptRetentionPolicy(input.env).retentionDays
+      attemptRetentionDays: loadDriverEventAttemptRetentionPolicy(input.env).retentionDays,
+      completionReviewRetentionDays: loadDriverRouteCompletionReviewRetentionDays(input.env),
+      completionInvariantMode
     }),
     driverEventReceiptService: new PrismaDriverEventReceiptRepository(input.prisma),
     driverOperationalHealthService: driverSyncHealthService,

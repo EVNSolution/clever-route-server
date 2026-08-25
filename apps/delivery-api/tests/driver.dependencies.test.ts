@@ -18,6 +18,13 @@ import {
 import type { RouteGroupingService } from '../src/modules/route-grouping/route-grouping.types.js';
 
 describe('loadDriverApiDependencies', () => {
+  test('fails startup on an invalid route completion invariant mode even when driver auth is disabled', () => {
+    expect(() => loadDriverApiDependencies({
+      env: { DRIVER_ROUTE_COMPLETION_INVARIANT_MODE: 'unsafe' },
+      prisma: {} as PrismaClient
+    })).toThrow('DRIVER_ROUTE_COMPLETION_INVARIANT_MODE must be OBSERVE, GUARDED, or FULL');
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });

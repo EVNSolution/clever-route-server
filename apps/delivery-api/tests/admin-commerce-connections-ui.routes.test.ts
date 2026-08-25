@@ -147,6 +147,61 @@ describe("Route Ops route list source regressions", () => {
 });
 
 describe("Admin WooCommerce connection UI routes", () => {
+  test("exposes the completion invariant mode only through authenticated runtime health", async () => {
+    const runtimeHealthService = {
+      get: vi.fn(() => Promise.resolve({
+        email: {
+          automatic: { senderConfigured: true, workerEnabled: true },
+          configured: true,
+          manual: { brevoConfigured: true },
+          outbox: { deadLetter: 0, lastErrorCode: null, lastSuccessAt: null, oldestPendingAt: null, pending: 0, processing: 0, retryWait: 0 },
+          state: "HEALTHY" as const
+        },
+        observedAt: "2026-08-25T00:00:00.000Z"
+      }))
+    };
+    const { app } = await createUiHarness({ driverRouteCompletionInvariantMode: "GUARDED", runtimeHealthService });
+    try {
+      const anonymous = await app.inject({ method: "GET", url: "/admin/ui/app/api/runtime-health?shopDomain=tenant-a.example.test" });
+      expect(anonymous.statusCode).toBe(401);
+      const { cookie } = await loginAndReadCsrf(app);
+      const authenticated = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/runtime-health?shopDomain=tenant-a.example.test"
+      });
+      expect(authenticated.statusCode).toBe(200);
+      expect(authenticated.json()).toMatchObject({
+        data: { runtimeHealth: { driverRouteCompletionInvariant: { capabilityVersion: 1, mode: "GUARDED", supportedModes: ["OBSERVE", "GUARDED", "FULL"] } } },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("records completion review decisions with authenticated actor and CSRF", async () => {
+    const review = vi.fn(() => Promise.resolve({ outcome: "FALSE_POSITIVE" as const, reviewedAt: "2026-08-25T01:00:00.000Z" }));
+    const { app } = await createUiHarness({ driverRouteCompletionReviewService: { listUnreviewed: vi.fn(() => Promise.resolve([])), review } });
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/driver-route-completion-reviews/11111111-1111-4111-8111-111111111111?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {
+          note: "Snapshot membership was stale at observation time.", outcome: "FALSE_POSITIVE", source: "ROUTE_OPS_UI"
+        }, csrfToken)
+      });
+      expect(response.statusCode).toBe(200);
+      expect(review).toHaveBeenCalledWith({
+        actor: "web-operator", note: "Snapshot membership was stale at observation time.", outcome: "FALSE_POSITIVE",
+        reviewId: "11111111-1111-4111-8111-111111111111", shopDomain: "tenant-a.example.test", source: "ROUTE_OPS_UI"
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test("does not register UI dependencies without dedicated strong web secrets or through JWT fallback", () => {
     const base = createBaseAdminCommerceDependencies();
 
@@ -7274,6 +7329,8 @@ async function createUiHarness(
     routesAppReleaseRepository: RoutesAppReleaseRepository;
     deliveryCustomerService: AdminCommerceConnectionsUiDependencies["deliveryCustomerService"];
     driverService: AdminCommerceConnectionsUiDependencies["driverService"];
+    driverRouteCompletionInvariantMode: AdminCommerceConnectionsUiDependencies["driverRouteCompletionInvariantMode"];
+    driverRouteCompletionReviewService: AdminCommerceConnectionsUiDependencies["driverRouteCompletionReviewService"];
     geocodingService: AdminCommerceConnectionsUiDependencies["geocodingService"];
     getConnection: ReturnType<typeof vi.fn>;
     listConnections: ReturnType<typeof vi.fn>;
@@ -7281,6 +7338,7 @@ async function createUiHarness(
     orderSyncService: AdminCommerceConnectionsUiDependencies["orderSyncService"];
     notificationService: AdminCommerceConnectionsUiDependencies["notificationService"];
     operationalStateService: AdminCommerceConnectionsUiDependencies["operationalStateService"];
+    runtimeHealthService: AdminCommerceConnectionsUiDependencies["runtimeHealthService"];
     pairingCodeService:
       | AdminCommerceConnectionsUiDependencies["pairingCodeService"]
       | null;
@@ -7390,6 +7448,12 @@ async function createUiHarness(
     ...(overrides.driverService === undefined
       ? {}
       : { driverService: overrides.driverService }),
+    ...(overrides.driverRouteCompletionInvariantMode === undefined
+      ? {}
+      : { driverRouteCompletionInvariantMode: overrides.driverRouteCompletionInvariantMode }),
+    ...(overrides.driverRouteCompletionReviewService === undefined
+      ? {}
+      : { driverRouteCompletionReviewService: overrides.driverRouteCompletionReviewService }),
     ...(overrides.orderIngestAuditService === undefined
       ? {}
       : { orderIngestAuditService: overrides.orderIngestAuditService }),
@@ -7402,6 +7466,9 @@ async function createUiHarness(
     ...(overrides.operationalStateService === undefined
       ? {}
       : { operationalStateService: overrides.operationalStateService }),
+    ...(overrides.runtimeHealthService === undefined
+      ? {}
+      : { runtimeHealthService: overrides.runtimeHealthService }),
     ...(overrides.now === undefined ? {} : { now: overrides.now }),
     publicBaseUrl: "https://clever-route-api.cleversystem.ai",
     ...(overrides.routeOptimizationJobService === undefined

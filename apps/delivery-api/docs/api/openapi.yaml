@@ -4800,7 +4800,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
-          description: Route version or assignment changed after session issue.
+          description: Route version or assignment changed, or ROUTE_COMPLETION_INCOMPLETE rejected a premature completion while leaving the route IN_PROGRESS.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -4870,7 +4870,7 @@ paths:
   /admin/ui/app/api/runtime-health:
     get:
       tags: [Route Operations Admin]
-      summary: Read redacted customer-email runtime and outbox health
+      summary: Read redacted runtime health, including the route-completion invariant mode
       operationId: getRouteOperationsRuntimeHealth
       x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
       responses:
@@ -4879,6 +4879,44 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EmailRuntimeHealthEnvelope' }
+  /admin/ui/app/api/driver-route-completion-reviews:
+    get:
+      tags: [Route Operations Admin]
+      summary: List oldest unreviewed incomplete-completion evidence for the authenticated shop
+      operationId: listUnreviewedDriverRouteCompletionInvariants
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      parameters:
+        - { in: query, name: limit, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200': { description: PII-free review identifiers, route identifiers, mode, timestamps, and stop counts. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/ui/app/api/driver-route-completion-reviews/{reviewId}:
+    parameters:
+      - { in: path, name: reviewId, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Route Operations Admin]
+      summary: Append an audited operator decision to an incomplete-completion review
+      operationId: reviewDriverRouteCompletionInvariant
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outcome, source, note]
+              properties:
+                outcome: { type: string, enum: [CONFIRMED_CORRECT, FALSE_POSITIVE] }
+                source: { type: string, enum: [ROUTE_OPS_UI, REPORT_RECONCILIATION] }
+                note: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '200': { description: Current review outcome and reviewedAt; an immutable actor/source/note history row is appended. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The review was concurrently assessed; reload before retrying. }
   /admin/ui/app/api/routes/{routePlanId}/operational-state:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -8793,9 +8831,10 @@ components:
             runtimeHealth:
               type: object
               additionalProperties: false
-              required: [email, observedAt]
+              required: [driverRouteCompletionInvariant, email, observedAt]
               properties:
                 observedAt: { type: string, format: date-time }
+                driverRouteCompletionInvariant: { $ref: '#/components/schemas/DriverRouteCompletionInvariantHealth' }
                 email:
                   type: object
                   additionalProperties: false
@@ -8829,6 +8868,12 @@ components:
                         processing: { type: integer, minimum: 0 }
                         retryWait: { type: integer, minimum: 0 }
         error: { type: 'null' }
+    DriverRouteCompletionInvariantHealth:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode: { type: string, enum: [OBSERVE, GUARDED, FULL] }
     DriverEventEnvelope:
       type: object
       required: [data, error]

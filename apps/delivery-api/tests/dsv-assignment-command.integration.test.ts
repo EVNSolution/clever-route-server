@@ -707,6 +707,10 @@ async function createFixture(
     driverAId: driverA.id,
     driverBId: driverB.id,
     forceDuplicateOwner: async () => {
+      await prisma.routeGroupingChildVersion.updateMany({
+        data: { status: 'ARCHIVED', supersededAt: new Date() },
+        where: { routePlanId: routeB.id, status: 'CURRENT' }
+      });
       const duplicateVersion = await createChildVersion(prisma, {
         driverId: driverB.id,
         groupingId: grouping.id,
@@ -976,6 +980,11 @@ async function createChildVersion(prisma: PrismaClient, input: {
   shopId: string;
   version: number;
 }) {
+  const deliveryStops = await prisma.deliveryStop.findMany({
+    select: { id: true, orderId: true },
+    where: { orderId: { in: input.orderIds } },
+  });
+  const deliveryStopIdByOrderId = new Map(deliveryStops.map((stop) => [stop.orderId, stop.id]));
   return prisma.routeGroupingChildVersion.create({
     data: {
       driverId: input.driverId,
@@ -983,7 +992,13 @@ async function createChildVersion(prisma: PrismaClient, input: {
       groupingVersionId: input.groupingVersionId,
       routePlanId: input.routePlanId,
       shopId: input.shopId,
-      snapshot: { stops: input.orderIds.map((orderId, index) => ({ orderId, sequence: index + 1 })) },
+      snapshot: {
+        stops: input.orderIds.map((orderId, index) => ({
+          deliveryStopId: deliveryStopIdByOrderId.get(orderId),
+          orderId,
+          sequence: index + 1,
+        })),
+      },
       status: 'CURRENT',
       version: input.version,
     },
@@ -1012,7 +1027,15 @@ async function rewriteRouteStorage(prisma: RouteGroupingHarnessDbClient, input: 
     if (versionId === undefined) continue;
     if (versionId !== undefined) {
       await prisma.routeGroupingChildVersion.update({
-        data: { snapshot: { stops: orderIds.map((orderId, index) => ({ orderId, sequence: index + 1 })) } },
+        data: {
+          snapshot: {
+            stops: orderIds.map((orderId, index) => ({
+              deliveryStopId: input.orderStops.get(orderId),
+              orderId,
+              sequence: index + 1,
+            })),
+          },
+        },
         where: { id: versionId },
       });
     }

@@ -82,6 +82,7 @@ import {
   DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError,
   DriverEventRouteVersionMismatchError,
+  DriverRouteCompletionIncompleteError,
   DriverEventSellerOrderAssignmentChangedError,
   DriverEventScopeError,
   type DriverEventAttemptAdmissionInput,
@@ -1415,6 +1416,28 @@ export function registerDriverEventRoutes(
         shopId: driverContext.shopId
       });
     } catch (error) {
+      if (error instanceof DriverRouteCompletionIncompleteError) {
+        request.log.warn({
+          decision: error.evidence.decision,
+          event: 'driver_route_completion_invariant_http_response',
+          mode: error.evidence.mode,
+          receiptAware: error.evidence.receiptAware,
+          totalStopCount: error.evidence.totalStopCount,
+          unresolvedStopCount: error.evidence.unresolvedStopCount,
+          wouldReject: error.evidence.wouldReject
+        }, 'driver route completion rejected');
+        return reply.code(409).send({
+          data: null,
+          error: {
+            code: error.code,
+            details: {
+              totalStopCount: error.evidence.totalStopCount,
+              unresolvedStopCount: error.evidence.unresolvedStopCount
+            },
+            message: 'Route completion requires every stop to be terminal'
+          }
+        });
+      }
       if (error instanceof DriverEventRouteVersionMismatchError) {
         logDriverEventContractFailure(request, driverContext, eventInput, error.code, false);
         logDriverEventContractMetric(request, driverContext, { failureStage: 'CONTRACT_VALIDATION', outcome: 'rejected' });

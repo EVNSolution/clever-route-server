@@ -10,6 +10,7 @@ import {
 import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
+  RoutePlanDeleteBlockedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
@@ -45,7 +46,6 @@ import type {
   RoutePlanSummary
 } from './route-plan.types.js';
 import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
-import { assertRouteExecutionOwnership } from './route-execution-ownership.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
@@ -56,6 +56,11 @@ import { isIanaTimezone, localDateTimeInTimeZoneToUtc } from '../driver/driver-r
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from '../shopify/shopify-api-version.js';
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
+import {
+  archiveDeletedRouteGroupingChildMembership,
+  replaceCurrentRouteGroupingChildVersion
+} from '../route-grouping/route-grouping.service.js';
+import { RouteGroupingValidationError } from '../route-grouping/route-grouping.types.js';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
 const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
@@ -665,7 +670,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (shop === null) {
         return null;
       }
-      if (Object.hasOwn(input.payload, 'driverId')) {
+      if (Object.hasOwn(input.payload, 'driverId') || normalizedStops !== undefined) {
         await tx.$queryRaw`
           SELECT "id"
           FROM "route_plans"
@@ -719,6 +724,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         hasDriverChange ||
         hasDepartureTimeChange ||
         hasScheduledStartChange;
+
+      if (routePlan.status === 'IN_PROGRESS' && hasStopSequenceChange) {
+        throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
+      }
+      if (hasStopSequenceChange && await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
+        throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
+      }
 
       if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
         const claimed = await tx.routePlan.updateMany({
@@ -879,14 +891,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
               }
             });
             deliveryStopIds.push(deliveryStop.id);
-          }
-
-          if (routePlan.status === 'IN_PROGRESS') {
-            await assertRouteExecutionOwnership(tx, {
-              deliveryStopIds,
-              routePlanId: input.routePlanId,
-              shopId: shop.id
-            });
           }
 
           await tx.routePlanStop.deleteMany({
@@ -1326,8 +1330,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       select: {
         id: true,
         routeGroupingChildVersions: {
-          select: { groupingId: true, id: true },
-          where: { status: 'CURRENT' }
+          select: { groupingId: true }
         }
       },
       where: {
@@ -1339,7 +1342,51 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     if (routePlan === null) {
       return { routePlanId: input.routePlanId, deleted: false };
     }
+    const preflightGroupingIds = [...new Set(routePlan.routeGroupingChildVersions.map((child) => child.groupingId))].sort();
     await this.prisma.$transaction(async (tx) => {
+      if (preflightGroupingIds.length > 0) {
+        await tx.$queryRaw(Prisma.sql`
+          SELECT "id"
+          FROM "route_groupings"
+          WHERE "id" IN (${Prisma.join(preflightGroupingIds.map((id) => Prisma.sql`${id}::uuid`))})
+          ORDER BY "id"
+          FOR UPDATE
+        `);
+      }
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "route_plans"
+        WHERE "id" = ${input.routePlanId}::uuid AND "shopId" = ${shop.id}::uuid
+        FOR UPDATE
+      `;
+      const lockedRoutePlan = await tx.routePlan.findFirst({
+        select: { id: true, status: true },
+        where: { id: input.routePlanId, shopId: shop.id }
+      });
+      if (lockedRoutePlan === null) throw new RoutePlanDeleteBlockedError('Route changed while deletion was being prepared.');
+      if (lockedRoutePlan.status === 'IN_PROGRESS') {
+        throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
+      }
+      const lockedGroupingRefs = await tx.routeGroupingChildVersion.findMany({
+        select: { groupingId: true },
+        where: { routePlanId: input.routePlanId, shopId: shop.id }
+      });
+      const lockedGroupingIds = [...new Set(lockedGroupingRefs.map((child) => child.groupingId))].sort();
+      if (!sameUniqueStringSet(preflightGroupingIds, lockedGroupingIds)) {
+        throw new RoutePlanDeleteBlockedError('Route grouping membership changed while deletion was being prepared.');
+      }
+      const routePlanChildren = await tx.routeGroupingChildVersion.findMany({
+        where: { routePlanId: input.routePlanId, shopId: shop.id }
+      });
+      const currentChildren = routePlanChildren.filter((child) => child.status === 'CURRENT' && child.supersededAt === null);
+      for (const child of selectRoutePlanDeletionLineageTerminals(routePlanChildren)) {
+        try {
+          await archiveDeletedRouteGroupingChildMembership(tx, child);
+        } catch (error) {
+          if (!(error instanceof RouteGroupingValidationError)) throw error;
+          throw new RoutePlanDeleteBlockedError('Grouped route deletion history is incomplete.');
+        }
+      }
       await tx.routePlanStop.deleteMany({
         where: { routePlanId: input.routePlanId }
       });
@@ -1347,11 +1394,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         routePlanIds: [input.routePlanId],
         shopId: shop.id
       });
-      await tx.routePlan.delete({
-        where: { id: input.routePlanId }
+      const deleted = await tx.routePlan.deleteMany({
+        where: { id: input.routePlanId, shopId: shop.id, status: { not: 'IN_PROGRESS' } }
       });
+      if (deleted.count !== 1) throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
       await collapseRouteGroupingSplitAfterChildDelete(tx, {
-        deletedChildVersions: routePlan.routeGroupingChildVersions,
+        deletedChildVersions: currentChildren.map((child) => ({ groupingId: child.groupingId, id: child.id })),
         shopId: shop.id
       });
     });
@@ -1436,6 +1484,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "route_plans"
+        WHERE "id" = ${input.routePlanId}::uuid
+          AND "shopId" = ${shop.id}::uuid
+        FOR UPDATE
+      `;
+
       const routePlan = (await tx.routePlan.findFirst({
         include: routePlanInclude(),
         where: {
@@ -1445,6 +1501,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       })) as RoutePlanRecord | null;
       if (routePlan === null) {
         return false;
+      }
+      if (routePlan.status === 'IN_PROGRESS') {
+        throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
+      }
+
+      const currentGroupingChild = await readCurrentRouteGroupingChild(tx, routePlan.id);
+      if (currentGroupingChild !== null && input.mutationContext?.source !== 'route_optimization_job') {
+        throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
       }
 
       const optimizationJobId =
@@ -1559,12 +1623,16 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         deliveryStopIds.push(deliveryStop.id);
       }
 
-      if (routePlan.status === 'IN_PROGRESS') {
-        await assertRouteExecutionOwnership(tx, {
-          deliveryStopIds,
-          routePlanId: input.routePlanId,
-          shopId: shop.id
-        });
+      const orderedOrders = normalizedStops.map((stop) => ordersByGid.get(stop.shopifyOrderGid)!);
+      if (currentGroupingChild !== null) {
+        const boundOrderIds = (await tx.order.findMany({
+          select: { id: true },
+          where: { currentRouteVersionId: currentGroupingChild.id }
+        })).map(({ id }) => id);
+        const nextOrderIds = orderedOrders.map((order) => order.id);
+        if (!sameUniqueStringSet(boundOrderIds, nextOrderIds)) {
+          throw new RoutePlanStopUpdateInvalidError('Grouped route optimization cannot add or remove route membership.');
+        }
       }
 
       await tx.routePlanStop.deleteMany({
@@ -1593,6 +1661,35 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         },
         where: { id: input.routePlanId }
       });
+
+      if (currentGroupingChild !== null) {
+        if (currentGroupingChild.snapshot === null || typeof currentGroupingChild.snapshot !== 'object' || Array.isArray(currentGroupingChild.snapshot)) {
+          throw new RoutePlanStopUpdateInvalidError('Grouped route membership snapshot is malformed.');
+        }
+        await replaceCurrentRouteGroupingChildVersion(tx, {
+          currentChildId: currentGroupingChild.id,
+          driverId: currentGroupingChild.driverId,
+          groupingId: currentGroupingChild.groupingId,
+          groupingVersionId: currentGroupingChild.groupingVersionId,
+          notificationStatus: currentGroupingChild.notificationStatus,
+          orderIds: orderedOrders.map((order) => order.id),
+          publishedAt: currentGroupingChild.publishedAt,
+          routePlanId: input.routePlanId,
+          shopId: shop.id,
+          snapshot: {
+            ...(currentGroupingChild.snapshot as Prisma.InputJsonObject),
+            membershipDeleted: false,
+            membershipSchemaVersion: 1,
+            stops: deliveryStopIds.map((deliveryStopId, index) => ({
+              deliveryStopId,
+              orderId: orderedOrders[index]!.id,
+              sequence: index + 1,
+              sourceOrderId: orderedOrders[index]!.shopifyOrderGid
+            }))
+          },
+          version: currentGroupingChild.version
+        });
+      }
 
       if (optimizationJobId !== null && applyingJob !== null) {
         const finishedAt = new Date();
@@ -2381,6 +2478,96 @@ function routeItemDtosFromRouteStops(routeStops: RoutePlanStopRecord[]): OrderIt
   );
 }
 
+async function readCurrentRouteGroupingChild(tx: Prisma.TransactionClient, routePlanId: string) {
+  const children = await tx.routeGroupingChildVersion.findMany({
+    select: {
+      driverId: true,
+      groupingId: true,
+      groupingVersionId: true,
+      id: true,
+      notificationStatus: true,
+      publishedAt: true,
+      shopId: true,
+      snapshot: true,
+      version: true
+    },
+    where: { routePlanId, status: 'CURRENT', supersededAt: null }
+  });
+  if (children.length > 1) {
+    throw new RoutePlanStopUpdateInvalidError('Grouped route has ambiguous CURRENT membership authority.');
+  }
+  return children[0] ?? null;
+}
+
+async function hasCurrentRouteGroupingChild(tx: Prisma.TransactionClient, routePlanId: string): Promise<boolean> {
+  return (await readCurrentRouteGroupingChild(tx, routePlanId)) !== null;
+}
+
+function sameUniqueStringSet(left: string[], right: string[]): boolean {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return leftSet.size === left.length && rightSet.size === right.length
+    && leftSet.size === rightSet.size
+    && [...leftSet].every((value) => rightSet.has(value));
+}
+
+function selectRoutePlanDeletionLineageTerminals<Child extends {
+  groupingId: string;
+  id: string;
+  snapshot: Prisma.JsonValue;
+}>(children: Child[]): Child[] {
+  const byGrouping = new Map<string, Child[]>();
+  for (const child of children) {
+    byGrouping.set(child.groupingId, [...(byGrouping.get(child.groupingId) ?? []), child]);
+  }
+  const terminals: Child[] = [];
+  for (const lineage of byGrouping.values()) {
+    const byId = new Map(lineage.map((child) => [child.id, child]));
+    const referenced = new Set<string>();
+    let rootCount = 0;
+    for (const child of lineage) {
+      const predecessorId = readDeletionPredecessorId(child.snapshot);
+      if (predecessorId === null) {
+        rootCount += 1;
+        continue;
+      }
+      if (!byId.has(predecessorId) || referenced.has(predecessorId)) {
+        throw new RoutePlanDeleteBlockedError('Grouped route deletion lineage is ambiguous.');
+      }
+      referenced.add(predecessorId);
+    }
+    const candidates = lineage.filter((child) => !referenced.has(child.id));
+    if (rootCount !== 1 || candidates.length !== 1 || referenced.size !== lineage.length - 1) {
+      throw new RoutePlanDeleteBlockedError('Grouped route deletion lineage is ambiguous.');
+    }
+    const terminal = candidates[0]!;
+    const visited = new Set<string>();
+    let cursor: Child | undefined = terminal;
+    while (cursor !== undefined && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      const predecessorId = readDeletionPredecessorId(cursor.snapshot);
+      cursor = predecessorId === null ? undefined : byId.get(predecessorId);
+    }
+    if (cursor !== undefined || visited.size !== lineage.length) {
+      throw new RoutePlanDeleteBlockedError('Grouped route deletion lineage is ambiguous.');
+    }
+    terminals.push(terminal);
+  }
+  return terminals;
+}
+
+function readDeletionPredecessorId(snapshot: Prisma.JsonValue): string | null {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    throw new RoutePlanDeleteBlockedError('Grouped route deletion history is incomplete.');
+  }
+  const predecessorId = snapshot.predecessorChildVersionId;
+  if (predecessorId === undefined || predecessorId === null) return null;
+  if (typeof predecessorId !== 'string') {
+    throw new RoutePlanDeleteBlockedError('Grouped route deletion lineage is ambiguous.');
+  }
+  return predecessorId;
+}
+
 async function clearRouteGroupingChildVersionRoutePlanRefs(
   tx: Pick<PrismaClient, 'routeGroupingChildVersion'>,
   input: { routePlanIds: string[]; shopId: string }
@@ -2416,8 +2603,21 @@ async function collapseRouteGroupingSplitAfterChildDelete(
     if (remainingRoutePlanIds.length > 1) continue;
 
     if (remainingRoutePlanIds.length > 0) {
+      const remainingRoutes = await tx.routePlan.findMany({
+        select: { id: true, status: true },
+        where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId }
+      });
+      if (remainingRoutes.length !== remainingRoutePlanIds.length || remainingRoutes.some((route) => route.status === 'IN_PROGRESS')) {
+        throw new RoutePlanDeleteBlockedError('In-progress split siblings cannot be collapsed.');
+      }
+      const cancelled = await tx.routePlan.updateMany({
+        data: { status: 'CANCELLED' },
+        where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId, status: { not: 'IN_PROGRESS' } }
+      });
+      if (cancelled.count !== remainingRoutePlanIds.length) {
+        throw new RoutePlanDeleteBlockedError('In-progress split siblings cannot be collapsed.');
+      }
       await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: remainingRoutePlanIds } } });
-      await tx.routePlan.updateMany({ data: { status: 'CANCELLED' }, where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId } });
     }
     await tx.routeGroupingChildVersion.updateMany({
       data: { status: 'ARCHIVED', supersededAt: new Date() },

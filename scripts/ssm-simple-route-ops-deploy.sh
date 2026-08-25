@@ -118,6 +118,7 @@ build_and_push() {
     --label "org.opencontainers.image.revision=$COMMIT_SHA" \
     --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
     --label "org.clever-route.image-role=runtime" \
+    --label "org.clever-route.route-completion-invariant-capability=1" \
     --cache-from "type=registry,ref=${RUNTIME_IMAGE_REPO}:buildcache" \
     --cache-to "type=registry,ref=${RUNTIME_IMAGE_REPO}:buildcache,mode=max" \
     -t "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}" .
@@ -223,6 +224,7 @@ chmod 0750 .deploy/candidate-retention/run-driver-event-attempt-retention.sh .de
 cat > .deploy/simple-candidate-image.env <<EOF_ENV
 IMAGE_TAG=$CHANNEL_TAG
 COMMIT_SHA=$COMMIT_SHA
+API_RUNTIME_REVISION=$COMMIT_SHA
 DELIVERY_API_IMAGE=$DELIVERY_API_IMAGE
 ROUTE_OPS_WEB_STATIC_IMAGE=$ROUTE_OPS_WEB_STATIC_IMAGE
 ROUTE_OPS_WEB_STATIC_VOLUME=$ROUTE_OPS_WEB_STATIC_VOLUME
@@ -235,6 +237,7 @@ DSV_PRODUCTION_BASELINE_APPROVED=$DSV_PRODUCTION_BASELINE_APPROVED
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=$DSV_PRODUCTION_BASELINE_MANIFEST_SHA256
 DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE=$([ -n "$PROOF_READY_FILTER_CONTRACT_SHA" ] && echo true || echo false)
 DRIVER_PROOF_MEDIA_READY_FILTER_CONTRACT_SHA=$PROOF_READY_FILTER_CONTRACT_SHA
+ROUTE_COMPLETION_INVARIANT_CAPABILITY_VERSION=1
 EOF_ENV
 HAD_CURRENT_IMAGE_ENV=0
 if [ -f .deploy/current-image.env ]; then
@@ -253,6 +256,15 @@ rollback_ready_filter_compatible="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_READY_FIL
 if [ "$proof_reservations_enabled" = "true" ] && [ "$rollback_ready_filter_compatible" != "true" ]; then
   echo 'proof media reservation rollout blocked: rollback image does not advertise READY-only reads' >&2
   exit 1
+fi
+completion_mode="$(awk -F= '$1 == "DRIVER_ROUTE_COMPLETION_INVARIANT_MODE" {print toupper(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
+completion_mode="${completion_mode:-OBSERVE}"
+rollback_completion_capability="$(awk -F= '$1 == "ROUTE_COMPLETION_INVARIANT_CAPABILITY_VERSION" {print substr($0, index($0, "=") + 1)}' .deploy/simple-rollback-image.env | tail -n 1)"
+rollback_delivery_image="$(awk -F= '$1 == "DELIVERY_API_IMAGE" {print substr($0, index($0, "=") + 1)}' .deploy/simple-rollback-image.env | tail -n 1)"
+if [ "$completion_mode" != "OBSERVE" ]; then
+  [ "$rollback_completion_capability" = "1" ] || { echo 'route completion rollout blocked: rollback image does not advertise invariant capability v1' >&2; exit 1; }
+  [ "$(docker image inspect "$rollback_delivery_image" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = "1" ] \
+    || { echo 'route completion rollout blocked: rollback image capability label is missing' >&2; exit 1; }
 fi
 is_digest_ref() {
   case "$1" in
@@ -440,6 +452,12 @@ printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/de
 token=''
 static_stage_reason="$(should_stage_static)"
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea
+runtime_revision="$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+[[ "$runtime_revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate delivery API image revision is invalid' >&2; exit 1; }
+sed -i.bak "s/^API_RUNTIME_REVISION=.*/API_RUNTIME_REVISION=$runtime_revision/" .deploy/simple-candidate-image.env
+rm -f .deploy/simple-candidate-image.env.bak
+[ "$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = "1" ] \
+  || { echo 'candidate delivery API does not advertise route completion invariant capability v1' >&2; exit 1; }
 if [ "$static_stage_reason" != "unchanged" ]; then
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull route-ops-web-static
 fi
@@ -473,7 +491,7 @@ if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE="$APP_DIR/.deploy/candidate-retention/
   exit 1
 fi
 .deploy/route-ops-docker-cleanup.sh --enforce
-printf '{"ts":"%s","commitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","commitSha":"%s","runtimeCommitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$runtime_revision" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
 printf 'simple deploy completed: commit=%s channel=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG"
 HOST_SCRIPT
   python3 - "$path" "$inner_path" <<'PY'

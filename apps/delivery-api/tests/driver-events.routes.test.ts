@@ -1,11 +1,13 @@
 import { describe, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import { buildApp } from '../src/app.js';
 import {
   DriverEventContextError,
   DriverEventEtaStaleConflictError,
   DriverEventExecutionConflictError,
-  DriverEventRouteNotInProgressError
+  DriverEventRouteNotInProgressError,
+  DriverRouteCompletionIncompleteError
 } from '../src/modules/driver/driver-event.repository.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
 import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
@@ -830,6 +832,50 @@ describe('Driver events route', () => {
     } finally {
       await app.close();
     }
+  });
+
+  test('maps incomplete route completion to stable 409 counts without identifiers', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverRouteCompletionIncompleteError({
+      decision: 'REJECTED',
+      driverContractVersion: 2,
+      mode: 'GUARDED',
+      receiptAware: true,
+      routeVersionId: 'route-version-1',
+      terminalStatuses: ['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED'],
+      totalStopCount: 11,
+      unresolvedStopCount: 10,
+      wouldReject: true
+    }));
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: eventPayload(),
+        url: '/driver/events'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_COMPLETION_INCOMPLETE',
+          details: { totalStopCount: 11, unresolvedStopCount: 10 },
+          message: 'Route completion requires every stop to be terminal'
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('keeps the HTTP rejection log outside the canonical invariant metric event', () => {
+    const source = readFileSync(new URL('../src/routes/driver-events.routes.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('if (error instanceof DriverRouteCompletionIncompleteError)');
+    const rejectionCatch = source.slice(start, source.indexOf('return reply.code(409)', start));
+    expect(rejectionCatch).toContain("event: 'driver_route_completion_invariant_http_response'");
+    expect(rejectionCatch).not.toContain("event: 'driver_route_completion_invariant',");
   });
 
   test('maps overlapping active route ownership to a deterministic conflict response', async () => {
