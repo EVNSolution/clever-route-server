@@ -643,6 +643,20 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         data: { latitude: 43.46, longitude: -80.48 },
         where: { orderId: { in: [assignedOrder.id, addedDraftOrder.id, publicDraftOrder.id] } }
       });
+      await expect(routeGroupingService.updateGroupingOrders({
+        addOrderIds: [publicDraftOrder.id],
+        groupingId: priorChild.groupingId,
+        removeOrderIds: [assignedOrder.id],
+        shopDomain: 'g002-evidence.invalid',
+        targetRoutePlanId: routePlanId
+      })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+      expect(await prisma.routeGroupingOrder.count({
+        where: { groupingId: priorChild.groupingId, orderId: { in: [assignedOrder.id, publicDraftOrder.id] } }
+      })).toBe(2);
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(2);
+      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      })).id).toBe(savedDraftChild.id);
       const assignmentGate = new pg.Client({ connectionString: databaseUrl });
       await assignmentGate.connect();
       try {
@@ -720,6 +734,44 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
         where: { routePlanId, status: 'CURRENT', supersededAt: null }
       })).id).toBe(publicSavedChild.id);
+
+      await prisma.routePlan.update({ data: { status: 'READY' }, where: { id: routePlanId } });
+      const reOptimizationGate = new pg.Client({ connectionString: databaseUrl });
+      await reOptimizationGate.connect();
+      try {
+        await reOptimizationGate.query('BEGIN');
+        await reOptimizationGate.query(
+          'UPDATE route_plans SET name = $2 WHERE id = $1',
+          [routePlanId, 'Concurrent authoritative name']
+        );
+        const concurrentAssignment = routePlanRepository.assignRoutePlanDriver({
+          payload: { driverId: driverA }, routePlanId, shopDomain: 'g002-evidence.invalid'
+        });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        let reOptimizationSettled = false;
+        const reOptimization = reOptimizationService.reOptimizeRoutes({
+          actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid'
+        }).finally(() => { reOptimizationSettled = true; });
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        expect(reOptimizationSettled).toBe(false);
+        await reOptimizationGate.query('COMMIT');
+        await expect(concurrentAssignment).resolves.toMatchObject({ routePlan: { driverId: driverA } });
+        await expect(reOptimization).resolves.not.toBeNull();
+      } finally {
+        await reOptimizationGate.query('ROLLBACK').catch(() => undefined);
+        await reOptimizationGate.end();
+      }
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({
+        assignmentGeneration: 3n,
+        driverId: driverA,
+        name: 'Concurrent authoritative name',
+        status: 'READY'
+      });
+      const reOptimizedChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      });
+      expect(reOptimizedChild).toMatchObject({ driverId: driverA });
+      expect(reOptimizedChild.snapshot).toMatchObject({ name: 'Concurrent authoritative name' });
 
       for (const status of ['COMPLETED', 'CANCELLED'] as const) {
         await prisma.routePlan.update({ data: { status }, where: { id: routePlanId } });

@@ -126,6 +126,13 @@ describe('route membership mutation authority', () => {
     }
     const publicDraft = source.slice(source.indexOf('async saveDraft('), source.indexOf('async saveDraftInTransaction('));
     expect(publicDraft).toContain("draftOptimization !== undefined && input.mode !== 'MANUAL_ORDER'");
+    const reOptimization = source.slice(source.indexOf('async reOptimizeRoutes('), source.indexOf('private maxChildRouteStopDistanceFromDepotMeters('));
+    expect(reOptimization).toContain('driverId: lockedRoutePlan.driverId');
+    expect(reOptimization).toContain('name: lockedRoutePlan.name');
+    expect(reOptimization).not.toContain('assignmentGeneration: { increment: 1 }');
+    const groupingOrders = source.slice(source.indexOf('async updateGroupingOrders('), source.indexOf('async createCustomStop('));
+    expect(groupingOrders.indexOf('await lockRoutePlanMembership(')).toBeLessThan(groupingOrders.indexOf('routeGroupingOrder.deleteMany('));
+    expect(groupingOrders.indexOf('assertLockedRoutePlanSuccessorPolicy({')).toBeLessThan(groupingOrders.indexOf('routeGroupingOrder.deleteMany('));
   });
 
   test('locks every completion contract before reading its immutable snapshot', () => {

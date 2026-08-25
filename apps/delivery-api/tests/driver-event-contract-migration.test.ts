@@ -28,6 +28,6 @@ describe('driver event contract v2 migration', () => {
     expect(routePlanRepository.match(/assignmentGeneration: \{ increment: 1 \}/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);
     expect(groupingService.match(/lockRoutePlanMembership\(/gu)?.length ?? 0).toBeGreaterThanOrEqual(6);
     expect(groupingService.match(/lockReadyRoutePlanMembership\(/gu)?.length ?? 0).toBeGreaterThanOrEqual(5);
-    expect(groupingService.match(/assignmentGeneration: \{ increment: 1 \}/gu)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(groupingService.match(/assignmentGeneration: \{ increment: 1 \}/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);
   });
 });
