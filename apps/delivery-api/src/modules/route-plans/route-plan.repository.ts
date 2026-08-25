@@ -10,6 +10,7 @@ import {
 import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
+  RoutePlanDeleteBlockedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
@@ -45,7 +46,6 @@ import type {
   RoutePlanSummary
 } from './route-plan.types.js';
 import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
-import { assertRouteExecutionOwnership } from './route-execution-ownership.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
@@ -720,6 +720,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         hasDepartureTimeChange ||
         hasScheduledStartChange;
 
+      if (routePlan.status === 'IN_PROGRESS' && hasStopSequenceChange) {
+        throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
+      }
+
       if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
         const claimed = await tx.routePlan.updateMany({
           data: { updatedAt: new Date() },
@@ -879,14 +883,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
               }
             });
             deliveryStopIds.push(deliveryStop.id);
-          }
-
-          if (routePlan.status === 'IN_PROGRESS') {
-            await assertRouteExecutionOwnership(tx, {
-              deliveryStopIds,
-              routePlanId: input.routePlanId,
-              shopId: shop.id
-            });
           }
 
           await tx.routePlanStop.deleteMany({
@@ -1325,6 +1321,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     const routePlan = await this.prisma.routePlan.findFirst({
       select: {
         id: true,
+        status: true,
         routeGroupingChildVersions: {
           select: { groupingId: true, id: true },
           where: { status: 'CURRENT' }
@@ -1339,6 +1336,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     if (routePlan === null) {
       return { routePlanId: input.routePlanId, deleted: false };
     }
+    if (routePlan.status === 'IN_PROGRESS') {
+      throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
+    }
     await this.prisma.$transaction(async (tx) => {
       await tx.routePlanStop.deleteMany({
         where: { routePlanId: input.routePlanId }
@@ -1347,9 +1347,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         routePlanIds: [input.routePlanId],
         shopId: shop.id
       });
-      await tx.routePlan.delete({
-        where: { id: input.routePlanId }
+      const deleted = await tx.routePlan.deleteMany({
+        where: { id: input.routePlanId, shopId: shop.id, status: { not: 'IN_PROGRESS' } }
       });
+      if (deleted.count !== 1) throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
       await collapseRouteGroupingSplitAfterChildDelete(tx, {
         deletedChildVersions: routePlan.routeGroupingChildVersions,
         shopId: shop.id
@@ -1445,6 +1446,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       })) as RoutePlanRecord | null;
       if (routePlan === null) {
         return false;
+      }
+      if (routePlan.status === 'IN_PROGRESS') {
+        throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
       }
 
       const optimizationJobId =
@@ -1557,14 +1561,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           }
         });
         deliveryStopIds.push(deliveryStop.id);
-      }
-
-      if (routePlan.status === 'IN_PROGRESS') {
-        await assertRouteExecutionOwnership(tx, {
-          deliveryStopIds,
-          routePlanId: input.routePlanId,
-          shopId: shop.id
-        });
       }
 
       await tx.routePlanStop.deleteMany({

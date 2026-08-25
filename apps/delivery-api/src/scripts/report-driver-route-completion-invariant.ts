@@ -20,8 +20,10 @@ try {
         COUNT(*) FILTER (WHERE decision = 'REJECTED') AS rejected_count,
         COUNT(*) FILTER (WHERE "reviewOutcome" = 'CONFIRMED_CORRECT') AS confirmed_correct_count,
         (SELECT COUNT(*) FROM driver_route_completion_gate_history history
-          WHERE history."createdAt" >= ${since} AND history.outcome = 'FALSE_POSITIVE') AS false_positive_count,
-        COUNT(*) FILTER (WHERE "reviewOutcome" IS NULL AND "wouldReject") AS unreviewed_count
+          WHERE history."retainedUntil" > ${now} AND history.outcome = 'FALSE_POSITIVE') AS false_positive_count,
+        (SELECT COUNT(*) FROM driver_route_completion_reviews outstanding
+          WHERE outstanding."retainedUntil" > ${now}
+            AND outstanding."reviewOutcome" IS NULL AND outstanding."wouldReject") AS unreviewed_count
       FROM driver_route_completion_reviews WHERE "createdAt" >= ${since}
     `),
     prisma.$queryRaw<AdoptionAggregate[]>(Prisma.sql`

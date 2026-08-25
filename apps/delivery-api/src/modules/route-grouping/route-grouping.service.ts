@@ -497,7 +497,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             select: {
               routePlan: {
                 select: {
-                  driver: { select: { accountId: true } }
+                  driver: { select: { accountId: true } },
+                  status: true
                 }
               },
               routePlanId: true,
@@ -516,6 +517,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           result: { deleted: false, deletedChildRoutePlanCount: 0, groupingId: input.groupingId }
         };
       }
+      assertNoInProgressCurrentChildren(group.childVersions);
 
       const childRoutePlanIds = [...new Set(group.childVersions.map((child) => child.routePlanId).filter((id): id is string => id !== null))];
       const notificationTargets = dedupeDriverNotificationTargets(group.childVersions.flatMap((child): DriverRouteNotificationTarget[] => {
@@ -566,7 +568,12 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routePlanIds: childRoutePlanIds,
           shopId: group.shopId
         });
-        await tx.routePlan.deleteMany({ where: { id: { in: childRoutePlanIds }, shopId: group.shopId } });
+        const deletedRoutes = await tx.routePlan.deleteMany({
+          where: { id: { in: childRoutePlanIds }, shopId: group.shopId, status: { not: 'IN_PROGRESS' } }
+        });
+        if (deletedRoutes.count !== childRoutePlanIds.length) {
+          throw new RouteGroupingValidationError(['in-progress child routes cannot be archived or deleted']);
+        }
       }
       await tx.order.deleteMany({
         where: { ownedRouteGroupingId: group.id, shopId: group.shopId, sourcePlatform: 'CUSTOM' }
@@ -2999,15 +3006,30 @@ async function recomputeAssignments(tx: Tx, groupingId: string): Promise<void> {
 
 async function archiveCurrentChildren(tx: Tx, group: LoadedGrouping, actor: string): Promise<void> {
   const current = group.childVersions.filter((child) => isOperationalCurrentChild(child));
+  assertNoInProgressCurrentChildren(current);
   for (const child of current) {
     if (child.routePlanId !== null) {
       await tx.routePlanStop.deleteMany({ where: { routePlanId: child.routePlanId } });
-      await tx.routePlan.updateMany({ data: { status: 'CANCELLED' }, where: { id: child.routePlanId } });
+      const cancelled = await tx.routePlan.updateMany({
+        data: { status: 'CANCELLED' },
+        where: { id: child.routePlanId, status: { not: 'IN_PROGRESS' } }
+      });
+      if (cancelled.count !== 1) {
+        throw new RouteGroupingValidationError(['in-progress child routes cannot be archived or deleted']);
+      }
     }
     await tx.routeGroupingChildVersion.update({ data: { status: 'ARCHIVED', supersededAt: new Date() }, where: { id: child.id } });
   }
   await tx.routeGroupingVersion.updateMany({ data: { status: 'ARCHIVED' }, where: { groupingId: group.id, status: 'CURRENT' } });
   void actor;
+}
+
+function assertNoInProgressCurrentChildren(
+  children: Array<{ routePlan?: { status?: string } | null; status: string; supersededAt: Date | null }>
+): void {
+  if (children.some((child) => child.status === 'CURRENT' && child.supersededAt === null && child.routePlan?.status === 'IN_PROGRESS')) {
+    throw new RouteGroupingValidationError(['in-progress child routes cannot be archived or deleted']);
+  }
 }
 
 async function createCurrentGroupingVersion(

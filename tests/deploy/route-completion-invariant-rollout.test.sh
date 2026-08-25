@@ -34,6 +34,12 @@ done
 for contract in 'docker compose' 'force-recreate' 'clever-route-api' '/healthz' 'rollback'; do
   grep -Fq "$contract" <<<"$rendered" || { echo 'mode-change host script must restart, health-check, and rollback' >&2; exit 1; }
 done
+emergency_rendered="$(ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 \
+  ROUTE_COMPLETION_EMERGENCY_ROLLBACK=true ROUTE_COMPLETION_TARGET_MODE=OBSERVE \
+  scripts/ssm-route-completion-invariant-mode.sh --render-host-script)"
+for contract in 'EMERGENCY_ROLLBACK=true' 'GUARDED|FULL' 'live_image_id' 'live_revision'; do
+  grep -Fq "$contract" <<<"$emergency_rendered" || { echo 'emergency OBSERVE rollback must use live elevated runtime identity' >&2; exit 1; }
+done
 case "$rendered" in
   *'prisma'*|*'psql'*|*'INSERT '*|*'UPDATE '*|*'DELETE '*)
     echo 'mode-change lane must not mutate the database' >&2
@@ -72,7 +78,9 @@ cat > "$tmp_dir/bin/aws" <<'AWS'
 case "$1 $2" in
   'cloudwatch describe-alarms')
     if [[ "$*" == *observe-alarm* ]]; then metric=DriverRouteCompletionWouldReject; alarm=observe-alarm; else metric=DriverRouteCompletionRejected; alarm=reject-alarm; fi
-    printf '{"AlarmName":"%s","ActionsEnabled":true,"Namespace":"CLEVER/DriverEvents","MetricName":"%s","Statistic":"Sum","Period":300,"EvaluationPeriods":1,"DatapointsToAlarm":1,"Threshold":1,"ComparisonOperator":"GreaterThanOrEqualToThreshold","TreatMissingData":"notBreaching","AlarmActions":["%s"]}\n' "$alarm" "$metric" "$ROUTE_COMPLETION_ALARM_TOPIC_ARN" ;;
+    actions="\"$ROUTE_COMPLETION_ALARM_TOPIC_ARN\""
+    if [ "${MOCK_EXTRA_ALARM_ACTION:-0}" = 1 ]; then actions="$actions,\"arn:aws:sns:ap-northeast-2:123:extra\""; fi
+    printf '{"AlarmName":"%s","ActionsEnabled":true,"Namespace":"CLEVER/DriverEvents","MetricName":"%s","Statistic":"Sum","Period":300,"EvaluationPeriods":1,"DatapointsToAlarm":1,"Threshold":1,"ComparisonOperator":"GreaterThanOrEqualToThreshold","TreatMissingData":"notBreaching","AlarmActions":[%s]}\n' "$alarm" "$metric" "$actions" ;;
   'sns list-subscriptions-by-topic') echo "${MOCK_CONFIRMED_SUBSCRIPTIONS:-1}" ;;
   *) exit 2 ;;
 esac
@@ -88,6 +96,11 @@ NODE
 PATH="$tmp_dir/bin:$PATH" ROUTE_COMPLETION_TARGET_MODE=GUARDED ROUTE_COMPLETION_OBSERVE_ALARM_NAME=observe-alarm ROUTE_COMPLETION_REJECT_ALARM_NAME=reject-alarm \
   ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 ROUTE_COMPLETION_ALARM_RECEIPT_PATH="$tmp_dir/alarm-receipt.json" \
   ROUTE_COMPLETION_ALARM_TOPIC_ARN=arn:aws:sns:ap-northeast-2:123:approved scripts/verify-route-completion-alarm.sh >/dev/null
+if PATH="$tmp_dir/bin:$PATH" MOCK_EXTRA_ALARM_ACTION=1 ROUTE_COMPLETION_TARGET_MODE=GUARDED ROUTE_COMPLETION_OBSERVE_ALARM_NAME=observe-alarm ROUTE_COMPLETION_REJECT_ALARM_NAME=reject-alarm \
+  ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 ROUTE_COMPLETION_ALARM_RECEIPT_PATH="$tmp_dir/alarm-receipt.json" \
+  ROUTE_COMPLETION_ALARM_TOPIC_ARN=arn:aws:sns:ap-northeast-2:123:approved scripts/verify-route-completion-alarm.sh >/dev/null 2>&1; then
+  echo 'additional alarm actions must fail closed' >&2; exit 1
+fi
 node - "$tmp_dir/alarm-receipt.json" "$tmp_dir/wrong-sha-receipt.json" <<'NODE'
 const fs = require('node:fs'); const value = JSON.parse(fs.readFileSync(process.argv[2])); value.sourceSha = 'f'.repeat(40); fs.writeFileSync(process.argv[3], JSON.stringify(value));
 NODE

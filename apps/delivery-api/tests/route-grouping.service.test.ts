@@ -138,6 +138,26 @@ describe('route grouping contracts', () => {
     expect(tx.routeGrouping.delete).toHaveBeenCalledWith({ where: { id: 'group-copy' } });
   });
 
+  test('blocks group hard deletion while a CURRENT child route is in progress', async () => {
+    const tx = deleteGroupingTransactionHarness({ ownedRouteGroupingId: 'group-copy' });
+    tx.routeGrouping.findFirst.mockResolvedValue({
+      childVersions: [{
+        routePlan: { driver: null, status: 'IN_PROGRESS' }, routePlanId: 'route-plan-id',
+        status: 'CURRENT', supersededAt: null, version: 1
+      }],
+      id: 'group-copy', orders: [], shopId: 'shop-1'
+    });
+    const service = new PrismaRouteGroupingService(
+      { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never,
+      new FakeDriverPushProvider()
+    );
+
+    await expect(service.deleteGrouping({ groupingId: 'group-copy', shopDomain: 'tenant.example' }))
+      .rejects.toThrow('in-progress child routes cannot be archived or deleted');
+    expect(tx.routePlanStop.deleteMany).not.toHaveBeenCalled();
+    expect(tx.routeGrouping.delete).not.toHaveBeenCalled();
+  });
+
   test('two VIRTUAL copies receive distinct local identities and deleting one targets only its owned graph', async () => {
     const source = copySourceFixture('SHOPIFY');
     const firstTx = copyTransactionHarness(source);

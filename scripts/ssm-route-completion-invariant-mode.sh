@@ -10,13 +10,19 @@ TARGET_MODE="${ROUTE_COMPLETION_TARGET_MODE:-}"
 EXPECTED_CURRENT_MODE="${ROUTE_COMPLETION_EXPECTED_CURRENT_MODE:-}"
 EXPECTED_IMAGE_ID="${ROUTE_COMPLETION_EXPECTED_IMAGE_ID:-}"
 EXPECTED_IMAGE_REPO_DIGEST="${ROUTE_COMPLETION_EXPECTED_IMAGE_REPO_DIGEST:-}"
+EMERGENCY_ROLLBACK="${ROUTE_COMPLETION_EMERGENCY_ROLLBACK:-false}"
 
 fail() { echo "ssm-route-completion-invariant-mode: $*" >&2; exit 65; }
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'ROUTE_COMPLETION_SOURCE_SHA must be an exact 40-character SHA'
 case "$TARGET_MODE" in OBSERVE|GUARDED|FULL) ;; *) fail 'ROUTE_COMPLETION_TARGET_MODE must be OBSERVE, GUARDED, or FULL' ;; esac
-case "$EXPECTED_CURRENT_MODE" in OBSERVE|GUARDED|FULL) ;; *) fail 'ROUTE_COMPLETION_EXPECTED_CURRENT_MODE must be OBSERVE, GUARDED, or FULL' ;; esac
-[[ "$EXPECTED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'ROUTE_COMPLETION_EXPECTED_IMAGE_ID must be an exact image ID'
-[[ "$EXPECTED_IMAGE_REPO_DIGEST" =~ @sha256:[0-9a-f]{64}$ ]] || fail 'ROUTE_COMPLETION_EXPECTED_IMAGE_REPO_DIGEST must be an exact repo digest'
+case "$EMERGENCY_ROLLBACK" in true|false) ;; *) fail 'ROUTE_COMPLETION_EMERGENCY_ROLLBACK must be true or false' ;; esac
+if [ "$EMERGENCY_ROLLBACK" = true ]; then
+  [ "$TARGET_MODE" = OBSERVE ] || fail 'emergency rollback can only target OBSERVE'
+else
+  case "$EXPECTED_CURRENT_MODE" in OBSERVE|GUARDED|FULL) ;; *) fail 'ROUTE_COMPLETION_EXPECTED_CURRENT_MODE must be OBSERVE, GUARDED, or FULL' ;; esac
+  [[ "$EXPECTED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'ROUTE_COMPLETION_EXPECTED_IMAGE_ID must be an exact image ID'
+  [[ "$EXPECTED_IMAGE_REPO_DIGEST" =~ @sha256:[0-9a-f]{64}$ ]] || fail 'ROUTE_COMPLETION_EXPECTED_IMAGE_REPO_DIGEST must be an exact repo digest'
+fi
 
 render_host_script() {
   cat <<EOF_HOST
@@ -27,6 +33,7 @@ TARGET_MODE=$TARGET_MODE
 EXPECTED_CURRENT_MODE=$EXPECTED_CURRENT_MODE
 EXPECTED_IMAGE_ID='$EXPECTED_IMAGE_ID'
 EXPECTED_IMAGE_REPO_DIGEST='$EXPECTED_IMAGE_REPO_DIGEST'
+EMERGENCY_ROLLBACK=$EMERGENCY_ROLLBACK
 cd "\$APP_DIR"
 test "\$(sed -n 's/^COMMIT_SHA=//p' .deploy/current-image.env)" = "\$COMMIT_SHA"
 lock_dir=.deploy/route-ops-simple-deploy.lock.d
@@ -35,17 +42,30 @@ cleanup() { rmdir "\$lock_dir" 2>/dev/null || true; }
 trap cleanup EXIT
 container=clever-route-clever-route-api-1
 expected_image="\$(sed -n 's/^DELIVERY_API_IMAGE=//p' .deploy/current-image.env)"
-test "\$(docker inspect "\$container" --format '{{.Image}}')" = "\$EXPECTED_IMAGE_ID"
-test "\$expected_image" = "\$EXPECTED_IMAGE_REPO_DIGEST"
-docker image inspect "\$EXPECTED_IMAGE_REPO_DIGEST" >/dev/null
-test "\$(docker inspect "\$container" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "\$COMMIT_SHA"
+live_image_id="\$(docker inspect "\$container" --format '{{.Image}}')"
+live_revision="\$(docker inspect "\$container" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+if [ "\$EMERGENCY_ROLLBACK" = true ]; then
+  [[ "\$live_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+  [[ "\$expected_image" =~ @sha256:[0-9a-f]{64}$ ]]
+  test "\$live_revision" = "\$COMMIT_SHA"
+else
+  test "\$live_image_id" = "\$EXPECTED_IMAGE_ID"
+  test "\$expected_image" = "\$EXPECTED_IMAGE_REPO_DIGEST"
+fi
+docker image inspect "\$expected_image" >/dev/null
+test "\$live_revision" = "\$COMMIT_SHA"
 test "\$(docker inspect "\$container" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = 1
 runtime_env=apps/delivery-api/.env
 backup=".deploy/runtime-env.before-route-completion-mode-\$(date -u +%Y%m%dT%H%M%SZ)"
 cp "\$runtime_env" "\$backup"
 current_mode="\$(sed -n 's/^DRIVER_ROUTE_COMPLETION_INVARIANT_MODE=//p' "\$runtime_env" | tail -1)"
 current_mode="\${current_mode:-OBSERVE}"
-test "\$current_mode" = "\$EXPECTED_CURRENT_MODE"
+if [ "\$EMERGENCY_ROLLBACK" = true ]; then
+  case "\$current_mode" in GUARDED|FULL) ;; *) echo 'emergency rollback requires an elevated current mode' >&2; exit 65 ;; esac
+  EXPECTED_CURRENT_MODE="\$current_mode"
+else
+  test "\$current_mode" = "\$EXPECTED_CURRENT_MODE"
+fi
 wait_health() {
   for attempt in \$(seq 1 12); do
     if docker compose -p clever-route --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml exec -T clever-route-api node -e "const http=require('node:http');http.get('http://127.0.0.1:3000/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"; then return 0; fi

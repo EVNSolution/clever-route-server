@@ -4,6 +4,7 @@ import { PrismaClient } from '@prisma/client';
 import { cleanupResolvedDriverEventAttempts } from '../src/modules/driver/driver-event-attempt-retention.js';
 import { cleanupReviewedRouteCompletionEvidence } from '../src/modules/driver/driver-route-completion-review-retention.js';
 import {
+  DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError,
   DriverEventRouteVersionMismatchError,
   DriverRouteCompletionIncompleteError,
@@ -13,7 +14,7 @@ import {
   DriverEventReceiptScopeError,
   PrismaDriverEventReceiptRepository
 } from '../src/modules/driver/driver-event-receipt.repository.js';
-import { replaceCurrentRouteGroupingChildVersion } from '../src/modules/route-grouping/route-grouping.service.js';
+import { PrismaRouteGroupingService, replaceCurrentRouteGroupingChildVersion } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import { PrismaDriverRouteCompletionReviewRepository } from '../src/modules/driver/driver-route-completion-review.repository.js';
 
@@ -133,6 +134,58 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         data: { snapshot: { stops: [{ deliveryStopId: '61000000-0000-4000-8000-000000000010' }] } },
         where: { id: routeVersionId }
       });
+      await prisma.order.update({ data: { currentRouteVersionId: routeVersionId }, where: { id: '60000000-0000-4000-8000-000000000010' } });
+
+      const routePlanRepository = new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true });
+      await expect(routePlanRepository.updateRoutePlanStops({
+        routePlanId,
+        shopDomain: 'g002-evidence.invalid',
+        payload: { stops: [] }
+      })).rejects.toMatchObject({ code: 'ROUTE_STOP_UPDATE_INVALID' });
+      await expect(routePlanRepository.saveRoutePlan({
+        routePlanId,
+        shopDomain: 'g002-evidence.invalid',
+        payload: { stops: [] }
+      })).rejects.toMatchObject({ code: 'ROUTE_STOP_UPDATE_INVALID' });
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(1);
+      expect(await prisma.routeGroupingChildVersion.findMany({
+        where: { routePlanId, status: 'CURRENT', supersededAt: null }
+      })).toEqual([expect.objectContaining({ id: routeVersionId })]);
+      await expect(routePlanRepository.deleteRoutePlan({ routePlanId, shopDomain: 'g002-evidence.invalid' }))
+        .rejects.toMatchObject({ code: 'ROUTE_DELETE_BLOCKED' });
+      const routeGroupingService = new PrismaRouteGroupingService(prisma, {} as never);
+      await expect(routeGroupingService.deleteGrouping({
+        groupingId: '40000000-0000-4000-8000-000000000010', shopDomain: 'g002-evidence.invalid'
+      })).rejects.toThrow('in-progress child routes cannot be archived or deleted');
+      expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } })).toMatchObject({ status: 'IN_PROGRESS' });
+      expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: routeVersionId } }))
+        .toMatchObject({ status: 'CURRENT', supersededAt: null });
+
+      const removalReceipt = await prisma.dsvCommandReceipt.create({ data: {
+        actorType: 'DSV_ADMIN', commandId: 'active-removal-command', commandName: 'ACTIVE_ROUTE_ORDER_REMOVAL',
+        payloadHash: 'non-pii-test-hash', principalType: 'DSV_ADMIN', requestId: 'active-removal-request', shopId
+      } });
+      const removalRequest = await prisma.dsvDispatchChangeRequest.create({ data: {
+        commandReceiptId: removalReceipt.id, deliveryStopId: '61000000-0000-4000-8000-000000000010',
+        driverId: driverA, priorSnapshot: { currentRouteVersionId: routeVersionId }, removalReason: 'test',
+        requestId: 'active-removal-request', requestedByActorType: 'DSV_ADMIN', routePlanId,
+        routeVersionId, sellerOrderId: '60000000-0000-4000-8000-000000000010', shopId,
+        type: 'ACTIVE_ROUTE_ORDER_REMOVAL'
+      } });
+      await expect(repository.recordDriverEvent({
+        appVersion: '1.2.0', assignmentGeneration: '1', changeRequestId: removalRequest.id,
+        clientEventId: 'active-removal-ack', deliveryStopId: null,
+        driverContractVersion: 2, driverId: driverA, eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED', expectedRouteVersionId: routeVersionId,
+        latitude: null, longitude: null, occurredAt: new Date('2026-08-24T04:57:30.000Z'), payload: { changeRequestId: removalRequest.id },
+        requestId: 'request-active-removal-ack', routePlanId, shopDomain: 'g002-evidence.invalid', shopId, versionCode: 120
+      })).rejects.toBeInstanceOf(DriverEventExecutionConflictError);
+      expect(await prisma.dsvDispatchChangeRequest.findUniqueOrThrow({ where: { id: removalRequest.id } }))
+        .toMatchObject({ appliedDriverEventId: null, status: 'PENDING_ACK' });
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: '60000000-0000-4000-8000-000000000010' } }))
+        .toMatchObject({ currentRouteVersionId: routeVersionId });
+      expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(1);
+      expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: routeVersionId } }))
+        .toMatchObject({ status: 'CURRENT', supersededAt: null });
 
       await expect(prisma.routeGroupingChildVersion.create({ data: {
         driverId: driverA, groupingId: '40000000-0000-4000-8000-000000000010',

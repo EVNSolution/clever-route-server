@@ -13,7 +13,7 @@ on:
         options: [OBSERVE, GUARDED, FULL]
       evidence_artifact_id:
         description: Artifact ID containing route-completion-rollout-evidence.json
-        required: true
+        required: false
       alarm_receipt_artifact_id:
         description: Exact-SHA Route completion alarm canary receipt artifact ID
         required: false
@@ -47,6 +47,7 @@ jobs:
           fetch-depth: 0
           ref: main
       - name: Require exact main SHA and successful CI
+        if: inputs.target_mode != 'OBSERVE'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -60,6 +61,7 @@ jobs:
           chmod +x scripts/ssm-route-completion-invariant-mode.sh scripts/verify-route-completion-alarm.sh tests/deploy/route-completion-invariant-rollout.test.sh
           tests/deploy/route-completion-invariant-rollout.test.sh
       - name: Verify rollout evidence provenance and gates
+        if: inputs.target_mode != 'OBSERVE'
         id: evidence
         env:
           ARTIFACT_ID: ${{ inputs.evidence_artifact_id }}
@@ -89,6 +91,14 @@ jobs:
             echo "image_id=$(jq -er '.runtime.imageId' "$evidence_path")"
             echo "image_repo_digest=$(jq -er '.runtime.imageRepoDigest' "$evidence_path")"
           } >> "$GITHUB_OUTPUT"
+      - name: Require elevated emergency rollback approval
+        if: inputs.target_mode == 'OBSERVE'
+        env:
+          EMERGENCY_ALLOWED_ACTORS: ${{ vars.ROUTE_COMPLETION_EMERGENCY_ROLLBACK_ALLOWED_ACTORS }}
+          GITHUB_ACTOR_NAME: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          case ",${EMERGENCY_ALLOWED_ACTORS// /}," in *",$GITHUB_ACTOR_NAME,"*) ;; *) exit 1 ;; esac
       - name: Verify alarm canary artifact provenance
         if: inputs.target_mode != 'OBSERVE'
         env:
@@ -122,6 +132,7 @@ jobs:
           ROUTE_COMPLETION_EXPECTED_IMAGE_ID: ${{ steps.evidence.outputs.image_id }}
           ROUTE_COMPLETION_EXPECTED_IMAGE_REPO_DIGEST: ${{ steps.evidence.outputs.image_repo_digest }}
           ROUTE_COMPLETION_EXPECTED_CURRENT_MODE: ${{ steps.evidence.outputs.current_mode }}
+          ROUTE_COMPLETION_EMERGENCY_ROLLBACK: ${{ inputs.target_mode == 'OBSERVE' && 'true' || 'false' }}
           ROUTE_COMPLETION_TARGET_MODE: ${{ inputs.target_mode }}
           ROUTE_OPS_SSM_TAG_KEY: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_KEY || 'Service' }}
           ROUTE_OPS_SSM_TAG_VALUE: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_VALUE || 'clever-delivery-server' }}

@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { consecutiveCleanReviewedDays, meetsRecoveryThreshold } from '../src/modules/driver/driver-route-completion-rollout-evidence.js';
 
 const now = new Date('2026-08-25T12:00:00.000Z');
@@ -28,6 +30,13 @@ describe('route completion rollout review continuity', () => {
   test('uses the raw recovery fraction at the 99.5 percent gate', () => {
     expect(meetsRecoveryThreshold(199, 200)).toBe(true);
     expect(meetsRecoveryThreshold(198, 199)).toBe(false);
+  });
+
+  test('gates on every retained false positive and outstanding review, not only the seven-day sample window', () => {
+    const report = readFileSync(join(process.cwd(), 'src/scripts/report-driver-route-completion-invariant.ts'), 'utf8');
+    expect(report).toContain('history."retainedUntil" > ${now}');
+    expect(report).toContain('outstanding."retainedUntil" > ${now}');
+    expect(report).not.toContain('history."createdAt" >= ${since} AND history.outcome');
   });
 });
 

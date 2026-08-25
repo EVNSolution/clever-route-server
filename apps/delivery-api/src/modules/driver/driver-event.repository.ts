@@ -671,7 +671,7 @@ function attemptFailureFor(error: unknown): {
 }
 
 async function applyDispatchChangeRequestAck(
-  prisma: Pick<DriverEventTransactionClient, '$queryRaw' | 'deliveryStop' | 'dsvDispatchChangeRequest' | 'order' | 'routePlanStop'>,
+  prisma: Pick<DriverEventTransactionClient, '$queryRaw' | 'deliveryStop' | 'dsvDispatchChangeRequest' | 'order'>,
   input: RecordDriverEventInput,
   driverEventId: string,
   appliedAt: Date
@@ -714,31 +714,10 @@ async function applyDispatchChangeRequestAck(
     });
     if (updated.count !== 1) throw new DriverEventContextError('Dispatch change request stop is unavailable');
   } else if (request.type === 'ACTIVE_ROUTE_ORDER_REMOVAL') {
-    const otherOrdersOnStop = await prisma.order.count({
-      where: {
-        currentRouteVersionId: request.routeVersionId,
-        deliveryStops: { some: { id: request.deliveryStopId } },
-        id: { not: request.sellerOrderId },
-        shopId: input.shopId
-      }
-    });
-    const updated = await prisma.order.updateMany({
-      data: { currentRouteVersionId: null },
-      where: {
-        currentRouteVersionId: request.routeVersionId,
-        id: request.sellerOrderId,
-        shopId: input.shopId
-      }
-    });
-    if (updated.count !== 1) throw new DriverEventSellerOrderAssignmentChangedError();
-    if (otherOrdersOnStop === 0) {
-      await prisma.routePlanStop.deleteMany({
-        where: {
-          deliveryStopId: request.deliveryStopId,
-          routePlanId
-        }
-      });
-    }
+    // Acknowledging this request used to mutate live membership while leaving the
+    // CURRENT child-version snapshot unchanged. Reject until the operation is
+    // routed through the immutable successor-version transaction.
+    throw new DriverEventExecutionConflictError(routePlanId, request.deliveryStopId);
   }
   const applied = await prisma.dsvDispatchChangeRequest.updateMany({
     data: {

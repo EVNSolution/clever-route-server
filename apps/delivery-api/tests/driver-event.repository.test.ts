@@ -1273,7 +1273,7 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.routePlan.findFirst).not.toHaveBeenCalled();
   });
 
-  test('applies one active route removal dispatch change when acknowledged by request id', async () => {
+  test('fails closed when active route removal acknowledgement would mutate an immutable child route', async () => {
     const { prisma } = createPrismaHarness({
       dispatchChangeRequest: {
         deliveryStopId: 'stop-id',
@@ -1294,34 +1294,11 @@ describe('PrismaDriverEventRepository', () => {
       deliveryStopId: null,
       eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
       routePlanId: 'route-plan-id'
-    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
+    }))).rejects.toBeInstanceOf(DriverEventExecutionConflictError);
 
-    expect(prisma.order.updateMany).toHaveBeenCalledWith({
-      data: { currentRouteVersionId: null },
-      where: {
-        currentRouteVersionId: 'route-version-id',
-        id: 'order-id',
-        shopId: 'shop-id'
-      }
-    });
-    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
-      where: {
-        deliveryStopId: 'stop-id',
-        routePlanId: 'route-plan-id'
-      }
-    });
-    expect(prisma.dsvDispatchChangeRequest.updateMany).toHaveBeenCalledWith({
-      data: {
-        appliedAt: serverReceivedAt,
-        appliedDriverEventId: 'driver-event-id',
-        status: 'APPLIED'
-      },
-      where: {
-        id: 'change-request-id',
-        shopId: 'shop-id',
-        status: 'PENDING_ACK'
-      }
-    });
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.dsvDispatchChangeRequest.updateMany).not.toHaveBeenCalled();
   });
 
   test('does not apply dispatch change acknowledgement when the order assignment changed', async () => {

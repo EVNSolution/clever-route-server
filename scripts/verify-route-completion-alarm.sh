@@ -21,7 +21,7 @@ verify_alarm() {
     and .ComparisonOperator == "GreaterThanOrEqualToThreshold"
     and .TreatMissingData == "notBreaching"
     and ((.Dimensions // []) | length) == 0
-    and (.AlarmActions | index($topic) != null)
+    and (.AlarmActions == [$topic])
   ' <<<"$alarm" >/dev/null || { echo "alarm contract mismatch: $alarm_name" >&2; exit 65; }
 }
 verify_alarm "$ROUTE_COMPLETION_OBSERVE_ALARM_NAME" DriverRouteCompletionWouldReject
