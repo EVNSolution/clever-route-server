@@ -3,6 +3,80 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrismaDsvDriverAuthRepository } from '../src/modules/dsv/dsv-driver-auth.repository.js';
 
 describe('Prisma DSV driver auth repository', () => {
+  test('direct signup links only exact active name and phone matches and needs no invite', async () => {
+    const account = {
+      id: 'account-id',
+      loginId: 'direct.driver',
+      name: '임지인',
+      phone: '01012345678',
+      tokenVersion: 0,
+    };
+    const matchingDriver = {
+      displayName: account.name,
+      id: 'matching-driver-id',
+      phone: '010-1234-5678',
+      shop: { shopDomain: 'dsv-production.local' },
+    };
+    const differentPhoneDriver = {
+      displayName: account.name,
+      id: 'different-phone-driver-id',
+      phone: '010-9999-9999',
+      shop: { shopDomain: 'dsv-production.local' },
+    };
+    const transaction = {
+      driver: {
+        findMany: vi.fn(() => Promise.resolve([matchingDriver, differentPhoneDriver])),
+        updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      },
+      driverAccount: {
+        create: vi.fn(() => Promise.resolve(account)),
+      },
+      driverAccountSession: {
+        create: vi.fn(() => Promise.resolve({ id: 'session-id' })),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
+    };
+    const repository = new PrismaDsvDriverAuthRepository(
+      prisma as never,
+      'identity-secret-that-is-at-least-32-characters',
+    );
+
+    const result = await repository.register({
+      loginId: account.loginId,
+      name: account.name,
+      password: 'temporary-password',
+      phone: account.phone,
+      residentNumberFront: null,
+      signupInviteToken: null,
+    });
+
+    expect(transaction.driver.findMany).toHaveBeenCalledWith({
+      include: { shop: { select: { shopDomain: true } } },
+      where: {
+        accountId: null,
+        displayName: account.name,
+        dsvProfile: { isNot: null },
+        status: 'ACTIVE',
+      },
+    });
+    expect(transaction.driver.updateMany).toHaveBeenCalledTimes(1);
+    expect(transaction.driver.updateMany).toHaveBeenCalledWith({
+      data: {
+        accountId: account.id,
+        authSubject: 'driver-matching-driver-id',
+        inviteCode: null,
+        inviteCodeExpiresAt: null,
+      },
+      where: { accountId: null, id: matchingDriver.id, status: 'ACTIVE' },
+    });
+    expect(result.account).toMatchObject({
+      connectionStatus: 'LINKED',
+      linkedDrivers: [{ driverId: matchingDriver.id, name: account.name }],
+    });
+  });
+
   test('creates a new DSV driver from a shop invite and links the new account atomically', async () => {
     const account = {
       id: 'account-id',
