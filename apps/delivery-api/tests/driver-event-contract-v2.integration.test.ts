@@ -22,6 +22,12 @@ import { PrismaDriverRouteCompletionReviewRepository } from '../src/modules/driv
 
 const databaseUrl = process.env.DRIVER_EVENT_CONTRACT_V2_DATABASE_URL ?? '';
 const live = databaseUrl === '' ? test.skip : test;
+const validCustomStopLocation = {
+  address1: '100 Test Route',
+  countryCode: 'CA',
+  latitude: 43.46,
+  longitude: -80.48
+} as const;
 
 describe('driver event contract v2 PostgreSQL invariants', () => {
   live('serializes assignment ownership and increments exactly once per distinct owner', async () => {
@@ -219,6 +225,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         await new Promise((resolve) => setTimeout(resolve, 75));
         let appendSettled = false;
         const append = routeGroupingService.createCustomStop({
+          ...validCustomStopLocation,
           actor: 'route-ops:test', groupingId: '40000000-0000-4000-8000-000000000010',
           shopDomain: 'g002-evidence.invalid', stopName: 'Completion race append', targetRoutePlanId: routePlanId
         }).then(
@@ -607,6 +614,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         .toMatchObject({ currentRouteVersionId: nextChildId });
 
       const addedDraft = await routeGroupingService.createCustomStop({
+        ...validCustomStopLocation,
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
         stopName: 'In-progress draft append'
       });
@@ -679,6 +687,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       });
       await prisma.routeGroupingOrder.delete({ where: { id: unresolvedMembership.id } });
       await expect(routeGroupingService.createCustomStop({
+        ...validCustomStopLocation,
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
         stopName: 'Must roll back unresolved membership', targetRoutePlanId: routePlanId
       })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
@@ -721,6 +730,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       expect(mismatchedGrouping?.children.find((child) => child.routePlanId === routePlanId)?.orderIds)
         .toEqual([assignedOrder.id]);
       await expect(routeGroupingService.createCustomStop({
+        ...validCustomStopLocation,
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
         stopName: 'Must roll back mismatched read snapshot', targetRoutePlanId: routePlanId
       })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
@@ -746,6 +756,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         });
         const stopName = `Must roll back ${invalid.name}`;
         await expect(routeGroupingService.createCustomStop({
+          ...validCustomStopLocation,
           actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
           stopName, targetRoutePlanId: routePlanId
         })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
@@ -760,6 +771,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       });
 
       const publicDraft = await routeGroupingService.createCustomStop({
+        ...validCustomStopLocation,
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
         stopName: 'Public draft append after driver change'
       });
@@ -1174,6 +1186,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       });
       expect(preDiscriminatorCreatedChild.snapshot).toMatchObject({ membershipSchemaVersion: 1 });
       await expect(routeGroupingService.createCustomStop({
+        ...validCustomStopLocation,
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
         stopName: 'Post modern rollback mutation one', targetRoutePlanId: preDiscriminatorRoutePlanId
       })).resolves.not.toBeNull();
@@ -1184,6 +1197,7 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         membershipSchemaVersion: 1, predecessorChildVersionId: preDiscriminatorCreatedChild.id
       });
       await expect(routeGroupingService.createCustomStop({
+        ...validCustomStopLocation,
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid',
         stopName: 'Post modern rollback mutation two', targetRoutePlanId: preDiscriminatorRoutePlanId
       })).resolves.not.toBeNull();

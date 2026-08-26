@@ -8,6 +8,11 @@ import {
 import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint } from '../modules/route-plans/route-plan.types.js';
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import {
+  type RequiredCustomStopLocationFields,
+  validateCustomStopUpdateLocationRequest,
+  validateRequiredCustomStopLocation
+} from '../modules/route-grouping/custom-stop-location-contract.js';
+import {
   CustomOrderReferenceCopyNotAllowedError,
   RouteGroupingBranchLockConflictError,
   RouteGroupingCopyLockedError,
@@ -589,10 +594,14 @@ function readUpdateGroupingOrdersPayload(value: unknown): { addOrderIds?: string
   };
 }
 
-function readCustomStopPayload(value: unknown, create: boolean): CustomRouteGroupingStopFields & {
+type CustomStopPayload = CustomRouteGroupingStopFields & {
   expectedUpdatedAt?: string;
   targetRoutePlanId?: string;
-} {
+};
+
+function readCustomStopPayload(value: unknown, create: true): CustomStopPayload & RequiredCustomStopLocationFields;
+function readCustomStopPayload(value: unknown, create: false): CustomStopPayload;
+function readCustomStopPayload(value: unknown, create: boolean): CustomStopPayload {
   const object = requireObject(value);
   const payload: CustomRouteGroupingStopFields & { expectedUpdatedAt?: string; targetRoutePlanId?: string } = {
     ...(object.address1 === undefined ? {} : { address1: readNullableString(object.address1) }),
@@ -602,8 +611,8 @@ function readCustomStopPayload(value: unknown, create: boolean): CustomRouteGrou
     ...(object.email === undefined ? {} : { email: readNullableString(object.email) }),
     ...(object.expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt: readRevisionTimestamp(object.expectedUpdatedAt, 'expectedUpdatedAt') }),
     ...(object.instructions === undefined ? {} : { instructions: readNullableString(object.instructions) }),
-    ...(object.latitude === undefined ? {} : { latitude: readNullableNumber(object.latitude) }),
-    ...(object.longitude === undefined ? {} : { longitude: readNullableNumber(object.longitude) }),
+    ...(object.latitude === undefined ? {} : { latitude: readCustomStopCoordinate(object.latitude, 'latitude') }),
+    ...(object.longitude === undefined ? {} : { longitude: readCustomStopCoordinate(object.longitude, 'longitude') }),
     ...(object.phone === undefined ? {} : { phone: readNullableString(object.phone) }),
     ...(object.postalCode === undefined ? {} : { postalCode: readNullableString(object.postalCode) }),
     ...(object.priority === undefined ? {} : { priority: readBoundedInteger(object.priority, 'priority', 0, 100) }),
@@ -619,13 +628,20 @@ function readCustomStopPayload(value: unknown, create: boolean): CustomRouteGrou
   if (!create && Object.keys(payload).every((key) => key === 'expectedUpdatedAt')) {
     throw new BadRouteGroupPayloadError('at least one custom stop field is required');
   }
-  if ((payload.latitude === null) !== (payload.longitude === null) && payload.latitude !== undefined && payload.longitude !== undefined) {
-    throw new BadRouteGroupPayloadError('latitude and longitude must be provided together');
-  }
+  if (create) validateRequiredCustomStopLocation(payload);
+  else validateCustomStopUpdateLocationRequest(payload);
   if (payload.timeWindowStart !== undefined && payload.timeWindowStart !== null && payload.timeWindowEnd !== undefined && payload.timeWindowEnd !== null) {
     if (Date.parse(payload.timeWindowStart) >= Date.parse(payload.timeWindowEnd)) throw new BadRouteGroupPayloadError('invalid time window');
   }
   return payload;
+}
+
+function readCustomStopCoordinate(value: unknown, field: 'latitude' | 'longitude'): number | null {
+  try {
+    return readNullableNumber(value);
+  } catch {
+    throw new RouteGroupingValidationError([`custom stop ${field} must be a finite number`]);
+  }
 }
 
 function readCreateBranchPayload(value: unknown): { color?: string | null; driverId?: string | null; label?: string | null; orderIds?: string[]; sortOrder?: number } {
@@ -906,7 +922,9 @@ function readBoundedInteger(value: unknown, field: string, minimum: number, maxi
 
 function readCountryCode(value: unknown): string | null {
   const countryCode = readNullableString(value)?.toUpperCase() ?? null;
-  if (countryCode !== null && !/^[A-Z]{2}$/u.test(countryCode)) throw new BadRouteGroupPayloadError('countryCode must be two letters');
+  if (countryCode !== null && !/^[A-Z]{2}$/u.test(countryCode)) {
+    throw new RouteGroupingValidationError(['custom stop countryCode must be a two-letter ISO country code']);
+  }
   return countryCode;
 }
 

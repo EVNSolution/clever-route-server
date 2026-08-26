@@ -2500,7 +2500,7 @@ paths:
     post:
       tags: [Shopify Embedded Admin]
       summary: Create a CLEVER-local custom stop in a route group or child route
-      description: Creates only tenant-scoped CLEVER database rows. It never creates or mutates Shopify data.
+      description: Creates only tenant-scoped CLEVER database rows. It never creates or mutates Shopify data. A non-empty address1, two-letter countryCode, and a routeable non-null latitude/longitude pair are required.
       operationId: createAdminRouteGroupCustomStop
       x-clever-audience: shopify-embedded-admin
       x-side-effect: write-clever-db
@@ -2535,7 +2535,7 @@ paths:
     patch:
       tags: [Shopify Embedded Admin]
       summary: Update a CLEVER-local custom stop
-      description: Rejects commerce-sourced stops and scopes the stop through the authenticated tenant and route group.
+      description: Rejects commerce-sourced stops and scopes the stop through the authenticated tenant and route group. If any address location field changes, latitude and longitude must both be included and non-null in the same request. Supplying either coordinate also requires the other coordinate in the same request. Updates to unrelated fields preserve the existing location.
       operationId: updateAdminRouteGroupCustomStop
       x-clever-audience: shopify-embedded-admin
       x-side-effect: write-clever-db
@@ -5230,15 +5230,35 @@ components:
       allOf:
         - $ref: '#/components/schemas/CustomRouteStopFields'
         - type: object
-          required: [stopName]
+          required: [stopName, address1, countryCode, latitude, longitude]
           properties:
+            address1: { type: string, minLength: 1 }
+            countryCode: { type: string, pattern: '^[A-Za-z]{2}$' }
+            latitude: { type: number, minimum: -90, maximum: 90 }
+            longitude: { type: number, minimum: -180, maximum: 180 }
             targetRoutePlanId:
               type: string
               format: uuid
               description: Omit to keep the stop unassigned at group level; provide a current child route plan ID to append it atomically.
     CustomRouteStopUpdateInput:
+      description: Address location fields and coordinates are an atomic unit. If address1, address2, city, province, postalCode, or countryCode is present, latitude and longitude must both be present and non-null. If either coordinate is present, both must be present and non-null. Unrelated fields preserve the stored location.
       allOf:
         - $ref: '#/components/schemas/CustomRouteStopFields'
+        - type: object
+          properties:
+            address1: { type: string, minLength: 1 }
+            countryCode: { type: string, pattern: '^[A-Za-z]{2}$' }
+            latitude: { type: number, minimum: -90, maximum: 90 }
+            longitude: { type: number, minimum: -180, maximum: 180 }
+          dependentRequired:
+            address1: [latitude, longitude]
+            address2: [latitude, longitude]
+            city: [latitude, longitude]
+            province: [latitude, longitude]
+            postalCode: [latitude, longitude]
+            countryCode: [latitude, longitude]
+            latitude: [longitude]
+            longitude: [latitude]
     Error:
       type: object
       required: [code, message]

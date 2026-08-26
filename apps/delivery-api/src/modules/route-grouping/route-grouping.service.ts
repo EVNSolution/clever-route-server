@@ -16,8 +16,13 @@ import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-
 import { toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
-import { diagnoseRouteStopLocation } from '../route-plans/route-stop-location-diagnostic.js';
 import { aggregateOrderItems, toOrderItemDto } from '../order-items/order-items.js';
+import {
+  hasCustomStopLocationChanges,
+  validateCustomStopLocationValues,
+  validateCustomStopUpdateLocationRequest,
+  validateRequiredCustomStopLocation
+} from './custom-stop-location-contract.js';
 import {
   CustomOrderReferenceCopyNotAllowedError,
   RouteGroupingBranchLockConflictError,
@@ -799,6 +804,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   }
 
   async createCustomStop(input: CreateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null> {
+    validateRequiredCustomStopLocation(input);
     validateCustomStopValues(input);
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const group = await findGroupingForUpdate(tx, input);
@@ -882,6 +888,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   }
 
   async updateCustomStop(input: UpdateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null> {
+    validateCustomStopUpdateLocationRequest(input);
+    validateCustomStopValues(input);
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const group = await findGroupingForUpdate(tx, input);
       if (group === null) return null;
@@ -910,6 +918,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         province: input.province === undefined ? assignment.deliveryStop.province : input.province,
         recipientName: input.recipientName === undefined ? assignment.deliveryStop.recipientName : input.recipientName
       };
+      if (hasCustomStopLocationChanges(input)) {
+        validateRequiredCustomStopLocation({ ...merged, ...mergedAddress });
+      }
       validateCustomStopValues({ ...merged, ...mergedAddress });
       await updateGroupingRevision(tx, group, input.expectedUpdatedAt);
 
@@ -2688,6 +2699,7 @@ async function assertNoCustomStopsRemovedAsOrders(
 }
 
 function validateCustomStopValues(input: {
+  address1?: string | null;
   countryCode?: string | null;
   latitude?: number | null;
   longitude?: number | null;
@@ -2697,31 +2709,7 @@ function validateCustomStopValues(input: {
   timeWindowEnd?: string | null;
   timeWindowStart?: string | null;
 }): void {
-  const latitude = input.latitude ?? null;
-  const longitude = input.longitude ?? null;
-  if ((latitude === null) !== (longitude === null)) {
-    throw new RouteGroupingValidationError(['latitude and longitude must be provided together']);
-  }
-  if (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90)) {
-    throw new RouteGroupingValidationError(['latitude must be between -90 and 90']);
-  }
-  if (longitude !== null && (!Number.isFinite(longitude) || longitude < -180 || longitude > 180)) {
-    throw new RouteGroupingValidationError(['longitude must be between -180 and 180']);
-  }
-  if (latitude !== null && longitude !== null) {
-    const locationDiagnostic = diagnoseRouteStopLocation({
-      countryCode: input.countryCode,
-      geocodeStatus: 'RESOLVED',
-      latitude,
-      longitude,
-      province: input.province
-    });
-    if (!locationDiagnostic.routeable) {
-      throw new RouteGroupingValidationError([
-        `custom stop location is not routeable: ${locationDiagnostic.issues.join(', ')}`
-      ]);
-    }
-  }
+  validateCustomStopLocationValues(input);
   if (input.serviceMinutes !== undefined && (!Number.isInteger(input.serviceMinutes) || input.serviceMinutes < 0 || input.serviceMinutes > 1_440)) {
     throw new RouteGroupingValidationError(['serviceMinutes must be an integer between 0 and 1440']);
   }

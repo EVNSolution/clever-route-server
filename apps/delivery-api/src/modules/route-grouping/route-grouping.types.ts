@@ -212,11 +212,18 @@ export type CustomRouteGroupingStopFields = {
   timeWindowStart?: string | null;
 };
 
-export type CreateCustomRouteGroupingStopInput = CustomRouteGroupingStopFields & {
+export type CreateCustomRouteGroupingStopInput = Omit<
+  CustomRouteGroupingStopFields,
+  'address1' | 'countryCode' | 'latitude' | 'longitude' | 'stopName'
+> & {
+  address1: string;
   actor: string;
   appId?: string | undefined;
+  countryCode: string;
   expectedUpdatedAt?: string;
   groupingId: string;
+  latitude: number;
+  longitude: number;
   shopDomain: string;
   stopName: string;
   targetRoutePlanId?: string;

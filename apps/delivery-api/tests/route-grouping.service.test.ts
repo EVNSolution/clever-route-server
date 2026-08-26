@@ -286,7 +286,9 @@ describe('route grouping contracts', () => {
     vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-1' } as never);
 
     await service.createCustomStop({
+      address1: '123 Main St',
       actor: 'admin-user',
+      countryCode: 'CA',
       groupingId: 'group-1',
       latitude: 43.7,
       longitude: -79.4,
@@ -319,6 +321,7 @@ describe('route grouping contracts', () => {
     const service = new PrismaRouteGroupingService({ $transaction: transaction } as never, new FakeDriverPushProvider());
 
     const error = await service.createCustomStop({
+      address1: '123 Main St',
       actor: 'admin-user',
       countryCode: 'CA',
       groupingId: 'group-1',
@@ -335,11 +338,98 @@ describe('route grouping contracts', () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
+  test('requires a complete routeable location before opening a custom stop create transaction', async () => {
+    const transaction = vi.fn();
+    const service = new PrismaRouteGroupingService({ $transaction: transaction } as never, new FakeDriverPushProvider());
+    const valid = {
+      address1: '123 Main St',
+      actor: 'admin-user',
+      countryCode: 'CA',
+      groupingId: 'group-1',
+      latitude: 43.7,
+      longitude: -79.4,
+      shopDomain: 'tenant.example',
+      stopName: 'Warehouse pickup'
+    };
+    const invalid = [
+      { ...valid, address1: null },
+      { ...valid, countryCode: null },
+      { ...valid, countryCode: 'CAN' },
+      { ...valid, latitude: null },
+      { ...valid, longitude: 181 }
+    ];
+
+    for (const input of invalid) {
+      await expect(service.createCustomStop(input as never)).rejects.toBeInstanceOf(RouteGroupingValidationError);
+    }
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  test('rejects non-atomic custom stop location updates before opening a transaction', async () => {
+    const transaction = vi.fn();
+    const service = new PrismaRouteGroupingService({ $transaction: transaction } as never, new FakeDriverPushProvider());
+    const identity = { deliveryStopId: 'stop-custom', groupingId: 'group-1', shopDomain: 'tenant.example' };
+
+    await expect(service.updateCustomStop({ ...identity, address1: '456 Queen St' })).rejects.toMatchObject({
+      blockers: ['custom stop address changes must include non-null latitude and longitude in the same request'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+    await expect(service.updateCustomStop({ ...identity, latitude: 43.65 })).rejects.toMatchObject({
+      blockers: ['custom stop coordinate changes must include non-null latitude and longitude in the same request'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  test('preserves location on unrelated custom stop updates and accepts an atomic address and pin update', async () => {
+    const unrelated = customStopUpdateHarness();
+    await unrelated.service.updateCustomStop({
+      deliveryStopId: 'stop-custom',
+      groupingId: 'group-1',
+      instructions: 'Use loading dock 2',
+      shopDomain: 'tenant.example'
+    });
+    expect(unrelated.tx.deliveryStop.update).toHaveBeenCalledWith({
+      data: { instructions: 'Use loading dock 2' },
+      where: { id: 'stop-custom' }
+    });
+    expect(unrelated.tx.order.update).not.toHaveBeenCalled();
+
+    const atomic = customStopUpdateHarness();
+    await atomic.service.updateCustomStop({
+      address1: '456 Queen St',
+      countryCode: 'CA',
+      deliveryStopId: 'stop-custom',
+      expectedUpdatedAt: '2026-08-19T12:00:00.000Z',
+      groupingId: 'group-1',
+      latitude: 43.65,
+      longitude: -79.38,
+      shopDomain: 'tenant.example'
+    });
+    expect(atomic.tx.routeGrouping.updateMany).toHaveBeenCalledWith({
+      data: { status: 'READY' },
+      where: { id: 'group-1', shopId: 'shop-1', updatedAt: new Date('2026-08-19T12:00:00.000Z') }
+    });
+    expect(atomic.tx.deliveryStop.update).toHaveBeenCalledWith({
+      data: {
+        address1: '456 Queen St',
+        countryCode: 'CA',
+        geocodeStatus: 'RESOLVED',
+        latitude: 43.65,
+        longitude: -79.38
+      },
+      where: { id: 'stop-custom' }
+    });
+  });
+
   test('denies cross-tenant custom stop creation and rejects commerce stop edits', async () => {
     const crossTenantTx = { shop: { findUnique: vi.fn().mockResolvedValue(null) } };
     const crossTenantPrisma = { $transaction: vi.fn((operation: (client: typeof crossTenantTx) => unknown) => operation(crossTenantTx)) };
     const crossTenantService = new PrismaRouteGroupingService(crossTenantPrisma as never, new FakeDriverPushProvider());
-    expect(await crossTenantService.createCustomStop({ actor: 'admin', groupingId: 'other-group', shopDomain: 'tenant.example', stopName: 'Denied' })).toBeNull();
+    expect(await crossTenantService.createCustomStop({
+      address1: '123 Main St', actor: 'admin', countryCode: 'CA', groupingId: 'other-group', latitude: 43.7,
+      longitude: -79.4, shopDomain: 'tenant.example', stopName: 'Denied'
+    })).toBeNull();
 
     const editTx = {
       routeGrouping: { findFirst: vi.fn().mockResolvedValue({ id: 'group-1', shopId: 'shop-1' }) },
@@ -1129,6 +1219,58 @@ describe('route grouping contracts', () => {
     expect(provider.sentMessages[0]?.metadata).toEqual({ changeRequestId: 'change-request-id', orderMessageId: 'message-id' });
   });
 });
+
+function customStopUpdateHarness() {
+  const tx = {
+    deliveryStop: { update: vi.fn().mockResolvedValue({ id: 'stop-custom' }) },
+    order: { update: vi.fn().mockResolvedValue({ id: 'order-custom' }) },
+    routeGrouping: {
+      findFirst: vi.fn().mockResolvedValue({
+        dateRangeEnd: null,
+        dateRangeStart: null,
+        id: 'group-1',
+        name: 'Group 1',
+        planDate: new Date('2026-08-19T00:00:00.000Z'),
+        shopId: 'shop-1',
+        updatedAt: new Date('2026-08-19T12:00:00.000Z')
+      }),
+      findUnique: vi.fn().mockResolvedValue({ childVersions: [], id: 'group-1', shopId: 'shop-1' }),
+      update: vi.fn().mockResolvedValue({ id: 'group-1' }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
+    },
+    routeGroupingOrder: {
+      findFirst: vi.fn().mockResolvedValue({
+        deliveryStop: {
+          address1: '123 Main St',
+          address2: null,
+          city: 'Toronto',
+          countryCode: 'CA',
+          id: 'stop-custom',
+          instructions: null,
+          latitude: 43.7,
+          longitude: -79.4,
+          phone: null,
+          postalCode: 'M5V 1A1',
+          priority: 0,
+          province: 'ON',
+          recipientName: null,
+          routePlanStops: [],
+          serviceMinutes: 5,
+          timeWindowEnd: null,
+          timeWindowStart: null
+        },
+        deliveryStopId: 'stop-custom',
+        order: { id: 'order-custom', ownedRouteGroupingId: 'group-1', phone: null, sourcePlatform: 'CUSTOM' },
+        orderId: 'order-custom'
+      })
+    },
+    shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+  };
+  const prisma = { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) };
+  const service = new PrismaRouteGroupingService(prisma as never, new FakeDriverPushProvider());
+  vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-1' } as never);
+  return { prisma, service, tx };
+}
 
 function copySourceFixture(sourcePlatform: 'SHOPIFY' | 'CUSTOM') {
   return {
