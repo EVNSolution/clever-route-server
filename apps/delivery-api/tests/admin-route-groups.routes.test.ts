@@ -194,6 +194,98 @@ describe('Admin route group routes', () => {
     }
   });
 
+  test('rejects incomplete or malformed custom stop locations before calling the service', async () => {
+    const { createCustomStop, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const validLocation = { address1: '123 Main St', countryCode: 'CA', latitude: 43.7, longitude: -79.4 };
+    const cases = [
+      { message: 'custom stop address1 is required', payload: { ...validLocation, address1: undefined } },
+      { message: 'custom stop address1 is required', payload: { ...validLocation, address1: null } },
+      { message: 'custom stop address1 is required', payload: { ...validLocation, address1: '   ' } },
+      { message: 'custom stop countryCode is required', payload: { ...validLocation, countryCode: undefined } },
+      { message: 'custom stop countryCode must be a two-letter ISO country code', payload: { ...validLocation, countryCode: 'CAN' } },
+      { message: 'custom stop latitude and longitude are required', payload: { ...validLocation, latitude: undefined } },
+      { message: 'custom stop latitude and longitude are required', payload: { ...validLocation, latitude: null } },
+      { message: 'custom stop latitude and longitude are required', payload: { ...validLocation, longitude: null } },
+      { message: 'custom stop latitude must be a finite number', payload: { ...validLocation, latitude: 'north' } },
+      { message: 'latitude must be between -90 and 90', payload: { ...validLocation, latitude: 91 } },
+      { message: 'longitude must be between -180 and 180', payload: { ...validLocation, longitude: 181 } },
+      {
+        message: 'custom stop location is not routeable: COORDINATES_ZERO, GEOCODE_STATUS_INCONSISTENT',
+        payload: { ...validLocation, latitude: 0, longitude: 0 }
+      },
+      {
+        message: 'custom stop location is not routeable: COORDINATES_OUTSIDE_COUNTRY, GEOCODE_STATUS_INCONSISTENT',
+        payload: { ...validLocation, latitude: 37.5, longitude: 127 }
+      },
+      {
+        message: 'custom stop location is not routeable: COORDINATES_OUTSIDE_PROVINCE, GEOCODE_STATUS_INCONSISTENT',
+        payload: { ...validLocation, latitude: 49.28, longitude: -123.12, province: 'ON' }
+      }
+    ];
+
+    try {
+      for (const entry of cases) {
+        const response = await app.inject({
+          headers: { authorization: 'Bearer session-token' },
+          method: 'POST',
+          payload: { ...entry.payload, stopName: 'Invalid custom stop' },
+          url: '/admin/route-groups/route-group-id/stops/custom'
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({
+          data: null,
+          error: { code: 'ROUTE_GROUPING_INVALID', message: entry.message }
+        });
+      }
+      expect(createCustomStop).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('requires address and coordinate changes to be submitted atomically', async () => {
+    const { dependencies, updateCustomStop } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const addressOnly = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { address1: '456 Queen St' },
+        url: '/admin/route-groups/route-group-id/stops/stop-id/custom'
+      });
+      expect(addressOnly.statusCode).toBe(400);
+      expect(addressOnly.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_GROUPING_INVALID',
+          message: 'custom stop address changes must include non-null latitude and longitude in the same request'
+        }
+      });
+      expect(updateCustomStop).not.toHaveBeenCalled();
+
+      const atomic = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { address1: '456 Queen St', latitude: 43.65, longitude: -79.38 },
+        url: '/admin/route-groups/route-group-id/stops/stop-id/custom'
+      });
+      expect(atomic.statusCode).toBe(200);
+      expect(updateCustomStop).toHaveBeenCalledWith({
+        address1: '456 Queen St',
+        appId: 'clever',
+        deliveryStopId: 'stop-id',
+        groupingId: 'route-group-id',
+        latitude: 43.65,
+        longitude: -79.38,
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('updates and deletes only a custom stop in the authenticated tenant group', async () => {
     const { deleteCustomStop, dependencies, updateCustomStop } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });

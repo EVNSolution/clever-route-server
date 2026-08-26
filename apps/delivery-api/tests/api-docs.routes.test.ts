@@ -154,6 +154,37 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('GET /docs/openapi.yaml keeps custom stop create locations required and updates atomic', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      expect(response.statusCode).toBe(200);
+      execFileSync('ruby', [
+        '-e',
+        [
+          'require "yaml"',
+          'doc = YAML.load(STDIN.read)',
+          'schemas = doc.dig("components", "schemas")',
+          'create = schemas.fetch("CustomRouteStopCreateInput").fetch("allOf").fetch(1)',
+          'required = create.fetch("required")',
+          'raise "custom stop create location fields must be required" unless %w[stopName address1 countryCode latitude longitude].all? { |field| required.include?(field) }',
+          'properties = create.fetch("properties")',
+          'raise "custom stop create location fields must be non-null" unless %w[address1 countryCode latitude longitude].all? { |field| !properties.fetch(field).fetch("type").is_a?(Array) }',
+          'update = schemas.fetch("CustomRouteStopUpdateInput")',
+          'update_contract = update.fetch("allOf").fetch(1)',
+          'update_properties = update_contract.fetch("properties")',
+          'raise "custom stop update location fields must be non-null when present" unless %w[address1 countryCode latitude longitude].all? { |field| !update_properties.fetch(field).fetch("type").is_a?(Array) }',
+          'dependent = update_contract.fetch("dependentRequired")',
+          'raise "address updates must depend on both coordinates" unless %w[address1 address2 city province postalCode countryCode].all? { |field| dependent.fetch(field) == %w[latitude longitude] }',
+          'raise "coordinate updates must be paired" unless dependent.fetch("latitude") == ["longitude"] && dependent.fetch("longitude") == ["latitude"]'
+        ].join('; ')
+      ], { input: response.body });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml documents the embedded app-facing admin contract', async () => {
     const app = await buildApp();
     const [ordersSource, routeGroupsSource, inventoriesSource, customerEmailSource, driversSource, routePlansSource] = await Promise.all([
