@@ -1,13 +1,14 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import type { DsvDriverAccountLinkService } from './dsv-driver-account-link.service.js';
 
 export type DsvOperationalNotification = {
   changeRequestId?: string;
   createdAt: string;
   description: string;
   id: string;
-  kind: 'CANCELLED_ORDER' | 'CHANGE_APPLIED' | 'CHANGE_CANCELLED' | 'CHANGE_PENDING' | 'DRIVER_NOTIFICATION_FAILED';
+  kind: 'CANCELLED_ORDER' | 'CHANGE_APPLIED' | 'CHANGE_CANCELLED' | 'CHANGE_PENDING' | 'DRIVER_ACCOUNT_LINK_PENDING' | 'DRIVER_NOTIFICATION_FAILED';
   recoverable: boolean;
   sellerOrderId?: string;
   severity: 'info' | 'success' | 'warning';
@@ -24,7 +25,10 @@ type OperationalNotificationPrismaClient = Pick<
 >;
 
 export class PrismaDsvOperationalNotificationService implements DsvOperationalNotificationService {
-  constructor(private readonly prisma: OperationalNotificationPrismaClient) {}
+  constructor(
+    private readonly prisma: OperationalNotificationPrismaClient,
+    private readonly driverAccountLinks?: Pick<DsvDriverAccountLinkService, 'listPending'>,
+  ) {}
 
   async list(input: { shopDomain: string }): Promise<{ items: DsvOperationalNotification[] }> {
     const shop = await this.prisma.shop.findUnique({
@@ -32,7 +36,7 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
       where: appScopedShopWhere({ shopDomain: input.shopDomain.trim().toLowerCase() }),
     });
     if (shop === null) return { items: [] };
-    const [requests, attempts, cancelledOrders] = await Promise.all([
+    const [requests, attempts, cancelledOrders, driverAccountLinks] = await Promise.all([
       this.prisma.dsvDispatchChangeRequest.findMany({
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         select: {
@@ -65,6 +69,7 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
         take: 50,
         where: { currentRouteVersionId: null, deliveryStatus: 'CANCELLED', shopId: shop.id },
       }),
+      this.driverAccountLinks?.listPending(input) ?? Promise.resolve([]),
     ]);
 
     const items: DsvOperationalNotification[] = [];
@@ -111,6 +116,17 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
         sellerOrderId: order.id,
         severity: 'warning',
         title: '취소 주문 복구 가능',
+      });
+    }
+    for (const review of driverAccountLinks) {
+      items.push({
+        createdAt: review.createdAt,
+        description: '등록 정보가 DSV 배송원 정보와 일부만 일치합니다. 관리 화면에서 연결 대상을 확인하세요.',
+        id: `driver-account-link:${review.accountId}:${review.driverId}`,
+        kind: 'DRIVER_ACCOUNT_LINK_PENDING',
+        recoverable: false,
+        severity: 'warning',
+        title: '배송원 앱 계정 연결 검토',
       });
     }
 

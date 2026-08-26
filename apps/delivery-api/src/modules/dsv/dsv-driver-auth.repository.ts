@@ -367,17 +367,18 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
       data: { lastUsedAt: now },
       where: { id: session.id },
     });
+    const account = await this.linkMatchingDrivers(session.account);
     return {
-      account: accountView(session.account, session.account.drivers),
-      accountId: session.account.id,
+      account: accountView(account, account.drivers),
+      accountId: account.id,
       expiresAt: session.expiresAt,
       refreshToken,
-      tokenVersion: session.account.tokenVersion,
+      tokenVersion: account.tokenVersion,
     };
   }
 
   private async linkMatchingDrivers(account: AccountWithDrivers): Promise<AccountWithDrivers> {
-    if (account.name === null) return account;
+    if (account.name === null || account.drivers.length > 0) return account;
     const candidates = (await this.prisma.driver.findMany({
       select: {
         id: true,

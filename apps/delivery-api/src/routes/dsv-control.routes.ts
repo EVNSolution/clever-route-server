@@ -63,6 +63,10 @@ import type {
   DsvVehicleInput,
 } from '../modules/dsv/dsv-resource.service.js';
 import {
+  DsvDriverAccountLinkCandidateError,
+  type DsvDriverAccountLinkService,
+} from '../modules/dsv/dsv-driver-account-link.service.js';
+import {
   DsvForbiddenError,
   createDsvAdminPrincipal,
   requireDsvScopes,
@@ -170,6 +174,7 @@ export type DsvControlDependencies = {
   cookieName: string;
   customerAccountService?: DsvCustomerAccountService;
   dispatchImportService: DsvDispatchImportService;
+  driverAccountLinkService?: DsvDriverAccountLinkService;
   geocodingService?: Pick<GeocodingService, 'geocode'>;
   manualEmailService: DsvManualEmailService;
   operatorInvitationService?: DsvAdminOperatorInvitationService;
@@ -666,6 +671,42 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         ? sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found')
         : sendData(reply, resources);
     }, ['dsv:resources:read']));
+
+  app.get(`${apiRoot}/driver-account-links/pending`, async (request, reply) =>
+    withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
+      if (dependencies.driverAccountLinkService === undefined) {
+        return sendError(reply, 503, 'DRIVER_ACCOUNT_LINK_UNAVAILABLE', '배송원 계정 연결 서비스를 사용할 수 없습니다.');
+      }
+      const reviews = await dependencies.driverAccountLinkService.listPending({ shopDomain });
+      return sendData(reply, { reviews });
+    }, ['dsv:accounts:read', 'dsv:resources:read']));
+
+  app.post(`${apiRoot}/driver-account-links/:driverId/approve`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+      const driverId = readUuidParam(request, 'driverId');
+      const accountId = readDriverAccountLinkApproval(request.body);
+      if (driverId === null || accountId === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid driver account link approval');
+      if (dependencies.driverAccountLinkService === undefined) {
+        return sendError(reply, 503, 'DRIVER_ACCOUNT_LINK_UNAVAILABLE', '배송원 계정 연결 서비스를 사용할 수 없습니다.');
+      }
+      try {
+        const linked = await dependencies.driverAccountLinkService.approve({
+          accountId,
+          actorId: actor,
+          driverId,
+          requestId: request.id,
+          shopDomain,
+        });
+        return sendData(reply, { linked });
+      } catch (error) {
+        if (error instanceof DsvDriverAccountLinkCandidateError) {
+          return error.code === 'NOT_FOUND'
+            ? sendError(reply, 404, 'DRIVER_ACCOUNT_LINK_NOT_FOUND', error.message)
+            : sendError(reply, 409, 'DRIVER_ACCOUNT_LINK_CONFLICT', error.message);
+        }
+        throw error;
+      }
+    }, ['dsv:accounts:write', 'dsv:resources:write']));
 
   app.post(`${apiRoot}/drivers`, async (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
@@ -2001,6 +2042,13 @@ function readDriverInput(value: unknown): DsvDriverInput | null {
   const zone = readBoundedText(body.zone, 160);
   if (age === null || (age !== 0 && age < 18) || age > 100 || career === null || gender === null || name === null || phone === null || score === null || traits === null || zone === null) return null;
   return { age, career, gender, name, ...(phone === undefined ? {} : { phone }), score, traits, zone };
+}
+
+function readDriverAccountLinkApproval(value: unknown): string | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyKeys(body, ['accountId'])) return null;
+  const accountId = readTrimmed(body.accountId);
+  return accountId !== null && uuidPattern.test(accountId) ? accountId : null;
 }
 
 function readVehicleInput(value: unknown): DsvVehicleInput | null {

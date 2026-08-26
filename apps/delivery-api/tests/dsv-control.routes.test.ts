@@ -25,6 +25,7 @@ import { defaultDsvOperationalSettings } from '../src/modules/dsv/dsv-operationa
 import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-canonicalization.js';
 import type { DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
 import type { DsvAdminOperatorInvitationService } from '../src/modules/dsv/dsv-admin-account-invitations.service.js';
+import type { DsvDriverAccountLinkService } from '../src/modules/dsv/dsv-driver-account-link.service.js';
 
 const stopId = '11111111-1111-4111-8111-111111111111';
 const destinationId = '22222222-2222-4222-8222-222222222222';
@@ -2064,6 +2065,40 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('lists and approves a scoped driver account link review with account and resource authority', async () => {
+    const { app, driverAccountLinkService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const pending = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'GET',
+        url: '/api/dsv/driver-account-links/pending',
+      });
+      expect(pending.statusCode).toBe(200);
+      expect(pending.json()).toMatchObject({ data: { reviews: [{ accountId: customerAccountId, driverId: targetDriverId }] } });
+      expect(driverAccountLinkService.listPending).toHaveBeenCalledWith({ shopDomain: 'tomatonofood.com' });
+
+      const approved = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { accountId: customerAccountId },
+        url: `/api/dsv/driver-account-links/${targetDriverId}/approve`,
+      });
+      expect(approved.statusCode).toBe(200);
+      expect(approved.json()).toMatchObject({ data: { linked: { accountId: customerAccountId, driverId: targetDriverId } } });
+      const approvalInput = driverAccountLinkService.approve.mock.calls[0]?.[0];
+      expect(approvalInput).toMatchObject({
+        accountId: customerAccountId,
+        actorId: adminAccountId,
+        driverId: targetDriverId,
+        shopDomain: 'tomatonofood.com',
+      });
+      expect(typeof approvalInput?.requestId).toBe('string');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('accepts age zero as an unknown-age driver sentinel', async () => {
     const { app, resourceService } = await createHarness();
     try {
@@ -2138,6 +2173,7 @@ async function createHarness(overrides: {
   adminAccountManagement?: DsvAdminAccountManager;
   addressCanonicalizer?: DsvAddressCanonicalizer;
   customerAccountService?: DsvCustomerAccountService;
+  driverAccountLinkService?: DsvDriverAccountLinkService;
   manualEmailService?: DsvManualEmailService;
   operatorInvitationService?: DsvAdminOperatorInvitationService;
 } = {}): Promise<{
@@ -2145,6 +2181,7 @@ async function createHarness(overrides: {
   app: Awaited<ReturnType<typeof buildApp>>;
   assignmentCommandService: MockAssignmentCommandService;
   dispatchImportService: MockDispatchImportService;
+  driverAccountLinkService: MockDriverAccountLinkService;
   geocodingService: ReturnType<typeof createGeocodingService>;
   invalidateSession: ReturnType<typeof vi.fn>;
   repository: MockRepository;
@@ -2157,6 +2194,7 @@ async function createHarness(overrides: {
   const geocodingService = createGeocodingService();
   const settingsService = createSettingsService();
   const resourceService = createResourceService();
+  const driverAccountLinkService = overrides.driverAccountLinkService ?? createDriverAccountLinkService();
   const invalidateSession = vi.fn(() => Promise.resolve());
   const adminAccounts = {
     authenticate: vi.fn(({ loginId, password }: { loginId: string; password: string }) =>
@@ -2190,6 +2228,7 @@ async function createHarness(overrides: {
     cookieName: 'clever_dsv_admin',
     ...(overrides.customerAccountService === undefined ? {} : { customerAccountService: overrides.customerAccountService }),
     dispatchImportService,
+    driverAccountLinkService,
     geocodingService,
     manualEmailService: overrides.manualEmailService ?? createManualEmailService(),
     ...(overrides.operatorInvitationService === undefined ? {} : { operatorInvitationService: overrides.operatorInvitationService }),
@@ -2199,7 +2238,27 @@ async function createHarness(overrides: {
     sessionSecret: '12345678901234567890123456789012',
     settingsService,
   };
-  return { adminAccounts, app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, geocodingService, invalidateSession, repository, resourceService, settingsService };
+  return { adminAccounts, app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, driverAccountLinkService: driverAccountLinkService as MockDriverAccountLinkService, geocodingService, invalidateSession, repository, resourceService, settingsService };
+}
+
+type MockDriverAccountLinkService = {
+  [Key in keyof DsvDriverAccountLinkService]: ReturnType<typeof vi.fn<DsvDriverAccountLinkService[Key]>>;
+};
+
+function createDriverAccountLinkService(): MockDriverAccountLinkService {
+  return {
+    approve: vi.fn(() => Promise.resolve({ accountId: customerAccountId, driverId: targetDriverId })),
+    listPending: vi.fn(() => Promise.resolve([{
+      accountId: customerAccountId,
+      accountName: '정재연',
+      accountPhoneLast4: '4444',
+      createdAt: '2026-08-26T02:00:00.000Z',
+      driverId: targetDriverId,
+      driverName: '정재연',
+      driverPhoneLast4: '2222',
+      reason: 'PHONE_MISMATCH' as const,
+    }])),
+  };
 }
 
 function createOperatorInvitationService(): DsvAdminOperatorInvitationService & {
