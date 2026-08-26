@@ -29,6 +29,7 @@ import {
   PrismaDsvCustomerAccountService,
 } from './dsv-customer-account-invitations.service.js';
 import { PrismaDsvResourceService } from './dsv-resource.service.js';
+import { PrismaDsvDriverAccountLinkService } from './dsv-driver-account-link.service.js';
 import type { DsvControlDependencies } from '../../routes/dsv-control.routes.js';
 import { isStrongAdminWebSecret } from '../../routes/admin-ui-session.js';
 import { PrismaAdminStoreSettingsService } from '../commerce/admin-store-settings.service.js';
@@ -113,6 +114,7 @@ export function loadDsvControlDependencies(input: {
       ...(webPublicOrigin === undefined ? {} : { webPublicOrigin }),
     }),
     dispatchImportService: new PrismaDsvDispatchImportService(input.prisma, { addressCanonicalizer }),
+    driverAccountLinkService: new PrismaDsvDriverAccountLinkService(input.prisma),
     geocodingService,
     manualEmailService,
     repository: new PrismaDsvControlRepository(input.prisma),

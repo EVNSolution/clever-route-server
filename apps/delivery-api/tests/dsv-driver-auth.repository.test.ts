@@ -430,4 +430,54 @@ describe('Prisma DSV driver auth repository', () => {
       tokenVersion: 1,
     });
   });
+
+  test('retries safe exact-match linking while refreshing an unlinked session', async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const unlinkedAccount = {
+      drivers: [],
+      id: 'account-id',
+      loginId: 'driver.login',
+      name: '정재연',
+      phone: '01012345678',
+      status: 'ACTIVE',
+      tokenVersion: 1,
+    };
+    const linkedAccount = {
+      ...unlinkedAccount,
+      drivers: [{
+        displayName: '정재연',
+        id: 'driver-id',
+        phone: '010-1234-5678',
+        shop: { shopDomain: 'dsv-production.local' },
+      }],
+    };
+    const prisma = {
+      driver: {
+        findMany: vi.fn(() => Promise.resolve([{ id: 'driver-id', phone: '010-1234-5678' }])),
+        updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      },
+      driverAccount: { findUniqueOrThrow: vi.fn(() => Promise.resolve(linkedAccount)) },
+      driverAccountSession: {
+        findUnique: vi.fn(() => Promise.resolve({ account: unlinkedAccount, expiresAt, id: 'session-id', revokedAt: null })),
+        update: vi.fn(() => Promise.resolve({ id: 'session-id' })),
+      },
+    };
+    const repository = new PrismaDsvDriverAuthRepository(
+      prisma as never,
+      'identity-secret-that-is-at-least-32-characters',
+    );
+
+    const result = await repository.refresh({ refreshToken: 'refresh-token' });
+
+    expect(prisma.driver.updateMany).toHaveBeenCalledWith({
+      data: {
+        accountId: 'account-id',
+        authSubject: 'driver-driver-id',
+        inviteCode: null,
+        inviteCodeExpiresAt: null,
+      },
+      where: { accountId: null, id: 'driver-id' },
+    });
+    expect(result.account.connectionStatus).toBe('LINKED');
+  });
 });
