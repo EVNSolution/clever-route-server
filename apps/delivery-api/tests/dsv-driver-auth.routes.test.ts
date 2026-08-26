@@ -114,6 +114,38 @@ describe('DSV Driver app auth routes', () => {
     }
   });
 
+  test('accepts direct app signup with name and phone and no invite token', async () => {
+    const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.resolve(session));
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { register } as never },
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId: ' Driver.Direct ',
+          name: '  QA 배송원 01  ',
+          password: 'test-password-01',
+          phone: '010-9000-0001',
+        },
+        url: '/api/dsv/driver/auth/register',
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(register).toHaveBeenCalledWith({
+        loginId: 'driver.direct',
+        name: 'QA 배송원 01',
+        password: 'test-password-01',
+        phone: '01090000001',
+        residentNumberFront: null,
+        signupInviteToken: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('keeps the resident identity field nullable for the simplified app signup', async () => {
     const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.resolve(session));
     const app = await buildApp({

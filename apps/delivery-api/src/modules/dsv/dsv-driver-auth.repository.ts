@@ -41,7 +41,7 @@ export type DsvDriverRegistrationInput = {
   password: string;
   phone: string;
   residentNumberFront: string | null;
-  signupInviteToken: string;
+  signupInviteToken: string | null;
 };
 
 export type DsvDriverSignupInviteView = {
@@ -140,14 +140,16 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
     try {
       return await this.prisma.$transaction(async (transaction) => {
         const now = new Date();
-        const invite = await transaction.dsvDriverAccountSignupInvite.findUnique({
-          include: {
-            driver: { include: { dsvProfile: true, shop: { select: { shopDomain: true } } } },
-            shop: { select: { shopDomain: true } },
-          },
-          where: { tokenHash: hashDsvDriverSignupToken(input.signupInviteToken) },
-        });
-        if (
+        const invite = input.signupInviteToken === null
+          ? null
+          : await transaction.dsvDriverAccountSignupInvite.findUnique({
+              include: {
+                driver: { include: { dsvProfile: true, shop: { select: { shopDomain: true } } } },
+                shop: { select: { shopDomain: true } },
+              },
+              where: { tokenHash: hashDsvDriverSignupToken(input.signupInviteToken) },
+            });
+        if (input.signupInviteToken !== null && (
           invite === null
           || invite.consumedAt !== null
           || invite.revokedAt !== null
@@ -159,9 +161,8 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
             || invite.driver.displayName.trim() !== name
             || normalizeDsvDriverPhone(invite.driver.phone ?? '') !== phone
           ))
-        ) {
-          throw new DsvDriverSignupInviteError();
-        }
+        )) throw new DsvDriverSignupInviteError();
+
         const account = await transaction.driverAccount.create({
           data: {
             loginId,
@@ -172,46 +173,69 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
             residentNumberFrontFingerprint,
           },
         });
-        let linkedDriver: LinkedDriverRecord;
-        if (invite.driver === null) {
-          const driverId = randomUUID();
-          linkedDriver = await transaction.driver.create({
-            data: {
-              accountId: account.id,
-              authSubject: `driver-${driverId}`,
+        const linkedDrivers: LinkedDriverRecord[] = [];
+        if (input.signupInviteToken === null) {
+          const candidates = (await transaction.driver.findMany({
+            include: { shop: { select: { shopDomain: true } } },
+            where: {
+              accountId: null,
               displayName: name,
-              dsvProfile: {
-                create: {
-                  lookupName: name,
-                  residentNumberFrontFingerprint,
-                },
-              },
-              id: driverId,
-              phone,
-              shopId: invite.shopId,
+              dsvProfile: { isNot: null },
               status: 'ACTIVE',
             },
-            include: { shop: { select: { shopDomain: true } } },
-          });
+          })).filter((candidate) => normalizeDsvDriverPhone(candidate.phone ?? '') === phone);
+          for (const candidate of candidates) {
+            const linked = await transaction.driver.updateMany({
+              data: {
+                accountId: account.id,
+                authSubject: `driver-${candidate.id}`,
+                inviteCode: null,
+                inviteCodeExpiresAt: null,
+              },
+              where: { accountId: null, id: candidate.id, status: 'ACTIVE' },
+            });
+            if (linked.count === 1) linkedDrivers.push(candidate);
+          }
         } else {
-          const linked = await transaction.driver.updateMany({
-            data: {
-              accountId: account.id,
-              authSubject: `driver-${invite.driver.id}`,
-              inviteCode: null,
-              inviteCodeExpiresAt: null,
-            },
-            where: { accountId: null, id: invite.driver.id, status: 'ACTIVE' },
+          if (invite === null) throw new DsvDriverSignupInviteError();
+          if (invite.driver === null) {
+            const driverId = randomUUID();
+            linkedDrivers.push(await transaction.driver.create({
+              data: {
+                accountId: account.id,
+                authSubject: `driver-${driverId}`,
+                displayName: name,
+                dsvProfile: {
+                  create: {
+                    lookupName: name,
+                    residentNumberFrontFingerprint,
+                  },
+                },
+                id: driverId,
+                phone,
+                shopId: invite.shopId,
+                status: 'ACTIVE',
+              },
+              include: { shop: { select: { shopDomain: true } } },
+            }));
+          } else {
+            const linked = await transaction.driver.updateMany({
+              data: {
+                accountId: account.id,
+                authSubject: `driver-${invite.driver.id}`,
+                inviteCode: null,
+                inviteCodeExpiresAt: null,
+              },
+              where: { accountId: null, id: invite.driver.id, status: 'ACTIVE' },
+            });
+            if (linked.count !== 1) throw new DsvDriverSignupInviteError();
+            linkedDrivers.push(invite.driver);
+          }
+          const consumed = await transaction.dsvDriverAccountSignupInvite.updateMany({
+            data: { consumedAt: now },
+            where: { consumedAt: null, expiresAt: { gt: now }, id: invite.id, revokedAt: null },
           });
-          if (linked.count !== 1) throw new DsvDriverSignupInviteError();
-          linkedDriver = invite.driver;
-        }
-        const consumed = await transaction.dsvDriverAccountSignupInvite.updateMany({
-          data: { consumedAt: now },
-          where: { consumedAt: null, expiresAt: { gt: now }, id: invite.id, revokedAt: null },
-        });
-        if (consumed.count !== 1) {
-          throw new DsvDriverSignupInviteError();
+          if (consumed.count !== 1) throw new DsvDriverSignupInviteError();
         }
         await transaction.driverAccountSession.create({
           data: {
@@ -221,7 +245,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
           },
         });
         return {
-          account: accountView(account, [linkedDriver]),
+          account: accountView(account, linkedDrivers),
           accountId: account.id,
           expiresAt,
           refreshToken,
@@ -353,13 +377,16 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
   }
 
   private async linkMatchingDrivers(account: AccountWithDrivers): Promise<AccountWithDrivers> {
-    if (account.name === null || account.residentNumberFrontFingerprint === null) return account;
+    if (account.name === null) return account;
     const candidates = (await this.prisma.driver.findMany({
-      select: { id: true, phone: true },
+      select: {
+        id: true,
+        phone: true,
+      },
       where: {
         accountId: null,
         displayName: account.name,
-        dsvProfile: { is: { residentNumberFrontFingerprint: account.residentNumberFrontFingerprint } },
+        dsvProfile: { isNot: null },
         status: 'ACTIVE',
       },
     })).filter((candidate) => (

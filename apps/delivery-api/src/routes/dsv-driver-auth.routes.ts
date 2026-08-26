@@ -207,9 +207,12 @@ function readRegistrationInput(value: unknown) {
     : typeof object.residentNumberFront === 'string'
       ? object.residentNumberFront.trim()
       : undefined;
-  const signupInviteToken = typeof object.signupInviteToken === 'string'
-    ? object.signupInviteToken.trim()
-    : '';
+  const signupInviteToken = object.signupInviteToken === undefined
+    || object.signupInviteToken === null
+    ? null
+    : typeof object.signupInviteToken === 'string'
+      ? object.signupInviteToken.trim()
+      : undefined;
   if (
     !LOGIN_ID_PATTERN.test(loginId)
     || name.length === 0
@@ -219,7 +222,8 @@ function readRegistrationInput(value: unknown) {
     || !PHONE_PATTERN.test(phone)
     || residentNumberFront === undefined
     || (residentNumberFront !== null && !RESIDENT_NUMBER_FRONT_PATTERN.test(residentNumberFront))
-    || !DSV_DRIVER_SIGNUP_TOKEN_PATTERN.test(signupInviteToken)
+    || signupInviteToken === undefined
+    || (signupInviteToken !== null && !DSV_DRIVER_SIGNUP_TOKEN_PATTERN.test(signupInviteToken))
   ) return null;
   return { loginId, name, password, phone, residentNumberFront, signupInviteToken };
 }
