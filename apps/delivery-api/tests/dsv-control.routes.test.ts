@@ -99,9 +99,9 @@ describe('DSV control routes', () => {
   });
 
   test.each([
-    { fileNamePrefix: 'CLEVER_DSV_', guide: 'operator' },
-    { fileNamePrefix: 'CLEVER_Driver_', guide: 'driver' },
-  ])('serves the $guide guide only to authenticated settings readers with byte ranges and downloads', async ({ fileNamePrefix, guide }) => {
+    { asciiFileName: 'CLEVER_DSV_Operator_User_Guide_20260811.pdf', guide: 'operator' },
+    { asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.1.pdf', guide: 'driver' },
+  ])('serves the $guide guide only to authenticated settings readers with byte ranges and downloads', async ({ asciiFileName, guide }) => {
     const { app } = await createHarness();
     try {
       const unauthorized = await app.inject({ method: 'GET', url: `/api/dsv/guides/${guide}` });
@@ -127,7 +127,7 @@ describe('DSV control routes', () => {
       });
       expect(download.statusCode).toBe(206);
       expect(download.headers['content-disposition']).toContain('attachment');
-      expect(download.headers['content-disposition']).toContain(`filename*=UTF-8''${fileNamePrefix}`);
+      expect(download.headers['content-disposition']).toContain(`filename="${asciiFileName}"`);
 
       const invalid = await app.inject({
         headers: { cookie: login.cookie, range: 'bytes=999999999-' },
