@@ -5,12 +5,9 @@ import {
   DsvDriverAuthConflictError,
   DsvDriverAuthCredentialsError,
   DsvDriverAuthRefreshError,
-  DsvDriverSignupInviteError,
   type DsvDriverAuthRepository,
 } from '../src/modules/dsv/dsv-driver-auth.repository.js';
 import { verifyDriverAccountToken } from '../src/modules/driver/driver-token-verifier.js';
-
-const signupInviteToken = 'A'.repeat(43);
 
 const session = {
   account: {
@@ -79,8 +76,8 @@ describe('DSV Driver app auth routes', () => {
           name: '  QA 배송원 01  ',
           password: 'test-password-01',
           phone: '010-9000-0001',
-          residentNumberFront: '9001011',
-          signupInviteToken,
+          residentNumberFront: null,
+          signupInviteToken: null,
         },
         url: '/api/dsv/driver/auth/register',
       });
@@ -91,8 +88,6 @@ describe('DSV Driver app auth routes', () => {
         name: 'QA 배송원 01',
         password: 'test-password-01',
         phone: '01090000001',
-        residentNumberFront: '9001011',
-        signupInviteToken,
       });
       const body = response.json<{ data: { accessToken: string }; error: null }>();
       expect(body).toMatchObject({
@@ -138,15 +133,13 @@ describe('DSV Driver app auth routes', () => {
         name: 'QA 배송원 01',
         password: 'test-password-01',
         phone: '01090000001',
-        residentNumberFront: null,
-        signupInviteToken: null,
       });
     } finally {
       await app.close();
     }
   });
 
-  test('keeps the resident identity field nullable for the simplified app signup', async () => {
+  test('accepts only null legacy signup fields and never forwards them to the repository', async () => {
     const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.resolve(session));
     const app = await buildApp({
       dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { register } as never },
@@ -161,7 +154,7 @@ describe('DSV Driver app auth routes', () => {
           password: 'test-password-01',
           phone: '01090000001',
           residentNumberFront: null,
-          signupInviteToken,
+          signupInviteToken: null,
         },
         url: '/api/dsv/driver/auth/register',
       });
@@ -172,79 +165,67 @@ describe('DSV Driver app auth routes', () => {
           name: 'QA 배송원 01',
           password: 'test-password-01',
           phone: '01090000002',
-          signupInviteToken,
+        },
+        url: '/api/dsv/driver/auth/register',
+      });
+      const residentValue = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId: 'driver.resident',
+          name: 'QA 배송원 01',
+          password: 'test-password-01',
+          phone: '01090000003',
+          residentNumberFront: '9001011',
+        },
+        url: '/api/dsv/driver/auth/register',
+      });
+      const inviteValue = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId: 'driver.invite',
+          name: 'QA 배송원 01',
+          password: 'test-password-01',
+          phone: '01090000004',
+          signupInviteToken: 'A'.repeat(43),
         },
         url: '/api/dsv/driver/auth/register',
       });
 
       expect(explicitNull.statusCode).toBe(201);
       expect(omitted.statusCode).toBe(201);
+      expect(residentValue.statusCode).toBe(400);
+      expect(inviteValue.statusCode).toBe(400);
       expect(register).toHaveBeenNthCalledWith(1, {
         loginId: 'driver.null',
         name: 'QA 배송원 01',
         password: 'test-password-01',
         phone: '01090000001',
-        residentNumberFront: null,
-        signupInviteToken,
       });
       expect(register).toHaveBeenNthCalledWith(2, {
         loginId: 'driver.omitted',
         name: 'QA 배송원 01',
         password: 'test-password-01',
         phone: '01090000002',
-        residentNumberFront: null,
-        signupInviteToken,
       });
+      expect(register).toHaveBeenCalledTimes(2);
     } finally {
       await app.close();
     }
   });
 
-  test('validates a secure invite and hides invalid or expired invites behind one public error', async () => {
-    const validateSignupInvite = vi.fn<DsvDriverAuthRepository['validateSignupInvite']>()
-      .mockResolvedValueOnce({
-        driverName: 'QA 배송원 01',
-        expiresAt: '2026-09-01T00:00:00.000Z',
-        phoneLast4: '0001',
-        shopDomain: 'dsv-demo.local',
-      })
-      .mockRejectedValueOnce(new DsvDriverSignupInviteError());
+  test('does not expose the retired signup invite validation endpoint', async () => {
     const app = await buildApp({
-      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { validateSignupInvite } as never },
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: {} as never },
     });
 
     try {
-      const valid = await app.inject({
+      const response = await app.inject({
         method: 'POST',
-        payload: { token: signupInviteToken },
-        url: '/api/dsv/driver/auth/signup-invite/validate',
-      });
-      const invalid = await app.inject({
-        method: 'POST',
-        payload: { token: 'B'.repeat(43) },
+        payload: { token: 'A'.repeat(43) },
         url: '/api/dsv/driver/auth/signup-invite/validate',
       });
 
-      expect(valid.statusCode).toBe(200);
-      expect(valid.json()).toEqual({
-        data: {
-          invite: {
-            driverName: 'QA 배송원 01',
-            expiresAt: '2026-09-01T00:00:00.000Z',
-            phoneLast4: '0001',
-            shopDomain: 'dsv-demo.local',
-          },
-        },
-        error: null,
-      });
-      expect(invalid.statusCode).toBe(401);
-      expect(invalid.json()).toEqual({
-        data: null,
-        error: {
-          code: 'INVALID_SIGNUP_INVITE',
-          message: '유효하지 않거나 만료된 가입 링크입니다. 새로운 초대 링크를 요청해 주세요.',
-        },
-      });
+      expect(response.statusCode).toBe(404);
     } finally {
       await app.close();
     }
@@ -349,8 +330,6 @@ describe('DSV Driver app auth routes', () => {
           name: 'QA 배송원 01',
           password: 'test-password-01',
           phone: '01090000001',
-          residentNumberFront: '9001011',
-          signupInviteToken,
         },
         url: '/api/dsv/driver/auth/register',
       });
@@ -393,8 +372,6 @@ describe('DSV Driver app auth routes', () => {
             name: 'QA 배송원 01',
             password: 'test-password-01',
             phone: '01090000001',
-            residentNumberFront: '9001011',
-            signupInviteToken,
           },
           url: '/api/dsv/driver/auth/register',
         }));

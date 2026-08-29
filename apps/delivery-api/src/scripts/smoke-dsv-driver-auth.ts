@@ -4,20 +4,14 @@ import { randomBytes } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { assertShopifyShopPrivacyWriteAllowed } from '../modules/shopify/order-privacy-redaction.js';
 
-import { fingerprintResidentNumberFront } from '../modules/dsv/dsv-driver-identity.js';
-
 const SAFE_TARGET = 'safe-local-dsv-driver-auth-temp-cluster';
 const target = process.env.DSV_DRIVER_AUTH_SMOKE_TARGET;
 const databaseUrl = process.env.DATABASE_URL;
-const identitySecret = process.env.DSV_DRIVER_IDENTITY_SECRET;
 const apiBaseUrl = process.env.DELIVERY_API_BASE_URL;
 
 if (target !== SAFE_TARGET) throw new Error(`DSV_DRIVER_AUTH_SMOKE_TARGET must equal ${SAFE_TARGET}`);
 if (databaseUrl === undefined || !isSafeDisposableDatabase(databaseUrl)) {
   throw new Error('DATABASE_URL must target the disposable loopback clever_driver_auth database on port 55456');
-}
-if (identitySecret === undefined || identitySecret.length < 32) {
-  throw new Error('DSV_DRIVER_IDENTITY_SECRET must contain at least 32 characters');
 }
 if (apiBaseUrl === undefined || !isLoopbackApi(apiBaseUrl)) {
   throw new Error('DELIVERY_API_BASE_URL must be an HTTP loopback URL');
@@ -32,14 +26,12 @@ const fixtures = [
     name: 'QA 배송원 A',
     password: `Qa-driver-A-${suffix}!`,
     phone: '01090000001',
-    residentNumberFront: '9001011',
   },
   {
     loginId: `qa.driver.b.${suffix}`,
     name: 'QA 배송원 B',
     password: `Qa-driver-B-${suffix}!`,
     phone: '01090000002',
-    residentNumberFront: '9102022',
   },
 ] as const;
 
@@ -63,10 +55,7 @@ try {
             career: '합성 스모크 테스트',
             gender: '미제공',
             lookupName: fixture.name,
-            residentNumberFrontFingerprint: fingerprintResidentNumberFront(
-              fixture.residentNumberFront,
-              identitySecret,
-            ),
+            residentNumberFrontFingerprint: null,
             score: '미제공',
             traits: [],
             zone: '테스트 구역',
@@ -89,10 +78,7 @@ try {
           career: '합성 스모크 테스트',
           gender: '미제공',
           lookupName: 'QA 배송원 불일치',
-          residentNumberFrontFingerprint: fingerprintResidentNumberFront(
-            fixtures[0].residentNumberFront,
-            identitySecret,
-          ),
+          residentNumberFrontFingerprint: null,
           score: '미제공',
           traits: [],
           zone: '테스트 구역',
@@ -159,12 +145,11 @@ try {
     const fixture = fixtures.find((candidate) => candidate.loginId === account.loginId);
     assert.ok(fixture);
     assert.notEqual(account.passwordHash, fixture.password);
-    assert.notEqual(account.residentNumberFrontFingerprint, fixture.residentNumberFront);
-    assert.match(account.residentNumberFrontFingerprint ?? '', /^[a-f0-9]{64}$/u);
+    assert.equal(account.residentNumberFrontFingerprint, null);
   }
 
   console.log(JSON.stringify({
-    checked: ['register', 'login', 'exact-link', 'wrong-password', 'duplicate-account', 'no-raw-identity-storage'],
+    checked: ['register', 'login', 'exact-link', 'wrong-password', 'duplicate-account', 'no-resident-identity-input'],
     driverCount: fixtures.length,
     result: 'passed',
   }));

@@ -4,7 +4,6 @@ import {
   DsvDriverAuthConflictError,
   DsvDriverAuthCredentialsError,
   DsvDriverAuthRefreshError,
-  DsvDriverSignupInviteError,
   type DsvDriverAuthRepository,
   type DsvDriverAuthSession,
 } from '../modules/dsv/dsv-driver-auth.repository.js';
@@ -13,7 +12,6 @@ import {
   normalizeDsvDriverPhone,
 } from '../modules/dsv/dsv-driver-identity.js';
 import { signDriverAccountToken } from '../modules/driver/driver-token-verifier.js';
-import { DSV_DRIVER_SIGNUP_TOKEN_PATTERN } from '../modules/dsv/dsv-driver-signup-invite.js';
 
 export type DsvDriverAuthDependencies = {
   jwtSecret: string;
@@ -23,46 +21,11 @@ export type DsvDriverAuthDependencies = {
 const DRIVER_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const LOGIN_ID_PATTERN = /^[a-z0-9._-]{4,40}$/u;
 const PHONE_PATTERN = /^01\d{8,9}$/u;
-const RESIDENT_NUMBER_FRONT_PATTERN = /^\d{7}$/u;
 
 export function registerDsvDriverAuthRoutes(
   app: FastifyInstance,
   dependencies: DsvDriverAuthDependencies,
 ): void {
-  app.post<{ Body: unknown }>('/api/dsv/driver/auth/signup-invite/validate', {
-    config: {
-      rateLimit: {
-        groupId: 'dsv-driver-signup-invite-validate',
-        max: 10,
-        timeWindow: '15 minutes',
-      },
-    },
-  }, async (request, reply) => {
-    const token = readSignupInviteToken(request.body);
-    if (token === null) {
-      return reply.code(400).send({
-        data: null,
-        error: { code: 'BAD_REQUEST', message: 'A valid signup invite token is required' },
-      });
-    }
-    try {
-      const invite = await dependencies.repository.validateSignupInvite({ token });
-      return reply.code(200).send({ data: { invite }, error: null });
-    } catch (error) {
-      if (error instanceof DsvDriverSignupInviteError) {
-        return reply.code(401).send({
-          data: null,
-          error: { code: 'INVALID_SIGNUP_INVITE', message: error.message },
-        });
-      }
-      request.log.error({ err: error }, 'DSV driver signup invite validation failed');
-      return reply.code(500).send({
-        data: null,
-        error: { code: 'INTERNAL_SERVER_ERROR', message: 'Signup invite could not be validated' },
-      });
-    }
-  });
-
   app.post<{ Body: unknown }>('/api/dsv/driver/auth/register', {
     config: {
       rateLimit: {
@@ -87,12 +50,6 @@ export function registerDsvDriverAuthRoutes(
         return reply.code(409).send({
           data: null,
           error: { code: 'ACCOUNT_EXISTS', message: error.message },
-        });
-      }
-      if (error instanceof DsvDriverSignupInviteError) {
-        return reply.code(401).send({
-          data: null,
-          error: { code: 'INVALID_SIGNUP_INVITE', message: error.message },
         });
       }
       request.log.error({ err: error }, 'DSV driver registration failed');
@@ -201,18 +158,8 @@ function readRegistrationInput(value: unknown) {
   const name = typeof object.name === 'string' ? object.name.trim() : '';
   const password = typeof object.password === 'string' ? object.password : '';
   const phone = typeof object.phone === 'string' ? normalizeDsvDriverPhone(object.phone) : '';
-  const residentNumberFront = object.residentNumberFront === undefined
-    || object.residentNumberFront === null
-    ? null
-    : typeof object.residentNumberFront === 'string'
-      ? object.residentNumberFront.trim()
-      : undefined;
-  const signupInviteToken = object.signupInviteToken === undefined
-    || object.signupInviteToken === null
-    ? null
-    : typeof object.signupInviteToken === 'string'
-      ? object.signupInviteToken.trim()
-      : undefined;
+  const legacyFieldsAreNull = (object.residentNumberFront === undefined || object.residentNumberFront === null)
+    && (object.signupInviteToken === undefined || object.signupInviteToken === null);
   if (
     !LOGIN_ID_PATTERN.test(loginId)
     || name.length === 0
@@ -220,19 +167,9 @@ function readRegistrationInput(value: unknown) {
     || password.length < 8
     || password.length > 128
     || !PHONE_PATTERN.test(phone)
-    || residentNumberFront === undefined
-    || (residentNumberFront !== null && !RESIDENT_NUMBER_FRONT_PATTERN.test(residentNumberFront))
-    || signupInviteToken === undefined
-    || (signupInviteToken !== null && !DSV_DRIVER_SIGNUP_TOKEN_PATTERN.test(signupInviteToken))
+    || !legacyFieldsAreNull
   ) return null;
-  return { loginId, name, password, phone, residentNumberFront, signupInviteToken };
-}
-
-function readSignupInviteToken(value: unknown): string | null {
-  const object = objectOrNull(value);
-  if (object === null || !hasOnlyKeys(object, ['token'])) return null;
-  const token = typeof object.token === 'string' ? object.token.trim() : '';
-  return DSV_DRIVER_SIGNUP_TOKEN_PATTERN.test(token) ? token : null;
+  return { loginId, name, password, phone };
 }
 
 function readLoginInput(value: unknown) {

@@ -101,7 +101,7 @@ describe('DSV control routes', () => {
 
   test.each([
     { asciiFileName: 'CLEVER_DSV_Operator_User_Guide_20260811.pdf', guide: 'operator' },
-    { asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.1.pdf', guide: 'driver' },
+    { asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.2.pdf', guide: 'driver' },
   ])('serves the $guide guide only to authenticated settings readers with byte ranges and downloads', async ({ asciiFileName, guide }) => {
     const { app } = await createHarness();
     try {
@@ -2003,44 +2003,14 @@ describe('DSV control routes', () => {
       expect(createdDriver.statusCode).toBe(201);
       expect(resourceService.createDriver).toHaveBeenCalledWith({ ...driverPayload, shopDomain: 'tomatonofood.com' });
 
-      const shopSignupInvite = await app.inject({
-        headers,
-        method: 'POST',
-        url: '/api/dsv/drivers/signup-invite',
-      });
-      expect(shopSignupInvite.statusCode).toBe(201);
-      expect(shopSignupInvite.json()).toMatchObject({
-        data: {
-          invite: {
-            expiresAt: '2026-08-05T00:00:00.000Z',
-            signupUrl: 'clever-driver://signup?token=secure-token',
-          },
-        },
-        error: null,
-      });
-      expect(resourceService.issueDriverSignupInvite).toHaveBeenNthCalledWith(1, {
-        shopDomain: 'tomatonofood.com',
-      });
-
-      const signupInvite = await app.inject({
+      const shopInvite = await app.inject({ headers, method: 'POST', url: '/api/dsv/drivers/signup-invite' });
+      const driverInvite = await app.inject({
         headers,
         method: 'POST',
         url: `/api/dsv/drivers/${targetDriverId}/signup-invite`,
       });
-      expect(signupInvite.statusCode).toBe(201);
-      expect(signupInvite.json()).toMatchObject({
-        data: {
-          invite: {
-            expiresAt: '2026-08-05T00:00:00.000Z',
-            signupUrl: 'clever-driver://signup?token=secure-token',
-          },
-        },
-        error: null,
-      });
-      expect(resourceService.issueDriverSignupInvite).toHaveBeenNthCalledWith(2, {
-        driverId: targetDriverId,
-        shopDomain: 'tomatonofood.com',
-      });
+      expect(shopInvite.statusCode).toBe(404);
+      expect(driverInvite.statusCode).toBe(404);
 
       const vehiclePayload = { note: '군포복합물류센터', plate: '21사 6101', telematicsSerialNumber: 'TMS-6101', type: '냉장탑차' };
       const createdVehicle = await app.inject({ headers, method: 'POST', payload: vehiclePayload, url: '/api/dsv/vehicles' });
@@ -2437,10 +2407,6 @@ function createResourceService(): MockResourceService {
     deleteDriver: vi.fn(() => Promise.resolve()),
     deleteVehicle: vi.fn(() => Promise.resolve()),
     list: vi.fn(() => Promise.resolve({ assignments: [], drivers: [], vehicles: [] })),
-    issueDriverSignupInvite: vi.fn(() => Promise.resolve({
-      expiresAt: '2026-08-05T00:00:00.000Z',
-      signupUrl: 'clever-driver://signup?token=secure-token',
-    })),
     unassignDriver: vi.fn(() => Promise.resolve()),
     updateDriver: vi.fn(() => Promise.resolve(driver)),
     updateVehicle: vi.fn(() => Promise.resolve(vehicle)),

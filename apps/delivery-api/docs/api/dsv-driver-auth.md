@@ -3,23 +3,25 @@
 DSV 전용 Driver 앱은 기존 CLEVER Routes 앱의 Shopify 초대 및 전화번호 + PIN 인증을
 사용하지 않는다. 일반 앱 로그인 화면의 회원가입 버튼에서 로그인 ID, 비밀번호, 이름과
 국내 휴대전화 번호를 받고 이후 로그인은 로그인 ID와 비밀번호만 사용한다.
-`residentNumberFront` API 필드는 구버전 호환을 위해 유지하지만 `null` 또는 생략할 수 있다.
 
 ## API
 
 | Method | Path | 결과 |
 | --- | --- | --- |
-| `POST` | `/api/dsv/drivers/:driverId/signup-invite` | DSV 관리자 세션과 CSRF로 기존 링크를 폐기하고 새 앱 링크 발급 |
-| `POST` | `/api/dsv/driver/auth/signup-invite/validate` | 앱 링크 토큰의 유효성 및 배송원 표시 정보 확인 |
 | `POST` | `/api/dsv/driver/auth/register` | 계정 생성, 정확히 일치하는 DSV 배송원 연결, 30일 갱신 세션 발급 |
 | `POST` | `/api/dsv/driver/auth/login` | 계정 로그인, 새로 등록된 일치 배송원 재탐색, 세션 발급 |
 | `POST` | `/api/dsv/driver/auth/refresh` | 유효한 refresh token으로 비밀번호 재입력 없이 15분 access token 갱신 |
 
 로그인 ID는 소문자 영문, 숫자, `.`, `_`, `-`만 허용하며 4~40자다. 비밀번호는
 8~128자, 이름은 1~80자, 휴대전화 번호는 `01`로 시작하는 숫자 10~11자리다.
-선택적으로 전달하는 주민번호 앞자리는 숫자 7자리여야 한다. `signupInviteToken`은 구버전
-앱 링크를 위한 선택 필드이며 신규 앱은 `null` 또는 생략한다. 전화번호 구분기호와 로그인
-ID 대문자는 서버 경계에서 정규화된다.
+전화번호 구분기호와 로그인 ID 대문자는 서버 경계에서 정규화된다.
+
+### 구버전 요청 형태 tombstone
+
+게시된 Android v11이 `residentNumberFront`와 `signupInviteToken`을 `null`로 보낼 수 있어
+`register` HTTP parser는 두 키의 생략 또는 `null`만 임시로 허용한다. 이 키들은 도메인
+입력이 아니며 repository에 전달되지 않는다. 빈 값이 아닌 값을 보내면 `400 BAD_REQUEST`를
+반환한다. 구버전 앱 지원 종료 후 두 키의 parser 호환도 제거한다.
 
 ## 연결 규칙
 
@@ -35,31 +37,23 @@ ID 대문자는 서버 경계에서 정규화된다.
 2. 숫자만 남긴 휴대전화 번호가 정확히 같다.
 3. 해당 배송원이 아직 다른 계정에 연결되지 않았다.
 
-구버전 요청에서 주민번호 앞자리 필드를 보내더라도 배송원 연결 판단에는 사용하지 않는다.
-
-구버전 일회용 링크를 보낸 요청은 이전 계약대로 링크의 배송원 ID를 우선 권위로 사용한다.
-일반 회원가입과 구버전 링크 어느 쪽도 일부 값만 같거나 이미 다른 계정이 확보한 배송원을
-연결하지 않는다.
-
 ## 보안 및 저장
 
 - 비밀번호는 계정별 salt를 사용한 `scrypt` 해시만 저장한다.
-- 가입 토큰은 32바이트 암호학적 난수이며 DB에는 SHA-256 해시만 저장한다. 24시간 만료,
-  재발급 시 기존 미사용 링크 폐기, 성공 가입 시 1회 소비를 적용한다.
-- 주민번호 앞 7자리는 `DSV_DRIVER_IDENTITY_SECRET` 기반 HMAC-SHA256 지문만 저장한다.
 - 로그인 실패 메시지는 존재하지 않는 ID, 오입력, 잠금 계정을 구분하지 않는다.
 - 비밀번호 5회 연속 실패 시 15분 잠금한다.
-- 링크 검증은 IP당 15분에 10회, 가입은 5회, 로그인은 10회로 제한한다.
+- 가입은 IP당 15분에 5회, 로그인은 10회로 제한한다.
 - 일반 회원가입은 이름과 전화번호 일치만 확인하며 SMS 소유권 인증은 아직 하지 않는다.
   전화번호 인증을 도입하기 전까지 운영자는 배송원 연락처의 정확성과 계정 연결 이력을
   확인해야 한다.
-- access token은 15분, refresh token은 30일이며 응답 `use`는
-  `dsv_driver_account`다.
+- access token은 15분, refresh token은 30일이며 응답 `use`는 `dsv_driver_account`다.
 - 모바일 앱은 비밀번호가 아닌 refresh token과 세션 표시 정보만 OS 보안 저장소에 보관한다.
 - 로그아웃 시 기기의 저장 세션을 삭제하고, 갱신 세션이 폐기·만료되면 다시 로그인한다.
 
 ## 운영 활성화
 
 인증 라우트는 `CLEVER_DSV_DRIVER_AUTH_ENABLED=true`일 때만 등록된다. 이 값이 켜진
-환경에서는 `JWT_SECRET`과 32자 이상의 `DSV_DRIVER_IDENTITY_SECRET`이 누락되면 서버가
-기동을 거부한다.
+환경에서는 `JWT_SECRET`이 누락되면 서버가 기동을 거부한다.
+
+과거 `DsvDriverAccountSignupInvite` 테이블과 migration은 감사 이력 보존을 위해 유지하지만,
+현행 서버는 토큰을 발급·검증·소비하지 않는다.
