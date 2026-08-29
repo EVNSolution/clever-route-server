@@ -57,17 +57,17 @@ jobs:
           if [ "${{ github.event_name }}" = "push" ]; then
             before="${{ github.event.before }}"
             if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
-              if git fetch --no-tags --depth=1 origin "$before" && git diff --name-only "$before" "$GITHUB_SHA" > changed-files.txt; then
+              if git fetch --no-tags --depth=1 origin "$before" && git -c core.quotePath=false diff --name-only "$before" "$GITHUB_SHA" > changed-files.txt; then
                 :
               else
                 echo "Could not determine exact push diff; classifying all tracked files fail-closed." >&2
-                git ls-files > changed-files.txt
+                git -c core.quotePath=false ls-files > changed-files.txt
               fi
             else
-              git ls-files > changed-files.txt
+              git -c core.quotePath=false ls-files > changed-files.txt
             fi
           else
-            git ls-files > changed-files.txt
+            git -c core.quotePath=false ls-files > changed-files.txt
           fi
           cat changed-files.txt
       - name: Classify Route Ops changes
