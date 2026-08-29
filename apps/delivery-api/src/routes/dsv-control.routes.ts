@@ -116,7 +116,7 @@ const apiRoot = '/api/dsv';
 const cookiePath = `${apiRoot}/`;
 const operatorGuideFileName = 'CLEVER_DSV_관제_운영자_사용자_가이드_20260811.pdf';
 const operatorGuidePath = fileURLToPath(new URL(`../../assets/dsv-guides/${operatorGuideFileName}`, import.meta.url));
-const driverGuideFileName = 'CLEVER_Driver_설치_현장교육_가이드_Rev1.1.pdf';
+const driverGuideFileName = 'CLEVER_Driver_설치_현장교육_가이드_Rev1.2.pdf';
 const driverGuidePath = fileURLToPath(new URL(`../../assets/dsv-guides/${driverGuideFileName}`, import.meta.url));
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const applyCommandIdHeader = 'idempotency-key';
@@ -482,7 +482,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
 
   app.get<{ Querystring: { download?: string } }>(`${apiRoot}/guides/driver`, async (request, reply) =>
     withDsvSession(request, reply, dependencies, async () => sendGuide(request, reply, {
-      asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.1.pdf',
+      asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.2.pdf',
       fileName: driverGuideFileName,
       path: driverGuidePath,
     }), ['dsv:settings:read']));
@@ -728,28 +728,6 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       try {
         const driver = await dependencies.resourceService.updateDriver({ ...input, driverId, shopDomain });
         return sendData(reply, { driver });
-      } catch (error) {
-        return sendResourceError(reply, error);
-      }
-    }, ['dsv:resources:write']));
-
-  app.post(`${apiRoot}/drivers/signup-invite`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
-      try {
-        const invite = await dependencies.resourceService.issueDriverSignupInvite({ shopDomain });
-        return sendData(reply, { invite }, 201);
-      } catch (error) {
-        return sendResourceError(reply, error);
-      }
-    }, ['dsv:resources:write']));
-
-  app.post(`${apiRoot}/drivers/:driverId/signup-invite`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
-      const driverId = readUuidParam(request, 'driverId');
-      if (driverId === null) return sendError(reply, 400, 'BAD_REQUEST', 'driverId must be a UUID');
-      try {
-        const invite = await dependencies.resourceService.issueDriverSignupInvite({ driverId, shopDomain });
-        return sendData(reply, { invite }, 201);
       } catch (error) {
         return sendResourceError(reply, error);
       }

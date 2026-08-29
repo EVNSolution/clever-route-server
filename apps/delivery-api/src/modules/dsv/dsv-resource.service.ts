@@ -1,12 +1,6 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
-import {
-  buildDsvDriverSignupUrl,
-  createDsvDriverSignupToken,
-  DSV_DRIVER_SIGNUP_INVITE_TTL_MS,
-  hashDsvDriverSignupToken,
-} from './dsv-driver-signup-invite.js';
 
 export type DsvDriverInput = {
   age: number;
@@ -60,15 +54,9 @@ export type DsvResourceService = {
   deleteDriver(input: { driverId: string; shopDomain: string }): Promise<void>;
   deleteVehicle(input: { shopDomain: string; vehicleId: string }): Promise<void>;
   list(input: { shopDomain: string }): Promise<DsvResourceSnapshot | null>;
-  issueDriverSignupInvite(input: { driverId?: string; shopDomain: string }): Promise<DsvDriverSignupInviteView>;
   unassignDriver(input: { assignmentId: string; shopDomain: string; vehicleId: string }): Promise<void>;
   updateDriver(input: DsvDriverInput & { driverId: string; shopDomain: string }): Promise<DsvDriverView>;
   updateVehicle(input: DsvVehicleInput & { shopDomain: string; vehicleId: string }): Promise<DsvVehicleView>;
-};
-
-export type DsvDriverSignupInviteView = {
-  expiresAt: string;
-  signupUrl: string;
 };
 
 export class DsvResourceNotFoundError extends Error {
@@ -139,53 +127,6 @@ export class PrismaDsvResourceService implements DsvResourceService {
       if (isUniqueConflict(error)) throw new DsvResourceConflictError('DRIVER_NAME_EXISTS');
       throw error;
     }
-  }
-
-  async issueDriverSignupInvite(input: { driverId?: string; shopDomain: string }): Promise<DsvDriverSignupInviteView> {
-    const shop = await this.requireShop(input.shopDomain);
-    const rawToken = createDsvDriverSignupToken();
-    const expiresAt = new Date(Date.now() + DSV_DRIVER_SIGNUP_INVITE_TTL_MS);
-    const now = new Date();
-    await this.prisma.$transaction(async (transaction) => {
-      if (input.driverId === undefined) {
-        await transaction.dsvDriverAccountSignupInvite.updateMany({
-          data: { revokedAt: now },
-          where: { consumedAt: null, driverId: null, revokedAt: null, shopId: shop.id },
-        });
-        await transaction.dsvDriverAccountSignupInvite.create({
-          data: {
-            expiresAt,
-            shopId: shop.id,
-            tokenHash: hashDsvDriverSignupToken(rawToken),
-          },
-        });
-        return;
-      }
-      const driver = await transaction.driver.findFirst({
-        select: { accountId: true, id: true },
-        where: {
-          accountId: null,
-          dsvProfile: { isNot: null },
-          id: input.driverId,
-          shopId: shop.id,
-          status: 'ACTIVE',
-        },
-      });
-      if (driver === null) throw new DsvResourceNotFoundError('driver');
-      await transaction.dsvDriverAccountSignupInvite.updateMany({
-        data: { revokedAt: now },
-        where: { consumedAt: null, driverId: driver.id, revokedAt: null },
-      });
-      await transaction.dsvDriverAccountSignupInvite.create({
-        data: {
-          driverId: driver.id,
-          expiresAt,
-          shopId: shop.id,
-          tokenHash: hashDsvDriverSignupToken(rawToken),
-        },
-      });
-    });
-    return { expiresAt: expiresAt.toISOString(), signupUrl: buildDsvDriverSignupUrl(rawToken) };
   }
 
   async updateDriver(input: DsvDriverInput & { driverId: string; shopDomain: string }): Promise<DsvDriverView> {
