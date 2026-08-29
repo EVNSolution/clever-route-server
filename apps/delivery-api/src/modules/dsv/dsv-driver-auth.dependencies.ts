@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 
 import type { DsvDriverAuthDependencies } from '../../routes/dsv-driver-auth.routes.js';
+import { readDriverJwtSecret } from '../driver/driver-token-verifier.js';
 import { PrismaDsvDriverAuthRepository } from './dsv-driver-auth.repository.js';
 
 export type DsvDriverAuthRuntimeEnv = Partial<Record<
@@ -16,8 +17,8 @@ export function loadDsvDriverAuthDependencies(input: {
   const enabled = readBoolean(input.env.CLEVER_DSV_DRIVER_AUTH_ENABLED);
   if (enabled !== true) return undefined;
 
-  const jwtSecret = input.env.JWT_SECRET?.trim();
-  if (jwtSecret === undefined || jwtSecret === '') {
+  const jwtSecret = readDriverJwtSecret(input.env.JWT_SECRET);
+  if (jwtSecret === undefined) {
     throw new Error('CLEVER_DSV_DRIVER_AUTH_ENABLED=true requires JWT_SECRET');
   }
   return {

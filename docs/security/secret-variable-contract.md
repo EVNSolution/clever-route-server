@@ -11,7 +11,7 @@ These variables are maintained in `apps/delivery-api/.env` for every environment
 | --- | --- | --- |
 | `DATABASE_URL` | always | Prisma/PostgreSQL connection string. Treat as secret because it contains DB credentials. |
 | `POSTGRES_PASSWORD` | compose-managed Postgres | PostgreSQL user password used to build `DATABASE_URL`. |
-| `JWT_SECRET` | driver/mobile APIs enabled | Signs and verifies driver session tokens. |
+| `JWT_SECRET` | driver/mobile APIs enabled | Signs and verifies driver session tokens. Must contain at least 32 random characters. |
 | `CREDENTIAL_ENCRYPTION_KEY` | any DB-stored connector credential exists | 32-byte AES-GCM master key used to encrypt/decrypt customer connector secrets stored in DB. |
 | `DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY` | S3 proof-media backend enabled | S3-compatible storage secret access key. |
 | `DRIVER_PROOF_MEDIA_S3_SESSION_TOKEN` | temporary S3 credentials used | Optional temporary S3 session token. |

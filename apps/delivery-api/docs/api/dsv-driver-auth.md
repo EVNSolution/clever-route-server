@@ -53,7 +53,7 @@ DSV 전용 Driver 앱은 기존 CLEVER Routes 앱의 Shopify 초대 및 전화�
 ## 운영 활성화
 
 인증 라우트는 `CLEVER_DSV_DRIVER_AUTH_ENABLED=true`일 때만 등록된다. 이 값이 켜진
-환경에서는 `JWT_SECRET`이 누락되면 서버가 기동을 거부한다.
+환경에서는 `JWT_SECRET`이 누락되거나 32자보다 짧으면 서버가 기동을 거부한다.
 
 과거 `DsvDriverAccountSignupInvite` 테이블과 migration은 감사 이력 보존을 위해 유지하지만,
 현행 서버는 토큰을 발급·검증·소비하지 않는다.

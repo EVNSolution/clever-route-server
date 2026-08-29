@@ -11,6 +11,7 @@ import { PrismaDriverRouteAccessRepository } from './driver-route-access.reposit
 import { PrismaDriverRouteSessionRepository } from './driver-route-session.repository.js';
 import { PrismaDriverSelfServiceRepository } from './driver-self-service.repository.js';
 import { PrismaDriverTokenAccessRepository } from './driver-token-access.repository.js';
+import { readDriverJwtSecret } from './driver-token-verifier.js';
 import { createS3DriverProofMediaStorage } from './driver-proof-media-s3-storage.js';
 import {
   createHttpDriverProofMediaScanMonitor,
@@ -123,7 +124,7 @@ export function loadDriverApiDependencies(
   input: LoadDriverApiDependenciesInput
 ): DriverApiDependencies | undefined {
   const completionInvariantMode = loadDriverRouteCompletionInvariantMode(input.env);
-  const jwtSecret = readOptional(input.env.JWT_SECRET);
+  const jwtSecret = readDriverJwtSecret(input.env.JWT_SECRET);
   if (jwtSecret === undefined) {
     return undefined;
   }

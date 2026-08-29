@@ -11,6 +11,7 @@ const riskyRules = [
   { name: 'database/dump', re: /(^|\/)[^/]*(?:\.sql|\.sql\.gz|\.dump|\.sqlite|\.sqlite3|\.db|\.db-shm|\.db-wal|\.bak)$/i },
   { name: 'playwright/browser artifact', re: /(^|\/)(?:output|playwright-report|test-results|blob-report|\.playwright|playwright\/\.auth)(?:\/|$)|(^|\/)(?:storageState[^/]*\.json|[^/]*cookies[^/]*\.txt|trace\.zip|[^/]*\.har)$/i },
   { name: 'secret scan output', re: /(^|\/)(?:\.gitleaks-report\..*|\.trufflehog-report\..*|\.secret-scan)(?:\/|$)/i },
+  { name: 'credential JSON', re: /(^|\/)(?:google-services|service-account[^/]*|firebase-adminsdk[^/]*|credentials|[^/]+\.credentials)\.json$/i },
 ];
 
 function listGit(args) {

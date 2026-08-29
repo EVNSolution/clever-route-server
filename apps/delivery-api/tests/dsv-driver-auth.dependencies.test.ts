@@ -22,14 +22,25 @@ describe('DSV driver auth runtime dependency gate', () => {
     })).toThrow('requires JWT_SECRET');
   });
 
+  test('fails fast when the enabled JWT credential is shorter than 32 characters', () => {
+    expect(() => loadDsvDriverAuthDependencies({
+      env: {
+        CLEVER_DSV_DRIVER_AUTH_ENABLED: 'true',
+        JWT_SECRET: 'short-secret',
+      },
+      nodeEnv: 'production',
+      prisma,
+    })).toThrow('JWT_SECRET must contain at least 32 characters');
+  });
+
   test('loads the repository only when explicitly enabled with complete secrets', () => {
     expect(loadDsvDriverAuthDependencies({
       env: {
         CLEVER_DSV_DRIVER_AUTH_ENABLED: 'true',
-        JWT_SECRET: 'jwt',
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters',
       },
       nodeEnv: 'production',
       prisma,
-    })).toMatchObject({ jwtSecret: 'jwt' });
+    })).toMatchObject({ jwtSecret: 'test-driver-jwt-secret-32-characters' });
   });
 });

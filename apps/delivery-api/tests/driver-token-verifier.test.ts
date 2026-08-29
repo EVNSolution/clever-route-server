@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, test } from 'vitest';
 
 import {
+  readDriverJwtSecret,
   signDriverRouteToken,
   signDriverToken,
   verifyDriverRouteToken,
@@ -10,6 +11,19 @@ import {
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-07T06:10:00Z');
+
+describe('readDriverJwtSecret', () => {
+  test('keeps the API disabled when absent and rejects weak configured secrets', () => {
+    expect(readDriverJwtSecret(undefined)).toBeUndefined();
+    expect(readDriverJwtSecret('   ')).toBeUndefined();
+    expect(() => readDriverJwtSecret('short-secret')).toThrow(
+      'JWT_SECRET must contain at least 32 characters'
+    );
+    expect(readDriverJwtSecret('  test-driver-jwt-secret-32-characters  ')).toBe(
+      'test-driver-jwt-secret-32-characters'
+    );
+  });
+});
 
 describe('verifyDriverToken', () => {
   test('signs route access with only the global account and assigned route scope', () => {
