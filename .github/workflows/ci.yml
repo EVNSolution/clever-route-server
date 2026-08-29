@@ -9,9 +9,12 @@ on:
       - main
     paths:
       - ".github/workflows/ci.yml"
+      - ".github/workflows/route-ops-simple-deploy.yml"
       - "apps/delivery-api/src/modules/customer-email/customer-email-reconciliation.ts"
       - "apps/delivery-api/src/scripts/reconcile-customer-email.ts"
+      - "scripts/ssm-simple-route-ops-deploy.sh"
       - "scripts/ssm-customer-email-reconciliation.sh"
+      - "tests/deploy/ssm-simple-route-ops-deploy.test.sh"
       - "tests/deploy/ssm-customer-email-reconciliation.test.sh"
       - "tests/fixtures/customer-email-reconciliation-host/**"
   workflow_dispatch:

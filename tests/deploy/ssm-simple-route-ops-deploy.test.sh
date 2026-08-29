@@ -100,6 +100,7 @@ checks = {
     'workflow_splits_image_scope': "grep -Eq '^(apps/delivery-api/|\\.dockerignore$)'" in workflow and "grep -Eq '^(apps/route-ops-web/|\\.dockerignore$)'" in workflow,
     'workflow_unquotes_non_ascii_paths_before_scope_match': 'git -c core.quotePath=false diff --name-only' in workflow and 'git -c core.quotePath=false ls-files' in workflow,
     'main_ci_unquotes_non_ascii_paths_before_classification': 'git -c core.quotePath=false diff --name-only' in ci_workflow and 'git -c core.quotePath=false ls-files' in ci_workflow,
+    'main_ci_runs_for_simple_deploy_contract_changes': '      - ".github/workflows/route-ops-simple-deploy.yml"' in ci_workflow and '      - "scripts/ssm-simple-route-ops-deploy.sh"' in ci_workflow and '      - "tests/deploy/ssm-simple-route-ops-deploy.test.sh"' in ci_workflow,
     'workflow_uses_runtime_revision_for_api_scope': 'API_RUNTIME_COMMIT: ${{ steps.current.outputs.runtime_commit }}' in workflow and 'api_files="$(git -c core.quotePath=false diff --name-only "$API_RUNTIME_COMMIT" HEAD)"' in workflow and '''printf '%s\\n' "$api_files" | grep -Eq '^(apps/delivery-api/|\.dockerignore$)' '''.strip() in workflow,
     'workflow_has_no_migrate_build': 'clever-route-api-migrate' not in workflow and 'target: migrate' not in workflow,
     'ssm_wait_covers_real_deploy_duration': 'SSM_WAIT_TIMEOUT_SECONDS:-1800' in wrapper and 'aws ssm wait command-executed' not in wrapper and '--query Status' in wrapper and 'sleep 5' in wrapper,
