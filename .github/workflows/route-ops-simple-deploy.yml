@@ -200,6 +200,7 @@ jobs:
         shell: bash
         env:
           DEPLOYED_COMMIT: ${{ steps.current.outputs.deployed_commit }}
+          API_RUNTIME_COMMIT: ${{ steps.current.outputs.runtime_commit }}
           CURRENT_DELIVERY_API_IMAGE: ${{ steps.current.outputs.delivery_api_image }}
           CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.current.outputs.route_ops_web_static_image }}
           PUBLISH_IMAGES: ${{ inputs.publish_images }}
@@ -211,11 +212,17 @@ jobs:
           else
             files="$(git -c core.quotePath=false ls-files)"
           fi
+          if [ -n "$API_RUNTIME_COMMIT" ] && git cat-file -e "${API_RUNTIME_COMMIT}^{commit}" 2>/dev/null && git merge-base --is-ancestor "$API_RUNTIME_COMMIT" HEAD; then
+            api_files="$(git -c core.quotePath=false diff --name-only "$API_RUNTIME_COMMIT" HEAD)"
+          else
+            api_files="$(git -c core.quotePath=false ls-files)"
+          fi
           printf '%s\n' "$files" > changed-files.txt
+          printf '%s\n' "$api_files" > api-changed-files.txt
           build_api=false
           build_web=false
           if [ "$PUBLISH_IMAGES" = "true" ]; then
-            if [ -z "$CURRENT_DELIVERY_API_IMAGE" ] || printf '%s\n' "$files" | grep -Eq '^(apps/delivery-api/|\.dockerignore$)'; then
+            if [ -z "$CURRENT_DELIVERY_API_IMAGE" ] || printf '%s\n' "$api_files" | grep -Eq '^(apps/delivery-api/|\.dockerignore$)'; then
               build_api=true
             fi
             if [ -z "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE" ] || printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|\.dockerignore$)'; then
@@ -228,6 +235,9 @@ jobs:
             echo "changed_files<<EOF_CHANGED"
             cat changed-files.txt
             echo "EOF_CHANGED"
+            echo "api_changed_files<<EOF_API_CHANGED"
+            cat api-changed-files.txt
+            echo "EOF_API_CHANGED"
           } >> "$GITHUB_OUTPUT"
           printf 'build_api=%s build_web=%s\n' "$build_api" "$build_web"
 
