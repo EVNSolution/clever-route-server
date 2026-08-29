@@ -100,6 +100,8 @@ jobs:
         run: node scripts/check-ignore-hygiene.mjs
       - name: Secret scan staged/worktree
         run: scripts/scan-secrets.sh --worktree
+      - name: Secret scan regression
+        run: tests/security/scan-secrets.test.sh
       - name: Route Ops classifier tests
         if: needs.route-ops-changes.outputs.workflow_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true'
         run: node tests/ci/route-ops-change-classifier.test.mjs

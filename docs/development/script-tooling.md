@@ -6,7 +6,7 @@ This repo keeps a small set of root-level scripts because deployment and Route O
 
 - `scripts/ssm-simple-route-ops-deploy.sh` — current production deploy lane: GitHub Actions publishes digest-addressable changed images, then SSM pulls, runs the same-image migration service, stages static assets only when needed, recreates only `delivery-api`, and rolls back from the previous `.deploy/current-image.env` if health fails. The local `--publish` flag is a manual fallback, not the normal CI path; missing `write:packages` in `gh auth status` is warning-only while Docker/GHCR push failures remain fatal.
 
-- `scripts/scan-secrets.sh` — local/CI secret hygiene utility for staged, worktree, and history scans.
+- `scripts/scan-secrets.sh` — local/CI secret hygiene utility for staged, worktree, and history scans, including redacted high-confidence generic password assignments.
 - `scripts/monitor-route-ops-production.sh` — read-only SSM monitor wrapper for production health, container status, redacted recent logs, canonical active-assignment invariants, informational recurring seller-key counts, anonymous cross-app customer-email outbox counts, and authenticated smoke through the deployed runtime image.
 - `scripts/package-wordpress-plugin.sh` — explicit packaging helper for the WordPress plugin artifact.
 

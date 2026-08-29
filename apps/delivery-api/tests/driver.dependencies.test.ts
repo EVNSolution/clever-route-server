@@ -35,11 +35,18 @@ describe('loadDriverApiDependencies', () => {
     expect(dependencies).toBeUndefined();
   });
 
+  test('rejects a configured JWT secret shorter than 32 characters', () => {
+    expect(() => loadDriverApiDependencies({
+      env: { JWT_SECRET: 'short-secret' },
+      prisma: {} as PrismaClient
+    })).toThrow('JWT_SECRET must contain at least 32 characters');
+  });
+
   test('keeps local proof media storage as the default runtime backend', () => {
     const dependencies = loadDriverApiDependencies({
       env: {
         DRIVER_PROOF_MEDIA_STORAGE_DIR: '/tmp/clever-proof-media',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     });
@@ -53,7 +60,7 @@ describe('loadDriverApiDependencies', () => {
     const dependencies = loadDriverApiDependencies({
       env: {
         DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED: 'true',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     });
@@ -64,7 +71,7 @@ describe('loadDriverApiDependencies', () => {
   test('keeps assigned route reads independent from driver OSRM runtime config', () => {
     const dependencies = loadDriverApiDependencies({
       env: {
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     });
@@ -82,7 +89,7 @@ describe('loadDriverApiDependencies', () => {
         DRIVER_ROUTE_MAP_PREVIEW_ENABLED: 'true',
         DRIVER_ROUTE_MAP_PREVIEW_SECRET: 'preview-secret',
         DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS: '120',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     });
@@ -96,7 +103,7 @@ describe('loadDriverApiDependencies', () => {
       loadDriverApiDependencies({
         env: {
           DRIVER_ROUTE_MAP_PREVIEW_ENABLED: 'true',
-          JWT_SECRET: 'driver-secret'
+          JWT_SECRET: 'test-driver-jwt-secret-32-characters'
         },
         prisma: {} as PrismaClient
       })
@@ -107,7 +114,7 @@ describe('loadDriverApiDependencies', () => {
         env: {
           DELIVERY_API_PUBLIC_URL: 'https://delivery.example.com/api',
           DRIVER_ROUTE_MAP_PREVIEW_ENABLED: 'true',
-          JWT_SECRET: 'driver-secret'
+          JWT_SECRET: 'test-driver-jwt-secret-32-characters'
         },
         prisma: {} as PrismaClient
       })
@@ -123,7 +130,7 @@ describe('loadDriverApiDependencies', () => {
       env: {
         DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND: ' ',
         DRIVER_PROOF_MEDIA_SCANNER_BACKEND: ' ',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     });
@@ -143,7 +150,7 @@ describe('loadDriverApiDependencies', () => {
         DRIVER_PROOF_MEDIA_S3_REGION: 'ap-northeast-2',
         DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY: 'secret-test-key',
         DRIVER_PROOF_MEDIA_STORAGE_BACKEND: 's3',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     });
@@ -176,7 +183,7 @@ describe('loadDriverApiDependencies', () => {
     expect(() => loadDriverApiDependencies({
       env: {
         DRIVER_PROOF_MEDIA_STORAGE_BACKEND: 's3',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     })).toThrow('DRIVER_PROOF_MEDIA_S3_BUCKET is required when DRIVER_PROOF_MEDIA_STORAGE_BACKEND=s3');
@@ -186,7 +193,7 @@ describe('loadDriverApiDependencies', () => {
     expect(() => loadDriverApiDependencies({
       env: {
         DRIVER_PROOF_MEDIA_STORAGE_BACKEND: 'ftp',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     })).toThrow('DRIVER_PROOF_MEDIA_STORAGE_BACKEND must be local or s3');
@@ -199,7 +206,7 @@ describe('loadDriverApiDependencies', () => {
         DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL: 'https://alerts.internal.example/proof-media-scan',
         DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'http',
         DRIVER_PROOF_MEDIA_SCANNER_URL: 'https://scanner.internal.example/scan',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     });
@@ -211,7 +218,7 @@ describe('loadDriverApiDependencies', () => {
     expect(() => loadDriverApiDependencies({
       env: {
         DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'http',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     })).toThrow('DRIVER_PROOF_MEDIA_SCANNER_URL is required when DRIVER_PROOF_MEDIA_SCANNER_BACKEND=http');
@@ -221,7 +228,7 @@ describe('loadDriverApiDependencies', () => {
     expect(() => loadDriverApiDependencies({
       env: {
         DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'clamd',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     })).toThrow('DRIVER_PROOF_MEDIA_SCANNER_BACKEND must be none or http');
@@ -231,7 +238,7 @@ describe('loadDriverApiDependencies', () => {
     expect(() => loadDriverApiDependencies({
       env: {
         DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND: 'http',
-        JWT_SECRET: 'driver-secret'
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     })).toThrow('DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL is required when DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND=http');
@@ -327,7 +334,7 @@ describe('loadDriverApiDependencies', () => {
       sellerOrderId: 'order-1'
     });
     const dependencies = loadDriverApiDependencies({
-      env: { JWT_SECRET: 'driver-secret' },
+      env: { JWT_SECRET: 'test-driver-jwt-secret-32-characters' },
       prisma,
       routeGroupingService,
       routeOptimizationScheduler

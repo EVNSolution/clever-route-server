@@ -54,6 +54,43 @@ const allow = [
   /wJalrXUtnFEMI\/K7MDENG\/bPxRfiCYEXAMPLEKEY/,
   /sk_live_\[A-Za-z0-9\]\+/,
 ];
+const genericCredentialAssignment = /(?:^|[\s,{])([A-Za-z_][A-Za-z0-9_-]*)\s*[:=]\s*(?:(["'`])([^"'`\s,;}]+)\2|([^\s,;}]+))/gu;
+const allowedGenericCredentialValues = new Set([
+  'StrongPassw0rd!',
+  'KnownStrongPassw0rd!',
+  'PreviousStrongPassw0rd!',
+  'NewStrongPassw0rd!',
+  'CurrentStrongPassw0rd!',
+  'FreshStrongPassw0rd!',
+  'WrongPassw0rd!',
+  'StrongPass!234',
+  'CurrentPass!234',
+  'NewStrongPass!234',
+  'local-demo-password-2026',
+  'correct-password-2026',
+  'wrong-password',
+  'replacement-password-2026',
+  'temporary-password-2026',
+]);
+
+function hasSuspiciousGenericCredential(line) {
+  for (const match of line.matchAll(genericCredentialAssignment)) {
+    const key = match[1] ?? '';
+    const quoted = match[2] !== undefined;
+    const value = match[3] ?? match[4] ?? '';
+    if (!/(?:password|passwd|pwd|jwt[_-]?secret)/iu.test(key)) continue;
+    if (/(?:hash|digest|ciphertext|migrationname|migrationpath)$/iu.test(key)) continue;
+    if (!quoted && (key !== key.toUpperCase() || !/^[A-Z0-9_]+$/u.test(key))) continue;
+    if (value.length < 8 || /\$\{|[([{]|=>/u.test(value)) continue;
+    if (/^(?:test|example|dummy|fake|mock|fixture|placeholder|sample|change[-_]?me)(?:[-_]|$)/iu.test(value)) continue;
+    if (allowedGenericCredentialValues.has(value)) continue;
+    const classes = [/[a-z]/u, /[A-Z]/u, /\d/u, /[^A-Za-z0-9]/u]
+      .filter((re) => re.test(value)).length;
+    if (classes >= 3) return true;
+  }
+  return false;
+}
+
 let findings = 0;
 let scanned = 0;
 for (const file of paths) {
@@ -69,6 +106,10 @@ for (const file of paths) {
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     if (allow.some((re) => re.test(line))) continue;
+    if (hasSuspiciousGenericCredential(line)) {
+      findings += 1;
+      console.error(`${label}: ${file}:${i + 1}: generic_password_assignment: <redacted>`);
+    }
     for (const rule of rules) {
       if (rule.re.test(line)) {
         findings += 1;
@@ -127,21 +168,62 @@ const patterns = [
   { name: 'slack_token', pattern: String.raw`\bxox[baprs]-[A-Za-z0-9-]{20,}\b` },
   { name: 'stripe_live_key', pattern: String.raw`\bsk_live_[A-Za-z0-9]{16,}\b` },
   { name: 'aws_access_key', pattern: String.raw`\b(AKIA|ASIA)[0-9A-Z]{16}\b` },
+  { name: 'generic_password_assignment', pattern: '(password|passwd|pwd|jwt[_-]?secret)[A-Za-z0-9_-]*[[:space:]]*[:=]' },
 ];
 const allow = [/AKIA_TEST\b/, /AKIA_TEST_VALUE\b/, /AKIAIOSFODNN7EXAMPLE\b/, /wJalrXUtnFEMI\/K7MDENG\/bPxRfiCYEXAMPLEKEY/, /sk_live_\[A-Za-z0-9\]\+/];
+const genericCredentialAssignment = /(?:^|[\s,{])([A-Za-z_][A-Za-z0-9_-]*)\s*[:=]\s*(?:(["'`])([^"'`\s,;}]+)\2|([^\s,;}]+))/gu;
+const allowedGenericCredentialValues = new Set([
+  'StrongPassw0rd!',
+  'KnownStrongPassw0rd!',
+  'PreviousStrongPassw0rd!',
+  'NewStrongPassw0rd!',
+  'CurrentStrongPassw0rd!',
+  'FreshStrongPassw0rd!',
+  'WrongPassw0rd!',
+  'StrongPass!234',
+  'CurrentPass!234',
+  'NewStrongPass!234',
+  'local-demo-password-2026',
+  'correct-password-2026',
+  'wrong-password',
+  'replacement-password-2026',
+  'temporary-password-2026',
+]);
+
+function hasSuspiciousGenericCredential(line) {
+  for (const match of line.matchAll(genericCredentialAssignment)) {
+    const key = match[1] ?? '';
+    const quoted = match[2] !== undefined;
+    const value = match[3] ?? match[4] ?? '';
+    if (!/(?:password|passwd|pwd|jwt[_-]?secret)/iu.test(key)) continue;
+    if (/(?:hash|digest|ciphertext|migrationname|migrationpath)$/iu.test(key)) continue;
+    if (!quoted && (key !== key.toUpperCase() || !/^[A-Z0-9_]+$/u.test(key))) continue;
+    if (value.length < 8 || /\$\{|[([{]|=>/u.test(value)) continue;
+    if (/^(?:test|example|dummy|fake|mock|fixture|placeholder|sample|change[-_]?me)(?:[-_]|$)/iu.test(value)) continue;
+    if (allowedGenericCredentialValues.has(value)) continue;
+    const classes = [/[a-z]/u, /[A-Z]/u, /\d/u, /[^A-Za-z0-9]/u]
+      .filter((re) => re.test(value)).length;
+    if (classes >= 3) return true;
+  }
+  return false;
+}
+
 const commits = execFileSync('git', ['rev-list', '--all'], { encoding: 'utf8' }).split('\n').filter(Boolean);
 let findings = 0;
 for (const commit of commits) {
   for (const rule of patterns) {
     let out = '';
     try {
-      out = execFileSync('git', ['grep', '-I', '-n', '-E', '-e', rule.pattern, commit], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 20 * 1024 * 1024 });
+      const grepArgs = ['grep', '-I', '-n', '-E'];
+      if (rule.name === 'generic_password_assignment') grepArgs.push('-i');
+      out = execFileSync('git', [...grepArgs, '-e', rule.pattern, commit], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 20 * 1024 * 1024 });
     } catch (error) {
       if (error.status === 1) continue;
       throw error;
     }
     for (const line of out.split('\n').filter(Boolean)) {
       if (allow.some((re) => re.test(line))) continue;
+      if (rule.name === 'generic_password_assignment' && !hasSuspiciousGenericCredential(line)) continue;
       const first = line.indexOf(':');
       const second = line.indexOf(':', first + 1);
       const third = line.indexOf(':', second + 1);

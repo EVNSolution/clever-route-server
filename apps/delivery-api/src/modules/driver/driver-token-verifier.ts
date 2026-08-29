@@ -4,6 +4,16 @@ import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 const DRIVER_AUDIENCE = 'clever-delivery-driver';
 const DRIVER_ACCOUNT_AUDIENCE = 'clever-driver-account';
 const DRIVER_ROUTE_AUDIENCE = 'clever-delivery-driver-route';
+const MIN_DRIVER_JWT_SECRET_CHARACTERS = 32;
+
+export function readDriverJwtSecret(value: string | undefined): string | undefined {
+  const secret = value?.trim();
+  if (!secret) return undefined;
+  if (secret.length < MIN_DRIVER_JWT_SECRET_CHARACTERS) {
+    throw new Error('JWT_SECRET must contain at least 32 characters');
+  }
+  return secret;
+}
 
 export type VerifiedDriverAccountToken = {
   accountId: string;

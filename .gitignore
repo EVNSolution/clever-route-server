@@ -65,6 +65,11 @@ backups/
 .gitleaks-report.*
 .trufflehog-report.*
 .secret-scan/
+google-services.json
+service-account*.json
+firebase-adminsdk*.json
+credentials.json
+*.credentials.json
 
 # Evidence/private artifacts
 evidence/
@@ -78,6 +83,7 @@ docs/proof-media-production-evidence-manifest-*.md
 
 # Local orchestration/editor noise
 .omx/
+.worktrees/
 worktrees/
 .DS_Store
 Thumbs.db
