@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { classifyRouteOpsChanges } from '../../scripts/ci/route-ops-change-classifier.mjs';
 
 function check(name, files, expected) {
@@ -20,6 +22,42 @@ function releaseStaticChecksRun(files) {
   const result = classifyRouteOpsChanges(files);
   return result.deploy_changed || result.workflow_changed || result.full_required;
 }
+
+function checkNonAsciiGitPathClassification() {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'route-ops-nonascii-path-'));
+  try {
+    const assetDir = join(fixtureRoot, 'apps/delivery-api/assets');
+    const assetPath = join(assetDir, '배송원-가이드.pdf');
+    mkdirSync(assetDir, { recursive: true });
+    writeFileSync(assetPath, 'old');
+
+    for (const args of [
+      ['init', '--quiet'],
+      ['config', 'user.name', 'Route Ops Test'],
+      ['config', 'user.email', 'route-ops-test@example.invalid'],
+      ['add', '.'],
+      ['commit', '--quiet', '-m', 'fixture'],
+    ]) {
+      const result = spawnSync('git', args, { cwd: fixtureRoot, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    writeFileSync(assetPath, 'new');
+    const result = spawnSync(
+      'git',
+      ['-c', 'core.quotePath=false', 'diff', '--name-only', 'HEAD'],
+      { cwd: fixtureRoot, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const changedFiles = result.stdout.trim().split('\n');
+    assert.deepEqual(changedFiles, ['apps/delivery-api/assets/배송원-가이드.pdf']);
+    assert.equal(classifyRouteOpsChanges(changedFiles).api_changed, true);
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+checkNonAsciiGitPathClassification();
 
 check('web-only UI change', ['apps/route-ops-web/src/pages/RoutesPage.tsx', 'apps/route-ops-web/src/styles.css'], {
   web_changed: true,
