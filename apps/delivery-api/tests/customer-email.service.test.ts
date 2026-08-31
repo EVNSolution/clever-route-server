@@ -5,6 +5,38 @@ import { defaultCustomerEmailSettings } from '../src/modules/customer-email/cust
 import { BrevoCustomerEmailTransport } from '../src/modules/customer-email/customer-email-transport.js';
 
 describe('CustomerEmailService', () => {
+  test('activates automatic delivery only through the consent-scoped command', async () => {
+    const { prisma, service } = createHarness();
+    const updatedAt = new Date('2026-08-31T07:00:00.000Z');
+    prisma.shop.findUnique.mockResolvedValue({
+      customerEmailSettings: defaultCustomerEmailSettings(), id: 'shop-id', updatedAt
+    });
+    prisma.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    const activation = await service.setAutomaticActivation({
+      acceptedBy: 'operator-id', confirmed: true, enabled: true,
+      noticeVersion: 'customer-email-automatic-v1', shopDomain: 'example.myshopify.com'
+    });
+
+    expect(activation).toMatchObject({
+      consent: {
+        acceptedBy: 'operator-id', noticeVersion: 'customer-email-automatic-v1', settingsVersion: expect.stringContaining('v3:g1') as unknown
+      },
+      enabled: true
+    });
+    expect(prisma.shop.updateMany).toHaveBeenCalledWith({
+      data: { customerEmailSettings: expect.objectContaining({ automatic: expect.objectContaining({ enabled: true }) as unknown }) as unknown },
+      where: { id: 'shop-id', updatedAt }
+    });
+  });
+
+  test('rejects unconfirmed automatic activation', async () => {
+    const { service } = createHarness();
+    await expect(service.setAutomaticActivation({
+      acceptedBy: 'operator-id', confirmed: false, enabled: true, shopDomain: 'example.myshopify.com'
+    })).rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_BAD_REQUEST' });
+  });
+
   test('migrates a v1 settings write to v3 during a rolling app deployment', async () => {
     const { prisma, service } = createHarness();
     const current = defaultCustomerEmailSettings();
@@ -376,12 +408,16 @@ describe('CustomerEmailService', () => {
       {
         createdAt: new Date('2026-08-05T12:00:00.000Z'),
         deliveryStopId: 'stop-1',
+        providerEventAt: new Date('2026-08-05T12:00:02.000Z'),
+        providerStatus: 'HARD_BOUNCE',
         sentAt: null,
         status: 'FAILED',
       },
       {
         createdAt: new Date('2026-08-05T11:00:00.000Z'),
         deliveryStopId: 'stop-1',
+        providerEventAt: new Date('2026-08-05T11:01:02.000Z'),
+        providerStatus: 'DELIVERED',
         sentAt: new Date('2026-08-05T11:01:00.000Z'),
         status: 'SENT',
       },
@@ -395,6 +431,8 @@ describe('CustomerEmailService', () => {
       recipients: [{
         deliveryStopId: 'stop-1',
         history: {
+          lastProviderEventAt: '2026-08-05T12:00:02.000Z',
+          lastProviderStatus: 'HARD_BOUNCE',
           lastSentAt: '2026-08-05T11:01:00.000Z',
           lastStatus: 'FAILED',
           sendCount: 1,
@@ -407,6 +445,8 @@ describe('CustomerEmailService', () => {
       select: {
         createdAt: true,
         deliveryStopId: true,
+        providerEventAt: true,
+        providerStatus: true,
         sentAt: true,
         status: true,
       },
@@ -753,7 +793,7 @@ describe('CustomerEmailService', () => {
     expect(prisma.customerEmailManualDispatch.create).toHaveBeenCalledOnce();
     expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      data: expect.objectContaining({ providerMessageId: 'message-id', status: 'SENT' }),
+      data: expect.objectContaining({ providerMessageId: 'message-id', providerStatus: 'ACCEPTED', status: 'SENT' }),
     }));
     expect('customerRouteNotificationFact' in prisma).toBe(false);
   });

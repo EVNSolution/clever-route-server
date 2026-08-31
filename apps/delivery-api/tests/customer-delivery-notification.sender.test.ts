@@ -6,6 +6,7 @@ import {
 } from '../src/modules/route-plans/customer-delivery-notification.sender.js';
 
 const message = {
+  appId: 'clever-kfood',
   deliveryStopId: 'stop-1',
   idempotencyKey: 'admin-stop-key:customer-notification',
   orderId: 'order-1',
@@ -68,6 +69,7 @@ describe('customer delivery notification sender', () => {
     });
 
     await expect(sender.send({
+      appId: 'clever-kfood',
       body: 'Customer-visible memo',
       idempotencyKey: 'memo-command:customer-message-email',
       kind: 'CUSTOMER_MESSAGE',
@@ -82,6 +84,7 @@ describe('customer delivery notification sender', () => {
     });
     const [, requestInit] = fetchImpl.mock.calls[0] ?? [];
     expect(requestInit?.body).toBe(JSON.stringify({
+      appId: 'clever-kfood',
       body: 'Customer-visible memo',
       idempotencyKey: 'memo-command:customer-message-email',
       kind: 'CUSTOMER_MESSAGE',

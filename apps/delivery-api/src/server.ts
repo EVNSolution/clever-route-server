@@ -9,6 +9,8 @@ import {
 import { loadAdminDriverDependencies } from './modules/driver/admin-driver.dependencies.js';
 import { loadAdminInventoryDependencies } from './modules/inventory/inventory.dependencies.js';
 import { loadAdminCustomerEmailDependencies } from './modules/customer-email/customer-email.dependencies.js';
+import { PrismaEmailRuntimeHealthService } from './modules/customer-email/email-runtime-health.service.js';
+import { EmailRuntimeHealthRuntime } from './modules/customer-email/email-runtime-health.runtime.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
 import { DriverOperationalHealthRuntime } from './modules/driver/driver-operational-health.runtime.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
@@ -151,6 +153,16 @@ const customerDeliveryNotificationRuntime = createCustomerDeliveryNotificationRu
   logger: app.log,
   prisma
 });
+const emailSenderConfigured = typeof process.env.BREVO_API_KEY === 'string' && process.env.BREVO_API_KEY.trim() !== '';
+const emailHealthRuntime = new EmailRuntimeHealthRuntime(
+  prisma,
+  new PrismaEmailRuntimeHealthService(prisma, {
+    automaticSenderConfigured: emailSenderConfigured,
+    automaticWorkerEnabled: emailSenderConfigured && customerDeliveryNotificationRuntime.enabled,
+    manualBrevoConfigured: emailSenderConfigured
+  }, operationalAlertRepository),
+  app.log
+);
 const driverOperationalHealthRuntime = driverApi?.driverOperationalHealthService === undefined
   ? null
   : new DriverOperationalHealthRuntime(driverApi.driverOperationalHealthService, app.log);
@@ -164,6 +176,7 @@ try {
   await app.listen({ host: '0.0.0.0', port: env.port });
   await adminNotificationRuntime.start();
   await customerDeliveryNotificationRuntime.start();
+  emailHealthRuntime.start();
   driverOperationalHealthRuntime?.start();
   await dsvV1Read?.driverNotificationRuntime?.start();
   uvisTelemetryRuntime.start();
@@ -176,6 +189,7 @@ try {
     app.close(),
     adminNotificationRuntime.close(),
     customerDeliveryNotificationRuntime.close(),
+    emailHealthRuntime.close(),
     driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
     dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
     uvisTelemetryRuntime.close(),
@@ -192,6 +206,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       void Promise.all([
         adminNotificationRuntime.close(),
         customerDeliveryNotificationRuntime.close(),
+        emailHealthRuntime.close(),
         driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
         dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
         uvisTelemetryRuntime.close(),

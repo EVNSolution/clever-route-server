@@ -21,7 +21,7 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
         recipientEmailSnapshot: 'customer@example.com',
         requestedUiStatus: 'COMPLETED',
         routePlanId: 'route-id',
-        shop: { shopDomain: 'example.myshopify.com' }
+        shop: { appId: 'clever-kfood', shopDomain: 'example.myshopify.com' }
       }),
       updateMany: vi.fn<(input: UpdateManyInput) => Promise<{ count: number }>>()
         .mockResolvedValue({ count: 1 })
@@ -33,6 +33,7 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
     const claimed = await outbox.claimNext({ leaseMs: 60_000, now });
 
     expect(claimed).toMatchObject({
+      appId: 'clever-kfood',
       attemptCount: 3,
       deliveryStopId: 'stop-id',
       factId: 'fact-id',
@@ -47,6 +48,12 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
     expect(customerRouteNotificationFact.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         reconciliationTombstones: { none: { disposition: 'DO_NOT_SEND' } },
+        AND: [{
+          OR: [
+            { source: 'DSV_CUSTOMER_MESSAGE' },
+            { shop: { customerEmailSettings: { equals: true, path: ['automatic', 'enabled'] } } }
+          ]
+        }],
         OR: [
           {
             nextAttemptAt: { lte: now },
@@ -70,6 +77,12 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
     expect(claimUpdate?.where.id).toBe('fact-id');
     expect(Array.isArray(claimUpdate?.where.OR)).toBe(true);
     expect(claimUpdate?.where.reconciliationTombstones).toEqual({ none: { disposition: 'DO_NOT_SEND' } });
+    expect(claimUpdate?.where.AND).toEqual([{
+      OR: [
+        { source: 'DSV_CUSTOMER_MESSAGE' },
+        { shop: { customerEmailSettings: { equals: true, path: ['automatic', 'enabled'] } } }
+      ]
+    }]);
   });
 
   test('returns no job when another worker wins the compare-and-set claim', async () => {
@@ -84,7 +97,7 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
         recipientEmailSnapshot: 'customer@example.com',
         requestedUiStatus: 'READY',
         routePlanId: 'route-id',
-        shop: { shopDomain: 'example.myshopify.com' }
+        shop: { appId: 'clever-kfood', shopDomain: 'example.myshopify.com' }
       }),
       updateMany: vi.fn<(input: UpdateManyInput) => Promise<{ count: number }>>()
         .mockResolvedValue({ count: 0 })
@@ -108,7 +121,7 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
       recipientEmailSnapshot: 'customer@example.com',
       requestedUiStatus: 'READY',
       routePlanId: 'route-id',
-      shop: { shopDomain: 'example.myshopify.com' }
+      shop: { appId: 'clever-kfood', shopDomain: 'example.myshopify.com' }
     };
     const customerRouteNotificationFact = {
       findFirst: vi.fn()
@@ -172,6 +185,7 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
       ]);
     const [sentInput, , deadInput] = customerRouteNotificationFact.updateMany.mock.calls.map(([input]) => input);
     expect(sentInput?.data.recipientEmailSnapshot).toBeNull();
+    expect(sentInput?.data).toMatchObject({ providerEventAt: now, providerStatus: 'ACCEPTED' });
     expect(deadInput?.data.recipientEmailSnapshot).toBeNull();
   });
 });

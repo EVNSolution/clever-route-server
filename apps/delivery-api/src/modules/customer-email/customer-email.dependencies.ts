@@ -9,11 +9,12 @@ import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../sho
 import { ShopifySessionTokenVerifier } from '../shopify/session-token-verifier.js';
 import type { AdminCustomerEmailDependencies } from '../../routes/admin-customer-email.routes.js';
 import { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
+import { PrismaCustomerEmailProviderEventRepository } from './customer-email-provider-event.repository.js';
 
 export const DEFAULT_CUSTOMER_EMAIL_ASSETS_DIR = 'var/customer-email-assets';
 
 export type CustomerEmailRuntimeEnv = CustomerEmailTransportEnv & ShopifyAppCredentialsEnv & Partial<Record<
-  'CUSTOMER_EMAIL_ASSETS_DIR' | 'DELIVERY_API_PUBLIC_URL',
+  'BREVO_WEBHOOK_BEARER_TOKEN' | 'CUSTOMER_EMAIL_ASSETS_DIR' | 'DELIVERY_API_PUBLIC_URL',
   string
 >>;
 
@@ -24,6 +25,7 @@ export function loadAdminCustomerEmailDependencies(input: {
   const appCredentials = loadShopifyAppCredentials(input.env);
   if (appCredentials.length === 0) return undefined;
   const logoAssets = loadLogoAssets(input.env);
+  const providerWebhookToken = readOptional(input.env.BREVO_WEBHOOK_BEARER_TOKEN);
   return {
     customerEmailService: new CustomerEmailService(
       input.prisma,
@@ -31,6 +33,12 @@ export function loadAdminCustomerEmailDependencies(input: {
       new PrismaCustomerDeliveryNotificationAttemptRepository(input.prisma)
     ),
     ...(logoAssets === undefined ? {} : { logoAssets }),
+    ...(providerWebhookToken === undefined ? {} : {
+      providerWebhook: {
+        repository: new PrismaCustomerEmailProviderEventRepository(input.prisma),
+        token: providerWebhookToken
+      }
+    }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials }),
   };
 }

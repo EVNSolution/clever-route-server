@@ -278,6 +278,7 @@ function buildJobMessage(job: CustomerDeliveryNotificationJob):
     }
     return {
       message: {
+        appId: job.appId,
         body: customerMessage.body,
         idempotencyKey: job.idempotencyKey,
         kind: 'CUSTOMER_MESSAGE',
@@ -306,15 +307,26 @@ function buildJobMessage(job: CustomerDeliveryNotificationJob):
   }
   return {
     message: {
+      appId: job.appId,
       deliveryStopId: job.deliveryStopId,
       idempotencyKey: job.idempotencyKey,
       orderId: job.orderId,
       recipientEmail: job.recipientEmail,
       routePlanId: job.routePlanId,
       shopDomain: job.shopDomain,
+      ...(readCustomerEmailSignalMetadata(job.metadata) === null
+        ? {}
+        : { signal: readCustomerEmailSignalMetadata(job.metadata) as 'DELIVERED' | 'DELIVERY_SCHEDULED' | 'DRIVER_NEARBY' | 'MISSED_DELIVERY' | 'OUT_FOR_DELIVERY' }),
       status: job.requestedUiStatus
     }
   };
+}
+
+function readCustomerEmailSignalMetadata(metadata: CustomerDeliveryNotificationJob['metadata']): string | null {
+  const signal = readMetadataString(metadata, 'signal');
+  return signal !== null && ['DELIVERED', 'DELIVERY_SCHEDULED', 'DRIVER_NEARBY', 'MISSED_DELIVERY', 'OUT_FOR_DELIVERY'].includes(signal)
+    ? signal
+    : null;
 }
 
 function isCustomerMessageSource(job: CustomerDeliveryNotificationJob): boolean {

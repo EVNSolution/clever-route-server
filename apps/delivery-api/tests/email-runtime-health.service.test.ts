@@ -1,5 +1,12 @@
 import { describe, expect, test, vi } from 'vitest';
 import { PrismaEmailRuntimeHealthService } from '../src/modules/customer-email/email-runtime-health.service.js';
+import { defaultCustomerEmailSettings } from '../src/modules/customer-email/customer-email-settings.js';
+
+const automaticSettings = (() => {
+  const settings = defaultCustomerEmailSettings();
+  settings.automatic.enabled = true;
+  return settings;
+})();
 
 describe('email runtime health', () => {
   test('rejects invalid runtime health thresholds', () => {
@@ -11,6 +18,23 @@ describe('email runtime health', () => {
       manualBrevoConfigured: true,
       thresholds: { processingStaleAfterMs: 0 }
     })).toThrow('processingStaleAfterMs');
+  });
+
+  test('keeps K-food runtime health inside its app-scoped tenant', async () => {
+    const findUnique = vi.fn().mockResolvedValue({ customerEmailSettings: defaultCustomerEmailSettings(), id: 'shop-id' });
+    const prisma = {
+      customerRouteNotificationFact: { count: vi.fn().mockResolvedValue(0), findFirst: vi.fn().mockResolvedValue(null) },
+      shop: { findUnique }
+    };
+
+    await new PrismaEmailRuntimeHealthService(prisma as never, {
+      automaticSenderConfigured: true, automaticWorkerEnabled: true, manualBrevoConfigured: true
+    }).get({ appId: 'clever-kfood', shopDomain: 'kfood.example.test' });
+
+    expect(findUnique).toHaveBeenCalledWith({
+      select: { customerEmailSettings: true, id: true },
+      where: { appId_shopDomain: { appId: 'clever-kfood', shopDomain: 'kfood.example.test' } }
+    });
   });
 
   test('reports degraded when queued, retry, or processing work exceeds its threshold', async () => {
@@ -31,7 +55,7 @@ describe('email runtime health', () => {
         count: vi.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(1).mockResolvedValueOnce(1).mockResolvedValueOnce(0),
         findFirst
       },
-      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-id' }) }
+      shop: { findUnique: vi.fn().mockResolvedValue({ customerEmailSettings: automaticSettings, id: 'shop-id' }) }
     };
 
     const result = await new PrismaEmailRuntimeHealthService(prisma as never, {
@@ -62,7 +86,7 @@ describe('email runtime health', () => {
           return Promise.resolve(null);
         })
       },
-      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-id' }) }
+      shop: { findUnique: vi.fn().mockResolvedValue({ customerEmailSettings: automaticSettings, id: 'shop-id' }) }
     });
     const config = {
       automaticSenderConfigured: true,
@@ -94,7 +118,7 @@ describe('email runtime health', () => {
           return Promise.resolve({ occurredAt: new Date('2026-08-24T07:59:00.000Z') });
         })
       },
-      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-id' }) }
+      shop: { findUnique: vi.fn().mockResolvedValue({ customerEmailSettings: automaticSettings, id: 'shop-id' }) }
     };
 
     const result = await new PrismaEmailRuntimeHealthService(prisma as never, {
@@ -121,7 +145,7 @@ describe('email runtime health', () => {
           .mockResolvedValueOnce(4),
         findFirst
       },
-      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-id' }) }
+      shop: { findUnique: vi.fn().mockResolvedValue({ customerEmailSettings: automaticSettings, id: 'shop-id' }) }
     };
     const alerts = {
       openOrObserve: vi.fn().mockResolvedValue({}),
@@ -135,7 +159,7 @@ describe('email runtime health', () => {
       manualBrevoConfigured: true
     }, alerts as never, () => now).get({ shopDomain: 'tenant-a.example.test' })).resolves.toEqual({
       email: {
-        automatic: { senderConfigured: false, workerEnabled: false },
+        automatic: { enabled: true, senderConfigured: false, workerEnabled: false },
         configured: false,
         manual: { brevoConfigured: true },
         outbox: {
@@ -168,12 +192,44 @@ describe('email runtime health', () => {
   test('never reports a disabled automatic worker healthy when manual Brevo is configured', async () => {
     const prisma = {
       customerRouteNotificationFact: { count: vi.fn().mockResolvedValue(0), findFirst: vi.fn().mockResolvedValue(null) },
-      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-id' }) }
+      shop: { findUnique: vi.fn().mockResolvedValue({ customerEmailSettings: automaticSettings, id: 'shop-id' }) }
     };
     const result = await new PrismaEmailRuntimeHealthService(prisma as never, {
       automaticSenderConfigured: false, automaticWorkerEnabled: false, manualBrevoConfigured: true
     }).get({ shopDomain: 'tenant-a.example.test' });
     expect(result.email.state).toBe('DISABLED');
     expect(result.email.manual.brevoConfigured).toBe(true);
+  });
+
+  test('reports inactive without alerts when automatic delivery is off and the outbox is empty', async () => {
+    const prisma = {
+      customerRouteNotificationFact: { count: vi.fn().mockResolvedValue(0), findFirst: vi.fn().mockResolvedValue(null) },
+      shop: { findUnique: vi.fn().mockResolvedValue({ customerEmailSettings: defaultCustomerEmailSettings(), id: 'shop-id' }) }
+    };
+    const alerts = { openOrObserve: vi.fn(), resolveByDedupeKey: vi.fn() };
+
+    const result = await new PrismaEmailRuntimeHealthService(prisma as never, {
+      automaticSenderConfigured: true, automaticWorkerEnabled: true, manualBrevoConfigured: true
+    }, alerts as never).get({ shopDomain: 'tenant-a.example.test' });
+
+    expect(result.email.state).toBe('INACTIVE');
+    expect(result.email.automatic.enabled).toBe(false);
+    expect(alerts.openOrObserve).not.toHaveBeenCalled();
+  });
+
+  test('reports historical queued facts as degraded without making them claimable', async () => {
+    const prisma = {
+      customerRouteNotificationFact: {
+        count: vi.fn().mockResolvedValueOnce(7).mockResolvedValue(0),
+        findFirst: vi.fn().mockResolvedValue(null)
+      },
+      shop: { findUnique: vi.fn().mockResolvedValue({ customerEmailSettings: defaultCustomerEmailSettings(), id: 'shop-id' }) }
+    };
+    const result = await new PrismaEmailRuntimeHealthService(prisma as never, {
+      automaticSenderConfigured: true, automaticWorkerEnabled: true, manualBrevoConfigured: true
+    }).get({ shopDomain: 'tenant-a.example.test' });
+
+    expect(result.email.state).toBe('DEGRADED');
+    expect(result.email.outbox.pending).toBe(7);
   });
 });

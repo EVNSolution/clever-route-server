@@ -7,6 +7,8 @@ import {
 import { PrismaCustomerDeliveryNotificationOutbox } from './customer-delivery-notification.outbox.js';
 import { CustomerDeliveryNotificationWorker } from './customer-delivery-notification.worker.js';
 import { PrismaCustomerDeliveryNotificationAttemptRepository } from '../customer-email/customer-delivery-notification-attempt.repository.js';
+import { PrismaCustomerEmailAutomaticSender } from '../customer-email/customer-email-automatic.sender.js';
+import { loadCustomerEmailTransport, type CustomerEmailTransportEnv } from '../customer-email/customer-email-transport.js';
 
 type LoggerLike = {
   error?(bindings: unknown, message?: string): void;
@@ -21,11 +23,15 @@ export type CustomerDeliveryNotificationRuntime = {
 };
 
 export function createCustomerDeliveryNotificationRuntime(input: {
-  env: CustomerDeliveryNotificationRuntimeEnv;
+  env: CustomerDeliveryNotificationRuntimeEnv & CustomerEmailTransportEnv;
   logger?: LoggerLike | undefined;
   prisma: PrismaClient;
 }): CustomerDeliveryNotificationRuntime {
-  const sender = loadCustomerDeliveryNotificationSender(input.env);
+  const legacySender = loadCustomerDeliveryNotificationSender(input.env);
+  const transport = loadCustomerEmailTransport(input.env);
+  const sender = transport.configured
+    ? new PrismaCustomerEmailAutomaticSender(input.prisma, transport, legacySender)
+    : legacySender;
   if (sender === undefined || !isCustomerDeliveryNotificationWorkerEnabled(input.env)) {
     return {
       close: () => Promise.resolve(),
@@ -35,7 +41,7 @@ export function createCustomerDeliveryNotificationRuntime(input: {
   }
 
   const worker = new CustomerDeliveryNotificationWorker(
-    new PrismaCustomerDeliveryNotificationOutbox(input.prisma),
+    new PrismaCustomerDeliveryNotificationOutbox(input.prisma, { allowCustomerMessages: legacySender !== undefined }),
     sender,
     {},
     input.logger,

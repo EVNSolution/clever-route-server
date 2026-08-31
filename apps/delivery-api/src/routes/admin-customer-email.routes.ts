@@ -1,6 +1,6 @@
 import type { MultipartFile } from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -22,10 +22,15 @@ import {
   type AdminSessionTokenVerifier,
 } from './admin-session-auth.js';
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
+import type { PrismaCustomerEmailProviderEventRepository } from '../modules/customer-email/customer-email-provider-event.repository.js';
 
 export type AdminCustomerEmailDependencies = {
   customerEmailService: CustomerEmailService;
   logoAssets?: CustomerEmailLogoAssetStore;
+  providerWebhook?: {
+    repository: PrismaCustomerEmailProviderEventRepository;
+    token: string;
+  };
   sessionTokenVerifier: AdminSessionTokenVerifier;
 };
 
@@ -41,6 +46,21 @@ export function registerAdminCustomerEmailRoutes(
   app: FastifyInstance,
   dependencies: AdminCustomerEmailDependencies,
 ): void {
+  const providerWebhook = dependencies.providerWebhook;
+  if (providerWebhook !== undefined) {
+    app.post<{ Body: unknown }>('/webhooks/customer-email/brevo', async (request, reply) => {
+      if (!matchesBearerToken(request.headers.authorization, providerWebhook.token)) {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid provider webhook token'));
+      }
+      const events = readBrevoProviderEvents(request.body);
+      if (events === null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid provider webhook payload'));
+      let matched = 0;
+      for (const event of events) matched += await providerWebhook.repository.record(event);
+      request.log.info({ eventCount: events.length, matched }, 'customer email provider events recorded');
+      return reply.code(204).send();
+    });
+  }
+
   app.get('/admin/customer-email/settings', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
     if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
@@ -92,6 +112,44 @@ export function registerAdminCustomerEmailRoutes(
       });
       if (customerEmailSettings === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Shop not found'));
       return reply.code(200).send({ data: { customerEmailSettings }, error: null });
+    } catch (error) {
+      return sendCustomerEmailError(reply, error);
+    }
+  });
+
+  app.post<{ Body: unknown }>('/admin/customer-email/activation', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    const payload = readActivationPayload(request.body, true);
+    if (payload === null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid customer email activation payload'));
+    try {
+      const activation = await dependencies.customerEmailService.setAutomaticActivation({
+        ...authenticated,
+        ...payload,
+        acceptedBy: authenticated.subject,
+        enabled: true
+      });
+      if (activation === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Shop not found'));
+      return reply.code(200).send({ data: { activation }, error: null });
+    } catch (error) {
+      return sendCustomerEmailError(reply, error);
+    }
+  });
+
+  app.delete<{ Body: unknown }>('/admin/customer-email/activation', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    const payload = readActivationPayload(request.body, false);
+    if (payload === null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid customer email deactivation payload'));
+    try {
+      const activation = await dependencies.customerEmailService.setAutomaticActivation({
+        ...authenticated,
+        ...payload,
+        acceptedBy: authenticated.subject,
+        enabled: false
+      });
+      if (activation === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Shop not found'));
+      return reply.code(200).send({ data: { activation }, error: null });
     } catch (error) {
       return sendCustomerEmailError(reply, error);
     }
@@ -314,6 +372,70 @@ function readAppIdHeader(value: string | string[] | undefined): string | undefin
 function readCorrelationId(value: string | string[] | undefined): string | null {
   const candidate = (Array.isArray(value) ? value[0] : value)?.trim();
   return candidate && candidate.length <= 128 ? candidate : null;
+}
+
+function readActivationPayload(value: unknown, enabling: boolean): { confirmed: boolean; noticeVersion?: string } | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const payload = value as Record<string, unknown>;
+  if (typeof payload.confirmed !== 'boolean' || (enabling && payload.confirmed !== true)) return null;
+  if (payload.noticeVersion !== undefined && (typeof payload.noticeVersion !== 'string' || payload.noticeVersion.trim() === '' || payload.noticeVersion.length > 120)) {
+    return null;
+  }
+  return {
+    confirmed: payload.confirmed,
+    ...(typeof payload.noticeVersion === 'string' ? { noticeVersion: payload.noticeVersion.trim() } : {})
+  };
+}
+
+function matchesBearerToken(authorization: string | undefined, expected: string): boolean {
+  const actual = readBearerToken(authorization);
+  if (actual === null || expected === '') return false;
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+function readBrevoProviderEvents(value: unknown): Array<{ occurredAt: Date; providerMessageId: string; status: string }> | null {
+  const items = Array.isArray(value) ? value : [value];
+  if (items.length === 0 || items.length > 100) return null;
+  const events = items.map(readBrevoProviderEvent);
+  return events.some((event) => event === null)
+    ? null
+    : events as Array<{ occurredAt: Date; providerMessageId: string; status: string }>;
+}
+
+function readBrevoProviderEvent(value: unknown): { occurredAt: Date; providerMessageId: string; status: string } | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const payload = value as Record<string, unknown>;
+  const messageId = [payload['message-id'], payload.messageId, payload.message_id]
+    .find((candidate) => typeof candidate === 'string' && candidate.trim() !== '');
+  const event = typeof payload.event === 'string' ? payload.event.trim() : '';
+  if (typeof messageId !== 'string' || messageId.length > 500 || event === '') return null;
+  const occurredAt = readProviderEventDate(payload.ts_event ?? payload.ts ?? payload.date);
+  if (occurredAt === null) return null;
+  return { occurredAt, providerMessageId: messageId.trim(), status: normalizeProviderStatus(event) };
+}
+
+function readProviderEventDate(value: unknown): Date | null {
+  const milliseconds = typeof value === 'number'
+    ? value * 1_000
+    : typeof value === 'string' && /^\d+(?:\.\d+)?$/u.test(value.trim())
+      ? Number(value) * 1_000
+      : typeof value === 'string'
+        ? Date.parse(value)
+        : Number.NaN;
+  const date = new Date(milliseconds);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function normalizeProviderStatus(value: string): string {
+  const normalized = value.replace(/[^a-zA-Z]/gu, '').toLowerCase();
+  const known: Record<string, string> = {
+    accepted: 'ACCEPTED', blocked: 'BLOCKED', clicked: 'CLICKED', deferred: 'DEFERRED', delivered: 'DELIVERED',
+    hardbounce: 'HARD_BOUNCE', invalid: 'INVALID', opened: 'OPENED', softbounce: 'SOFT_BOUNCE',
+    request: 'ACCEPTED', sent: 'ACCEPTED', spam: 'SPAM', uniqueopened: 'OPENED', unsubscribed: 'UNSUBSCRIBED'
+  };
+  return known[normalized] ?? 'UNKNOWN';
 }
 
 function readEmailDomain(value: string): string | null {

@@ -19,6 +19,7 @@ describe('CustomerDeliveryNotificationWorker', () => {
     await expect(worker.runDueBatch(now)).resolves.toBe(1);
 
     expect(sender.send).toHaveBeenCalledWith({
+      appId: 'clever-kfood',
       deliveryStopId: 'stop-id',
       idempotencyKey: 'notification-key',
       orderId: 'order-id',
@@ -34,6 +35,15 @@ describe('CustomerDeliveryNotificationWorker', () => {
       provider: 'http',
       providerMessageId: 'provider-id'
     });
+  });
+
+  test('preserves the authoritative automatic signal from durable fact metadata', async () => {
+    const { outbox, sender } = createHarness({ metadata: { signal: 'MISSED_DELIVERY' } });
+    sender.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'provider-id', status: 'SENT' });
+
+    await new CustomerDeliveryNotificationWorker(outbox as never, sender, { batchSize: 1 }).runDueBatch(now);
+
+    expect(sender.send).toHaveBeenCalledWith(expect.objectContaining({ signal: 'MISSED_DELIVERY' }));
   });
 
   test('keeps the outbox SENT and leaves durable STARTED evidence for reconciliation when attempt settlement fails', async () => {
@@ -75,6 +85,7 @@ describe('CustomerDeliveryNotificationWorker', () => {
     await expect(worker.runDueBatch(now)).resolves.toBe(1);
 
     expect(sender.send).toHaveBeenCalledWith({
+      appId: 'clever-kfood',
       body: 'Customer-visible memo',
       idempotencyKey: 'notification-key',
       kind: 'CUSTOMER_MESSAGE',
@@ -232,6 +243,7 @@ describe('CustomerDeliveryNotificationWorker', () => {
 
 function createHarness(overrides: Partial<CustomerDeliveryNotificationJob> = {}) {
   const job: CustomerDeliveryNotificationJob = {
+    appId: 'clever-kfood',
     attemptCount: 1,
     deliveryStopId: 'stop-id',
     factId: 'fact-id',

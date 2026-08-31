@@ -6,6 +6,7 @@ import { assertRoutePlanExecutionOwnership, RouteExecutionConflictError } from '
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
 import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tracking.geometry.js';
+import { persistAutomaticCustomerEmailFacts } from '../customer-email/customer-email-automatic-fact.js';
 import { deriveDsvTimeConstraintState, dsvTimeConstraintAuditEvents } from '../dsv/dsv-time-constraint.js';
 import {
   buildDriverRouteEtaSnapshot,
@@ -107,12 +108,12 @@ export type DriverStopSequenceDeviation = {
 
 type DriverEventPrismaClient = Pick<
   PrismaClient,
-  '$queryRaw' | '$transaction' | 'deliveryStop' | 'driverEvent' | 'driverEventAttempt' | 'driverRouteCompletionReview' | 'dsvDispatchChangeRequest' | 'order' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
+  '$queryRaw' | '$transaction' | 'customerRouteNotificationFact' | 'deliveryStop' | 'driverEvent' | 'driverEventAttempt' | 'driverRouteCompletionReview' | 'dsvDispatchChangeRequest' | 'order' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry' | 'shop'
 >;
 
 type DriverEventTransactionClient = Pick<
   Prisma.TransactionClient,
-  '$queryRaw' | 'deliveryStop' | 'driverEvent' | 'driverEventAttempt' | 'driverRouteCompletionReview' | 'dsvDispatchChangeRequest' | 'order' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
+  '$queryRaw' | 'customerRouteNotificationFact' | 'deliveryStop' | 'driverEvent' | 'driverEventAttempt' | 'driverRouteCompletionReview' | 'dsvDispatchChangeRequest' | 'order' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry' | 'shop'
 >;
 
 type DriverEventSchemaCapabilities = {
@@ -392,6 +393,16 @@ export class PrismaDriverEventRepository {
           input.shopId,
           event.createdAt
         );
+        if (transaction.customerRouteNotificationFact !== undefined && transaction.shop !== undefined) {
+          await persistAutomaticCustomerEmailFacts(transaction, {
+            deliveryStopId: input.deliveryStopId,
+            driverEventId: event.id,
+            eventType: input.eventType,
+            occurredAt: input.occurredAt,
+            routePlanId: input.routePlanId,
+            shopId: input.shopId
+          });
+        }
 
         return {
           completionInvariant,

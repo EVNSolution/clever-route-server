@@ -3407,6 +3407,56 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/customer-email/activation:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Activate automatic customer delivery email with explicit operator consent
+      operationId: activateAdminCustomerEmail
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmed]
+              properties:
+                confirmed: { type: boolean, const: true }
+                noticeVersion: { type: string, maxLength: 120 }
+      responses:
+        '200': { description: Automatic customer email activation state. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Shopify Embedded Admin]
+      summary: Deactivate automatic customer delivery email without deleting consent history
+      operationId: deactivateAdminCustomerEmail
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirmed]
+              properties:
+                confirmed: { type: boolean }
+      responses:
+        '200': { description: Automatic customer email activation state. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /admin/customer-email/test:
     post:
       tags: [Shopify Embedded Admin]
@@ -4942,6 +4992,29 @@ paths:
       responses:
         '200': { description: Updated legacy-compatible notification projection. }
         '404': { $ref: '#/components/responses/NotFound' }
+  /webhooks/customer-email/brevo:
+    post:
+      tags: [Customer Email Provider]
+      summary: Record Brevo transactional delivery outcomes without retaining recipient payload fields
+      operationId: recordBrevoCustomerEmailEvent
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - BrevoWebhookBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - { type: object, additionalProperties: true }
+                - type: array
+                  maxItems: 100
+                  items: { type: object, additionalProperties: true }
+      responses:
+        '204': { description: Provider event accepted. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 components:
   securitySchemes:
     DsvSessionCookie:
@@ -4959,6 +5032,10 @@ components:
       scheme: bearer
       bearerFormat: Shopify App Bridge session JWT
       description: Server-verified Shopify embedded app session token.
+    BrevoWebhookBearer:
+      type: http
+      scheme: bearer
+      description: Dedicated bearer token configured for Brevo transactional webhooks.
     DriverAccessToken:
       type: http
       scheme: bearer
@@ -8863,8 +8940,9 @@ components:
                     automatic:
                       type: object
                       additionalProperties: false
-                      required: [senderConfigured, workerEnabled]
+                      required: [enabled, senderConfigured, workerEnabled]
                       properties:
+                        enabled: { type: boolean }
                         senderConfigured: { type: boolean }
                         workerEnabled: { type: boolean }
                     configured: { type: boolean }
@@ -8874,7 +8952,7 @@ components:
                       required: [brevoConfigured]
                       properties:
                         brevoConfigured: { type: boolean }
-                    state: { type: string, enum: [HEALTHY, DEGRADED, DISABLED] }
+                    state: { type: string, enum: [HEALTHY, DEGRADED, DISABLED, INACTIVE] }
                     outbox:
                       type: object
                       additionalProperties: false

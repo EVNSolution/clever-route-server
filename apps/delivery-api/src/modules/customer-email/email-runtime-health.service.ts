@@ -2,9 +2,11 @@ import type { PrismaClient } from '@prisma/client';
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
 import { normalizeShopDomain } from '../commerce/commerce-connection.repository.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { normalizeCustomerEmailSettings } from './customer-email-settings.js';
 
 export type EmailRuntimeHealth = {
   automatic: {
+    enabled: boolean;
     senderConfigured: boolean;
     workerEnabled: boolean;
   };
@@ -19,7 +21,7 @@ export type EmailRuntimeHealth = {
     processing: number;
     retryWait: number;
   };
-  state: 'DEGRADED' | 'DISABLED' | 'HEALTHY';
+  state: 'DEGRADED' | 'DISABLED' | 'HEALTHY' | 'INACTIVE';
 };
 
 type EmailRuntimeHealthThresholds = {
@@ -52,11 +54,11 @@ export class PrismaEmailRuntimeHealthService {
     this.thresholds = validateThresholds(config.thresholds);
   }
 
-  async get(input: { shopDomain: string }): Promise<{ email: EmailRuntimeHealth; observedAt: string }> {
+  async get(input: { appId?: string | undefined; shopDomain: string }): Promise<{ email: EmailRuntimeHealth; observedAt: string }> {
     const now = this.now();
     const shop = await this.prisma.shop.findUnique({
-      select: { id: true },
-      where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) })
+      select: { customerEmailSettings: true, id: true },
+      where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
     });
     const shopId = shop?.id ?? '__missing_shop__';
     const scope = { shopId };
@@ -79,31 +81,44 @@ export class PrismaEmailRuntimeHealthService {
         where: { ...scope, errorCode: { not: null }, NOT: { errorCode: 'OPERATOR_DO_NOT_SEND' } }
       })
     ]);
+    const automaticEnabled = shop === null ? false : readAutomaticEnabled(shop.customerEmailSettings);
     const configured = this.config.automaticSenderConfigured && this.config.automaticWorkerEnabled;
     const unresolvedLastError = lastError !== null
       && (lastSuccess?.sentAt === null || lastSuccess?.sentAt === undefined || lastError.updatedAt === undefined || lastSuccess.sentAt <= lastError.updatedAt);
-    const state = !configured
-      ? 'DISABLED'
-      : deadLetter > 0
+    const hasBacklog = pending + processing + retryWait + deadLetter > 0;
+    const degraded = deadLetter > 0
         || isStale(oldestQueued?.occurredAt, now, this.thresholds.queuedStaleAfterMs)
         || isStale(oldestRetry?.occurredAt, now, this.thresholds.retryWaitStaleAfterMs)
         || isStale(oldestProcessing?.updatedAt, now, this.thresholds.processingStaleAfterMs)
-        || unresolvedLastError
-        ? 'DEGRADED'
-        : 'HEALTHY';
+        || unresolvedLastError;
+    const state = !automaticEnabled && !hasBacklog
+      ? 'INACTIVE'
+      : automaticEnabled && !configured
+        ? 'DISABLED'
+        : degraded || (!automaticEnabled && hasBacklog)
+          ? 'DEGRADED'
+          : 'HEALTHY';
     if (this.alerts !== undefined && shop !== null) {
-      await (state === 'DISABLED'
-        ? this.alerts.openOrObserve({
+      await Promise.all([
+        state === 'DISABLED' ? this.alerts.openOrObserve({
             dedupeKey: 'EMAIL_RUNTIME_DISABLED', observedAt: now, severity: 'CRITICAL', shopId: shop.id,
             title: 'Customer email runtime is disabled', type: 'EMAIL_RUNTIME_DISABLED'
           })
         : this.alerts.resolveByDedupeKey({
             dedupeKey: 'EMAIL_RUNTIME_DISABLED', resolutionCode: 'EMAIL_RUNTIME_RECOVERED', resolvedAt: now, shopId: shop.id
-          }));
+          }),
+        state === 'DEGRADED' ? this.alerts.openOrObserve({
+          dedupeKey: 'EMAIL_RUNTIME_DEGRADED', observedAt: now, severity: 'WARNING', shopId: shop.id,
+          title: 'Customer email delivery requires attention', type: 'EMAIL_RUNTIME_DEGRADED'
+        }) : this.alerts.resolveByDedupeKey({
+          dedupeKey: 'EMAIL_RUNTIME_DEGRADED', resolutionCode: 'EMAIL_RUNTIME_RECOVERED', resolvedAt: now, shopId: shop.id
+        })
+      ]);
     }
     return {
       email: {
         automatic: {
+          enabled: automaticEnabled,
           senderConfigured: this.config.automaticSenderConfigured,
           workerEnabled: this.config.automaticWorkerEnabled
         },
@@ -122,6 +137,14 @@ export class PrismaEmailRuntimeHealthService {
       },
       observedAt: now.toISOString()
     };
+  }
+}
+
+function readAutomaticEnabled(value: unknown): boolean {
+  try {
+    return normalizeCustomerEmailSettings(value).automatic.enabled;
+  } catch {
+    return false;
   }
 }
 
