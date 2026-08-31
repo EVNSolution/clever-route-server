@@ -143,7 +143,7 @@ describe('Admin route group routes', () => {
   });
 
   test('creates a tenant-scoped custom stop without a Shopify operation', async () => {
-    const { createCustomStop, dependencies } = createDependencyHarness();
+    const { createCustomStop, dependencies, geocode } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
 
     try {
@@ -155,8 +155,7 @@ describe('Admin route group routes', () => {
           city: 'Toronto',
           countryCode: 'CA',
           expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
-          latitude: 43.7,
-          longitude: -79.4,
+          postalCode: 'M5H 2N2',
           priority: 10,
           recipientName: 'Receiving desk',
           serviceMinutes: 15,
@@ -180,6 +179,7 @@ describe('Admin route group routes', () => {
         groupingId: 'route-group-id',
         latitude: 43.7,
         longitude: -79.4,
+        postalCode: 'M5H 2N2',
         priority: 10,
         recipientName: 'Receiving desk',
         serviceMinutes: 15,
@@ -189,39 +189,32 @@ describe('Admin route group routes', () => {
         timeWindowEnd: '2026-06-25T15:00:00.000Z',
         timeWindowStart: '2026-06-25T13:00:00.000Z'
       });
+      expect(geocode).toHaveBeenCalledWith({
+        address: {
+          address1: '123 Main St',
+          address2: null,
+          city: 'Toronto',
+          countryCode: 'CA',
+          postalCode: 'M5H 2N2',
+          province: null
+        },
+        shopDomain: 'example.myshopify.com'
+      });
     } finally {
       await app.close();
     }
   });
 
   test('rejects incomplete or malformed custom stop locations before calling the service', async () => {
-    const { createCustomStop, dependencies } = createDependencyHarness();
+    const { createCustomStop, dependencies, geocode } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
-    const validLocation = { address1: '123 Main St', countryCode: 'CA', latitude: 43.7, longitude: -79.4 };
+    const validLocation = { address1: '123 Main St', countryCode: 'CA' };
     const cases = [
       { message: 'custom stop address1 is required', payload: { ...validLocation, address1: undefined } },
       { message: 'custom stop address1 is required', payload: { ...validLocation, address1: null } },
       { message: 'custom stop address1 is required', payload: { ...validLocation, address1: '   ' } },
       { message: 'custom stop countryCode is required', payload: { ...validLocation, countryCode: undefined } },
-      { message: 'custom stop countryCode must be a two-letter ISO country code', payload: { ...validLocation, countryCode: 'CAN' } },
-      { message: 'custom stop latitude and longitude are required', payload: { ...validLocation, latitude: undefined } },
-      { message: 'custom stop latitude and longitude are required', payload: { ...validLocation, latitude: null } },
-      { message: 'custom stop latitude and longitude are required', payload: { ...validLocation, longitude: null } },
-      { message: 'custom stop latitude must be a finite number', payload: { ...validLocation, latitude: 'north' } },
-      { message: 'latitude must be between -90 and 90', payload: { ...validLocation, latitude: 91 } },
-      { message: 'longitude must be between -180 and 180', payload: { ...validLocation, longitude: 181 } },
-      {
-        message: 'custom stop location is not routeable: COORDINATES_ZERO, GEOCODE_STATUS_INCONSISTENT',
-        payload: { ...validLocation, latitude: 0, longitude: 0 }
-      },
-      {
-        message: 'custom stop location is not routeable: COORDINATES_OUTSIDE_COUNTRY, GEOCODE_STATUS_INCONSISTENT',
-        payload: { ...validLocation, latitude: 37.5, longitude: 127 }
-      },
-      {
-        message: 'custom stop location is not routeable: COORDINATES_OUTSIDE_PROVINCE, GEOCODE_STATUS_INCONSISTENT',
-        payload: { ...validLocation, latitude: 49.28, longitude: -123.12, province: 'ON' }
-      }
+      { message: 'custom stop countryCode must be a two-letter ISO country code', payload: { ...validLocation, countryCode: 'CAN' } }
     ];
 
     try {
@@ -239,46 +232,52 @@ describe('Admin route group routes', () => {
         });
       }
       expect(createCustomStop).not.toHaveBeenCalled();
+      expect(geocode).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
   });
 
-  test('requires address and coordinate changes to be submitted atomically', async () => {
-    const { dependencies, updateCustomStop } = createDependencyHarness();
+  test('geocodes address updates and ignores caller-supplied coordinates', async () => {
+    const { dependencies, geocode, updateCustomStop } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
 
     try {
-      const addressOnly = await app.inject({
+      const updated = await app.inject({
         headers: { authorization: 'Bearer session-token' },
         method: 'PATCH',
-        payload: { address1: '456 Queen St' },
+        payload: {
+          address1: '456 Queen St',
+          city: 'Toronto',
+          countryCode: 'CA',
+          latitude: 0,
+          longitude: 0,
+          postalCode: 'M5V 2B6'
+        },
         url: '/admin/route-groups/route-group-id/stops/stop-id/custom'
       });
-      expect(addressOnly.statusCode).toBe(400);
-      expect(addressOnly.json()).toEqual({
-        data: null,
-        error: {
-          code: 'ROUTE_GROUPING_INVALID',
-          message: 'custom stop address changes must include non-null latitude and longitude in the same request'
-        }
-      });
-      expect(updateCustomStop).not.toHaveBeenCalled();
-
-      const atomic = await app.inject({
-        headers: { authorization: 'Bearer session-token' },
-        method: 'PATCH',
-        payload: { address1: '456 Queen St', latitude: 43.65, longitude: -79.38 },
-        url: '/admin/route-groups/route-group-id/stops/stop-id/custom'
-      });
-      expect(atomic.statusCode).toBe(200);
+      expect(updated.statusCode).toBe(200);
       expect(updateCustomStop).toHaveBeenCalledWith({
         address1: '456 Queen St',
         appId: 'clever',
+        city: 'Toronto',
+        countryCode: 'CA',
         deliveryStopId: 'stop-id',
         groupingId: 'route-group-id',
-        latitude: 43.65,
-        longitude: -79.38,
+        latitude: 43.7,
+        longitude: -79.4,
+        postalCode: 'M5V 2B6',
+        shopDomain: 'example.myshopify.com'
+      });
+      expect(geocode).toHaveBeenCalledWith({
+        address: {
+          address1: '456 Queen St',
+          address2: null,
+          city: 'Toronto',
+          countryCode: 'CA',
+          postalCode: 'M5V 2B6',
+          province: null
+        },
         shopDomain: 'example.myshopify.com'
       });
     } finally {
@@ -286,8 +285,35 @@ describe('Admin route group routes', () => {
     }
   });
 
+  test('does not persist a custom stop when server geocoding fails', async () => {
+    const { createCustomStop, dependencies, geocode } = createDependencyHarness();
+    geocode.mockResolvedValueOnce({ code: 'GEOCODER_NO_RESULT', message: 'No geocoding result was found.', ok: false });
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { address1: 'Unknown address', countryCode: 'CA', stopName: 'Unknown stop' },
+        url: '/admin/route-groups/route-group-id/stops/custom'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_GROUPING_INVALID',
+          message: 'custom stop address could not be geocoded: No geocoding result was found.'
+        }
+      });
+      expect(createCustomStop).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('updates and deletes only a custom stop in the authenticated tenant group', async () => {
-    const { deleteCustomStop, dependencies, updateCustomStop } = createDependencyHarness();
+    const { deleteCustomStop, dependencies, geocode, updateCustomStop } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
 
     try {
@@ -320,6 +346,7 @@ describe('Admin route group routes', () => {
         groupingId: 'route-group-id',
         shopDomain: 'example.myshopify.com'
       });
+      expect(geocode).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -779,6 +806,7 @@ function createDependencyHarness(): {
   deleteGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteGrouping']>>;
   dependencies: AdminRouteGroupDependencies;
   generateChildRoutes: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['generateChildRoutes']>>;
+  geocode: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['geocodingService']['geocode']>>;
   nextRouteIdx: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['nextRouteIdx']>>;
   previewOptimization: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['previewOptimization']>>;
   reOptimizeRoutes: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['reOptimizeRoutes']>>;
@@ -795,6 +823,18 @@ function createDependencyHarness(): {
     subject: 'shopify-user-id'
   }));
   const createBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createBranch']>(() => Promise.resolve(routeGroup));
+  const geocode = vi.fn<AdminRouteGroupDependencies['geocodingService']['geocode']>(() => Promise.resolve({
+    cached: false,
+    ok: true,
+    result: {
+      addressLabel: '123 Main St, Toronto, ON',
+      latitude: 43.7,
+      longitude: -79.4,
+      provider: 'test',
+      providerPlaceId: 'test-place',
+      rawLabel: '123 Main St, Toronto, ON'
+    }
+  }));
   const copyGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyGrouping']>(() => Promise.resolve(routeGroup));
   const createCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>(() => Promise.resolve(routeGroup));
   const createGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>(() => Promise.resolve(routeGroup));
@@ -826,6 +866,7 @@ function createDependencyHarness(): {
     deleteCustomStop,
     deleteGrouping,
     dependencies: {
+      geocodingService: { geocode },
       routeGroupingService: {
         copyGrouping,
         createBranch,
@@ -853,6 +894,7 @@ function createDependencyHarness(): {
       sessionTokenVerifier: { verify }
     },
     generateChildRoutes,
+    geocode,
     nextRouteIdx,
     previewOptimization,
     reOptimizeRoutes,
