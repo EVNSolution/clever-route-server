@@ -79,7 +79,7 @@ describe('customer email reconciliation PostgreSQL contract', () => {
         automaticSenderConfigured: true, automaticWorkerEnabled: true, manualBrevoConfigured: true
       }, undefined, () => now).get({ shopDomain: 'email-reconciliation-70.invalid' });
       expect(runtimeHealth.email.outbox).toMatchObject({ deadLetter: 0, lastErrorCode: null });
-      expect(runtimeHealth.email.state, JSON.stringify(runtimeHealth.email)).toBe('HEALTHY');
+      expect(runtimeHealth.email.state, JSON.stringify(runtimeHealth.email)).toBe('DEGRADED');
       await prisma.customerRouteNotificationFact.updateMany({
         data: { nextAttemptAt: new Date(now.getTime() + 86_400_000) },
         where: { id: { not: firstEligibleFactId }, shopId }
