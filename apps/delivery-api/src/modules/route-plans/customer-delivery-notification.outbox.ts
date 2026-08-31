@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 export type CustomerDeliveryNotificationJob = {
+  appId: string;
   attemptCount: number;
   deliveryStopId: string | null;
   factId: string;
@@ -22,8 +23,21 @@ type CustomerDeliveryNotificationOutboxPrismaClient = Pick<
   'customerRouteNotificationFact'
 >;
 
-const claimableWhere = (now: Date): Prisma.CustomerRouteNotificationFactWhereInput => ({
+const claimableWhere = (now: Date, allowCustomerMessages: boolean): Prisma.CustomerRouteNotificationFactWhereInput => ({
   reconciliationTombstones: { none: { disposition: 'DO_NOT_SEND' } },
+  AND: [{
+    OR: [
+      ...(allowCustomerMessages ? [{ source: 'DSV_CUSTOMER_MESSAGE' }] : []),
+      {
+        shop: {
+          customerEmailSettings: {
+            equals: true,
+            path: ['automatic', 'enabled']
+          }
+        }
+      }
+    ]
+  }],
   OR: [
     {
       nextAttemptAt: { lte: now },
@@ -37,7 +51,10 @@ const claimableWhere = (now: Date): Prisma.CustomerRouteNotificationFactWhereInp
 });
 
 export class PrismaCustomerDeliveryNotificationOutbox {
-  constructor(private readonly prisma: CustomerDeliveryNotificationOutboxPrismaClient) {}
+  constructor(
+    private readonly prisma: CustomerDeliveryNotificationOutboxPrismaClient,
+    private readonly options: { allowCustomerMessages?: boolean } = {}
+  ) {}
 
   async claimNext(input: {
     leaseMs: number;
@@ -61,9 +78,9 @@ export class PrismaCustomerDeliveryNotificationOutbox {
           recipientEmailSnapshot: true,
           requestedUiStatus: true,
           routePlanId: true,
-          shop: { select: { shopDomain: true } }
+          shop: { select: { appId: true, shopDomain: true } }
         },
-        where: claimableWhere(input.now)
+        where: claimableWhere(input.now, this.options.allowCustomerMessages !== false)
       });
       if (fact === null) return null;
 
@@ -81,12 +98,13 @@ export class PrismaCustomerDeliveryNotificationOutbox {
         },
         where: {
           id: fact.id,
-          ...claimableWhere(input.now)
+          ...claimableWhere(input.now, this.options.allowCustomerMessages !== false)
         }
       });
       if (claimed.count !== 1) continue;
 
       return {
+        appId: fact.shop.appId,
         attemptCount: fact.attemptCount + 1,
         deliveryStopId: fact.deliveryStopId,
         factId: fact.id,
@@ -119,7 +137,9 @@ export class PrismaCustomerDeliveryNotificationOutbox {
         leaseToken: null,
         nextAttemptAt: null,
         provider: input.provider,
+        providerEventAt: input.now,
         providerMessageId: input.providerMessageId ?? null,
+        providerStatus: 'ACCEPTED',
         recipientEmailSnapshot: null,
         sentAt: input.now,
         status: 'SENT'

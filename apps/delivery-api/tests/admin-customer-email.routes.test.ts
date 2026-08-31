@@ -17,6 +17,57 @@ const pngBytes = Buffer.from([
 ]);
 
 describe('admin customer email routes', () => {
+  test('activates automatic delivery through explicit consent and supports deactivation', async () => {
+    const { dependencies, service } = createHarness();
+    service.setAutomaticActivation
+      .mockResolvedValueOnce({ consent: { noticeVersion: 'v1' }, enabled: true })
+      .mockResolvedValueOnce({ consent: { noticeVersion: 'v1' }, enabled: false });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    try {
+      const activated = await app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'POST',
+        payload: { confirmed: true, noticeVersion: 'v1' }, url: '/admin/customer-email/activation'
+      });
+      const deactivated = await app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'DELETE',
+        payload: { confirmed: true }, url: '/admin/customer-email/activation'
+      });
+      expect(activated.statusCode).toBe(200);
+      expect(deactivated.statusCode).toBe(200);
+      expect(service.setAutomaticActivation).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        acceptedBy: 'shopify-user-id', confirmed: true, enabled: true, noticeVersion: 'v1'
+      }));
+      expect(service.setAutomaticActivation).toHaveBeenNthCalledWith(2, expect.objectContaining({ enabled: false }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('authenticates Brevo webhooks and records only message evidence', async () => {
+    const providerRecord = vi.fn().mockResolvedValue(1);
+    const { dependencies } = createHarness({ providerRecord, providerToken: 'webhook-secret' });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    try {
+      const unauthorized = await app.inject({
+        method: 'POST', payload: { event: 'delivered', 'message-id': 'provider-id', ts_event: 1788014100 },
+        url: '/webhooks/customer-email/brevo'
+      });
+      const accepted = await app.inject({
+        headers: { authorization: 'Bearer webhook-secret' }, method: 'POST',
+        payload: { email: 'ignored@example.test', event: 'delivered', 'message-id': 'provider-id', ts_event: 1788014100 },
+        url: '/webhooks/customer-email/brevo'
+      });
+      expect(unauthorized.statusCode).toBe(401);
+      expect(accepted.statusCode).toBe(204);
+      expect(providerRecord).toHaveBeenCalledWith({
+        occurredAt: new Date(1788014100 * 1_000), providerMessageId: 'provider-id', status: 'DELIVERED'
+      });
+      expect(JSON.stringify(providerRecord.mock.calls)).not.toContain('ignored@example.test');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects settings reads without a Shopify admin bearer token', async () => {
     const { dependencies, service } = createHarness();
     const app = await buildApp({ adminCustomerEmail: dependencies });
@@ -602,13 +653,20 @@ describe('admin customer email routes', () => {
   });
 });
 
-function createHarness(input: { assetsConfigured?: boolean; assetsDirectory?: string; publicBaseUrl?: string } = {}) {
+function createHarness(input: {
+  assetsConfigured?: boolean;
+  assetsDirectory?: string;
+  providerRecord?: ReturnType<typeof vi.fn>;
+  providerToken?: string;
+  publicBaseUrl?: string;
+} = {}) {
   const service = {
     getSettings: vi.fn(),
     preview: vi.fn(),
     saveGlobalSettings: vi.fn(),
     saveSettings: vi.fn(),
     saveTemplateSettings: vi.fn(),
+    setAutomaticActivation: vi.fn(),
     send: vi.fn(),
     sendTest: vi.fn(),
   };
@@ -619,6 +677,12 @@ function createHarness(input: { assetsConfigured?: boolean; assetsDirectory?: st
   const dependencies: AdminCustomerEmailDependencies = {
     customerEmailService: service as never,
     ...(input.assetsConfigured === false ? {} : { logoAssets }),
+    ...(input.providerToken === undefined ? {} : {
+      providerWebhook: {
+        repository: { record: input.providerRecord ?? vi.fn().mockResolvedValue(0) } as never,
+        token: input.providerToken
+      }
+    }),
     sessionTokenVerifier: {
       verify: vi.fn().mockReturnValue({
         appId: undefined,

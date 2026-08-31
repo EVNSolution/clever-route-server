@@ -270,6 +270,7 @@ enum CustomerRouteNotificationStatus {
   QUEUED
   PROCESSING
   SENT
+  SKIPPED
   DEAD
 }
 
@@ -2048,6 +2049,8 @@ model CustomerRouteNotificationFact {
   leaseExpiresAt           DateTime?                              @db.Timestamptz(6)
   provider                 String?                                @db.Text
   providerMessageId        String?                                @db.Text
+  providerStatus           String?                                @db.Text
+  providerEventAt          DateTime?                              @db.Timestamptz(6)
   errorCode                String?                                @db.Text
   errorMessage             String?                                @db.Text
   sentAt                   DateTime?                              @db.Timestamptz(6)
@@ -2064,6 +2067,7 @@ model CustomerRouteNotificationFact {
   @@index([status, nextAttemptAt])
   @@index([status, leaseExpiresAt])
   @@index([deliveryStopId, occurredAt])
+  @@index([providerMessageId])
   @@map("customer_route_notification_facts")
 }
 
@@ -2125,6 +2129,8 @@ model CustomerEmailManualDispatchRecipient {
   errorMessage      String?                               @db.Text
   provider          String?                               @db.Text
   providerMessageId String?                               @db.Text
+  providerStatus    String?                               @db.Text
+  providerEventAt   DateTime?                             @db.Timestamptz(6)
   renderedSubject   String?                               @db.Text
   renderedBody      String?                               @db.Text
   sentAt            DateTime?                             @db.Timestamptz(6)
@@ -2134,6 +2140,7 @@ model CustomerEmailManualDispatchRecipient {
 
   @@index([shopId, routePlanId, deliveryStopId])
   @@index([dispatchId, status])
+  @@index([providerMessageId])
   @@map("customer_email_manual_dispatch_recipients")
 }
 

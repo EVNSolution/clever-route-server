@@ -151,7 +151,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     const runtimeHealthService = {
       get: vi.fn(() => Promise.resolve({
         email: {
-          automatic: { senderConfigured: true, workerEnabled: true },
+          automatic: { enabled: true, senderConfigured: true, workerEnabled: true },
           configured: true,
           manual: { brevoConfigured: true },
           outbox: { deadLetter: 0, lastErrorCode: null, lastSuccessAt: null, oldestPendingAt: null, pending: 0, processing: 0, retryWait: 0 },

@@ -1,14 +1,19 @@
+import type { CustomerEmailSignal } from '../customer-email/customer-email-settings.js';
+
 export type CustomerDeliveryStatusNotificationMessage = {
+  appId: string;
   deliveryStopId: string;
   idempotencyKey: string;
   orderId: string;
   recipientEmail: string;
   routePlanId: string;
   shopDomain: string;
+  signal?: CustomerEmailSignal | undefined;
   status: 'COMPLETED' | 'IN_PROGRESS' | 'READY';
 };
 
 export type CustomerMessageNotificationMessage = {
+  appId: string;
   body: string;
   idempotencyKey: string;
   kind: 'CUSTOMER_MESSAGE';
@@ -127,6 +132,7 @@ const notificationSendRetryDelaysMs = [100, 200] as const;
 function toRequestBody(message: CustomerDeliveryNotificationMessage): Record<string, string> {
   if (isCustomerMessageNotification(message)) {
     return {
+      appId: message.appId,
       body: message.body,
       idempotencyKey: message.idempotencyKey,
       kind: message.kind,
@@ -137,12 +143,14 @@ function toRequestBody(message: CustomerDeliveryNotificationMessage): Record<str
     };
   }
   return {
+    appId: message.appId,
     deliveryStopId: message.deliveryStopId,
     idempotencyKey: message.idempotencyKey,
     orderId: message.orderId,
     recipientEmail: message.recipientEmail,
     routePlanId: message.routePlanId,
     shopDomain: message.shopDomain,
+    ...(message.signal === undefined ? {} : { signal: message.signal }),
     status: message.status
   };
 }

@@ -212,8 +212,8 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
       runtimeHealthService: new PrismaEmailRuntimeHealthService(
         input.prisma,
         {
-          automaticSenderConfigured: readOptional(input.env.CUSTOMER_DELIVERY_NOTIFICATION_URL) !== undefined,
-          automaticWorkerEnabled: readOptional(input.env.CUSTOMER_DELIVERY_NOTIFICATION_URL) !== undefined
+          automaticSenderConfigured: readOptional(input.env.BREVO_API_KEY) !== undefined,
+          automaticWorkerEnabled: readOptional(input.env.BREVO_API_KEY) !== undefined
             && isCustomerDeliveryNotificationWorkerEnabled(input.env),
           manualBrevoConfigured: readOptional(input.env.BREVO_API_KEY) !== undefined
         },

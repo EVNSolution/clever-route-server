@@ -182,10 +182,13 @@ export function normalizeCustomerEmailSettings(value: unknown): CustomerEmailSet
   if (value === null || value === undefined) return defaultCustomerEmailSettings();
   if (isRecord(value) && value.version === 1) return migrateCustomerEmailSettingsV1(value);
   if (isRecord(value) && value.version === 2) return migrateCustomerEmailSettingsV2(value);
-  return validateCustomerEmailSettingsPayload(value);
+  return validateCustomerEmailSettingsPayload(value, { allowAutomaticEnabled: true });
 }
 
-export function validateCustomerEmailSettingsPayload(value: unknown): CustomerEmailSettings {
+export function validateCustomerEmailSettingsPayload(
+  value: unknown,
+  options: { allowAutomaticEnabled?: boolean } = {}
+): CustomerEmailSettings {
   if (!isRecord(value)) throw new Error('Customer email settings must be an object.');
   if (value.version !== 3) throw new Error('Customer email settings version must be 3.');
   const senderName = readBoundedString(value.senderName, 'senderName', 1, 120);
@@ -193,7 +196,7 @@ export function validateCustomerEmailSettingsPayload(value: unknown): CustomerEm
   const replyTo = readNullableEmail(value.replyTo, 'replyTo');
   const templates = readTemplates(value.templates);
   return {
-    automatic: readAutomaticSettings(value.automatic),
+    automatic: readAutomaticSettings(value.automatic, options.allowAutomaticEnabled === true),
     branding: readBranding(value.branding),
     compatibility: { nearbyStopsThreshold: readCompatibilityNearbyStopsThreshold(value.compatibility) },
     globalVersion: readOptionalVersion(value.globalVersion, 'globalVersion'),
@@ -307,11 +310,11 @@ function readBranding(value: unknown): CustomerEmailBranding {
   };
 }
 
-function readAutomaticSettings(value: unknown): CustomerEmailAutomaticSettings {
+function readAutomaticSettings(value: unknown, allowEnabled: boolean): CustomerEmailAutomaticSettings {
   if (value === undefined || value === null) return defaultCustomerEmailAutomaticSettings();
   if (!isRecord(value)) throw new Error('automatic must be an object.');
   const enabled = readBoolean(value.enabled, 'automatic.enabled');
-  if (enabled) {
+  if (enabled && !allowEnabled) {
     throw new Error('automatic.enabled cannot be enabled through customer email settings.');
   }
   const consent = isRecord(value.consent) ? value.consent : {};

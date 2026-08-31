@@ -134,6 +134,19 @@ describe('customer email settings', () => {
         enabled: true,
       },
     })).toThrow(/automatic\.enabled cannot be enabled/u);
+    const activated = {
+      ...settings,
+      automatic: {
+        consent: {
+          acceptedAt: '2026-08-31T07:00:00.000Z',
+          acceptedBy: 'operator',
+          noticeVersion: 'customer-email-automatic-v1',
+          settingsVersion: 'global:1',
+        },
+        enabled: true,
+      },
+    };
+    expect(normalizeCustomerEmailSettings(activated).automatic.enabled).toBe(true);
     expect(() => validateCustomerEmailSettingsPayload({
       ...settings,
       templates: {

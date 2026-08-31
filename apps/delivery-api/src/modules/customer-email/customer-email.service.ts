@@ -60,6 +60,10 @@ export type CustomerEmailDispatch = {
   results: CustomerEmailDispatchResult[];
 };
 
+export type CustomerEmailAutomaticSendResult =
+  | { errorCode: string; errorMessage: string; status: 'SKIPPED' }
+  | { provider: string; providerMessageId: string | null; status: 'SENT' };
+
 export type CustomerEmailRenderedRecipient = {
   diagnostics: {
     body: CustomerEmailRenderDiagnostic[];
@@ -83,6 +87,8 @@ export type CustomerEmailRenderDiagnostic = {
 };
 
 export type CustomerEmailManualHistorySummary = {
+  lastProviderEventAt: string | null;
+  lastProviderStatus: string | null;
   lastSentAt: string | null;
   lastStatus: string | null;
   sendCount: number;
@@ -221,7 +227,7 @@ export class CustomerEmailService {
       replyTo: payload.replyTo,
       senderEmail: payload.senderEmail,
       senderName: payload.senderName,
-    });
+    }, { allowAutomaticEnabled: true });
     const updateResult = await this.prisma.shop.updateMany({
       data: { customerEmailSettings: next },
       where: { id: shop.id, updatedAt: shop.updatedAt },
@@ -261,7 +267,7 @@ export class CustomerEmailService {
           version: currentTemplate.version + 1,
         },
       },
-    });
+    }, { allowAutomaticEnabled: true });
     const updateResult = await this.prisma.shop.updateMany({
       data: { customerEmailSettings: next },
       where: { id: shop.id, updatedAt: shop.updatedAt },
@@ -270,6 +276,48 @@ export class CustomerEmailService {
       throw new CustomerEmailVersionConflictError('TEMPLATE_VERSION_CONFLICT', 'Customer email template version conflict.');
     }
     return next;
+  }
+
+  async setAutomaticActivation(input: {
+    acceptedBy: string;
+    confirmed: boolean;
+    enabled: boolean;
+    noticeVersion?: string | undefined;
+    shopDomain: string;
+    appId?: string | undefined;
+  }): Promise<CustomerEmailSettings['automatic'] | null> {
+    if (input.enabled && !input.confirmed) {
+      throw new CustomerEmailValidationError('Automatic customer email activation must be confirmed.');
+    }
+    const noticeVersion = input.noticeVersion?.trim() || 'customer-email-automatic-v1';
+    const shop = await this.prisma.shop.findUnique({
+      select: { customerEmailSettings: true, id: true, updatedAt: true },
+      where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+    });
+    if (shop === null) return null;
+    const current = normalizeCustomerEmailSettings(shop.customerEmailSettings);
+    const next = validateCustomerEmailSettingsPayload({
+      ...current,
+      automatic: input.enabled
+        ? {
+            consent: {
+              acceptedAt: new Date().toISOString(),
+              acceptedBy: input.acceptedBy,
+              noticeVersion,
+              settingsVersion: automaticSettingsVersion(current)
+            },
+            enabled: true
+          }
+        : { ...current.automatic, enabled: false }
+    }, { allowAutomaticEnabled: true });
+    const updateResult = await this.prisma.shop.updateMany({
+      data: { customerEmailSettings: next },
+      where: { id: shop.id, updatedAt: shop.updatedAt }
+    });
+    if (updateResult.count === 0) {
+      throw new CustomerEmailVersionConflictError('SETTINGS_VERSION_CONFLICT', 'Customer email activation version conflict.');
+    }
+    return next.automatic;
   }
 
   async sendTest(input: {
@@ -315,6 +363,56 @@ export class CustomerEmailService {
       .map((stop) => stop.deliveryStop.id);
     const history = await this.readManualHistory(routePlan.shop.id, input.routePlanId, input.signal, eligibleStopIds);
     return buildPreview(routePlan, settings, input, history);
+  }
+
+  async sendAutomatic(input: CustomerEmailPreviewInput & {
+    idempotencyKey: string;
+    recipientEmail: string;
+  }): Promise<CustomerEmailAutomaticSendResult> {
+    const routePlan = await this.findRoutePlan(input);
+    if (routePlan === null) {
+      return { errorCode: 'CUSTOMER_EMAIL_ROUTE_NOT_FOUND', errorMessage: 'Route plan is unavailable.', status: 'SKIPPED' };
+    }
+    const settings = normalizeCustomerEmailSettings(routePlan.shop.customerEmailSettings);
+    if (!settings.automatic.enabled) {
+      return { errorCode: 'CUSTOMER_EMAIL_AUTOMATIC_INACTIVE', errorMessage: 'Automatic customer email is inactive.', status: 'SKIPPED' };
+    }
+    const template = settings.templates[input.signal];
+    if (!template.enabled) {
+      return { errorCode: 'CUSTOMER_EMAIL_TEMPLATE_DISABLED', errorMessage: 'Automatic customer email template is disabled.', status: 'SKIPPED' };
+    }
+    const selectedStopId = input.deliveryStopIds?.[0];
+    const stop = routePlan.routeStops.find((candidate) => candidate.deliveryStop.id === selectedStopId);
+    if (stop === undefined) {
+      return { errorCode: 'CUSTOMER_EMAIL_STOP_NOT_FOUND', errorMessage: 'Delivery stop is unavailable.', status: 'SKIPPED' };
+    }
+    const recipientEmail = input.recipientEmail.trim().toLowerCase();
+    if (!isEmail(recipientEmail)) {
+      return { errorCode: 'CUSTOMER_EMAIL_MISSING', errorMessage: 'Canonical order email is missing or invalid.', status: 'SKIPPED' };
+    }
+    try {
+      assertConfigured(settings);
+    } catch (error) {
+      return {
+        errorCode: 'CUSTOMER_EMAIL_SENDER_MISSING',
+        errorMessage: error instanceof Error ? error.message : 'Customer email sender is not configured.',
+        status: 'SKIPPED'
+      };
+    }
+    const context = renderContext(routePlan, stop);
+    const result = await this.transport.send({
+      branding: settings.branding,
+      body: renderTemplate(template.body, context).value,
+      commandId: input.idempotencyKey,
+      recipientEmail,
+      replyTo: settings.replyTo,
+      senderEmail: settings.senderEmail,
+      senderName: settings.senderName,
+      signal: input.signal,
+      subject: renderTemplate(template.subject, context).value,
+      tags: ['customer-delivery-email', 'automatic', input.signal.toLowerCase()]
+    });
+    return { provider: result.provider, providerMessageId: result.providerMessageId, status: 'SENT' };
   }
 
   async send(input: CustomerEmailSendInput): Promise<CustomerEmailDispatch | null> {
@@ -428,17 +526,20 @@ export class CustomerEmailService {
         continue;
       }
 
+      const sentAt = new Date();
       await this.updateRecipient(created.dispatchId, recipient.deliveryStopId, {
         provider: sendResult.provider,
+        providerEventAt: sentAt,
         providerMessageId: sendResult.providerMessageId,
-        sentAt: new Date(),
+        providerStatus: 'ACCEPTED',
+        sentAt,
         status: 'SENT',
       });
       if (attempt !== undefined) {
         try {
           await this.attempts?.settle({
             attemptId: attempt.attemptId,
-            completedAt: new Date(),
+            completedAt: sentAt,
             outcome: 'SENT',
             providerMessageId: sendResult.providerMessageId
           });
@@ -654,7 +755,9 @@ export class CustomerEmailService {
       errorCode?: string | null | undefined;
       errorMessage?: string | null | undefined;
       provider?: string | null | undefined;
+      providerEventAt?: Date | null | undefined;
       providerMessageId?: string | null | undefined;
+      providerStatus?: string | null | undefined;
       sentAt?: Date | null | undefined;
       status: 'FAILED' | 'SENT';
     },
@@ -677,6 +780,8 @@ export class CustomerEmailService {
       select: {
         createdAt: true,
         deliveryStopId: true,
+        providerEventAt: true,
+        providerStatus: true,
         sentAt: true,
         status: true,
       },
@@ -693,6 +798,8 @@ export class CustomerEmailService {
       const current = summaries.get(row.deliveryStopId);
       if (current === undefined) {
         summaries.set(row.deliveryStopId, {
+          lastProviderEventAt: row.providerEventAt?.toISOString() ?? null,
+          lastProviderStatus: row.providerStatus,
           lastSentAt: row.status === 'SENT' ? row.sentAt?.toISOString() ?? null : null,
           lastStatus: row.status,
           sendCount: row.status === 'SENT' ? 1 : 0,
@@ -929,7 +1036,7 @@ function previewHasPriorSent(preview: CustomerEmailPreview): boolean {
 }
 
 function emptyManualHistorySummary(): CustomerEmailManualHistorySummary {
-  return { lastSentAt: null, lastStatus: null, sendCount: 0 };
+  return { lastProviderEventAt: null, lastProviderStatus: null, lastSentAt: null, lastStatus: null, sendCount: 0 };
 }
 
 function countDispatchResults(results: CustomerEmailDispatchResult[]): CustomerEmailDispatch['counts'] {
@@ -961,7 +1068,9 @@ function compactUpdateData(input: {
   errorCode?: string | null | undefined;
   errorMessage?: string | null | undefined;
   provider?: string | null | undefined;
+  providerEventAt?: Date | null | undefined;
   providerMessageId?: string | null | undefined;
+  providerStatus?: string | null | undefined;
   sentAt?: Date | null | undefined;
   status: 'FAILED' | 'SENT';
 }): Prisma.CustomerEmailManualDispatchRecipientUpdateManyMutationInput {
@@ -969,7 +1078,9 @@ function compactUpdateData(input: {
     ...(input.errorCode === undefined ? {} : { errorCode: input.errorCode }),
     ...(input.errorMessage === undefined ? {} : { errorMessage: input.errorMessage }),
     ...(input.provider === undefined ? {} : { provider: input.provider }),
+    ...(input.providerEventAt === undefined ? {} : { providerEventAt: input.providerEventAt }),
     ...(input.providerMessageId === undefined ? {} : { providerMessageId: input.providerMessageId }),
+    ...(input.providerStatus === undefined ? {} : { providerStatus: input.providerStatus }),
     ...(input.sentAt === undefined ? {} : { sentAt: input.sentAt }),
     status: input.status,
   };
@@ -981,6 +1092,11 @@ function isUniqueConstraintError(error: unknown): boolean {
 
 function cryptoRandomId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+}
+
+function automaticSettingsVersion(settings: CustomerEmailSettings): string {
+  const templateVersions = customerEmailSignals.map((signal) => settings.templates[signal].version).join('-');
+  return `v3:g${settings.globalVersion}:t${templateVersions}`;
 }
 
 export function readCustomerEmailSettingsPayload(value: unknown): CustomerEmailSettings | null {

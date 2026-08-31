@@ -570,6 +570,8 @@ function implementedLiteralRoutes(source: string, prefix: string): RouteMethodPa
 
 function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
   const routes: RouteMethodPair[] = [
+    { method: 'delete', path: '/admin/customer-email/activation' },
+    { method: 'post', path: '/admin/customer-email/activation' },
     { method: 'get', path: '/admin/customer-email/settings' },
     { method: 'patch', path: '/admin/customer-email/settings' },
     { method: 'patch', path: '/admin/customer-email/settings/global' },
