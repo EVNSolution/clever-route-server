@@ -31,7 +31,7 @@ export function loadGeocodingService(input: {
   const persistentCache = readPersistentCache(input);
   if (mode === 'vworld') {
     const apiKey = readOptional(input.env.VWORLD_API_KEY);
-    return new GeocodingService({
+    const koreanService = new GeocodingService({
       ...persistentCache.options,
       minIntervalMs: Math.ceil(1000 / readVWorldRateLimit(input.env.GEOCODING_RATE_LIMIT_PER_SECOND)),
       mode,
@@ -45,8 +45,19 @@ export function loadGeocodingService(input: {
           }),
       providerPolicy: 'vworld',
     });
+    return new CountryRoutingGeocodingService(
+      koreanService,
+      loadNominatimCompatibleService(input, persistentCache),
+    );
   }
 
+  return loadNominatimCompatibleService(input, persistentCache);
+}
+
+function loadNominatimCompatibleService(
+  input: Parameters<typeof loadGeocodingService>[0],
+  persistentCache: ReturnType<typeof readPersistentCache>,
+): GeocodingService {
   const searchUrl = readOptional(input.env.GEOCODING_SEARCH_URL) ?? PUBLIC_NOMINATIM_URL;
   const userAgent = readOptional(input.env.GEOCODING_USER_AGENT);
   const rateLimit = readRateLimit(input.env.GEOCODING_RATE_LIMIT_PER_SECOND);
@@ -75,7 +86,7 @@ export function loadGeocodingService(input: {
   return new GeocodingService({
     ...persistentCache.options,
     minIntervalMs: Math.ceil(1000 / rateLimit),
-    mode,
+    mode: 'nominatim_compatible',
     provider: new NominatimGeocodingClient({
       searchUrl,
       ...optionalTimeout(input.env.GEOCODING_TIMEOUT_MS),
@@ -84,6 +95,38 @@ export function loadGeocodingService(input: {
     providerPolicy: 'private_nominatim_compatible',
     requirePersistentCache: isPublicNominatim
   });
+}
+
+class CountryRoutingGeocodingService extends GeocodingService {
+  constructor(
+    private readonly koreanService: GeocodingService,
+    private readonly internationalService: GeocodingService,
+  ) {
+    super({ mode: 'disabled' });
+  }
+
+  override get status(): GeocodingService['status'] {
+    return this.koreanService.status;
+  }
+
+  override geocode(
+    input: Parameters<GeocodingService['geocode']>[0],
+  ): ReturnType<GeocodingService['geocode']> {
+    return isExplicitNonKoreanCountry(input.address.countryCode)
+      ? this.internationalService.geocode(input)
+      : this.koreanService.geocode(input);
+  }
+
+  override searchPlaces(
+    input: Parameters<GeocodingService['searchPlaces']>[0],
+  ): ReturnType<GeocodingService['searchPlaces']> {
+    return this.koreanService.searchPlaces(input);
+  }
+}
+
+function isExplicitNonKoreanCountry(countryCode: string | null): boolean {
+  const normalized = countryCode?.trim().toUpperCase() ?? '';
+  return /^[A-Z]{2}$/u.test(normalized) && normalized !== 'KR';
 }
 
 function readSharedPublicProviderLimiter(searchUrl: string): SerializedGeocodingRateLimiter {

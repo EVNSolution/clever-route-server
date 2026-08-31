@@ -313,6 +313,116 @@ describe('VWorld geocoding provider', () => {
       providerPolicy: 'vworld',
     });
   });
+
+  test('routes explicit non-Korean countries through the configured Nominatim-compatible provider', async () => {
+    const rawFetch = vi.fn((input: unknown) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      if (url.origin === 'https://geo.example.test') {
+        return Promise.resolve(response([{
+          address: { postcode: 'M5H 2N2' },
+          display_name: 'Toronto City Hall',
+          lat: '43.6536032',
+          lon: '-79.3840055',
+          place_id: 42,
+        }]));
+      }
+      throw new Error(`unexpected provider request: ${url.origin}`);
+    });
+    vi.stubGlobal('fetch', rawFetch);
+
+    try {
+      const configured = loadGeocodingService({
+        env: {
+          GEOCODING_PROVIDER_MODE: 'vworld',
+          GEOCODING_SEARCH_URL: 'https://geo.example.test/search',
+          GEOCODING_USER_AGENT: 'CLEVER-Route-Test/1.0 ops@example.test',
+          VWORLD_API_KEY: 'test-key',
+        },
+      });
+
+      await expect(configured.geocode({
+        address: {
+          address1: '100 Queen St W',
+          address2: null,
+          city: 'Toronto',
+          countryCode: 'CA',
+          postalCode: 'M5H 2N2',
+          province: 'ON',
+        },
+        shopDomain: '7hrud1-xq.myshopify.com',
+      })).resolves.toMatchObject({
+        ok: true,
+        result: {
+          latitude: 43.6536032,
+          longitude: -79.3840055,
+          provider: 'nominatim_compatible',
+        },
+      });
+
+      expect(rawFetch).toHaveBeenCalled();
+      for (const [input] of rawFetch.mock.calls) {
+        const url = input instanceof URL ? input : new URL(String(input));
+        expect(url.origin).toBe('https://geo.example.test');
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('keeps blank-country Korean addresses on VWorld when international fallback is configured', async () => {
+    const rawFetch = vi.fn((input: unknown) => {
+      void input;
+      return Promise.resolve(response({
+        response: {
+          result: {
+            items: [{
+              address: {
+                road: '서울특별시 강남구 언주로 211',
+                zipcode: '06273',
+              },
+              point: { x: '127.0466100', y: '37.4923433' },
+            }],
+          },
+          status: 'OK',
+        },
+      }));
+    });
+    vi.stubGlobal('fetch', rawFetch);
+
+    try {
+      const configured = loadGeocodingService({
+        env: {
+          GEOCODING_PROVIDER_MODE: 'vworld',
+          GEOCODING_SEARCH_URL: 'https://geo.example.test/search',
+          GEOCODING_USER_AGENT: 'CLEVER-Route-Test/1.0 ops@example.test',
+          VWORLD_API_KEY: 'test-key',
+        },
+      });
+
+      await expect(configured.geocode({
+        address: {
+          address1: '서울특별시 강남구 언주로 211',
+          address2: null,
+          city: null,
+          countryCode: null,
+          postalCode: null,
+          province: null,
+        },
+        shopDomain: 'dsv-demo.local',
+      })).resolves.toMatchObject({
+        ok: true,
+        result: { provider: 'vworld' },
+      });
+
+      const firstCall = rawFetch.mock.calls[0];
+      if (firstCall === undefined) throw new Error('expected VWorld request');
+      const input = firstCall[0];
+      const url = input instanceof URL ? input : new URL(String(input));
+      expect(url.origin).toBe('https://api.vworld.kr');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 function response(payload: unknown): Response {
