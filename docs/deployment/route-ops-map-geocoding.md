@@ -45,6 +45,12 @@ Nominatim-compatible mode disabled by default and must enforce:
 - no autocomplete; bulk geocoding is restricted to explicit operator repair
   and order-ingest flows.
 
+When `GEOCODING_PROVIDER_MODE=vworld`, Korean and blank-country inputs remain
+on VWorld for DSV compatibility. An explicit non-Korean two-letter country code
+routes through the configured Nominatim-compatible endpoint instead. Public
+Nominatim use in that country-routed path keeps the same identifying user agent,
+persistent-cache requirement, serialization, and rate limit described above.
+
 Operator corrections must persist in CLEVER canonical delivery facts/stops and
 must not mutate Woo raw payloads.
 
