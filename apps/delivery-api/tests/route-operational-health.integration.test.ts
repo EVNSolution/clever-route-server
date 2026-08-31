@@ -226,7 +226,7 @@ describe('route operational health PostgreSQL contract', () => {
       const health = await new PrismaEmailRuntimeHealthService(prisma, {
         automaticSenderConfigured: false, automaticWorkerEnabled: false, manualBrevoConfigured: true
       }).get({ shopDomain: fixture.shopDomain });
-      expect(health.email).toMatchObject({ configured: false, manual: { brevoConfigured: true }, outbox: { deadLetter: 0, pending: 1 }, state: 'DISABLED' });
+      expect(health.email).toMatchObject({ automatic: { enabled: false }, configured: false, manual: { brevoConfigured: true }, outbox: { deadLetter: 0, pending: 1 }, state: 'DEGRADED' });
       const columns = await prisma.$queryRaw<Array<{ column_name: string }>>`SELECT column_name FROM information_schema.columns WHERE table_name = 'customer_delivery_notification_attempts'`;
       expect(columns.map(({ column_name }) => column_name)).not.toEqual(expect.arrayContaining(['recipient', 'recipientEmail', 'subject', 'body', 'errorMessage']));
       await prisma.customerRouteNotificationFact.update({ data: { sentAt: new Date(), status: 'SENT' }, where: { id: fact.id } });
