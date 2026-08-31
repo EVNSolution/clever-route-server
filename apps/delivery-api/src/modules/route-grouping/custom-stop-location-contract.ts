@@ -10,15 +10,19 @@ export type RequiredCustomStopLocationFields = CustomRouteGroupingStopFields & {
   longitude: number;
 };
 
-export function validateRequiredCustomStopLocation(
-  input: CustomRouteGroupingStopFields
-): asserts input is RequiredCustomStopLocationFields {
+export function validateRequiredCustomStopAddress(input: CustomRouteGroupingStopFields): void {
   if (normalizeOptionalText(input.address1) === null) {
     throw new RouteGroupingValidationError(['custom stop address1 is required']);
   }
   if (normalizeCountryCode(input.countryCode) === null) {
     throw new RouteGroupingValidationError(['custom stop countryCode is required']);
   }
+}
+
+export function validateRequiredCustomStopLocation(
+  input: CustomRouteGroupingStopFields
+): asserts input is RequiredCustomStopLocationFields {
+  validateRequiredCustomStopAddress(input);
   if (!hasCustomStopCoordinates(input)) {
     throw new RouteGroupingValidationError(['custom stop latitude and longitude are required']);
   }
@@ -75,7 +79,7 @@ export function hasCustomStopLocationChanges(input: CustomRouteGroupingStopField
   return hasCustomStopAddressChanges(input) || input.latitude !== undefined || input.longitude !== undefined;
 }
 
-function hasCustomStopAddressChanges(input: CustomRouteGroupingStopFields): boolean {
+export function hasCustomStopAddressChanges(input: CustomRouteGroupingStopFields): boolean {
   return CUSTOM_STOP_LOCATION_ADDRESS_FIELDS.some((field) => input[field] !== undefined);
 }
 

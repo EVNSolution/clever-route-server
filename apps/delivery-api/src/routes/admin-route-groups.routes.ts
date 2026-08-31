@@ -7,9 +7,11 @@ import {
 } from './admin-session-auth.js';
 import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint } from '../modules/route-plans/route-plan.types.js';
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
+import type { GeocodingService } from '../modules/geocoding/geocoding.service.js';
 import {
+  hasCustomStopAddressChanges,
   type RequiredCustomStopLocationFields,
-  validateCustomStopUpdateLocationRequest,
+  validateRequiredCustomStopAddress,
   validateRequiredCustomStopLocation
 } from '../modules/route-grouping/custom-stop-location-contract.js';
 import {
@@ -26,6 +28,7 @@ import {
 } from '../modules/route-grouping/route-grouping.types.js';
 
 export type AdminRouteGroupDependencies = {
+  geocodingService: Pick<GeocodingService, 'geocode'>;
   routeGroupingService: RouteGroupingService;
   sessionTokenVerifier: AdminSessionTokenVerifier;
 };
@@ -122,7 +125,11 @@ export function registerAdminRouteGroupRoutes(
     if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
 
     try {
-      const payload = readCustomStopPayload(request.body, true);
+      const payload = await geocodeCustomStopPayload(
+        readCustomStopPayload(request.body, true),
+        authenticated.shopDomain,
+        dependencies.geocodingService
+      );
       const routeGroup = await dependencies.routeGroupingService.createCustomStop({
         appId: authenticated.appId,
         actor: authenticated.subject,
@@ -146,7 +153,10 @@ export function registerAdminRouteGroupRoutes(
     if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
 
     try {
-      const payload = readCustomStopPayload(request.body, false);
+      const parsedPayload = readCustomStopPayload(request.body, false);
+      const payload = hasCustomStopAddressChanges(parsedPayload)
+        ? await geocodeCustomStopPayload(parsedPayload, authenticated.shopDomain, dependencies.geocodingService)
+        : parsedPayload;
       const routeGroup = await dependencies.routeGroupingService.updateCustomStop({
         appId: authenticated.appId,
         deliveryStopId: request.params.deliveryStopId,
@@ -599,8 +609,6 @@ type CustomStopPayload = CustomRouteGroupingStopFields & {
   targetRoutePlanId?: string;
 };
 
-function readCustomStopPayload(value: unknown, create: true): CustomStopPayload & RequiredCustomStopLocationFields;
-function readCustomStopPayload(value: unknown, create: false): CustomStopPayload;
 function readCustomStopPayload(value: unknown, create: boolean): CustomStopPayload {
   const object = requireObject(value);
   const payload: CustomRouteGroupingStopFields & { expectedUpdatedAt?: string; targetRoutePlanId?: string } = {
@@ -611,8 +619,6 @@ function readCustomStopPayload(value: unknown, create: boolean): CustomStopPaylo
     ...(object.email === undefined ? {} : { email: readNullableString(object.email) }),
     ...(object.expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt: readRevisionTimestamp(object.expectedUpdatedAt, 'expectedUpdatedAt') }),
     ...(object.instructions === undefined ? {} : { instructions: readNullableString(object.instructions) }),
-    ...(object.latitude === undefined ? {} : { latitude: readCustomStopCoordinate(object.latitude, 'latitude') }),
-    ...(object.longitude === undefined ? {} : { longitude: readCustomStopCoordinate(object.longitude, 'longitude') }),
     ...(object.phone === undefined ? {} : { phone: readNullableString(object.phone) }),
     ...(object.postalCode === undefined ? {} : { postalCode: readNullableString(object.postalCode) }),
     ...(object.priority === undefined ? {} : { priority: readBoundedInteger(object.priority, 'priority', 0, 100) }),
@@ -628,20 +634,42 @@ function readCustomStopPayload(value: unknown, create: boolean): CustomStopPaylo
   if (!create && Object.keys(payload).every((key) => key === 'expectedUpdatedAt')) {
     throw new BadRouteGroupPayloadError('at least one custom stop field is required');
   }
-  if (create) validateRequiredCustomStopLocation(payload);
-  else validateCustomStopUpdateLocationRequest(payload);
+  if (create || hasCustomStopAddressChanges(payload)) validateRequiredCustomStopAddress(payload);
   if (payload.timeWindowStart !== undefined && payload.timeWindowStart !== null && payload.timeWindowEnd !== undefined && payload.timeWindowEnd !== null) {
     if (Date.parse(payload.timeWindowStart) >= Date.parse(payload.timeWindowEnd)) throw new BadRouteGroupPayloadError('invalid time window');
   }
   return payload;
 }
 
-function readCustomStopCoordinate(value: unknown, field: 'latitude' | 'longitude'): number | null {
-  try {
-    return readNullableNumber(value);
-  } catch {
-    throw new RouteGroupingValidationError([`custom stop ${field} must be a finite number`]);
+async function geocodeCustomStopPayload(
+  payload: CustomStopPayload,
+  shopDomain: string,
+  geocodingService: Pick<GeocodingService, 'geocode'>
+): Promise<CustomStopPayload & RequiredCustomStopLocationFields> {
+  validateRequiredCustomStopAddress(payload);
+  const geocode = await geocodingService.geocode({
+    address: {
+      address1: payload.address1 ?? null,
+      address2: payload.address2 ?? null,
+      city: payload.city ?? null,
+      countryCode: payload.countryCode ?? null,
+      postalCode: payload.postalCode ?? null,
+      province: payload.province ?? null
+    },
+    shopDomain
+  });
+  if (!geocode.ok) {
+    throw new RouteGroupingValidationError([
+      `custom stop address could not be geocoded: ${geocode.message}`
+    ]);
   }
+  const resolved = {
+    ...payload,
+    latitude: geocode.result.latitude,
+    longitude: geocode.result.longitude
+  };
+  validateRequiredCustomStopLocation(resolved);
+  return resolved;
 }
 
 function readCreateBranchPayload(value: unknown): { color?: string | null; driverId?: string | null; label?: string | null; orderIds?: string[]; sortOrder?: number } {

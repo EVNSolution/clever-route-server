@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 
 import type { AdminRouteGroupDependencies } from '../../routes/admin-route-groups.routes.js';
+import { loadGeocodingService, type GeocodingRuntimeEnv } from '../geocoding/geocoding.dependencies.js';
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../shopify/shopify-app-credentials.js';
 import { ShopifySessionTokenVerifier } from '../shopify/session-token-verifier.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
@@ -19,7 +20,7 @@ import {
 } from './route-grouping.service.js';
 import type { RouteGroupingService } from './route-grouping.types.js';
 
-export type AdminRouteGroupRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<
+export type AdminRouteGroupRuntimeEnv = ShopifyAppCredentialsEnv & GeocodingRuntimeEnv & Partial<Record<
   | 'FIREBASE_PROJECT_ID'
   | 'GOOGLE_APPLICATION_CREDENTIALS'
   | 'OSRM_BASE_URL'
@@ -45,6 +46,7 @@ export function loadAdminRouteGroupDependencies(input: {
   if (appCredentials.length === 0) return undefined;
 
   return {
+    geocodingService: loadGeocodingService({ env: input.env, prisma: input.prisma }),
     routeGroupingService: input.routeGroupingService ?? createRouteGroupingService(input),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
