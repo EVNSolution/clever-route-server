@@ -6,10 +6,12 @@ import type { RoutePlanDetail } from '../src/modules/route-plans/route-plan.type
 describe('refresh route geometry script', () => {
   test('parses route plan and shop arguments with explicit apply', () => {
     expect(parseRefreshRouteGeometryArgs([
+      '--app-id', 'clever-route-kfood',
       '--shop-domain', 'tomatonofood.com',
       '--route-plan-id', 'route-plan-id',
       '--apply'
     ])).toEqual({
+      appId: 'clever-route-kfood',
       apply: true,
       routePlanId: 'route-plan-id',
       shopDomain: 'tomatonofood.com'
@@ -21,6 +23,7 @@ describe('refresh route geometry script', () => {
       '--shop-domain', 'tomatonofood.com',
       '--route-plan-id', 'route-plan-id'
     ])).toEqual({
+      appId: undefined,
       apply: false,
       routePlanId: 'route-plan-id',
       shopDomain: 'tomatonofood.com'

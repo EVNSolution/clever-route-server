@@ -338,6 +338,7 @@ describe('route grouping contracts', () => {
     const getGrouping = vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-1' } as never);
 
     await service.createCustomStop({
+      appId: 'clever-route-kfood',
       address1: '123 Main St',
       actor: 'admin-user',
       countryCode: 'CA',
@@ -349,6 +350,7 @@ describe('route grouping contracts', () => {
     });
 
     expect(refreshRouteGeometryForRoutePlan).toHaveBeenCalledWith({
+      appId: 'clever-route-kfood',
       routePlanId: 'route-plan-1',
       shopDomain: 'tenant.example',
       source: 'SHAPE_MUTATION'
@@ -1077,7 +1079,7 @@ describe('route grouping contracts', () => {
     expect(body).toContain('await recomputeAssignments(tx, group.id)');
     expect(body.indexOf('await appendGroupingOrdersToChildRoute'))
       .toBeLessThan(body.indexOf('await recomputeAssignments'));
-    expect(body).toContain("await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.shopDomain, 'SHAPE_MUTATION')");
+    expect(body).toContain("await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.appId, input.shopDomain, 'SHAPE_MUTATION')");
     expect(source).toContain("selected orders are already assigned to another child route");
     expect(source).toContain("targetStatus !== 'READY' && targetStatus !== 'IN_PROGRESS'");
     expect(source).toContain("orders can only be added to a Ready or in-progress child route");

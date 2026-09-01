@@ -6,6 +6,7 @@ import { RoutePlanAdminService } from '../modules/route-plans/route-plan.service
 import type { RoutePlanDetail } from '../modules/route-plans/route-plan.types.js';
 
 type RefreshRouteGeometryArgs = {
+  appId: string | undefined;
   apply: boolean;
   routePlanId: string;
   shopDomain: string;
@@ -48,8 +49,9 @@ export function parseRefreshRouteGeometryArgs(argv: string[]): RefreshRouteGeome
 
   const routePlanId = readRequired(values, '--route-plan-id');
   const shopDomain = readRequired(values, '--shop-domain');
+  const appId = readOptional(values, '--app-id');
 
-  return { apply, routePlanId, shopDomain };
+  return { appId, apply, routePlanId, shopDomain };
 }
 
 async function main(): Promise<void> {
@@ -59,6 +61,7 @@ async function main(): Promise<void> {
   try {
     const repository = new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true });
     const before = await repository.findRoutePlanDetail({
+      appId: args.appId,
       routePlanId: args.routePlanId,
       shopDomain: args.shopDomain
     });
@@ -74,6 +77,7 @@ async function main(): Promise<void> {
       }
       const service = new RoutePlanAdminService(repository, routeGeometryProvider);
       const refreshed = await service.refreshRouteGeometryForRoutePlan({
+        appId: args.appId,
         routePlanId: args.routePlanId,
         shopDomain: args.shopDomain,
         source: 'EXPLICIT_REFRESH'
@@ -86,6 +90,7 @@ async function main(): Promise<void> {
 
     console.log(JSON.stringify({
       ok: true,
+      appId: args.appId ?? null,
       applied: args.apply,
       routePlanId: args.routePlanId,
       shopDomain: args.shopDomain,
@@ -119,6 +124,11 @@ function readRequired(values: Map<string, string>, key: string): string {
   return value;
 }
 
+function readOptional(values: Map<string, string>, key: string): string | undefined {
+  const value = values.get(key)?.trim();
+  return value === undefined || value === '' ? undefined : value;
+}
+
 function computeMaxSegmentMeters(coordinates: Array<[number, number]>): number | null {
   if (coordinates.length < 2) return null;
   let max = 0;
@@ -148,7 +158,7 @@ function toRadians(value: number): number {
 }
 
 function printUsage(): void {
-  console.error('Usage: node dist/scripts/refresh-route-geometry-cache.js --shop-domain <domain> --route-plan-id <uuid> [--apply]');
+  console.error('Usage: node dist/scripts/refresh-route-geometry-cache.js [--app-id <app-id>] --shop-domain <domain> --route-plan-id <uuid> [--apply]');
 }
 
 if (isMainModule()) {
