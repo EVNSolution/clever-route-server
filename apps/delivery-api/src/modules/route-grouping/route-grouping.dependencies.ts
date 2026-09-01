@@ -13,6 +13,8 @@ import {
   readDefaultRouteEngineCoverage
 } from '../route-plans/route-engine-coverage.js';
 import { VroomRouteOptimizationClient } from '../route-plans/vroom-route-optimizer.client.js';
+import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
+import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import { loadDriverPushProvider } from './driver-push.provider.js';
 import {
   DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS,
@@ -56,12 +58,16 @@ export function createRouteGroupingService(input: {
   env: AdminRouteGroupRuntimeEnv;
   prisma: PrismaClient;
 }): RouteGroupingService {
+  const routeGeometryProvider = readRouteGeometryProvider(input.env);
+  const routeGeometryRefresher = routeGeometryProvider === undefined
+    ? undefined
+    : new RoutePlanAdminService(new PrismaRoutePlanRepository(input.prisma), routeGeometryProvider);
   return new PrismaRouteGroupingService(
     input.prisma,
     loadDriverPushProvider(input.env),
-    undefined,
+    routeGeometryRefresher,
     readRouteOptimizationService(input.env),
-    readRouteGeometryProvider(input.env),
+    routeGeometryProvider,
     { maxChildRouteStopDistanceFromDepotMeters: readOptionalNumber(input.env.ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS) ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS }
   );
 }

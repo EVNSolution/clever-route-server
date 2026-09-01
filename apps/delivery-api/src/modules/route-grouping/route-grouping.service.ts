@@ -202,7 +202,7 @@ type RouteGroupingRouteGeometryRefresher = {
   refreshRouteGeometryForRoutePlan(input: {
     routePlanId: string;
     shopDomain: string;
-    source: 'SNAPSHOT';
+    source: 'SHAPE_MUTATION' | 'SNAPSHOT';
   }): Promise<unknown>;
 };
 
@@ -800,6 +800,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return group.id;
     });
     if (groupingId === null) return null;
+    if (input.targetRoutePlanId !== undefined && addOrderIds.length > 0) {
+      await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.shopDomain, 'SHAPE_MUTATION');
+    }
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
@@ -884,6 +887,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return group.id;
     });
     if (groupingId === null) return null;
+    if (input.targetRoutePlanId !== undefined) {
+      await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.shopDomain, 'SHAPE_MUTATION');
+    }
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
@@ -1984,7 +1990,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     return this.getGrouping({ appId: input.appId, groupingId: projection.groupingId, shopDomain: input.shopDomain });
   }
 
-  private async refreshChildRouteGeometry(routePlanIds: string[], shopDomain: string): Promise<void> {
+  private async refreshChildRouteGeometry(
+    routePlanIds: string[],
+    shopDomain: string,
+    source: 'SHAPE_MUTATION' | 'SNAPSHOT' = 'SNAPSHOT'
+  ): Promise<void> {
     const routeGeometryRefresher = this.routeGeometryRefresher;
     if (routeGeometryRefresher === undefined) return;
     const uniqueRoutePlanIds = [...new Set(routePlanIds)];
@@ -1995,7 +2005,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routeGeometryRefresher.refreshRouteGeometryForRoutePlan({
             routePlanId,
             shopDomain,
-            source: 'SNAPSHOT'
+            source
           })
         )
       );
