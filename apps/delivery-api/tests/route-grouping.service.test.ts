@@ -292,12 +292,12 @@ describe('route grouping contracts', () => {
       groupingId: 'group-1',
       latitude: 43.7,
       longitude: -79.4,
+      recipientName: 'Receiving desk',
       shopDomain: 'tenant.example',
-      stopName: 'Warehouse pickup'
     });
 
     const createdOrder = orderCreate.mock.calls[0]?.[0].data;
-    expect(createdOrder?.name).toBe('Warehouse pickup');
+    expect(createdOrder?.name).toBe('Receiving desk');
     expect(createdOrder?.rawPayload).toMatchObject({ kind: 'CLEVER_CUSTOM_ROUTE_STOP' });
     expect(createdOrder?.shopId).toBe('shop-1');
     expect(createdOrder?.shopifyOrderGid).toMatch(/^gid:\/\/clever\/CustomRouteStop\//u);
@@ -314,6 +314,17 @@ describe('route grouping contracts', () => {
         sourceSequence: 4
       }
     });
+
+    await service.createCustomStop({
+      address1: '456 Queen St',
+      actor: 'admin-user',
+      countryCode: 'CA',
+      groupingId: 'group-1',
+      latitude: 43.65,
+      longitude: -79.38,
+      shopDomain: 'tenant.example',
+    });
+    expect(orderCreate.mock.calls[1]?.[0].data.name).toBe('456 Queen St');
   });
 
   test('rejects zero coordinates before creating a custom route stop', async () => {

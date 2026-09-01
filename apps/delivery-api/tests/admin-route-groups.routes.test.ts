@@ -154,15 +154,12 @@ describe('Admin route group routes', () => {
           address1: '123 Main St',
           city: 'Toronto',
           countryCode: 'CA',
+          email: 'receiving@example.test',
           expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
+          phone: '416-555-0100',
           postalCode: 'M5H 2N2',
-          priority: 10,
           recipientName: 'Receiving desk',
-          serviceMinutes: 15,
-          stopName: 'Warehouse pickup',
-          targetRoutePlanId: 'route-plan-2',
-          timeWindowEnd: '2026-06-25T15:00:00.000Z',
-          timeWindowStart: '2026-06-25T13:00:00.000Z'
+          targetRoutePlanId: 'route-plan-2'
         },
         url: '/admin/route-groups/route-group-id/stops/custom'
       });
@@ -175,19 +172,16 @@ describe('Admin route group routes', () => {
         appId: 'clever-route-dev',
         city: 'Toronto',
         countryCode: 'CA',
+        email: 'receiving@example.test',
         expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
         groupingId: 'route-group-id',
         latitude: 43.7,
         longitude: -79.4,
+        phone: '416-555-0100',
         postalCode: 'M5H 2N2',
-        priority: 10,
         recipientName: 'Receiving desk',
-        serviceMinutes: 15,
         shopDomain: 'example.myshopify.com',
-        stopName: 'Warehouse pickup',
-        targetRoutePlanId: 'route-plan-2',
-        timeWindowEnd: '2026-06-25T15:00:00.000Z',
-        timeWindowStart: '2026-06-25T13:00:00.000Z'
+        targetRoutePlanId: 'route-plan-2'
       });
       expect(geocode).toHaveBeenCalledWith({
         address: {
@@ -222,7 +216,7 @@ describe('Admin route group routes', () => {
         const response = await app.inject({
           headers: { authorization: 'Bearer session-token' },
           method: 'POST',
-          payload: { ...entry.payload, stopName: 'Invalid custom stop' },
+          payload: entry.payload,
           url: '/admin/route-groups/route-group-id/stops/custom'
         });
         expect(response.statusCode).toBe(400);
@@ -294,7 +288,7 @@ describe('Admin route group routes', () => {
       const response = await app.inject({
         headers: { authorization: 'Bearer session-token' },
         method: 'POST',
-        payload: { address1: 'Unknown address', countryCode: 'CA', stopName: 'Unknown stop' },
+        payload: { address1: 'Unknown address', countryCode: 'CA' },
         url: '/admin/route-groups/route-group-id/stops/custom'
       });
 

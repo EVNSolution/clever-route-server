@@ -135,8 +135,7 @@ export function registerAdminRouteGroupRoutes(
         actor: authenticated.subject,
         groupingId: request.params.routeGroupId,
         shopDomain: authenticated.shopDomain,
-        ...payload,
-        stopName: payload.stopName ?? ''
+        ...payload
       });
       if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
       return reply.code(201).send({ data: { routeGroup }, error: null });
@@ -630,7 +629,6 @@ function readCustomStopPayload(value: unknown, create: boolean): CustomStopPaylo
     ...(object.timeWindowEnd === undefined ? {} : { timeWindowEnd: readNullableInstant(object.timeWindowEnd, 'timeWindowEnd') }),
     ...(object.timeWindowStart === undefined ? {} : { timeWindowStart: readNullableInstant(object.timeWindowStart, 'timeWindowStart') })
   };
-  if (create && payload.stopName === undefined) throw new BadRouteGroupPayloadError('stopName required');
   if (!create && Object.keys(payload).every((key) => key === 'expectedUpdatedAt')) {
     throw new BadRouteGroupPayloadError('at least one custom stop field is required');
   }

@@ -168,16 +168,18 @@ describe('API documentation routes', () => {
           'schemas = doc.dig("components", "schemas")',
           'create = schemas.fetch("CustomRouteStopCreateInput").fetch("allOf").fetch(1)',
           'required = create.fetch("required")',
-          'raise "custom stop create location fields must be required" unless %w[stopName address1 countryCode latitude longitude].all? { |field| required.include?(field) }',
+          'raise "custom stop create address fields must be required" unless %w[address1 countryCode].all? { |field| required.include?(field) }',
+          'raise "custom stop name must remain optional" if required.include?("stopName")',
+          'raise "derived coordinates must not be required" unless (required & %w[latitude longitude]).empty?',
+          'fields = schemas.fetch("CustomRouteStopFields").fetch("properties")',
+          'raise "derived coordinates must not be merchant inputs" unless (fields.keys & %w[latitude longitude]).empty?',
           'properties = create.fetch("properties")',
-          'raise "custom stop create location fields must be non-null" unless %w[address1 countryCode latitude longitude].all? { |field| !properties.fetch(field).fetch("type").is_a?(Array) }',
+          'raise "custom stop create address fields must be non-null" unless %w[address1 countryCode].all? { |field| !properties.fetch(field).fetch("type").is_a?(Array) }',
           'update = schemas.fetch("CustomRouteStopUpdateInput")',
           'update_contract = update.fetch("allOf").fetch(1)',
           'update_properties = update_contract.fetch("properties")',
-          'raise "custom stop update location fields must be non-null when present" unless %w[address1 countryCode latitude longitude].all? { |field| !update_properties.fetch(field).fetch("type").is_a?(Array) }',
-          'dependent = update_contract.fetch("dependentRequired")',
-          'raise "address updates must depend on both coordinates" unless %w[address1 address2 city province postalCode countryCode].all? { |field| dependent.fetch(field) == %w[latitude longitude] }',
-          'raise "coordinate updates must be paired" unless dependent.fetch("latitude") == ["longitude"] && dependent.fetch("longitude") == ["latitude"]'
+          'raise "custom stop update address fields must be non-null when present" unless %w[address1 countryCode].all? { |field| !update_properties.fetch(field).fetch("type").is_a?(Array) }',
+          'raise "custom stop updates must not request coordinates" unless (update_properties.keys & %w[latitude longitude]).empty?'
         ].join('; ')
       ], { input: response.body });
     } finally {
