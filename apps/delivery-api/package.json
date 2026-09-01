@@ -33,6 +33,7 @@
     "dsv:driver-auth:smoke": "tsx src/scripts/smoke-dsv-driver-auth.ts",
     "dsv:driver-app-release:publish": "tsx src/scripts/publish-dsv-driver-app-release.ts",
     "routes-app:release:publish": "tsx src/scripts/publish-routes-app-release.ts",
+    "routes-app:account-deletion": "node dist/scripts/process-driver-account-deletion.js",
     "dsv:dispatch-demo:smoke": "tsx src/scripts/smoke-dsv-dispatch-import.ts",
     "dsv:g002:backfill:dry-run": "tsx src/scripts/dsv-g002-backfill-dry-run.ts",
     "dsv:g002:baseline:empty": "bash scripts/dsv-g002-empty-baseline-rehearsal.sh",

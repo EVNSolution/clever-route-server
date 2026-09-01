@@ -31,7 +31,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       where: { id: 'shop-id' }
     });
     expect(prisma.driver.findFirst).toHaveBeenCalledWith({
-      select: { displayName: true, id: true, phone: true, status: true },
+      select: { accountId: true, displayName: true, id: true, phone: true, status: true },
       where: { id: 'driver-id', shopId: 'shop-id', status: 'ACTIVE' }
     });
     expect(prisma.routePlan.findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -266,7 +266,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
     expect(result.driver).toEqual({ displayName: 'Mina Kang', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' });
   });
 
-  test('creates an account deletion request without mutating the driver', async () => {
+  test('converges a legacy driver bearer on the account-level deletion request without copying PII', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaDriverSelfServiceRepository(prisma as never);
 
@@ -280,18 +280,70 @@ describe('PrismaDriverSelfServiceRepository', () => {
 
     expect(prisma.driverAccountDeletionRequest.create).toHaveBeenCalledWith({
       data: {
-        driverId: 'driver-id',
-        driverDisplayName: 'Minji Kim',
-        driverPhone: '+14165550123',
+        accountId: 'account-id',
+        driverDisplayName: null,
+        driverPhone: null,
         reason: 'No longer driving',
+        requestChannel: 'IN_APP',
         requestedAt: new Date('2026-05-19T09:00:00.000Z'),
-        shopDomain: 'example.myshopify.com',
-        shopId: 'shop-id',
-        status: 'REQUESTED'
+        shopDomain: null,
+        status: 'REQUESTED',
+        verificationMethod: 'LEGACY_DRIVER_TOKEN'
       }
     });
     expect(prisma.driver.update).not.toHaveBeenCalled();
     expect(result).toEqual({ duplicate: false, requestId: 'deletion-request-id', status: 'REQUESTED' });
+  });
+
+  test('promotes a linked legacy driver request instead of creating a second account request', async () => {
+    const legacyRequest = {
+      accountId: null,
+      driverId: 'driver-id',
+      id: 'legacy-request-id',
+      requestedAt: new Date('2026-05-18T09:00:00.000Z'),
+      status: 'REQUESTED' as const
+    };
+    const { prisma } = createPrismaHarness({ legacyDeletionRequest: legacyRequest });
+    const repository = new PrismaDriverSelfServiceRepository(prisma as never);
+
+    await expect(repository.requestGlobalAccountDeletion({
+      accountId: 'account-id',
+      reason: null,
+      requestedAt: new Date('2026-07-27T09:00:00.000Z'),
+      tokenVersion: 3
+    })).resolves.toEqual({ duplicate: true, requestId: 'legacy-request-id', status: 'REQUESTED' });
+
+    expect(prisma.driverAccountDeletionRequest.update).toHaveBeenCalledWith({
+      data: { accountId: 'account-id', driverId: null, shopDomain: null },
+      where: { id: 'legacy-request-id' }
+    });
+    expect(prisma.driverAccountDeletionRequest.create).not.toHaveBeenCalled();
+  });
+
+  test('uses the account link re-read under the deletion transaction lock', async () => {
+    const { prisma } = createPrismaHarness({
+      driver: { accountId: null, displayName: 'Minji Kim', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' },
+      lockedDriverAccountId: 'account-id'
+    });
+    const repository = new PrismaDriverSelfServiceRepository(prisma as never);
+
+    await expect(repository.requestAccountDeletion({
+      driverId: 'driver-id',
+      reason: null,
+      requestedAt: new Date('2026-07-27T09:00:00.000Z'),
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
+    })).resolves.toEqual({ duplicate: false, requestId: 'deletion-request-id', status: 'REQUESTED' });
+
+    expect(prisma.driverAccountDeletionRequest.create).toHaveBeenCalledWith({
+      // Vitest asymmetric matchers are intentionally untyped at this assertion boundary.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      data: expect.objectContaining({ accountId: 'account-id' })
+    });
+    expect(prisma.driverAccountDeletionRequest.create).not.toHaveBeenCalledWith({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      data: expect.objectContaining({ driverId: 'driver-id' })
+    });
   });
 
   test('creates one global account deletion request without Store ownership', async () => {
@@ -306,18 +358,20 @@ describe('PrismaDriverSelfServiceRepository', () => {
     });
 
     expect(prisma.driverAccount.findFirst).toHaveBeenCalledWith({
-      select: { name: true, phone: true },
+      select: { id: true },
       where: { id: 'account-id', status: 'ACTIVE', tokenVersion: 3 }
     });
     expect(prisma.driverAccountDeletionRequest.create).toHaveBeenCalledWith({
       data: {
         accountId: 'account-id',
-        driverDisplayName: 'Jiin',
-        driverPhone: '+14165550123',
+        driverDisplayName: null,
+        driverPhone: null,
         reason: 'Delete my account',
+        requestChannel: 'IN_APP',
         requestedAt: new Date('2026-07-27T09:00:00.000Z'),
         shopDomain: null,
-        status: 'REQUESTED'
+        status: 'REQUESTED',
+        verificationMethod: 'AUTHENTICATED_ACCOUNT'
       }
     });
     expect(result).toEqual({ duplicate: false, requestId: 'deletion-request-id', status: 'REQUESTED' });
@@ -390,31 +444,51 @@ describe('PrismaDriverSelfServiceRepository', () => {
 function createPrismaHarness(input: {
   activeAccountRoute?: { id: string } | null;
   deletionRequest?: { id: string; status: 'REQUESTED' } | null;
-  driver?: { displayName: string; id: string; phone: string | null; status: 'ACTIVE' } | null;
+  driver?: { accountId: string | null; displayName: string; id: string; phone: string | null; status: 'ACTIVE' } | null;
   routePlanScope?: { id: string } | null;
   routePlans?: ReturnType<typeof routePlanRecord>[];
+  legacyDeletionRequest?: {
+    accountId: null;
+    driverId: string;
+    id: string;
+    requestedAt: Date;
+    status: 'REQUESTED';
+  } | null;
+  lockedDriverAccountId?: string | null;
   shopDomain?: string;
 } = {}) {
   const driver = input.driver === undefined
-    ? { displayName: 'Minji Kim', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' as const }
+    ? { accountId: 'account-id', displayName: 'Minji Kim', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' as const }
     : input.driver;
   const routePlanScope = input.routePlanScope === undefined ? { id: routePlanId } : input.routePlanScope;
   const routePlans = input.routePlans ?? [routePlanRecord()];
   const activeAccountRoute = input.activeAccountRoute ?? null;
   const deletionRequest = input.deletionRequest ?? null;
-
-  return {
-    prisma: {
+  const legacyDeletionRequest = input.legacyDeletionRequest ?? null;
+  const lockedDriverAccountId = input.lockedDriverAccountId === undefined
+    ? driver?.accountId ?? null
+    : input.lockedDriverAccountId;
+  const prisma = {
+      $queryRaw: vi.fn(() => Promise.resolve(driver === null ? [] : [{ accountId: lockedDriverAccountId, id: driver.id }])),
       driver: {
         findFirst: vi.fn(() => Promise.resolve(driver)),
         update: vi.fn(() => Promise.resolve({ displayName: 'Mina Kang', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' }))
       },
       driverAccount: {
-        findFirst: vi.fn(() => Promise.resolve({ name: 'Jiin', phone: '+14165550123' }))
+        findFirst: vi.fn(() => Promise.resolve({ id: 'account-id' }))
       },
       driverAccountDeletionRequest: {
         create: vi.fn(() => Promise.resolve({ id: 'deletion-request-id', status: 'REQUESTED' })),
-        findUnique: vi.fn(() => Promise.resolve(deletionRequest))
+        findFirst: vi.fn(() => Promise.resolve(legacyDeletionRequest)),
+        findUnique: vi.fn((args: { where: { accountId?: string; driverId?: string } }) => Promise.resolve(
+          args.where.accountId === undefined ? legacyDeletionRequest : deletionRequest
+        )),
+        update: vi.fn(() => Promise.resolve({
+          ...(legacyDeletionRequest ?? { id: 'legacy-request-id', requestedAt: new Date(0), status: 'REQUESTED' as const }),
+          accountId: 'account-id',
+          driverId: null,
+          shopDomain: null
+        }))
       },
       driverRouteFeedback: {
         create: vi.fn((args: { data: { reviewNote: string; routePlanId: string; submittedAt: Date } }) => Promise.resolve({
@@ -433,6 +507,11 @@ function createPrismaHarness(input: {
       shop: {
         findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id', shopDomain: input.shopDomain ?? 'example.myshopify.com' }))
       }
+  };
+  return {
+    prisma: {
+      ...prisma,
+      $transaction: vi.fn((callback: (client: typeof prisma) => Promise<unknown>) => callback(prisma))
     }
   };
 }

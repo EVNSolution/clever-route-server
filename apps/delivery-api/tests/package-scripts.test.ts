@@ -25,6 +25,9 @@ describe('package scripts', () => {
       'node dist/scripts/reconcile-customer-email.js'
     );
     expect(packageJson.scripts?.['driver:proof-media:evidence:seed']).toBe('tsx src/scripts/proof-media-evidence-seed.ts');
+    expect(packageJson.scripts?.['routes-app:account-deletion']).toBe(
+      'node dist/scripts/process-driver-account-deletion.js'
+    );
     expect(packageJson.scripts?.['woocommerce:connection:bootstrap']).toBe(
       'tsx src/scripts/bootstrap-woocommerce-connection.ts'
     );

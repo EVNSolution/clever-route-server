@@ -67,7 +67,7 @@ export type DriverAccountDeletionRequestInput = DriverSelfServiceScopeInput & {
 export type DriverAccountDeletionRequestResult = {
   duplicate: boolean;
   requestId: string;
-  status: 'REQUESTED';
+  status: 'REQUESTED' | 'DEFERRED' | 'PROCESSING' | 'COMPLETED' | 'REJECTED' | 'FAILED';
 };
 
 export type GlobalDriverAccountDeletionRequestInput = {

@@ -246,6 +246,9 @@ describe('API documentation routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('  /routes-app:');
+      expect(response.body).toContain('  /routes-app/privacy:');
+      expect(response.body).toContain('  /routes-app/support:');
+      expect(response.body).toContain('  /routes-app/account-deletion:');
       expect(response.body).toContain('  /routes-app/download:');
       expect(response.body).toContain('  /routes-app/release/android:');
       expect(response.body).toContain('  /driver-app:');
@@ -254,6 +257,8 @@ describe('API documentation routes', () => {
       expect(response.body).toContain('const: package_migration');
       expect(response.body).toContain('const: ROUTES_APP_RELEASE_UNAVAILABLE');
       expect(response.body).toContain('const: no-store');
+      expect(response.body).toContain('OPERATOR_VERIFIED_CONTACT');
+      expect(response.body).toContain('COMPLETED');
     } finally {
       await app.close();
     }

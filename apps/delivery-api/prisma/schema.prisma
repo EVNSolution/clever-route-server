@@ -213,6 +213,22 @@ enum RetentionJobRunStatus {
 
 enum DriverAccountDeletionRequestStatus {
   REQUESTED
+  DEFERRED
+  PROCESSING
+  COMPLETED
+  REJECTED
+  FAILED
+}
+
+enum DriverAccountDeletionRequestChannel {
+  IN_APP
+  EXTERNAL_SUPPORT
+}
+
+enum DriverAccountDeletionVerificationMethod {
+  AUTHENTICATED_ACCOUNT
+  LEGACY_DRIVER_TOKEN
+  OPERATOR_VERIFIED_CONTACT
 }
 
 enum RouteGroupingStatus {
@@ -1779,18 +1795,35 @@ model DriverAccountDeletionRequest {
   account           DriverAccount?                     @relation(fields: [accountId], references: [id], onDelete: SetNull)
   shopId            String?                            @db.Uuid
   shop              Shop?                              @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  driverId          String?                            @db.Uuid
+  driverId          String?                            @unique @db.Uuid
   driver            Driver?                            @relation(fields: [driverId], references: [id], onDelete: SetNull)
   shopDomain        String?                            @db.Text
   driverDisplayName String?                            @db.Text
   driverPhone       String?                            @db.Text
   status            DriverAccountDeletionRequestStatus @default(REQUESTED)
+  requestChannel    DriverAccountDeletionRequestChannel @default(IN_APP)
+  verificationMethod DriverAccountDeletionVerificationMethod @default(AUTHENTICATED_ACCOUNT)
+  requestedBy       String?                            @db.VarChar(80)
   reason            String?                            @db.Text
   requestedAt       DateTime                           @db.Timestamptz(6)
+  processingKey     String?                            @db.Uuid
+  processingStartedAt DateTime?                        @db.Timestamptz(6)
+  processingLeaseExpiresAt DateTime?                   @db.Timestamptz(6)
+  lastAttemptAt     DateTime?                          @db.Timestamptz(6)
+  processedBy       String?                            @db.VarChar(80)
+  processedAt       DateTime?                          @db.Timestamptz(6)
+  attemptCount      Int                                @default(0)
+  failureCode       String?                            @db.VarChar(80)
+  rejectionCode     String?                            @db.VarChar(80)
+  supersededByRequestId String?                        @db.Uuid
+  supersededBy      DriverAccountDeletionRequest?      @relation("DriverAccountDeletionSupersession", fields: [supersededByRequestId], references: [id], onDelete: SetNull, map: "driver_account_deletion_requests_superseded_request_fkey")
+  supersededRequests DriverAccountDeletionRequest[]    @relation("DriverAccountDeletionSupersession")
   createdAt         DateTime                           @default(now()) @db.Timestamptz(6)
 
   @@index([shopDomain, requestedAt])
   @@index([driverId, requestedAt])
+  @@index([status, processingLeaseExpiresAt], map: "driver_account_deletion_requests_status_lease_idx")
+  @@index([supersededByRequestId], map: "driver_account_deletion_requests_superseded_request_idx")
   @@map("driver_account_deletion_requests")
 }
 
