@@ -5292,50 +5292,38 @@ components:
         email: { type: [string, 'null'] }
         expectedUpdatedAt: { type: string, format: date-time }
         instructions: { type: [string, 'null'] }
-        latitude: { type: [number, 'null'], minimum: -90, maximum: 90 }
-        longitude: { type: [number, 'null'], minimum: -180, maximum: 180 }
         phone: { type: [string, 'null'] }
         postalCode: { type: [string, 'null'] }
         priority: { type: integer, minimum: 0, maximum: 100 }
         province: { type: [string, 'null'] }
         recipientName: { type: [string, 'null'] }
         serviceMinutes: { type: integer, minimum: 0, maximum: 1440, default: 5 }
-        stopName: { type: string, minLength: 1 }
+        stopName:
+          type: string
+          minLength: 1
+          description: Optional legacy display label. When omitted, the server derives the internal name from recipientName or address1.
         timeWindowEnd: { type: [string, 'null'], format: date-time }
         timeWindowStart: { type: [string, 'null'], format: date-time }
     CustomRouteStopCreateInput:
       allOf:
         - $ref: '#/components/schemas/CustomRouteStopFields'
         - type: object
-          required: [stopName, address1, countryCode, latitude, longitude]
+          required: [address1, countryCode]
           properties:
             address1: { type: string, minLength: 1 }
             countryCode: { type: string, pattern: '^[A-Za-z]{2}$' }
-            latitude: { type: number, minimum: -90, maximum: 90 }
-            longitude: { type: number, minimum: -180, maximum: 180 }
             targetRoutePlanId:
               type: string
               format: uuid
               description: Omit to keep the stop unassigned at group level; provide a current child route plan ID to append it atomically.
     CustomRouteStopUpdateInput:
-      description: Address location fields and coordinates are an atomic unit. If address1, address2, city, province, postalCode, or countryCode is present, latitude and longitude must both be present and non-null. If either coordinate is present, both must be present and non-null. Unrelated fields preserve the stored location.
+      description: Address changes are geocoded by the server. Unrelated omitted fields preserve the stored values.
       allOf:
         - $ref: '#/components/schemas/CustomRouteStopFields'
         - type: object
           properties:
             address1: { type: string, minLength: 1 }
             countryCode: { type: string, pattern: '^[A-Za-z]{2}$' }
-            latitude: { type: number, minimum: -90, maximum: 90 }
-            longitude: { type: number, minimum: -180, maximum: 180 }
-          dependentRequired:
-            address1: [latitude, longitude]
-            address2: [latitude, longitude]
-            city: [latitude, longitude]
-            province: [latitude, longitude]
-            postalCode: [latitude, longitude]
-            countryCode: [latitude, longitude]
-            latitude: [longitude]
-            longitude: [latitude]
     Error:
       type: object
       required: [code, message]

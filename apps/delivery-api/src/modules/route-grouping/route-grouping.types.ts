@@ -214,7 +214,7 @@ export type CustomRouteGroupingStopFields = {
 
 export type CreateCustomRouteGroupingStopInput = Omit<
   CustomRouteGroupingStopFields,
-  'address1' | 'countryCode' | 'latitude' | 'longitude' | 'stopName'
+  'address1' | 'countryCode' | 'latitude' | 'longitude'
 > & {
   address1: string;
   actor: string;
@@ -225,7 +225,6 @@ export type CreateCustomRouteGroupingStopInput = Omit<
   latitude: number;
   longitude: number;
   shopDomain: string;
-  stopName: string;
   targetRoutePlanId?: string;
 };
 

@@ -816,7 +816,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const created = await tx.order.create({
         data: {
           email: normalizeOptionalText(input.email),
-          name: input.stopName.trim(),
+          name: normalizeOptionalText(input.stopName) ?? normalizeOptionalText(input.recipientName) ?? input.address1.trim(),
           phone: normalizeOptionalText(input.phone),
           processedAt: new Date(),
           rawPayload: {
