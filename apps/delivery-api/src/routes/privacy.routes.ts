@@ -2,6 +2,9 @@ import type { FastifyInstance } from 'fastify';
 
 const LAST_UPDATED = '2026-05-22';
 const PUBLIC_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/privacy';
+const DRIVER_LAST_UPDATED = '2026-09-01';
+const DRIVER_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/driver-app/privacy';
+const DRIVER_SUPPORT_URL = 'https://clever-route-api.cleversystem.ai/driver-app/support';
 
 export function registerPrivacyRoutes(app: FastifyInstance): void {
   app.get('/privacy', async (_request, reply) => {
@@ -10,6 +13,14 @@ export function registerPrivacyRoutes(app: FastifyInstance): void {
 
   app.get('/privacy-policy', async (_request, reply) => {
     return reply.redirect('/privacy');
+  });
+
+  app.get('/driver-app/privacy', async (_request, reply) => {
+    return reply.header('Content-Type', 'text/html; charset=utf-8').send(renderDriverPrivacyPage());
+  });
+
+  app.get('/driver-app/support', async (_request, reply) => {
+    return reply.header('Content-Type', 'text/html; charset=utf-8').send(renderDriverSupportPage());
   });
 }
 
@@ -186,4 +197,133 @@ function escapeHtml(value: string): string {
     .replace(/'/gu, '&#39;')
     .replace(/</gu, '&lt;')
     .replace(/>/gu, '&gt;');
+}
+
+function renderDriverPrivacyPage(): string {
+  return renderDriverPage({
+    description: 'Privacy policy for the CLEVER Driver iOS and Android delivery app.',
+    publicUrl: DRIVER_PRIVACY_URL,
+    title: 'CLEVER Driver 개인정보 처리방침',
+    body: `
+    <section>
+      <h2>1. 운영자 / Operator</h2>
+      <p>CLEVER Driver는 <strong>이브이앤솔루션 주식회사</strong>(EV&amp;Solution Co., Ltd.)가 운영하는 DSV 배송원 전용 앱입니다.</p>
+      <p>서울사무소: 서울특별시 동작구 노량진로 10, 서울창업센터 동작</p>
+      <p>개인정보 보호책임자: 장원철 이사<br />이메일: <a href="mailto:chase@evnsolution.com">chase@evnsolution.com</a><br />전화: <a href="tel:070-8028-3180">070-8028-3180</a></p>
+    </section>
+
+    <section>
+      <h2>2. 처리하는 정보 / Information we process</h2>
+      <ul>
+        <li><strong>계정 정보:</strong> 이름, 휴대전화 번호, 로그인 아이디, 서버 계정 식별자</li>
+        <li><strong>배송 업무 정보:</strong> 배정된 경로와 배송지, 주문·물품 표시 정보, 배송 상태, 시작·완료 이벤트와 타임스탬프</li>
+        <li><strong>배송 증빙:</strong> 사용자가 카메라로 촬영하거나 사진 앨범에서 선택해 업로드한 사진과 파일 메타데이터</li>
+        <li><strong>보안·운영 정보:</strong> 로그인과 세션 기록, 오류·접근 기록, 계정 삭제 요청 기록</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>3. 이용 목적 / Purposes</h2>
+      <ul>
+        <li>배송원 계정 생성, 본인 확인, 로그인과 DSV 배송원 정보 연결</li>
+        <li>배정된 배송 업무 표시, 경로 안내, 배송 상태와 증빙 처리</li>
+        <li>서비스 보안, 오류 대응, 고객 지원과 운영 기록 확인</li>
+        <li>계정 및 개인정보 열람·정정·삭제 요청 처리</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>4. 위치 정보 / Location</h2>
+      <p>사용자가 지도 화면을 열고 위치 권한을 허용한 경우 현재 위치는 배송 지도의 기기 화면에만 표시됩니다. 제출된 iOS 버전은 백그라운드 위치를 수집하거나 서버로 전송하지 않습니다.</p>
+      <p>When the user opens the map and grants permission, current location is displayed only on the device. The submitted iOS version does not collect background location or upload the device's current location.</p>
+    </section>
+
+    <section>
+      <h2>5. 처리 위탁 및 외부 서비스 / Service providers</h2>
+      <p>서비스 제공을 위해 승인된 서버·데이터베이스·파일 저장소와 지도·경로 안내 서비스가 사용될 수 있습니다. 해당 제공자는 계약된 서비스 제공과 보안 운영에 필요한 범위에서만 정보를 처리합니다.</p>
+      <p>개인정보는 법령상 요구, 이용자 보호 또는 서비스 제공을 위해 필요한 경우를 제외하고 판매하거나 광고·추적 목적으로 제공하지 않습니다.</p>
+    </section>
+
+    <section>
+      <h2>6. 보관 및 삭제 / Retention and deletion</h2>
+      <p>계정 정보는 계정 운영과 배송 업무 제공에 필요한 기간 동안 보관합니다. 배송 이벤트와 증빙은 배송 운영 확인, 분쟁 대응, 계약 또는 법령상 의무에 필요한 기간 동안 보관한 뒤 삭제하거나 식별할 수 없도록 처리합니다.</p>
+      <p>사용자는 앱의 <strong>환경설정 → 계정 관리 → 계정 삭제 요청</strong>에서 전체 계정 삭제를 시작할 수 있습니다. 진행 중인 배송이 있으면 배송을 완료하거나 반납한 뒤 요청할 수 있습니다. 요청이 접수되면 법령 또는 계약상 보관 의무가 있는 정보를 제외한 계정과 연결 개인정보를 삭제하거나 비식별 처리합니다.</p>
+    </section>
+
+    <section>
+      <h2>7. 이용자 권리와 문의 / Your choices and contact</h2>
+      <p>개인정보 열람, 정정, 처리 정지 또는 삭제 문의는 <a href="mailto:chase@evnsolution.com">chase@evnsolution.com</a> 또는 <a href="tel:070-8028-3180">070-8028-3180</a>으로 접수할 수 있습니다.</p>
+      <p>일반 앱 지원은 <a href="${DRIVER_SUPPORT_URL}">${DRIVER_SUPPORT_URL}</a>에서 확인할 수 있습니다.</p>
+    </section>`,
+  });
+}
+
+function renderDriverSupportPage(): string {
+  return renderDriverPage({
+    description: 'Support and contact information for the CLEVER Driver app.',
+    publicUrl: DRIVER_SUPPORT_URL,
+    title: 'CLEVER Driver 지원',
+    body: `
+    <section>
+      <h2>앱 지원 / App support</h2>
+      <p>CLEVER Driver는 승인된 DSV 배송원이 배정된 배송 업무, 경로, 배송 상태와 증빙을 처리하는 전용 앱입니다.</p>
+      <p>로그인, 계정 연결, 배송 배정, 지도, 사진 증빙 또는 계정 삭제 요청에 문제가 있으면 아래 연락처로 문의해 주세요. 문의 시 비밀번호나 전체 인증 토큰을 보내지 마세요.</p>
+    </section>
+
+    <section>
+      <h2>연락처 / Contact</h2>
+      <p><strong>이브이앤솔루션 주식회사</strong><br />EV&amp;Solution Co., Ltd.</p>
+      <p>서울사무소: 서울특별시 동작구 노량진로 10, 서울창업센터 동작</p>
+      <p>앱·서비스 문의: <a href="mailto:sumz@evnsolution.com">sumz@evnsolution.com</a><br />전화: <a href="tel:070-7954-4180">070-7954-4180</a></p>
+      <p>개인정보 문의: 장원철 이사<br />이메일: <a href="mailto:chase@evnsolution.com">chase@evnsolution.com</a><br />전화: <a href="tel:070-8028-3180">070-8028-3180</a><br />팩스: 0504-011-2955</p>
+    </section>
+
+    <section>
+      <h2>계정 삭제 요청 / Account deletion</h2>
+      <p>로그인 후 <strong>환경설정 → 계정 관리 → 계정 삭제 요청</strong>에서 삭제를 시작할 수 있습니다. 진행 중인 배송이 있으면 배송을 완료하거나 반납한 뒤 다시 요청해 주세요.</p>
+      <p>로그인할 수 없는 경우 위 이메일 또는 전화로 계정 확인과 삭제 절차를 문의할 수 있습니다. 개인정보 처리 방식은 <a href="${DRIVER_PRIVACY_URL}">CLEVER Driver 개인정보 처리방침</a>에서 확인할 수 있습니다.</p>
+    </section>`,
+  });
+}
+
+function renderDriverPage(input: {
+  body: string;
+  description: string;
+  publicUrl: string;
+  title: string;
+}): string {
+  return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${input.title}</title>
+  <meta name="description" content="${input.description}" />
+  <style>
+    :root { color-scheme: light; --ink: #172033; --muted: #5b6475; --line: #dbe3ef; --card: #ffffff; --bg: #f6f8fb; --accent: #0b57d0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.65; }
+    main { width: min(100% - 32px, 880px); margin: 0 auto; padding: 40px 0; }
+    header, section { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 26px; margin-bottom: 16px; }
+    h1 { margin: 0 0 12px; font-size: clamp(28px, 5vw, 42px); line-height: 1.2; }
+    h2 { margin: 0 0 12px; font-size: 21px; }
+    p { margin: 0 0 12px; }
+    p:last-child { margin-bottom: 0; }
+    ul { margin: 0; padding-left: 22px; }
+    a { color: var(--accent); overflow-wrap: anywhere; }
+    .eyebrow { color: var(--accent); font-size: 14px; font-weight: 700; }
+    .muted { color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">최종 업데이트 / Last updated: ${DRIVER_LAST_UPDATED}</p>
+      <h1>${input.title}</h1>
+      <p class="muted">공개 URL / Public URL: <a href="${input.publicUrl}">${input.publicUrl}</a></p>
+    </header>
+    ${input.body}
+  </main>
+</body>
+</html>`;
 }
