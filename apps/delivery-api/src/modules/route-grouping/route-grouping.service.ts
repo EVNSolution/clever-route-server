@@ -200,6 +200,7 @@ type ChildSnapshot = {
 
 type RouteGroupingRouteGeometryRefresher = {
   refreshRouteGeometryForRoutePlan(input: {
+    appId?: string | undefined;
     routePlanId: string;
     shopDomain: string;
     source: 'SHAPE_MUTATION' | 'SNAPSHOT';
@@ -801,7 +802,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     });
     if (groupingId === null) return null;
     if (input.targetRoutePlanId !== undefined && addOrderIds.length > 0) {
-      await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.shopDomain, 'SHAPE_MUTATION');
+      await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.appId, input.shopDomain, 'SHAPE_MUTATION');
     }
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
@@ -888,7 +889,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     });
     if (groupingId === null) return null;
     if (input.targetRoutePlanId !== undefined) {
-      await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.shopDomain, 'SHAPE_MUTATION');
+      await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.appId, input.shopDomain, 'SHAPE_MUTATION');
     }
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
@@ -1986,12 +1987,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return { childRoutePlanIds, groupingId: loaded.id };
     });
     if (projection === null) return null;
-    await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);
+    await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.appId, input.shopDomain);
     return this.getGrouping({ appId: input.appId, groupingId: projection.groupingId, shopDomain: input.shopDomain });
   }
 
   private async refreshChildRouteGeometry(
     routePlanIds: string[],
+    appId: string | undefined,
     shopDomain: string,
     source: 'SHAPE_MUTATION' | 'SNAPSHOT' = 'SNAPSHOT'
   ): Promise<void> {
@@ -2003,6 +2005,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const results = await Promise.allSettled(
         batch.map((routePlanId) =>
           routeGeometryRefresher.refreshRouteGeometryForRoutePlan({
+            appId,
             routePlanId,
             shopDomain,
             source
