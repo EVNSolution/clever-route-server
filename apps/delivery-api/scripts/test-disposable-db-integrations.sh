@@ -10,7 +10,8 @@ if [[ "${1:-}" == "--plan" ]]; then
     'Email reconciliation: 127.0.0.1:55491 / clever_email_reconciliation' \
     'G010: 127.0.0.1:55477 / clever_g007_g010_eta' \
     'G005: 127.0.0.1:55466 / clever_g005' \
-    'G006: 127.0.0.1:55490 / clever_g006'
+    'G006: 127.0.0.1:55490 / clever_g006' \
+    'Deletion lifecycle populated upgrade: 127.0.0.1:55492 / clever_deletion_upgrade'
   exit 0
 fi
 
@@ -69,6 +70,7 @@ g002_upgrade_container="clever-api-audit-g002-upgrade-${audit_suffix}"
 g010_container="clever-api-audit-g010-${audit_suffix}"
 g005_container="clever-api-audit-g005-${audit_suffix}"
 g006_container="clever-api-audit-g006-${audit_suffix}"
+deletion_upgrade_container="clever-api-audit-deletion-upgrade-${audit_suffix}"
 
 g003_url='postgresql://clever_g003:clever_g003@127.0.0.1:55433/clever_g003?schema=public'
 g002_url='postgresql://clever_g002:clever_g002@127.0.0.1:55488/clever_g002?schema=public'
@@ -85,6 +87,78 @@ start_postgres "$g002_upgrade_container" 55489 clever_g002_upgrade clever_g002_u
 start_postgres "$g010_container" 55477 clever_g007_g010_eta clever_g007 clever_g007
 start_postgres "$g005_container" 55466 clever_g005 clever_g005 clever_g005
 start_postgres "$g006_container" 55490 clever_g006 clever_g006 clever_g006
+start_postgres "$deletion_upgrade_container" 55492 clever_deletion_upgrade clever_deletion_upgrade clever_deletion_upgrade
+
+docker exec -i "$deletion_upgrade_container" psql -v ON_ERROR_STOP=1 \
+  -U clever_deletion_upgrade -d clever_deletion_upgrade <<'SQL'
+CREATE TYPE "DriverAccountDeletionRequestStatus" AS ENUM ('REQUESTED');
+CREATE TABLE driver_accounts (id UUID PRIMARY KEY);
+CREATE TABLE drivers (
+  id UUID PRIMARY KEY,
+  "accountId" UUID
+);
+CREATE TABLE driver_account_deletion_requests (
+  id UUID PRIMARY KEY,
+  "accountId" UUID,
+  "driverId" UUID,
+  "shopDomain" TEXT,
+  "driverDisplayName" TEXT,
+  "driverPhone" TEXT,
+  status "DriverAccountDeletionRequestStatus" NOT NULL DEFAULT 'REQUESTED',
+  reason TEXT,
+  "requestedAt" TIMESTAMPTZ NOT NULL
+);
+CREATE UNIQUE INDEX driver_account_deletion_requests_accountId_key
+  ON driver_account_deletion_requests("accountId");
+
+INSERT INTO driver_accounts VALUES
+  ('61000000-0000-4000-8000-000000000001'),
+  ('61000000-0000-4000-8000-000000000002');
+INSERT INTO drivers VALUES
+  ('62000000-0000-4000-8000-000000000001', '61000000-0000-4000-8000-000000000001'),
+  ('62000000-0000-4000-8000-000000000002', '61000000-0000-4000-8000-000000000001'),
+  ('62000000-0000-4000-8000-000000000003', '61000000-0000-4000-8000-000000000002'),
+  ('62000000-0000-4000-8000-000000000004', '61000000-0000-4000-8000-000000000002'),
+  ('62000000-0000-4000-8000-000000000005', NULL);
+INSERT INTO driver_account_deletion_requests
+  (id, "accountId", "driverId", "shopDomain", "driverDisplayName", "driverPhone", reason, "requestedAt")
+VALUES
+  ('63000000-0000-4000-8000-000000000001', '61000000-0000-4000-8000-000000000001', NULL, NULL, 'Account A', '+10000000001', 'account request', '2026-08-03T00:00:00Z'),
+  ('63000000-0000-4000-8000-000000000002', NULL, '62000000-0000-4000-8000-000000000001', 'a.invalid', 'Driver A1', '+10000000002', 'legacy request', '2026-08-01T00:00:00Z'),
+  ('63000000-0000-4000-8000-000000000003', NULL, '62000000-0000-4000-8000-000000000002', 'a.invalid', 'Driver A2', '+10000000003', 'legacy request', '2026-08-02T00:00:00Z'),
+  ('63000000-0000-4000-8000-000000000004', NULL, '62000000-0000-4000-8000-000000000003', 'b.invalid', 'Driver B1', '+10000000004', 'legacy request', '2026-08-01T00:00:00Z'),
+  ('63000000-0000-4000-8000-000000000005', NULL, '62000000-0000-4000-8000-000000000004', 'b.invalid', 'Driver B2', '+10000000005', 'legacy request', '2026-08-02T00:00:00Z'),
+  ('63000000-0000-4000-8000-000000000006', NULL, '62000000-0000-4000-8000-000000000005', 'c.invalid', 'Driver C', '+10000000006', 'legacy request', '2026-08-01T00:00:00Z'),
+  ('63000000-0000-4000-8000-000000000007', NULL, '62000000-0000-4000-8000-000000000005', 'c.invalid', 'Driver C duplicate', '+10000000007', 'legacy request', '2026-08-02T00:00:00Z');
+SQL
+docker exec -i "$deletion_upgrade_container" psql -v ON_ERROR_STOP=1 \
+  -U clever_deletion_upgrade -d clever_deletion_upgrade \
+  < prisma/migrations/20260901070000_complete_driver_account_deletion_lifecycle/migration.sql
+deletion_upgrade_rows="$(docker exec "$deletion_upgrade_container" psql -At \
+  -U clever_deletion_upgrade -d clever_deletion_upgrade -c '
+    SELECT id::text || '"'"':'"'"' || COALESCE("accountId"::text, '"'"'-'"'"') || '"'"':'"'"' ||
+      COALESCE("driverId"::text, '"'"'-'"'"') || '"'"':'"'"' || status::text || '"'"':'"'"' ||
+      COALESCE("supersededByRequestId"::text, '"'"'-'"'"')
+    FROM driver_account_deletion_requests ORDER BY id')"
+expected_deletion_upgrade_rows=$'63000000-0000-4000-8000-000000000001:61000000-0000-4000-8000-000000000001:-:REQUESTED:-\n63000000-0000-4000-8000-000000000002:-:-:REJECTED:63000000-0000-4000-8000-000000000001\n63000000-0000-4000-8000-000000000003:-:-:REJECTED:63000000-0000-4000-8000-000000000001\n63000000-0000-4000-8000-000000000004:61000000-0000-4000-8000-000000000002:-:REQUESTED:-\n63000000-0000-4000-8000-000000000005:-:-:REJECTED:63000000-0000-4000-8000-000000000004\n63000000-0000-4000-8000-000000000006:-:62000000-0000-4000-8000-000000000005:REQUESTED:-\n63000000-0000-4000-8000-000000000007:-:-:REJECTED:63000000-0000-4000-8000-000000000006'
+[[ "$deletion_upgrade_rows" == "$expected_deletion_upgrade_rows" ]] || {
+  printf 'Unexpected populated deletion lifecycle upgrade rows:\n%s\n' "$deletion_upgrade_rows" >&2
+  exit 1
+}
+deletion_upgrade_pii="$(docker exec "$deletion_upgrade_container" psql -At \
+  -U clever_deletion_upgrade -d clever_deletion_upgrade -c '
+    SELECT count(*) FROM driver_account_deletion_requests
+    WHERE status = '"'"'REJECTED'"'"'
+      AND ("driverDisplayName" IS NOT NULL OR "driverPhone" IS NOT NULL OR reason IS NOT NULL)')"
+[[ "$deletion_upgrade_pii" == '0' ]] || { echo 'Superseded deletion requests retained PII' >&2; exit 1; }
+deletion_upgrade_audit="$(docker exec "$deletion_upgrade_container" psql -At \
+  -U clever_deletion_upgrade -d clever_deletion_upgrade -c '
+    SELECT count(*) FROM driver_account_deletion_requests
+    WHERE status = '"'"'REJECTED'"'"'
+      AND "rejectionCode" = '"'"'DUPLICATE_MIGRATION_RECONCILED'"'"'
+      AND "processedBy" = '"'"'migration-20260901'"'"'')"
+[[ "$deletion_upgrade_audit" == '4' ]] || { echo 'Superseded deletion request audit metadata is incomplete' >&2; exit 1; }
+echo 'Deletion lifecycle populated legacy reconciliation: PASS'
 
 docker exec -i "$g002_upgrade_container" psql -v ON_ERROR_STOP=1 -U clever_g002_upgrade -d clever_g002_upgrade <<'SQL'
 CREATE TABLE driver_event_attempts (
@@ -250,5 +324,6 @@ npm test -- dsv-v1-read-query.integration.test.ts
 G006_DATABASE_TARGET_CLASS='safe-local-g006-disposable' \
 SHOP_PRIVACY_INVARIANT_DATABASE_TARGET_CLASS='safe-local-disposable' \
 DATABASE_URL="$g006_url" \
+DRIVER_ACCOUNT_DELETION_DATABASE_URL="$g006_url" \
 SHOPIFY_WEBHOOK_DURABILITY_DATABASE_URL="$g006_url" \
-npm test -- shopify-webhook-durability.integration.test.ts shop-privacy-db-invariant.integration.test.ts
+npm test -- shopify-webhook-durability.integration.test.ts shop-privacy-db-invariant.integration.test.ts driver-account-deletion.integration.test.ts

@@ -98,9 +98,26 @@ Content-Type: application/json
 
 The body requires `confirmation: "DELETE"` and accepts an optional `reason`.
 The endpoint creates one idempotent `REQUESTED` audit record for the global
-`DriverAccount`. It returns `409 ACCOUNT_DELETION_ACTIVE_ROUTE` while any route
-linked to the account is `IN_PROGRESS`. The request does not immediately delete
-delivery, consent, proof, or route history records.
+`DriverAccount`. A legacy route bearer converges on the same account request when
+the driver is linked to an account. It returns `409
+ACCOUNT_DELETION_ACTIVE_ROUTE` while any linked route is `IN_PROGRESS`.
+
+Request intake does not immediately delete records. A verified operator runs the
+bounded lifecycle separately. Fulfillment moves through `PROCESSING` and ends in
+`COMPLETED`, or moves to `DEFERRED` while an active route exists. Transaction
+failure is recorded as retryable `FAILED`; policy refusal uses a bounded
+`REJECTED` reason code. Completed/rejected requests are idempotent on retry.
+
+Successful fulfillment revokes account and driver refresh sessions, removes push
+tokens, invalidates access-token versions, clears authentication secrets and
+direct account/driver identifiers, clears consent device context, and redacts
+free-form route feedback. Delivery, route, consent timing, proof, dispute,
+security, and non-identifying audit records remain under their documented
+retention and legal/contract exceptions.
+
+The public external intake is `GET /routes-app/account-deletion`. Email intake is
+not identity proof. An operator must use the already registered contact channel
+for one-time verification before creating an `OPERATOR_VERIFIED_CONTACT` request.
 
 ## Security boundary
 

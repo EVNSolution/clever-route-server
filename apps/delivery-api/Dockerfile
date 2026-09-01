@@ -22,7 +22,8 @@ RUN npm --prefix apps/delivery-api run prisma:generate \
   && test -f apps/delivery-api/dist/scripts/report-driver-route-completion-invariant.js \
   && test -f apps/delivery-api/dist/scripts/cleanup-shopify-webhook-events.js \
   && test -f apps/delivery-api/dist/scripts/cleanup-driver-proof-media.js \
-  && test -f apps/delivery-api/dist/scripts/reconcile-customer-email.js
+  && test -f apps/delivery-api/dist/scripts/reconcile-customer-email.js \
+  && test -f apps/delivery-api/dist/scripts/process-driver-account-deletion.js
 
 FROM build AS pruned
 RUN npm --prefix apps/delivery-api prune --omit=dev

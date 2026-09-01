@@ -131,4 +131,82 @@ describe('privacy routes', () => {
       await app.close();
     }
   });
+
+  test('GET /routes-app/privacy serves the CLEVER Routes privacy notice without authentication', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/routes-app/privacy' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('text/html');
+      expect(response.body).toContain('CLEVER Routes 개인정보 처리방침');
+      expect(response.body).toContain('EV&amp;Solution Co., Ltd.');
+      expect(response.body).toContain('활성 배송 경로');
+      expect(response.body).toContain('전경 및 백그라운드');
+      expect(response.body).toContain('정밀 위치');
+      expect(response.body).toContain('증빙 사진');
+      expect(response.body).toContain('EXIF');
+      expect(response.body).toContain('비공개 저장소');
+      expect(response.body).toContain('기본 180일');
+      expect(response.body).toContain('해결된 순서 이벤트 재시도 증거는 기본 90일');
+      expect(response.body).toContain('미해결 또는 조정이 필요한 기록은 해결될 때까지');
+      expect(response.body).toContain('서명, 수령인 이름, 배송 메모');
+      expect(response.body).toContain('경로 및 정차 활동');
+      expect(response.body).toContain('푸시 토큰');
+      expect(response.body).toContain('기기 식별자');
+      expect(response.body).toContain('Firebase Cloud Messaging');
+      expect(response.body).toContain('Google Maps 또는 Waze');
+      expect(response.body).toContain('/routes-app/account-deletion');
+      expect(response.body).not.toContain('CLEVER Driver 개인정보 처리방침');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /routes-app/support serves Routes-specific support and safe contact guidance', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/routes-app/support' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('text/html');
+      expect(response.body).toContain('CLEVER Routes 지원');
+      expect(response.body).toContain('이브이앤솔루션 주식회사');
+      expect(response.body).toContain('mailto:');
+      expect(response.body).toContain('/routes-app/privacy');
+      expect(response.body).toContain('/routes-app/account-deletion');
+      expect(response.body).toContain('비밀번호, PIN, 인증 토큰 또는 증빙 사진을 보내지 마세요');
+      expect(response.body).not.toContain('DSV 배송원');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /routes-app/account-deletion provides verified external intake without an unsafe public deletion form', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/routes-app/account-deletion' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('text/html');
+      expect(response.body).toContain('CLEVER Routes 계정 및 데이터 삭제 요청');
+      expect(response.body).toContain('mailto:');
+      expect(response.body).toContain('등록된 연락처');
+      expect(response.body).toContain('일회성 본인 확인');
+      expect(response.body).toContain('활성 배송 경로');
+      expect(response.body).toContain('30일 이내');
+      expect(response.body).toContain('로그인 세션과 푸시 토큰');
+      expect(response.body).toContain('삭제하거나 익명화');
+      expect(response.body).toContain('배송, 분쟁, 보안, 계약 또는 법적 의무');
+      expect(response.body).toContain('비밀번호, PIN, 인증 토큰 또는 증빙 사진을 이메일로 보내지 마세요');
+      expect(response.body).not.toMatch(/<form\b/iu);
+      expect(response.body).not.toMatch(/<input\b/iu);
+      expect(response.body).not.toContain('href="tel:');
+    } finally {
+      await app.close();
+    }
+  });
 });

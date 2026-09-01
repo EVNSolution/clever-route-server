@@ -74,6 +74,10 @@ const driverAccountDeletionMigrationPath = new URL(
   '../prisma/migrations/20260727180000_scope_deletion_request_to_driver_account/migration.sql',
   import.meta.url
 );
+const driverAccountDeletionLifecycleMigrationPath = new URL(
+  '../prisma/migrations/20260901070000_complete_driver_account_deletion_lifecycle/migration.sql',
+  import.meta.url
+);
 const multiRouteMembershipMigrationPath = new URL(
   '../prisma/migrations/20260722090000_allow_safe_multi_route_membership/migration.sql',
   import.meta.url
@@ -467,6 +471,37 @@ describe('Prisma schema', () => {
     expect(migration).toContain('REFERENCES "driver_accounts"("id")');
     expect(migration).toContain('ON DELETE SET NULL');
     expect(migration.trim()).toMatch(/^BEGIN;[\s\S]*COMMIT;$/u);
+  });
+
+  test('adds an idempotent terminal account deletion lifecycle without deleting operational history', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(driverAccountDeletionLifecycleMigrationPath, 'utf8');
+    const statusEnum = /enum DriverAccountDeletionRequestStatus \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    const requestModel = /model DriverAccountDeletionRequest \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    for (const status of ['REQUESTED', 'DEFERRED', 'PROCESSING', 'COMPLETED', 'REJECTED', 'FAILED']) {
+      expect(statusEnum).toContain(status);
+    }
+    expect(requestModel).toMatch(/driverId\s+String\?\s+@unique\s+@db\.Uuid/u);
+    expect(requestModel).toContain('requestChannel');
+    expect(requestModel).toContain('verificationMethod');
+    expect(requestModel).toContain('processingKey');
+    expect(requestModel).toContain('processingLeaseExpiresAt');
+    expect(requestModel).toContain('processedBy');
+    expect(requestModel).toContain('processedAt');
+    expect(requestModel).toContain('attemptCount');
+    expect(requestModel).toContain('failureCode');
+    expect(requestModel).toContain('rejectionCode');
+    expect(requestModel).toContain('supersededByRequestId');
+    expect(migration.trim()).toMatch(/^BEGIN;[\s\S]*COMMIT;[\s\S]*BEGIN;[\s\S]*COMMIT;$/u);
+    expect(migration).toContain('ALTER TYPE "DriverAccountDeletionRequestStatus" ADD VALUE IF NOT EXISTS');
+    expect(migration).toContain('driver_account_deletion_reconciliation');
+    expect(migration).toContain('DUPLICATE_MIGRATION_RECONCILED');
+    expect(migration).toContain('"supersededByRequestId"');
+    expect(migration).toContain('driver_account_deletion_requests_driverId_key');
+    expect(migration).not.toContain('DELETE FROM "driver_account_deletion_requests"');
+    expect(migration).not.toContain('DELETE FROM "drivers"');
+    expect(migration).not.toContain('DELETE FROM "driver_accounts"');
   });
 
   test('ships a migration for the WooCommerce connection store rollout', async () => {

@@ -26,11 +26,11 @@ import { ROUTE_DRIVER_VISIBLE_STATUSES, toRouteExecutionStatus } from '../route-
 
 export type DriverSelfServicePrismaClient = Pick<
   PrismaClient,
-  'driver' | 'driverAccount' | 'driverAccountDeletionRequest' | 'driverRouteFeedback' | 'routePlan' | 'shop'
+  '$transaction' | 'driver' | 'driverAccount' | 'driverAccountDeletionRequest' | 'driverRouteFeedback' | 'routePlan' | 'shop'
 >;
 
 type ScopedDriverRecord = {
-  driver: DriverSelfProfile;
+  driver: DriverSelfProfile & { accountId: string | null };
   shop: {
     id: string;
     shopDomain: string;
@@ -147,7 +147,7 @@ export class PrismaDriverSelfServiceRepository {
 
   async getDriverProfile(input: DriverSelfServiceScopeInput): Promise<{ driver: DriverSelfProfile }> {
     const scoped = await this.resolveScopedDriver(input);
-    return { driver: scoped.driver };
+    return { driver: toDriverProfile(scoped.driver) };
   }
 
   async updateDriverProfile(input: UpdateDriverProfileInput): Promise<{ driver: DriverSelfProfile }> {
@@ -163,80 +163,165 @@ export class PrismaDriverSelfServiceRepository {
 
   async requestAccountDeletion(input: DriverAccountDeletionRequestInput): Promise<DriverAccountDeletionRequestResult> {
     const scoped = await this.resolveScopedDriver(input);
-    const request = await this.prisma.driverAccountDeletionRequest.create({
-      data: {
-        driverId: input.driverId,
-        driverDisplayName: scoped.driver.displayName,
-        driverPhone: scoped.driver.phone,
-        reason: input.reason,
-        requestedAt: input.requestedAt,
-        shopDomain: scoped.shop.shopDomain,
-        shopId: scoped.shop.id,
-        status: 'REQUESTED'
-      }
-    });
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const lockedDrivers = await tx.$queryRaw<Array<{ accountId: string | null; id: string }>>(Prisma.sql`
+          SELECT id, "accountId"
+          FROM drivers
+          WHERE id = CAST(${input.driverId} AS UUID)
+            AND "shopId" = CAST(${scoped.shop.id} AS UUID)
+            AND status = 'ACTIVE'
+          FOR UPDATE
+        `);
+        const lockedDriver = lockedDrivers[0];
+        if (lockedDriver === undefined) {
+          throw new DriverSelfServiceScopeError('Driver is not active in the requested shop scope');
+        }
+        const accountId = lockedDriver.accountId;
+        const existing = accountId === null
+          ? await tx.driverAccountDeletionRequest.findUnique({ where: { driverId: input.driverId } })
+          : await this.findOrPromoteAccountDeletionRequest(tx, accountId);
+        if (existing !== null) {
+          return { duplicate: true, requestId: existing.id, status: existing.status };
+        }
 
-    return {
-      duplicate: false,
-      requestId: request.id,
-      status: request.status
-    };
+        const activeRoute = await tx.routePlan.findFirst({
+          select: { id: true },
+          where: accountId === null
+            ? { driverId: input.driverId, status: 'IN_PROGRESS' }
+            : { driver: { accountId }, status: 'IN_PROGRESS' }
+        });
+        if (activeRoute !== null) {
+          throw new DriverAccountDeletionActiveRouteError('Finish or release the active route before requesting account deletion');
+        }
+
+        const request = await tx.driverAccountDeletionRequest.create({
+          data: accountId === null
+            ? {
+                driverDisplayName: null,
+                driverId: input.driverId,
+                driverPhone: null,
+                reason: input.reason,
+                requestChannel: 'IN_APP',
+                requestedAt: input.requestedAt,
+                shopDomain: scoped.shop.shopDomain,
+                shopId: scoped.shop.id,
+                status: 'REQUESTED',
+                verificationMethod: 'LEGACY_DRIVER_TOKEN'
+              }
+            : {
+                accountId,
+                driverDisplayName: null,
+                driverPhone: null,
+                reason: input.reason,
+                requestChannel: 'IN_APP',
+                requestedAt: input.requestedAt,
+                shopDomain: null,
+                status: 'REQUESTED',
+                verificationMethod: 'LEGACY_DRIVER_TOKEN'
+              }
+        });
+        return { duplicate: false, requestId: request.id, status: request.status };
+      });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
+      const concurrent = await this.prisma.$transaction(async (tx) => {
+        const lockedDrivers = await tx.$queryRaw<Array<{ accountId: string | null }>>(Prisma.sql`
+          SELECT "accountId"
+          FROM drivers
+          WHERE id = CAST(${input.driverId} AS UUID)
+            AND "shopId" = CAST(${scoped.shop.id} AS UUID)
+          FOR UPDATE
+        `);
+        const accountId = lockedDrivers[0]?.accountId ?? null;
+        return accountId === null
+          ? tx.driverAccountDeletionRequest.findUnique({ where: { driverId: input.driverId } })
+          : this.findOrPromoteAccountDeletionRequest(tx, accountId);
+      });
+      if (concurrent === null) throw error;
+      return { duplicate: true, requestId: concurrent.id, status: concurrent.status };
+    }
   }
 
   async requestGlobalAccountDeletion(
     input: GlobalDriverAccountDeletionRequestInput
   ): Promise<DriverAccountDeletionRequestResult | null> {
-    const account = await this.prisma.driverAccount.findFirst({
-      select: { name: true, phone: true },
-      where: {
-        id: input.accountId,
-        status: 'ACTIVE',
-        tokenVersion: input.tokenVersion
-      }
-    });
-    if (account === null) return null;
-
-    const existing = await this.prisma.driverAccountDeletionRequest.findUnique({
-      where: { accountId: input.accountId }
-    });
-    if (existing !== null) {
-      return { duplicate: true, requestId: existing.id, status: existing.status };
-    }
-
-    const activeRoute = await this.prisma.routePlan.findFirst({
-      select: { id: true },
-      where: {
-        driver: { accountId: input.accountId },
-        status: 'IN_PROGRESS'
-      }
-    });
-    if (activeRoute !== null) {
-      throw new DriverAccountDeletionActiveRouteError('Finish or release the active route before requesting account deletion');
-    }
-
     try {
-      const request = await this.prisma.driverAccountDeletionRequest.create({
-        data: {
-          accountId: input.accountId,
-          driverDisplayName: account.name,
-          driverPhone: account.phone,
-          reason: input.reason,
-          requestedAt: input.requestedAt,
-          shopDomain: null,
-          status: 'REQUESTED'
+      return await this.prisma.$transaction(async (tx) => {
+        const account = await tx.driverAccount.findFirst({
+          select: { id: true },
+          where: {
+            id: input.accountId,
+            status: 'ACTIVE',
+            tokenVersion: input.tokenVersion
+          }
+        });
+        if (account === null) return null;
+
+        const existing = await this.findOrPromoteAccountDeletionRequest(tx, input.accountId);
+        if (existing !== null) {
+          return { duplicate: true, requestId: existing.id, status: existing.status };
         }
+
+        const activeRoute = await tx.routePlan.findFirst({
+          select: { id: true },
+          where: {
+            driver: { accountId: input.accountId },
+            status: 'IN_PROGRESS'
+          }
+        });
+        if (activeRoute !== null) {
+          throw new DriverAccountDeletionActiveRouteError('Finish or release the active route before requesting account deletion');
+        }
+
+        const request = await tx.driverAccountDeletionRequest.create({
+          data: {
+            accountId: input.accountId,
+            driverDisplayName: null,
+            driverPhone: null,
+            reason: input.reason,
+            requestChannel: 'IN_APP',
+            requestedAt: input.requestedAt,
+            shopDomain: null,
+            status: 'REQUESTED',
+            verificationMethod: 'AUTHENTICATED_ACCOUNT'
+          }
+        });
+        return { duplicate: false, requestId: request.id, status: request.status };
       });
-      return { duplicate: false, requestId: request.id, status: request.status };
     } catch (error) {
       if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
         throw error;
       }
-      const concurrent = await this.prisma.driverAccountDeletionRequest.findUnique({
-        where: { accountId: input.accountId }
-      });
+      const concurrent = await this.prisma.$transaction((tx) =>
+        this.findOrPromoteAccountDeletionRequest(tx, input.accountId)
+      );
       if (concurrent === null) throw error;
       return { duplicate: true, requestId: concurrent.id, status: concurrent.status };
     }
+  }
+
+  private async findOrPromoteAccountDeletionRequest(
+    client: Pick<Prisma.TransactionClient, 'driverAccountDeletionRequest'>,
+    accountId: string
+  ) {
+    const accountRequest = await client.driverAccountDeletionRequest.findUnique({ where: { accountId } });
+    if (accountRequest !== null) return accountRequest;
+
+    const legacyRequest = await client.driverAccountDeletionRequest.findFirst({
+      orderBy: [{ requestedAt: 'asc' }, { id: 'asc' }],
+      where: { driver: { accountId } }
+    });
+    if (legacyRequest === null) return null;
+
+    return client.driverAccountDeletionRequest.update({
+      data: {
+        accountId,
+        driverId: null,
+        shopDomain: null
+      },
+      where: { id: legacyRequest.id }
+    });
   }
 
   async getDriverEarnings(input: GetDriverEarningsInput): Promise<DriverEarningsResult> {
@@ -297,7 +382,7 @@ export class PrismaDriverSelfServiceRepository {
     }
 
     const driver = await this.prisma.driver.findFirst({
-      select: driverProfileSelect,
+      select: scopedDriverProfileSelect,
       where: {
         id: input.driverId,
         shopId: shop.id,
@@ -309,7 +394,7 @@ export class PrismaDriverSelfServiceRepository {
       throw new DriverSelfServiceScopeError(`Driver not found for shop: ${input.driverId}`);
     }
 
-    return { driver: toDriverProfile(driver), shop };
+    return { driver: { ...toDriverProfile(driver), accountId: driver.accountId }, shop };
   }
 }
 
@@ -318,6 +403,11 @@ const driverProfileSelect = {
   id: true,
   phone: true,
   status: true
+} as const;
+
+const scopedDriverProfileSelect = {
+  accountId: true,
+  ...driverProfileSelect
 } as const;
 
 function routeHistoryIncludeFor(driverId: string) {

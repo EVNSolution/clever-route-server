@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-08-24
+  x-contract-revision: 2026-09-01
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -132,6 +132,54 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RoutesAppInstallUnavailableResponse' }
+  /routes-app/privacy:
+    get:
+      tags: [Routes App Distribution]
+      summary: Read the CLEVER Routes privacy notice
+      description: Public, unauthenticated, non-PDF privacy notice for CLEVER Routes and EV&Solution.
+      operationId: getRoutesAppPrivacy
+      x-source-file: src/routes/privacy.routes.ts
+      security: []
+      responses:
+        '200':
+          description: CLEVER Routes data collection, use, sharing, retention, security, and deletion disclosure.
+          content:
+            text/html:
+              schema:
+                type: string
+  /routes-app/support:
+    get:
+      tags: [Routes App Distribution]
+      summary: Read CLEVER Routes support and privacy contact guidance
+      description: Public, unauthenticated support page with safe contact guidance and links to the privacy and deletion pages.
+      operationId: getRoutesAppSupport
+      x-source-file: src/routes/privacy.routes.ts
+      security: []
+      responses:
+        '200':
+          description: CLEVER Routes support guidance.
+          content:
+            text/html:
+              schema:
+                type: string
+  /routes-app/account-deletion:
+    get:
+      tags: [Routes App Distribution]
+      summary: Read the external CLEVER Routes account deletion process
+      description: >-
+        Public, unauthenticated external intake instructions. Email starts support review only;
+        an operator must verify identity through the already registered contact channel before
+        creating an OPERATOR_VERIFIED_CONTACT request. The page has no destructive public form.
+      operationId: getRoutesAppAccountDeletion
+      x-source-file: src/routes/privacy.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Verified external account deletion intake and lifecycle guidance.
+          content:
+            text/html:
+              schema:
+                type: string
   /routes-app/download:
     get:
       tags: [Routes App Distribution]
@@ -4637,14 +4685,19 @@ paths:
   /driver/account-deletion-requests:
     post:
       tags: [Driver Mobile]
-      summary: Request account deletion without deleting operational records
+      summary: Create an idempotent verified account deletion request
       operationId: requestDriverAccountDeletion
       x-source-file: src/routes/driver-events.routes.ts
       description: >-
-        Global phone-account receive path. A DriverAccount bearer is preferred and
-        creates one idempotent account-scoped audit request. The legacy route bearer
-        remains temporarily accepted for backward compatibility. This endpoint does
-        not delete, anonymize, revoke tokens, remove proof media, or alter route assignments.
+        Global phone-account intake path. A DriverAccount bearer is preferred and
+        creates one idempotent account-scoped audit request. A legacy route bearer
+        remains temporarily accepted for backward compatibility and converges on the
+        linked account request when available. This request endpoint does not itself
+        delete or anonymize data. The bounded operator lifecycle later defers active
+        routes or transactionally revokes sessions, removes push tokens, anonymizes
+        direct account/driver identifiers, and records COMPLETED, REJECTED, or FAILED.
+        Delivery, route, proof, dispute, security, and non-identifying audit records
+        remain governed by their disclosed retention and legal/contract exceptions.
       security:
         - DriverAccountAccessToken: []
         - DriverAccessToken: []
@@ -8528,7 +8581,8 @@ components:
             requestId:
               type: string
             status:
-              const: REQUESTED
+              enum: [REQUESTED, DEFERRED, PROCESSING, COMPLETED, REJECTED, FAILED]
+              type: string
         error:
           type: 'null'
     DriverEarningsEnvelope:

@@ -5,6 +5,11 @@ const PUBLIC_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/privacy';
 const DRIVER_LAST_UPDATED = '2026-09-01';
 const DRIVER_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/driver-app/privacy';
 const DRIVER_SUPPORT_URL = 'https://clever-route-api.cleversystem.ai/driver-app/support';
+const ROUTES_APP_LAST_UPDATED = '2026-09-01';
+const ROUTES_APP_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/routes-app/privacy';
+const ROUTES_APP_SUPPORT_URL = 'https://clever-route-api.cleversystem.ai/routes-app/support';
+const ROUTES_APP_ACCOUNT_DELETION_URL = 'https://clever-route-api.cleversystem.ai/routes-app/account-deletion';
+const ROUTES_APP_DEFAULT_PRIVACY_CONTACT_EMAIL = 'chase@evnsolution.com';
 
 export function registerPrivacyRoutes(app: FastifyInstance): void {
   app.get('/privacy', async (_request, reply) => {
@@ -21,6 +26,18 @@ export function registerPrivacyRoutes(app: FastifyInstance): void {
 
   app.get('/driver-app/support', async (_request, reply) => {
     return reply.header('Content-Type', 'text/html; charset=utf-8').send(renderDriverSupportPage());
+  });
+
+  app.get('/routes-app/privacy', async (_request, reply) => {
+    return reply.header('Content-Type', 'text/html; charset=utf-8').send(renderRoutesAppPrivacyPage());
+  });
+
+  app.get('/routes-app/support', async (_request, reply) => {
+    return reply.header('Content-Type', 'text/html; charset=utf-8').send(renderRoutesAppSupportPage());
+  });
+
+  app.get('/routes-app/account-deletion', async (_request, reply) => {
+    return reply.header('Content-Type', 'text/html; charset=utf-8').send(renderRoutesAppAccountDeletionPage());
   });
 }
 
@@ -319,6 +336,173 @@ function renderDriverPage(input: {
   <main>
     <header>
       <p class="eyebrow">최종 업데이트 / Last updated: ${DRIVER_LAST_UPDATED}</p>
+      <h1>${input.title}</h1>
+      <p class="muted">공개 URL / Public URL: <a href="${input.publicUrl}">${input.publicUrl}</a></p>
+    </header>
+    ${input.body}
+  </main>
+</body>
+</html>`;
+}
+
+function renderRoutesAppPrivacyPage(): string {
+  return renderRoutesAppPage({
+    description: 'Privacy policy for the CLEVER Routes delivery application.',
+    publicUrl: ROUTES_APP_PRIVACY_URL,
+    title: 'CLEVER Routes 개인정보 처리방침',
+    body: `
+    <section>
+      <h2>1. 운영자 / Operator</h2>
+      <p><strong>이브이앤솔루션 주식회사</strong> (EV&amp;Solution Co., Ltd.)는 배송 경로와 정차 업무를 수행하는 CLEVER Routes 앱 및 연결 서버를 운영합니다.</p>
+      <p>이 방침은 CLEVER Routes 전용이며 CLEVER Driver 또는 DSV 서비스의 별도 방침을 대신하지 않습니다.</p>
+    </section>
+
+    <section>
+      <h2>2. 처리하는 정보와 목적 / Information and purposes</h2>
+      <ul>
+        <li><strong>계정 및 인증:</strong> 배송원 이름, 등록 전화번호, 계정 식별자, 로그인·세션 기록. 계정 확인, 접근 통제와 지원에 사용합니다.</li>
+        <li><strong>위치:</strong> 활성 배송 경로에서 앱이 전경 및 백그라운드 상태일 때 기기의 정밀 위치, 위치 시각과 정확도 정보를 처리합니다. 현재 위치 표시, 경로 진행, 도착 확인, 운영 안전과 분쟁 대응에 사용합니다.</li>
+        <li><strong>배송 증빙:</strong> 증빙 사진, 서명, 수령인 이름, 배송 메모와 제출 시각을 배송 완료 또는 실패 확인에 사용합니다.</li>
+        <li><strong>경로 및 정차 활동:</strong> 배정 경로, 정차 순서, 배송 상태, 시작·일시정지·도착·완료 이벤트와 재시도 기록을 업무 진행, 동기화와 운영 감사에 사용합니다.</li>
+        <li><strong>알림과 기기:</strong> 푸시 토큰, 제한된 기기 식별자 또는 그 해시, 앱 버전과 플랫폼 정보를 배송 알림, 세션 보호, 중복 기기 감지와 장애 대응에 사용합니다.</li>
+      </ul>
+      <p>위치 처리는 배송원이 명시적으로 시작한 활성 배송 경로의 수행에 필요한 범위로 제한합니다. 위치 권한은 기기 설정에서 변경할 수 있지만, 권한을 끄면 실시간 경로 기능이 제한될 수 있습니다.</p>
+    </section>
+
+    <section>
+      <h2>3. 증빙 사진 보호 / Proof-photo safeguards</h2>
+      <p>JPEG 증빙 사진은 저장 전에 EXIF APP1 메타데이터를 제거해 사진에 포함될 수 있는 위치·기기 정보를 줄입니다. 파일은 공개 웹 경로가 아닌 접근 통제된 비공개 저장소에 보관하며, 읽기 접근은 짧은 수명의 승인된 경로로 제한합니다.</p>
+      <p>증빙 사진과 관련 메타데이터의 기본 보관 기간은 업로드 후 <strong>기본 180일</strong>입니다. 배송 분쟁, 보안 사고, 계약 또는 법적 의무에 따른 보존 조치가 있으면 필요한 범위에서 더 오래 보관할 수 있습니다.</p>
+    </section>
+
+    <section>
+      <h2>4. 처리 위탁과 외부 전달 / Processors and handoff</h2>
+      <ul>
+        <li>승인된 서버, 데이터베이스와 비공개 파일 저장 인프라가 계정, 경로, 이벤트와 증빙을 처리합니다.</li>
+        <li>Firebase Cloud Messaging(FCM)은 기기에 배송 관련 푸시 알림을 전달하며, 이 과정에서 푸시 토큰과 기기·앱 정보가 처리될 수 있습니다.</li>
+        <li>설정된 지도, 지오코딩과 경로 계산 제공자는 주소 또는 좌표를 지도 표시와 경로 계산에 사용할 수 있습니다.</li>
+        <li>배송원이 외부 길찾기를 선택하면 Google Maps 또는 Waze 같은 선택된 지도 앱으로 배송지 주소 또는 좌표를 전달합니다.</li>
+      </ul>
+      <p>개인정보를 광고 목적으로 판매하지 않습니다. 법령, 이용자 보호 또는 서비스 제공에 필요한 경우를 제외하고 제3자에게 제공하지 않습니다.</p>
+    </section>
+
+    <section>
+      <h2>5. 보관, 삭제와 예외 / Retention and deletion</h2>
+      <p>실시간 위치 이벤트의 좌표는 운영 목적이 끝난 뒤 최소화하며, 증빙 사진은 기본 180일 보관 정책에 따라 정리합니다. 경로·정차 상태, 처리 시각과 비식별 운영 기록은 배송 이력, 분쟁, 보안, 계약 또는 법적 의무에 필요한 기간 동안 분리 보관할 수 있습니다.</p>
+      <p>해결된 순서 이벤트 재시도 증거는 기본 90일 보관 후 정리합니다. 미해결 또는 조정이 필요한 기록은 해결될 때까지 제한적으로 보관할 수 있습니다.</p>
+      <p>계정 및 개인정보 삭제 요청 절차, 처리 범위와 예외는 <a href="${ROUTES_APP_ACCOUNT_DELETION_URL}">${ROUTES_APP_ACCOUNT_DELETION_URL}</a>에서 확인할 수 있습니다.</p>
+    </section>
+
+    <section>
+      <h2>6. 권리와 문의 / Rights and contact</h2>
+      <p>개인정보 열람, 정정, 처리 정지 또는 삭제 문의는 ${renderRoutesAppContactLink('개인정보 문의 이메일')}로 접수할 수 있습니다. 일반 지원은 <a href="${ROUTES_APP_SUPPORT_URL}">${ROUTES_APP_SUPPORT_URL}</a>에서 확인하세요.</p>
+    </section>`,
+  });
+}
+
+function renderRoutesAppSupportPage(): string {
+  return renderRoutesAppPage({
+    description: 'Support and privacy contact information for CLEVER Routes.',
+    publicUrl: ROUTES_APP_SUPPORT_URL,
+    title: 'CLEVER Routes 지원',
+    body: `
+    <section>
+      <h2>운영자 / Operator</h2>
+      <p><strong>이브이앤솔루션 주식회사</strong><br />EV&amp;Solution Co., Ltd.</p>
+      <p>CLEVER Routes는 배정된 배송 경로, 정차, 실시간 진행, 알림과 배송 증빙을 처리하는 배송원용 앱입니다.</p>
+    </section>
+
+    <section>
+      <h2>지원 요청 / Support request</h2>
+      <p>로그인, 계정 확인, 배정 경로, 위치 권한, 알림, 지도 인계 또는 증빙 제출에 문제가 있으면 ${renderRoutesAppContactLink('지원 이메일')}로 문의해 주세요.</p>
+      <p>문의에는 문제 발생 시각, 앱 버전과 오류 화면처럼 필요한 최소 정보만 포함하고, <strong>비밀번호, PIN, 인증 토큰 또는 증빙 사진을 보내지 마세요.</strong></p>
+    </section>
+
+    <section>
+      <h2>개인정보와 계정 삭제 / Privacy and deletion</h2>
+      <p>개인정보 처리 내용은 <a href="${ROUTES_APP_PRIVACY_URL}">${ROUTES_APP_PRIVACY_URL}</a>에서 확인할 수 있습니다.</p>
+      <p>앱에 로그인할 수 없는 경우를 포함한 계정 및 데이터 삭제 요청은 <a href="${ROUTES_APP_ACCOUNT_DELETION_URL}">${ROUTES_APP_ACCOUNT_DELETION_URL}</a>의 안전한 외부 접수 절차를 이용하세요.</p>
+    </section>`,
+  });
+}
+
+function renderRoutesAppAccountDeletionPage(): string {
+  return renderRoutesAppPage({
+    description: 'External account and data deletion request instructions for CLEVER Routes.',
+    publicUrl: ROUTES_APP_ACCOUNT_DELETION_URL,
+    title: 'CLEVER Routes 계정 및 데이터 삭제 요청',
+    body: `
+    <section>
+      <h2>요청 방법 / How to request deletion</h2>
+      <ol>
+        <li>${renderRoutesAppContactLink('개인정보 문의 이메일')}로 CLEVER Routes 계정 삭제 요청임을 알려 주세요.</li>
+        <li>운영자는 저장된 계정 정보를 이메일로 회신하지 않고, 등록된 연락처를 이용한 별도의 일회성 본인 확인 절차를 안내합니다.</li>
+        <li>확인이 완료되면 같은 계정에 중복 삭제 작업이 생기지 않도록 하나의 계정 수준 요청으로 접수합니다.</li>
+      </ol>
+      <p><strong>비밀번호, PIN, 인증 토큰 또는 증빙 사진을 이메일로 보내지 마세요.</strong> 이 공개 페이지는 전화번호만으로 계정을 파괴적으로 삭제하는 기능이나 PIN 입력 양식을 제공하지 않습니다.</p>
+    </section>
+
+    <section>
+      <h2>처리 시점 / Timing</h2>
+      <p>활성 배송 경로가 있으면 배송을 완료하거나 안전하게 반납할 때까지 요청 처리가 보류될 수 있습니다. 본인 확인과 활성 업무 확인이 끝난 유효한 요청은 원칙적으로 <strong>30일 이내</strong> 처리하며, 법적·계약상 확인이 더 필요한 경우 사유와 예상 일정을 안내합니다.</p>
+    </section>
+
+    <section>
+      <h2>삭제 또는 익명화되는 정보 / Deleted or de-identified data</h2>
+      <ul>
+        <li>계정의 이름, 전화번호, 로그인 식별자와 인증 자격정보를 삭제하거나 익명화합니다.</li>
+        <li>로그인 세션과 푸시 토큰을 무효화 또는 제거해 재로그인을 차단합니다.</li>
+        <li>동의 기록의 불필요한 기기 문맥과 삭제 요청에 포함된 자유 입력 개인정보를 최소화합니다.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>제한적으로 보관되는 정보 / Limited retention</h2>
+      <p>배송, 분쟁, 보안, 계약 또는 법적 의무를 위해 필요한 경로·정차·배송 이벤트, 증빙 및 처리 감사 기록은 계정의 직접 식별정보와 분리해 정책 기간 동안 보관할 수 있습니다. 보존 의무가 끝나면 삭제하거나 추가로 익명화합니다.</p>
+      <p>완료된 요청에는 처리 상태와 시각 같은 비식별 감사 정보만 남길 수 있습니다.</p>
+    </section>`,
+  });
+}
+
+function renderRoutesAppContactLink(label: string): string {
+  const email = readPrivacyContactEmail() ?? ROUTES_APP_DEFAULT_PRIVACY_CONTACT_EMAIL;
+  const escapedEmail = escapeHtml(email);
+  return `<a href="mailto:${escapedEmail}">${escapeHtml(label)} (${escapedEmail})</a>`;
+}
+
+function renderRoutesAppPage(input: {
+  body: string;
+  description: string;
+  publicUrl: string;
+  title: string;
+}): string {
+  return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${input.title}</title>
+  <meta name="description" content="${input.description}" />
+  <style>
+    :root { color-scheme: light; --ink: #142033; --muted: #5b6475; --line: #d6e2ea; --card: #ffffff; --bg: #f4f8fa; --accent: #08756c; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.65; }
+    main { width: min(100% - 32px, 900px); margin: 0 auto; padding: 40px 0; }
+    header, section { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 26px; margin-bottom: 16px; }
+    h1 { margin: 0 0 12px; font-size: clamp(28px, 5vw, 42px); line-height: 1.2; }
+    h2 { margin: 0 0 12px; font-size: 21px; }
+    p { margin: 0 0 12px; }
+    p:last-child { margin-bottom: 0; }
+    ul, ol { margin: 0 0 12px; padding-left: 22px; }
+    a { color: var(--accent); overflow-wrap: anywhere; }
+    .eyebrow { color: var(--accent); font-size: 14px; font-weight: 700; }
+    .muted { color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">최종 업데이트 / Last updated: ${ROUTES_APP_LAST_UPDATED}</p>
       <h1>${input.title}</h1>
       <p class="muted">공개 URL / Public URL: <a href="${input.publicUrl}">${input.publicUrl}</a></p>
     </header>
