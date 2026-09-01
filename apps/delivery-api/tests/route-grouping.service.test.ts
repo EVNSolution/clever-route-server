@@ -327,6 +327,35 @@ describe('route grouping contracts', () => {
     expect(orderCreate.mock.calls[1]?.[0].data.name).toBe('456 Queen St');
   });
 
+  test('refreshes route geometry and legs after appending a custom stop to a child route', async () => {
+    const refreshRouteGeometryForRoutePlan = vi.fn().mockResolvedValue(null);
+    const prisma = { $transaction: vi.fn().mockResolvedValue('group-1') };
+    const service = new PrismaRouteGroupingService(
+      prisma as never,
+      new FakeDriverPushProvider(),
+      { refreshRouteGeometryForRoutePlan }
+    );
+    const getGrouping = vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-1' } as never);
+
+    await service.createCustomStop({
+      address1: '123 Main St',
+      actor: 'admin-user',
+      countryCode: 'CA',
+      groupingId: 'group-1',
+      latitude: 43.7,
+      longitude: -79.4,
+      shopDomain: 'tenant.example',
+      targetRoutePlanId: 'route-plan-1'
+    });
+
+    expect(refreshRouteGeometryForRoutePlan).toHaveBeenCalledWith({
+      routePlanId: 'route-plan-1',
+      shopDomain: 'tenant.example',
+      source: 'SHAPE_MUTATION'
+    });
+    expect(getGrouping).toHaveBeenCalledAfter(refreshRouteGeometryForRoutePlan);
+  });
+
   test('rejects zero coordinates before creating a custom route stop', async () => {
     const transaction = vi.fn();
     const service = new PrismaRouteGroupingService({ $transaction: transaction } as never, new FakeDriverPushProvider());
@@ -1048,6 +1077,7 @@ describe('route grouping contracts', () => {
     expect(body).toContain('await recomputeAssignments(tx, group.id)');
     expect(body.indexOf('await appendGroupingOrdersToChildRoute'))
       .toBeLessThan(body.indexOf('await recomputeAssignments'));
+    expect(body).toContain("await this.refreshChildRouteGeometry([input.targetRoutePlanId], input.shopDomain, 'SHAPE_MUTATION')");
     expect(source).toContain("selected orders are already assigned to another child route");
     expect(source).toContain("targetStatus !== 'READY' && targetStatus !== 'IN_PROGRESS'");
     expect(source).toContain("orders can only be added to a Ready or in-progress child route");
