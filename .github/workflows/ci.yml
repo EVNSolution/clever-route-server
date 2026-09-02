@@ -216,6 +216,8 @@ jobs:
           cache-dependency-path: apps/delivery-api/package-lock.json
       - name: Install delivery API dependencies
         run: npm --prefix apps/delivery-api ci
+      - name: Audit production dependency boundary
+        run: npm --prefix apps/delivery-api run audit:production
       - name: Prisma generate
         run: npm --prefix apps/delivery-api run prisma:generate
       - name: Lint delivery API
