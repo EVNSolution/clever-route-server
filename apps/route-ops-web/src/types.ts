@@ -350,10 +350,14 @@ export type RouteStopDto = {
   durationFromPreviousSeconds?: number | null;
   email?: string | null;
   estimatedArrivalAt?: string | null;
+  etaCalculatedAt?: string | null;
+  etaSource?: string | null;
+  etaStatus?: string | null;
   financialStatus?: string | null;
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
   paymentMethodTitle?: string | null;
   phone?: string | null;
+  serviceMinutes?: number | null;
   totalPriceAmount?: string | null;
   sequence: number;
   sourceOrderId: string;

@@ -127,6 +127,9 @@ type RoutePlanStopRecord = {
   distanceFromPreviousMeters: number | null;
   durationFromPreviousSeconds: number | null;
   estimatedArrivalAt: Date | null;
+  etaCalculatedAt: Date | null;
+  etaSource: string | null;
+  etaStatus: string | null;
   sequence: number;
 };
 
@@ -2954,6 +2957,9 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
     email: order.email ?? null,
     estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
+    etaCalculatedAt: routeStop.etaCalculatedAt?.toISOString() ?? null,
+    etaSource: routeStop.etaSource,
+    etaStatus: routeStop.etaStatus,
     paymentMethodTitle: readPaymentMethodTitle(rawPayload),
     phone: deliveryStop.phone ?? order.phone ?? null,
     serviceMinutes: deliveryStop.serviceMinutes,

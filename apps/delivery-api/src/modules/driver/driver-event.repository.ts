@@ -324,7 +324,7 @@ export class PrismaDriverEventRepository {
           };
         }
 
-        await lockRoutePlanForCompletion(transaction, input);
+        await lockRoutePlanForSerializedEvent(transaction, input);
         await validateVersionedOrderedContract(transaction, input);
         await validateDriverEventStateContext(transaction, input, input.shopId);
         const completionInvariant = await evaluateCompletionInvariant(transaction, input, this.completionInvariantMode);
@@ -391,7 +391,9 @@ export class PrismaDriverEventRepository {
           schemaCapabilities,
           input,
           input.shopId,
-          event.createdAt
+          event.createdAt,
+          routeVersionId,
+          event.id
         );
         if (transaction.customerRouteNotificationFact !== undefined && transaction.shop !== undefined) {
           await persistAutomaticCustomerEmailFacts(transaction, {
@@ -621,11 +623,19 @@ function requireAssignmentGeneration(input: RecordDriverEventInput): string {
   return value;
 }
 
-async function lockRoutePlanForCompletion(
+async function lockRoutePlanForSerializedEvent(
   prisma: DriverEventTransactionClient,
   input: RecordDriverEventInput
 ): Promise<void> {
-  if (input.eventType !== 'ROUTE_COMPLETED') return;
+  if (
+    input.eventType !== 'ROUTE_STARTED'
+    && input.eventType !== 'PICKUP_COMPLETED'
+    && input.eventType !== 'STOP_ARRIVED'
+    && input.eventType !== 'STOP_DELIVERED'
+    && input.eventType !== 'ROUTE_COMPLETED'
+  ) {
+    return;
+  }
   const routePlanId = requireRoutePlanId(input);
   const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT "id"
@@ -1149,7 +1159,9 @@ async function applyDriverEventStateTransition(
   schemaCapabilities: DriverEventSchemaCapabilities,
   input: RecordDriverEventInput,
   shopId: string,
-  serverReceivedAt: Date
+  serverReceivedAt: Date,
+  eventRouteVersionId: string | null | undefined,
+  eventId: string
 ): Promise<{ etaSnapshot?: DriverRouteEtaSnapshot; etaUpdate?: DriverRouteEtaUpdate }> {
   if (input.eventType === 'STOP_ARRIVED') {
     const routePlanId = requireRoutePlanId(input);
@@ -1174,10 +1186,14 @@ async function applyDriverEventStateTransition(
     });
     if (updated.count !== 1) throw new DriverEventStopTransitionConflictError();
     const stops = await loadRouteEtaStops(prisma, routePlanId);
-    const pickupCompletedAt = await loadPickupCompletedAt(prisma, input.driverId, routePlanId);
     const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
+    if (!await isCurrentEtaProgressEvent(prisma, schemaCapabilities, input, eventRouteVersionId, eventId)) {
+      return {};
+    }
+    const pickupCompletedAt = await loadPickupCompletedAt(prisma, schemaCapabilities, input.driverId, routePlanId, shopId, eventRouteVersionId);
     const etaUpdate = calculateArrivalEtaUpdate({
       arrivedDeliveryStopId: deliveryStopId,
+      eventOccurredAt: input.occurredAt,
       inputRouteVersionId,
       serverReceivedAt,
       stops
@@ -1224,10 +1240,24 @@ async function applyDriverEventStateTransition(
     }
 
     const stops = await loadRouteEtaStops(prisma, routePlanId);
-    const pickupCompletedAt = await loadPickupCompletedAt(prisma, input.driverId, routePlanId);
     const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
+    if (!await isCurrentEtaProgressEvent(prisma, schemaCapabilities, input, eventRouteVersionId, eventId)) {
+      return {};
+    }
+    const pickupCompletedAt = await loadPickupCompletedAt(prisma, schemaCapabilities, input.driverId, routePlanId, shopId, eventRouteVersionId);
+    const arrivedAt = await loadStopArrivalAt(
+      prisma,
+      input.driverId,
+      routePlanId,
+      requireDeliveryStopId(input),
+      shopId,
+      schemaCapabilities,
+      eventRouteVersionId
+    );
     const etaUpdate = calculateCompletionEtaUpdate({
+      arrivedAt,
       completedDeliveryStopId: requireDeliveryStopId(input),
+      eventOccurredAt: input.occurredAt,
       inputRouteVersionId,
       serverReceivedAt,
       stops
@@ -1258,7 +1288,11 @@ async function applyDriverEventStateTransition(
       }
     });
     const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
+    if (!await isCurrentEtaProgressEvent(prisma, schemaCapabilities, input, eventRouteVersionId, eventId)) {
+      return {};
+    }
     const etaUpdate = calculateRouteStartEtaUpdate({
+      eventOccurredAt: input.occurredAt,
       inputRouteVersionId,
       serverReceivedAt,
       stops: await loadRouteEtaStops(prisma, routePlanId)
@@ -1271,7 +1305,11 @@ async function applyDriverEventStateTransition(
     const routePlanId = requireRoutePlanId(input);
     const stops = await loadRouteEtaStops(prisma, routePlanId);
     const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
+    if (!await isCurrentEtaProgressEvent(prisma, schemaCapabilities, input, eventRouteVersionId, eventId)) {
+      return {};
+    }
     const etaUpdate = calculatePickupEtaUpdate({
+      eventOccurredAt: input.occurredAt,
       inputRouteVersionId,
       serverReceivedAt,
       stops
@@ -1279,7 +1317,7 @@ async function applyDriverEventStateTransition(
     await persistEtaUpdate(prisma, schemaCapabilities, shopId, routePlanId, etaUpdate);
     return {
       etaSnapshot: buildDriverRouteEtaSnapshot({
-        pickupCompletedAt: serverReceivedAt,
+        pickupCompletedAt: effectiveOccurredAt(input.occurredAt, serverReceivedAt),
         stops: applyEtaUpdateToStops(stops, etaUpdate)
       }),
       etaUpdate
@@ -1329,19 +1367,83 @@ async function buildCurrentEtaSnapshot(
 
 async function loadPickupCompletedAt(
   prisma: Pick<DriverEventPrismaClient, 'driverEvent'>,
+  schemaCapabilities: DriverEventSchemaCapabilities,
   driverId: string,
-  routePlanId: string
+  routePlanId: string,
+  shopId: string,
+  eventRouteVersionId: string | null | undefined
 ): Promise<Date | null> {
   const event = await prisma.driverEvent.findFirst({
     orderBy: { createdAt: 'asc' },
-    select: { createdAt: true },
+    select: { createdAt: true, occurredAt: true },
     where: {
       driverId,
       eventType: 'PICKUP_COMPLETED',
-      routePlanId
+      routePlanId,
+      shopId,
+      ...(schemaCapabilities.driverEventRouteVersionColumnExists
+        ? { routeVersionId: eventRouteVersionId ?? null }
+        : {})
     }
   });
-  return event?.createdAt ?? null;
+  return event === null ? null : effectiveOccurredAt(event.occurredAt ?? event.createdAt, event.createdAt);
+}
+
+async function loadStopArrivalAt(
+  prisma: Pick<DriverEventPrismaClient, 'driverEvent'>,
+  driverId: string,
+  routePlanId: string,
+  deliveryStopId: string,
+  shopId: string,
+  schemaCapabilities: DriverEventSchemaCapabilities,
+  eventRouteVersionId: string | null | undefined
+): Promise<Date | null> {
+  const event = await prisma.driverEvent.findFirst({
+    orderBy: { occurredAt: 'asc' },
+    select: { createdAt: true, occurredAt: true },
+    where: {
+      deliveryStopId,
+      driverId,
+      eventType: 'STOP_ARRIVED',
+      routePlanId,
+      shopId,
+      ...(schemaCapabilities.driverEventRouteVersionColumnExists
+        ? { routeVersionId: eventRouteVersionId ?? null }
+        : {})
+    }
+  });
+  return event === null ? null : effectiveOccurredAt(event.occurredAt, event.createdAt);
+}
+
+async function isCurrentEtaProgressEvent(
+  prisma: Pick<DriverEventPrismaClient, '$queryRaw'>,
+  schemaCapabilities: DriverEventSchemaCapabilities,
+  input: RecordDriverEventInput,
+  eventRouteVersionId: string | null | undefined,
+  eventId: string
+): Promise<boolean> {
+  const routePlanId = requireRoutePlanId(input);
+  const routeVersionPredicate = !schemaCapabilities.driverEventRouteVersionColumnExists
+    ? Prisma.empty
+    : eventRouteVersionId === null || eventRouteVersionId === undefined
+      ? Prisma.sql`AND "routeVersionId" IS NULL`
+      : Prisma.sql`AND "routeVersionId" = ${eventRouteVersionId}::uuid`;
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id
+    FROM driver_events
+    WHERE "routePlanId" = ${routePlanId}::uuid
+      AND "shopId" = ${input.shopId}::uuid
+      AND "driverId" = ${input.driverId}::uuid
+      ${routeVersionPredicate}
+      AND "eventType" IN ('ROUTE_STARTED', 'PICKUP_COMPLETED', 'STOP_ARRIVED', 'STOP_DELIVERED')
+    ORDER BY LEAST("occurredAt", "createdAt") DESC, "createdAt" DESC, id DESC
+    LIMIT 1
+  `);
+  return rows[0]?.id === eventId;
+}
+
+function effectiveOccurredAt(occurredAt: Date, serverReceivedAt: Date): Date {
+  return occurredAt.getTime() > serverReceivedAt.getTime() ? serverReceivedAt : occurredAt;
 }
 
 function applyEtaUpdateToStops(stops: DriverRouteEtaStop[], etaUpdate: DriverRouteEtaUpdate): DriverRouteEtaStop[] {

@@ -33,8 +33,9 @@ const stops = [
 ];
 
 describe('driver route ETA', () => {
-  test('builds the initial ETA chain from the authoritative server route-start time', () => {
+  test('builds the initial ETA chain from the route-start occurrence time', () => {
     const update = calculateRouteStartEtaUpdate({
+      eventOccurredAt: new Date('2026-07-20T09:58:00.000Z'),
       serverReceivedAt: new Date('2026-07-20T10:00:00.000Z'),
       stops
     });
@@ -53,28 +54,29 @@ describe('driver route ETA', () => {
       serverReceivedAt: '2026-07-20T10:00:00.000Z',
       trigger: 'ROUTE_STARTED',
       updatedStops: [
-        { deliveryStopId: 'stop-1', estimatedArrivalAt: '2026-07-20T10:10:00.000Z', sequence: 1 },
-        { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:30:00.000Z', sequence: 2 },
-        { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:40:00.000Z', sequence: 3 }
+        { deliveryStopId: 'stop-1', estimatedArrivalAt: '2026-07-20T10:08:00.000Z', sequence: 1 },
+        { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:28:00.000Z', sequence: 2 },
+        { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:38:00.000Z', sequence: 3 }
       ]
     });
   });
 
-  test('shifts only future stop ETAs from the actual server arrival time', () => {
+  test('shifts only future stop ETAs from the actual event arrival time', () => {
     const update = calculateArrivalEtaUpdate({
       arrivedDeliveryStopId: 'stop-1',
+      eventOccurredAt: new Date('2026-07-20T10:12:00.000Z'),
       serverReceivedAt: new Date('2026-07-20T10:17:00.000Z'),
       stops: [
-        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z') },
+        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z'), serviceMinutes: null },
         { ...stops[1]!, estimatedArrivalAt: new Date('2026-07-20T10:30:00.000Z') },
         { ...stops[2]!, estimatedArrivalAt: new Date('2026-07-20T10:40:00.000Z') }
       ]
     });
 
     expect(update).toEqual({
-      actualArrivalAt: '2026-07-20T10:17:00.000Z',
+      actualArrivalAt: '2026-07-20T10:12:00.000Z',
       deliveryStopId: 'stop-1',
-      delaySeconds: 420,
+      delaySeconds: 120,
       etaCalculatedAt: '2026-07-20T10:17:00.000Z',
       etaFailureCode: null,
       etaFailureMessage: null,
@@ -85,8 +87,8 @@ describe('driver route ETA', () => {
       serverReceivedAt: '2026-07-20T10:17:00.000Z',
       trigger: 'STOP_ARRIVED',
       updatedStops: [
-        { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:37:00.000Z', sequence: 2 },
-        { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:47:00.000Z', sequence: 3 }
+        { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:32:00.000Z', sequence: 2 },
+        { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:42:00.000Z', sequence: 3 }
       ]
     });
   });
@@ -94,9 +96,10 @@ describe('driver route ETA', () => {
   test('supports an early arrival and nulls downstream ETAs when a leg duration is unavailable', () => {
     const update = calculateArrivalEtaUpdate({
       arrivedDeliveryStopId: 'stop-2',
+      eventOccurredAt: new Date('2026-07-20T10:34:00.000Z'),
       serverReceivedAt: new Date('2026-07-20T10:34:00.000Z'),
       stops: [
-        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z') },
+        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z'), serviceMinutes: null },
         { ...stops[1]!, estimatedArrivalAt: new Date('2026-07-20T10:37:00.000Z') },
         { ...stops[2]!, durationFromPreviousSeconds: null, estimatedArrivalAt: new Date('2026-07-20T10:47:00.000Z') }
       ]
@@ -108,12 +111,14 @@ describe('driver route ETA', () => {
     ]);
   });
 
-  test('shifts only future stop ETAs from the server-confirmed completion time', () => {
+  test('uses the later of delivery time and arrival plus service as the completion anchor', () => {
     const update = calculateCompletionEtaUpdate({
+      arrivedAt: new Date('2026-07-20T10:18:00.000Z'),
       completedDeliveryStopId: 'stop-1',
+      eventOccurredAt: new Date('2026-07-20T10:20:00.000Z'),
       serverReceivedAt: new Date('2026-07-20T10:25:00.000Z'),
       stops: [
-        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z') },
+        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z'), serviceMinutes: null },
         { ...stops[1]!, estimatedArrivalAt: new Date('2026-07-20T10:30:00.000Z') },
         { ...stops[2]!, estimatedArrivalAt: new Date('2026-07-20T10:40:00.000Z') }
       ]
@@ -122,7 +127,7 @@ describe('driver route ETA', () => {
     expect(update).toEqual({
       actualArrivalAt: null,
       deliveryStopId: 'stop-1',
-      delaySeconds: 600,
+      delaySeconds: 480,
       etaCalculatedAt: '2026-07-20T10:25:00.000Z',
       etaFailureCode: null,
       etaFailureMessage: null,
@@ -133,14 +138,47 @@ describe('driver route ETA', () => {
       serverReceivedAt: '2026-07-20T10:25:00.000Z',
       trigger: 'STOP_DELIVERED',
       updatedStops: [
-        { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:40:00.000Z', sequence: 2 },
-        { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:50:00.000Z', sequence: 3 }
+        { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:38:00.000Z', sequence: 2 },
+        { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:48:00.000Z', sequence: 3 }
       ]
     });
   });
 
-  test('builds pickup ETA from the authoritative server receipt time and sorts stops', () => {
+  test('uses delivery time when it is later than arrival plus service', () => {
+    const update = calculateCompletionEtaUpdate({
+      arrivedAt: new Date('2026-07-20T10:18:00.000Z'),
+      completedDeliveryStopId: 'stop-1',
+      eventOccurredAt: new Date('2026-07-20T10:27:00.000Z'),
+      serverReceivedAt: new Date('2026-07-20T10:30:00.000Z'),
+      stops: [
+        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z') },
+        { ...stops[1]!, estimatedArrivalAt: new Date('2026-07-20T10:30:00.000Z') },
+        { ...stops[2]!, estimatedArrivalAt: new Date('2026-07-20T10:40:00.000Z') }
+      ]
+    });
+
+    expect(update.delaySeconds).toBe(720);
+    expect(update.updatedStops).toEqual([
+      { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:42:00.000Z', sequence: 2 },
+      { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:52:00.000Z', sequence: 3 }
+    ]);
+  });
+
+  test('clamps a future client event time to the server receipt time', () => {
+    const update = calculateArrivalEtaUpdate({
+      arrivedDeliveryStopId: 'stop-1',
+      eventOccurredAt: new Date('2026-07-20T10:30:00.000Z'),
+      serverReceivedAt: new Date('2026-07-20T10:17:00.000Z'),
+      stops
+    });
+
+    expect(update.actualArrivalAt).toBe('2026-07-20T10:17:00.000Z');
+    expect(update.updatedStops[0]?.estimatedArrivalAt).toBe('2026-07-20T10:37:00.000Z');
+  });
+
+  test('builds pickup ETA from the pickup occurrence time and sorts stops', () => {
     const update = calculatePickupEtaUpdate({
+      eventOccurredAt: new Date('2026-07-20T11:00:00.000Z'),
       serverReceivedAt: new Date('2026-07-20T11:00:00.000Z'),
       stops: [stops[1]!, stops[0]!]
     });

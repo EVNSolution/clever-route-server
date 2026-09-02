@@ -689,6 +689,118 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('class="ops-table route-stop-table"');
   });
 
+  test('child route manifest displays the ETA returned by the server', () => {
+    const persistedEta = '2026-06-05T14:30:00.000Z';
+    const detail = routePlanDetailFixture({
+      routePlan: routePlanFixture({
+        departureTime: '08:30',
+        deliveryDate: '2026-06-05',
+        planDate: '2026-06-05',
+        status: 'IN_PROGRESS',
+      }),
+      stops: routePlanDetailFixture().stops.map((stop, index) =>
+        index === 0
+          ? {
+              ...stop,
+              durationFromPreviousSeconds: 1080,
+              estimatedArrivalAt: persistedEta,
+            }
+          : {
+              ...stop,
+              durationFromPreviousSeconds: 600,
+              estimatedArrivalAt: null,
+            },
+      ),
+    });
+
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        isChildRouteDetail
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        settings={settingsFixture()}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+    const persistedEtaDisplay = new Intl.DateTimeFormat('en-CA', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(persistedEta));
+    const plannedEtaDisplay = new Intl.DateTimeFormat('en-CA', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date('2026-06-05T08:48:00'));
+    const plannedSecondEtaDisplay = new Intl.DateTimeFormat('en-CA', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date('2026-06-05T09:10:00'));
+
+    expect(html).toContain(persistedEtaDisplay);
+    expect(html).not.toContain(plannedEtaDisplay);
+    expect(html).not.toContain(plannedSecondEtaDisplay);
+  });
+
+  test('child route manifest previews planned ETA before route execution', () => {
+    const persistedEta = '2026-06-05T14:30:00.000Z';
+    const detail = routePlanDetailFixture({
+      routePlan: routePlanFixture({
+        departureTime: '08:30',
+        deliveryDate: '2026-06-05',
+        planDate: '2026-06-05',
+        status: 'READY',
+      }),
+      stops: routePlanDetailFixture().stops.map((stop, index) =>
+        index === 0
+          ? {
+              ...stop,
+              durationFromPreviousSeconds: 1080,
+              estimatedArrivalAt: persistedEta,
+            }
+          : {
+              ...stop,
+              durationFromPreviousSeconds: 600,
+              estimatedArrivalAt: null,
+            },
+      ),
+    });
+
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        isChildRouteDetail
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        settings={settingsFixture()}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+    const persistedEtaDisplay = new Intl.DateTimeFormat('en-CA', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(persistedEta));
+    const plannedEtaDisplay = new Intl.DateTimeFormat('en-CA', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date('2026-06-05T08:48:00'));
+    const plannedSecondEtaDisplay = new Intl.DateTimeFormat('en-CA', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date('2026-06-05T09:10:00'));
+
+    expect(html).toContain(plannedEtaDisplay);
+    expect(html).toContain(plannedSecondEtaDisplay);
+    expect(html).not.toContain(persistedEtaDisplay);
+  });
+
   test('route end draft payload preserves one aggregate save command shape', () => {
     const detail = routePlanDetailFixture();
     const draftStops = [...detail.stops].reverse();

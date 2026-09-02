@@ -160,6 +160,9 @@ export type RoutePlanDetailStop = {
   durationFromPreviousSeconds?: number | null;
   email?: string | null;
   estimatedArrivalAt?: string | null;
+  etaCalculatedAt?: string | null;
+  etaSource?: string | null;
+  etaStatus?: string | null;
   paymentMethodTitle?: string | null;
   phone?: string | null;
   serviceMinutes?: number | null;

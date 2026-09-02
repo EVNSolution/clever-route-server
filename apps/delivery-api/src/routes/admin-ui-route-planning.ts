@@ -1121,10 +1121,14 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
     durationFromPreviousSeconds: number | null;
     email: string | null;
     estimatedArrivalAt: string | null;
+    etaCalculatedAt: string | null;
+    etaSource: string | null;
+    etaStatus: string | null;
     financialStatus: string | null;
     normalizedPaymentStatus: RoutePlanDetail["stops"][number]["normalizedPaymentStatus"];
     paymentMethodTitle: string | null;
     phone: string | null;
+    serviceMinutes: number | null;
     totalPriceAmount: string | null;
     sourceOrderId: string;
     status: string;
@@ -1179,10 +1183,14 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
           null,
         email: stop.email ?? null,
         estimatedArrivalAt: stop.estimatedArrivalAt ?? null,
+        etaCalculatedAt: stop.etaCalculatedAt ?? null,
+        etaSource: stop.etaSource ?? null,
+        etaStatus: stop.etaStatus ?? null,
         financialStatus: stop.financialStatus,
         normalizedPaymentStatus: stop.normalizedPaymentStatus ?? null,
         paymentMethodTitle: stop.paymentMethodTitle ?? null,
         phone: stop.phone ?? null,
+        serviceMinutes: stop.serviceMinutes ?? null,
         totalPriceAmount: stop.totalPriceAmount ?? null,
         sourceOrderId: stop.shopifyOrderGid,
         status: stop.status,

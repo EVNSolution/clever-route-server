@@ -106,6 +106,9 @@ describe('PrismaRoutePlanRepository', () => {
     const firstStop = routePlanStopRecord({
       deliveryStopId: 'stop-1',
       estimatedArrivalAt: new Date('2026-05-08T13:00:00.000Z'),
+      etaCalculatedAt: new Date('2026-05-08T12:55:00.000Z'),
+      etaSource: 'STOP_ARRIVED',
+      etaStatus: 'READY',
       distanceFromPreviousMeters: 7400,
       durationFromPreviousSeconds: 960,
       order: orderRecord({
@@ -151,6 +154,9 @@ describe('PrismaRoutePlanRepository', () => {
       distanceFromPreviousMeters: 7400,
       durationFromPreviousSeconds: 960,
       estimatedArrivalAt: null,
+      etaCalculatedAt: '2026-05-08T12:55:00.000Z',
+      etaSource: 'STOP_ARRIVED',
+      etaStatus: 'READY',
       serviceMinutes: 5
     }));
     expect(result?.stops[1]).toEqual(expect.objectContaining({
@@ -2596,6 +2602,9 @@ function routePlanStopRecord(input: {
   distanceFromPreviousMeters: number | null;
   durationFromPreviousSeconds: number | null;
   estimatedArrivalAt: Date | null;
+  etaCalculatedAt?: Date | null;
+  etaSource?: string | null;
+  etaStatus?: string | null;
   order: Record<string, unknown>;
   sequence: number;
   serviceMinutes: number | null;
@@ -2623,6 +2632,9 @@ function routePlanStopRecord(input: {
     distanceFromPreviousMeters: input.distanceFromPreviousMeters,
     durationFromPreviousSeconds: input.durationFromPreviousSeconds,
     estimatedArrivalAt: input.estimatedArrivalAt,
+    etaCalculatedAt: input.etaCalculatedAt ?? null,
+    etaSource: input.etaSource ?? null,
+    etaStatus: input.etaStatus ?? null,
     sequence: input.sequence
   };
 }

@@ -110,6 +110,10 @@ describe('PrismaDriverEventRepository', () => {
 
   test('updates the matching stop when STOP_DELIVERED is recorded', async () => {
     const { prisma } = createPrismaHarness({
+      matchingArrivalEvent: {
+        createdAt: new Date('2026-06-01T06:00:00.000Z'),
+        occurredAt: new Date('2026-06-01T05:58:00.000Z')
+      },
       routeEtaStops: [
         {
           deliveryStop: { serviceMinutes: 5, status: 'DELIVERED' },
@@ -140,7 +144,7 @@ describe('PrismaDriverEventRepository', () => {
       etaUpdate: {
         actualArrivalAt: null,
         deliveryStopId: 'stop-id',
-        delaySeconds: 300,
+        delaySeconds: 480,
         etaCalculatedAt: '2026-06-01T06:00:00.000Z',
         etaFailureCode: null,
         etaFailureMessage: null,
@@ -151,7 +155,7 @@ describe('PrismaDriverEventRepository', () => {
         serverReceivedAt: '2026-06-01T06:00:00.000Z',
         trigger: 'STOP_DELIVERED',
         updatedStops: [
-          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:15:00.000Z', sequence: 2 }
+          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:18:00.000Z', sequence: 2 }
         ]
       },
       eventId: 'driver-event-id'
@@ -177,7 +181,7 @@ describe('PrismaDriverEventRepository', () => {
       }
     });
     expect(prisma.routePlanStop.update).toHaveBeenCalledWith({
-      data: { estimatedArrivalAt: new Date('2026-06-01T06:15:00.000Z') },
+      data: { estimatedArrivalAt: new Date('2026-06-01T06:18:00.000Z') },
       where: {
         routePlanId_deliveryStopId: {
           deliveryStopId: 'stop-2',
@@ -231,7 +235,7 @@ describe('PrismaDriverEventRepository', () => {
     }
   });
 
-  test('uses the server receipt time to update future ETAs when STOP_ARRIVED is recorded', async () => {
+  test('uses the clamped event occurrence time to update future ETAs when STOP_ARRIVED is recorded', async () => {
     const { prisma } = createPrismaHarness({
       routeEtaStops: [
         {
@@ -264,9 +268,9 @@ describe('PrismaDriverEventRepository', () => {
     expect(result).toEqual({
       duplicate: false,
       etaUpdate: {
-        actualArrivalAt: '2026-06-01T06:00:00.000Z',
+        actualArrivalAt: '2026-06-01T05:54:16.000Z',
         deliveryStopId: 'stop-id',
-        delaySeconds: 600,
+        delaySeconds: 256,
         etaCalculatedAt: '2026-06-01T06:00:00.000Z',
         etaFailureCode: null,
         etaFailureMessage: null,
@@ -277,7 +281,7 @@ describe('PrismaDriverEventRepository', () => {
         serverReceivedAt: '2026-06-01T06:00:00.000Z',
         trigger: 'STOP_ARRIVED',
         updatedStops: [
-          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:20:00.000Z', sequence: 2 }
+          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:14:16.000Z', sequence: 2 }
         ]
       },
       eventId: 'driver-event-id'
@@ -301,7 +305,7 @@ describe('PrismaDriverEventRepository', () => {
       }
     });
     expect(prisma.routePlanStop.update).toHaveBeenCalledWith({
-      data: { estimatedArrivalAt: new Date('2026-06-01T06:20:00.000Z') },
+      data: { estimatedArrivalAt: new Date('2026-06-01T06:14:16.000Z') },
       where: {
         routePlanId_deliveryStopId: {
           deliveryStopId: 'stop-2',
@@ -309,6 +313,73 @@ describe('PrismaDriverEventRepository', () => {
         }
       }
     });
+    const routeLocks = prisma.$queryRaw.mock.calls.filter(([query]) => {
+      const text = sqlText(query);
+      return text.includes('FROM "route_plans"') && text.includes('FOR UPDATE');
+    });
+    expect(routeLocks).toHaveLength(1);
+  });
+
+  test('does not let a late-received past progress event overwrite newer route ETA progress', async () => {
+    const { prisma } = createPrismaHarness({
+      latestEtaEvent: {
+        createdAt: new Date('2026-06-01T06:00:00.000Z'),
+        id: 'newer-event-id',
+        occurredAt: new Date('2026-06-01T05:58:00.000Z')
+      },
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5, status: 'ARRIVED' },
+          deliveryStopId: 'stop-id',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          estimatedArrivalAt: new Date('2026-06-01T05:50:00.000Z'),
+          sequence: 1
+        },
+        {
+          deliveryStop: { serviceMinutes: 5, status: 'ARRIVED' },
+          deliveryStopId: 'stop-2',
+          distanceFromPreviousMeters: 2000,
+          durationFromPreviousSeconds: 900,
+          estimatedArrivalAt: new Date('2026-06-01T06:18:00.000Z'),
+          sequence: 2
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: 'stop-id',
+      eventType: 'STOP_DELIVERED',
+      occurredAt: new Date('2026-06-01T05:55:00.000Z'),
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
+
+    expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
+  });
+
+  test('uses creation order and id to reject an equal-time replay behind the current latest event', async () => {
+    const { prisma } = createPrismaHarness({
+      latestEtaEvent: {
+        createdAt: serverReceivedAt,
+        id: 'zzz-newer-event-id',
+        occurredAt
+      }
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: 'stop-id',
+      eventType: 'STOP_ARRIVED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
+
+    expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw.mock.calls.some(([query]) => {
+      const text = sqlText(query);
+      return text.includes('ORDER BY LEAST("occurredAt", "createdAt") DESC')
+        && text.includes('"createdAt" DESC, id DESC');
+    })).toBe(true);
   });
 
   test('persists ETA status and input route version when ETA ownership columns exist', async () => {
@@ -522,7 +593,7 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
   });
 
-  test('records pickup with server-time full-chain ETA and current snapshot', async () => {
+  test('records pickup with event-time full-chain ETA and current snapshot', async () => {
     const { prisma } = createPrismaHarness({
       routeEtaStops: [
         {
@@ -558,13 +629,13 @@ describe('PrismaDriverEventRepository', () => {
         nextStopEta: {
           deliveryStopId: 'stop-id',
           distanceFromPreviousMeters: 1000,
-          estimatedArrivalAt: '2026-06-01T06:10:00.000Z',
+          estimatedArrivalAt: '2026-06-01T05:40:00.000Z',
           sequence: 1
         },
-        pickupCompletedAt: '2026-06-01T06:00:00.000Z',
+        pickupCompletedAt: '2026-06-01T05:30:00.000Z',
         remainingRouteEta: {
           distanceMeters: 3000,
-          estimatedCompletionAt: '2026-06-01T06:37:00.000Z'
+          estimatedCompletionAt: '2026-06-01T06:07:00.000Z'
         },
         status: 'READY'
       },
@@ -573,8 +644,8 @@ describe('PrismaDriverEventRepository', () => {
         serverReceivedAt: '2026-06-01T06:00:00.000Z',
         trigger: 'PICKUP_COMPLETED',
         updatedStops: [
-          { deliveryStopId: 'stop-id', estimatedArrivalAt: '2026-06-01T06:10:00.000Z', sequence: 1 },
-          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:30:00.000Z', sequence: 2 }
+          { deliveryStopId: 'stop-id', estimatedArrivalAt: '2026-06-01T05:40:00.000Z', sequence: 1 },
+          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:00:00.000Z', sequence: 2 }
         ]
       },
       eventId: 'driver-event-id'
@@ -791,14 +862,14 @@ describe('PrismaDriverEventRepository', () => {
       etaSnapshot: {
         nextStopEta: {
           deliveryStopId: 'stop-2',
-          estimatedArrivalAt: '2026-06-01T06:20:00.000Z'
+          estimatedArrivalAt: '2026-06-01T06:14:16.000Z'
         },
         status: 'READY'
       },
       etaUpdate: {
         trigger: 'STOP_ARRIVED',
         updatedStops: [
-          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:20:00.000Z', sequence: 2 }
+          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:14:16.000Z', sequence: 2 }
         ]
       }
     });
@@ -1555,8 +1626,10 @@ function createPrismaHarness(input: {
   existingEvent?: { deliveryStopId: string | null; eventType: string; id: string; payload?: unknown; routePlanId: string | null } | null;
   orderAssignmentVersionId?: string | null;
   otherOrdersOnStop?: number;
-  pickupEvent?: { createdAt: Date; id: string } | null;
-  pickupEventAfterCreateError?: { createdAt: Date; id: string } | null;
+  pickupEvent?: { createdAt: Date; id: string; occurredAt?: Date } | null;
+  pickupEventAfterCreateError?: { createdAt: Date; id: string; occurredAt?: Date } | null;
+  latestEtaEvent?: { createdAt: Date; id: string; occurredAt: Date } | null;
+  matchingArrivalEvent?: { createdAt: Date; occurredAt: Date } | null;
   routeGeometryCache?: { stopPoints: unknown } | null;
   routePlan?: { id: string; status?: string } | null;
   routeEtaInputVersionId?: string | null;
@@ -1658,6 +1731,9 @@ function createPrismaHarness(input: {
             ]
           : []);
       }
+      if (text.includes('ORDER BY LEAST("occurredAt", "createdAt") DESC')) {
+        return Promise.resolve([{ id: input.latestEtaEvent?.id ?? 'driver-event-id' }]);
+      }
       if (text.includes('UPDATE route_plan_stops')) {
         return Promise.resolve(input.routeEtaPersistenceRows ?? [{ id: 'route-plan-stop-id' }]);
       }
@@ -1688,12 +1764,15 @@ function createPrismaHarness(input: {
     },
     driverEvent: {
       create: createDriverEvent,
-      findFirst: vi.fn((args: { where?: { eventType?: unknown } }) => {
+      findFirst: vi.fn((args: { where?: { deliveryStopId?: string; eventType?: unknown } }) => {
         if (args.where?.eventType === 'PICKUP_COMPLETED') {
           if (driverEventCreateAttempted && input.pickupEventAfterCreateError !== undefined) {
             return Promise.resolve(input.pickupEventAfterCreateError);
           }
           return Promise.resolve(input.pickupEvent ?? null);
+        }
+        if (args.where?.eventType === 'STOP_ARRIVED' && args.where.deliveryStopId !== undefined) {
+          return Promise.resolve(input.matchingArrivalEvent ?? null);
         }
         return Promise.resolve(input.completionEvent ?? (createdEventType === 'ROUTE_COMPLETED' ? { id: 'driver-event-id' } : null));
       }),
