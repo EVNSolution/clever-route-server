@@ -667,7 +667,14 @@ describe('Admin route plan routes', () => {
           routeMetrics: null,
           routeStopPoints: routePlanStopPoints(),
           stops: [
-            expect.objectContaining({ orderName: '#1035', sequence: 1 }),
+            expect.objectContaining({
+              etaCalculatedAt: '2026-05-08T12:55:00.000Z',
+              etaSource: 'STOP_ARRIVED',
+              etaStatus: 'READY',
+              orderName: '#1035',
+              sequence: 1,
+              serviceMinutes: 5
+            }),
             expect.objectContaining({ orderName: '#1036', sequence: 2 })
           ]
         },
@@ -1357,7 +1364,13 @@ function createDependencyHarness(): {
       routeMetrics: null,
       routeStopPoints: routePlanStopPoints(),
       stops: [
-        routePlanStop({ orderName: '#1035', sequence: 1 }),
+        routePlanStop({
+          etaCalculatedAt: '2026-05-08T12:55:00.000Z',
+          etaSource: 'STOP_ARRIVED',
+          etaStatus: 'READY',
+          orderName: '#1035',
+          sequence: 1
+        }),
         routePlanStop({ orderName: '#1036', sequence: 2 })
       ]
     })
@@ -1583,7 +1596,14 @@ function routePlanPayload(): Record<string, unknown> {
   };
 }
 
-function routePlanStop(input: { orderName: string; sequence: number; status?: string }): RoutePlanDetailStop {
+function routePlanStop(input: {
+  etaCalculatedAt?: string | null;
+  etaSource?: string | null;
+  etaStatus?: string | null;
+  orderName: string;
+  sequence: number;
+  status?: string;
+}): RoutePlanDetailStop {
   return {
     address: {
       address1: '300 City Centre Dr',
@@ -1603,11 +1623,15 @@ function routePlanStop(input: { orderName: string; sequence: number; status?: st
     deliveryStopId: `stop-${input.sequence}`,
     financialStatus: 'PENDING',
     fulfillmentStatus: 'UNFULFILLED',
+    ...(input.etaCalculatedAt !== undefined ? { etaCalculatedAt: input.etaCalculatedAt } : {}),
+    ...(input.etaSource !== undefined ? { etaSource: input.etaSource } : {}),
+    ...(input.etaStatus !== undefined ? { etaStatus: input.etaStatus } : {}),
     orderId: `order-${input.sequence}`,
     orderName: input.orderName,
     paymentStatus: 'PENDING',
     recipientName: 'Noah Yoon',
     sequence: input.sequence,
+    serviceMinutes: 5,
     shopifyOrderGid: `gid://shopify/Order/${input.sequence}`,
     status: input.status ?? 'PENDING'
   };

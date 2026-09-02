@@ -56,11 +56,13 @@ export type DriverRouteEtaSnapshot = {
 const DEFAULT_SERVICE_MINUTES = 5;
 
 export function calculateRouteStartEtaUpdate(input: {
+  eventOccurredAt: Date;
   inputRouteVersionId?: string | null;
   serverReceivedAt: Date;
   stops: DriverRouteEtaStop[];
 }): DriverRouteEtaUpdate {
   return calculateFullChainEtaUpdate({
+    eventOccurredAt: input.eventOccurredAt,
     inputRouteVersionId: input.inputRouteVersionId,
     serverReceivedAt: input.serverReceivedAt,
     stops: input.stops,
@@ -69,11 +71,13 @@ export function calculateRouteStartEtaUpdate(input: {
 }
 
 export function calculatePickupEtaUpdate(input: {
+  eventOccurredAt: Date;
   inputRouteVersionId?: string | null;
   serverReceivedAt: Date;
   stops: DriverRouteEtaStop[];
 }): DriverRouteEtaUpdate {
   return calculateFullChainEtaUpdate({
+    eventOccurredAt: input.eventOccurredAt,
     inputRouteVersionId: input.inputRouteVersionId,
     serverReceivedAt: input.serverReceivedAt,
     stops: input.stops,
@@ -82,13 +86,14 @@ export function calculatePickupEtaUpdate(input: {
 }
 
 function calculateFullChainEtaUpdate(input: {
+  eventOccurredAt: Date;
   inputRouteVersionId?: string | null | undefined;
   serverReceivedAt: Date;
   stops: DriverRouteEtaStop[];
   trigger: 'ROUTE_STARTED' | 'PICKUP_COMPLETED';
 }): DriverRouteEtaUpdate {
   const sortedStops = [...input.stops].sort((left, right) => left.sequence - right.sequence);
-  let cursorMs: number | null = input.serverReceivedAt.getTime();
+  let cursorMs: number | null = effectiveEventTime(input.eventOccurredAt, input.serverReceivedAt).getTime();
   const updatedStops = sortedStops.map((stop) => {
     cursorMs = addDuration(cursorMs, stop.durationFromPreviousSeconds);
     const estimatedArrivalAt = toIsoString(cursorMs);
@@ -116,6 +121,7 @@ function calculateFullChainEtaUpdate(input: {
 
 export function calculateArrivalEtaUpdate(input: {
   arrivedDeliveryStopId: string;
+  eventOccurredAt: Date;
   inputRouteVersionId?: string | null;
   serverReceivedAt: Date;
   stops: DriverRouteEtaStop[];
@@ -128,7 +134,8 @@ export function calculateArrivalEtaUpdate(input: {
 
   const arrivedStop = sortedStops[arrivedIndex]!;
   const previousEstimatedArrivalAt = arrivedStop.estimatedArrivalAt;
-  let cursorMs: number | null = addServiceTime(input.serverReceivedAt.getTime(), arrivedStop.serviceMinutes);
+  const actualArrivalAt = effectiveEventTime(input.eventOccurredAt, input.serverReceivedAt);
+  let cursorMs: number | null = addServiceTime(actualArrivalAt.getTime(), arrivedStop.serviceMinutes);
   const updatedStops = sortedStops.slice(arrivedIndex + 1).map((stop) => {
     cursorMs = addDuration(cursorMs, stop.durationFromPreviousSeconds);
     const estimatedArrivalAt = toIsoString(cursorMs);
@@ -138,11 +145,11 @@ export function calculateArrivalEtaUpdate(input: {
   const failure = etaFailureFor(updatedStops);
 
   return {
-    actualArrivalAt: input.serverReceivedAt.toISOString(),
+    actualArrivalAt: actualArrivalAt.toISOString(),
     deliveryStopId: input.arrivedDeliveryStopId,
     delaySeconds: previousEstimatedArrivalAt === null
       ? null
-      : Math.round((input.serverReceivedAt.getTime() - previousEstimatedArrivalAt.getTime()) / 1000),
+      : Math.round((actualArrivalAt.getTime() - previousEstimatedArrivalAt.getTime()) / 1000),
     etaCalculatedAt: input.serverReceivedAt.toISOString(),
     etaFailureCode: failure?.code ?? null,
     etaFailureMessage: failure?.message ?? null,
@@ -157,7 +164,9 @@ export function calculateArrivalEtaUpdate(input: {
 }
 
 export function calculateCompletionEtaUpdate(input: {
+  arrivedAt?: Date | null;
   completedDeliveryStopId: string;
+  eventOccurredAt: Date;
   inputRouteVersionId?: string | null;
   serverReceivedAt: Date;
   stops: DriverRouteEtaStop[];
@@ -173,7 +182,12 @@ export function calculateCompletionEtaUpdate(input: {
   const previousEstimatedCompletionMs = previousEstimatedArrivalAt === null
     ? null
     : addServiceTime(previousEstimatedArrivalAt.getTime(), completedStop.serviceMinutes);
-  let cursorMs: number | null = input.serverReceivedAt.getTime();
+  const deliveredAt = effectiveEventTime(input.eventOccurredAt, input.serverReceivedAt);
+  const arrivalServiceCompletedMs = input.arrivedAt === undefined || input.arrivedAt === null
+    ? null
+    : addServiceTime(input.arrivedAt.getTime(), completedStop.serviceMinutes);
+  const completionAnchorMs = Math.max(deliveredAt.getTime(), arrivalServiceCompletedMs ?? Number.NEGATIVE_INFINITY);
+  let cursorMs: number | null = completionAnchorMs;
   const updatedStops = sortedStops.slice(completedIndex + 1).map((stop) => {
     cursorMs = addDuration(cursorMs, stop.durationFromPreviousSeconds);
     const estimatedArrivalAt = toIsoString(cursorMs);
@@ -187,7 +201,7 @@ export function calculateCompletionEtaUpdate(input: {
     deliveryStopId: input.completedDeliveryStopId,
     delaySeconds: previousEstimatedCompletionMs === null
       ? null
-      : Math.round((input.serverReceivedAt.getTime() - previousEstimatedCompletionMs) / 1000),
+      : Math.round((completionAnchorMs - previousEstimatedCompletionMs) / 1000),
     etaCalculatedAt: input.serverReceivedAt.toISOString(),
     etaFailureCode: failure?.code ?? null,
     etaFailureMessage: failure?.message ?? null,
@@ -199,6 +213,10 @@ export function calculateCompletionEtaUpdate(input: {
     trigger: 'STOP_DELIVERED',
     updatedStops
   };
+}
+
+function effectiveEventTime(eventOccurredAt: Date, serverReceivedAt: Date): Date {
+  return eventOccurredAt.getTime() > serverReceivedAt.getTime() ? serverReceivedAt : eventOccurredAt;
 }
 
 export function buildDriverRouteEtaSnapshot(input: {

@@ -153,6 +153,7 @@ export function withRouteGeometryResult(
 
 export function applyEstimatedRouteTiming(detail: RoutePlanDetail): RoutePlanDetail {
   const startInstant = readScheduledStartInstant(detail.routePlan.scheduledStartAt);
+  const preservePersistedArrival = detail.routePlan.status === 'IN_PROGRESS' || detail.routePlan.status === 'COMPLETED';
   const stopPointById = new Map(detail.routeStopPoints.map((point) => [point.deliveryStopId, point]));
   const timingByStopId = new Map<string, {
     distanceFromPreviousMeters: number | null;
@@ -192,7 +193,9 @@ export function applyEstimatedRouteTiming(detail: RoutePlanDetail): RoutePlanDet
     stops: detail.stops.map((stop) => ({
       ...stop,
       ...timingByStopId.get(stop.deliveryStopId),
-      estimatedArrivalAt: timingByStopId.get(stop.deliveryStopId)?.estimatedArrivalAt ?? null
+      estimatedArrivalAt: preservePersistedArrival
+        ? stop.estimatedArrivalAt ?? null
+        : timingByStopId.get(stop.deliveryStopId)?.estimatedArrivalAt ?? null
     }))
   };
 }

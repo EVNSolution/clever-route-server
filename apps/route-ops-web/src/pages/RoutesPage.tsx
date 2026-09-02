@@ -959,6 +959,7 @@ export function RouteBuilder(input: {
               detail?.routePlan.planDate ??
               null
             }
+            routeStatus={detail?.routePlan.status ?? null}
             stops={draftStops}
           />
         </>
@@ -1409,20 +1410,24 @@ function ChildRouteManifestCard({
   dwellMinutes,
   locale,
   planDate,
+  routeStatus,
   stops,
 }: {
   departureTime: string | null;
   dwellMinutes: number | null;
   locale?: string | null;
   planDate: string | null;
+  routeStatus: string | null;
   stops: RouteStopDto[];
 }): ReactElement {
   const t = getRoutesCopy(locale);
   const copy = childManifestCopy[resolveLocale(locale)];
   const displayStops = useMemo(
     () =>
-      applyManifestArrivalTimes(stops, planDate, departureTime, dwellMinutes),
-    [departureTime, dwellMinutes, planDate, stops],
+      routeStatus === 'IN_PROGRESS' || routeStatus === 'COMPLETED'
+        ? stops
+        : applyManifestArrivalTimes(stops, planDate, departureTime, dwellMinutes),
+    [departureTime, dwellMinutes, planDate, routeStatus, stops],
   );
   return (
     <article className="panel route-child-manifest-card">

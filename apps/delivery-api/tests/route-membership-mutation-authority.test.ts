@@ -193,17 +193,17 @@ describe('route membership mutation authority', () => {
     expect(source).toContain("throw new RouteGroupingValidationError(['archived legacy route membership cannot be restored safely'])");
   });
 
-  test('locks every completion contract before reading its immutable snapshot', () => {
+  test('locks every serialized progress or completion contract before reading its immutable snapshot', () => {
     const source = readFileSync(join(sourceRoot, 'modules/driver/driver-event.repository.ts'), 'utf8');
     const transaction = source.slice(
       source.indexOf('const result = await this.prisma.$transaction('),
       source.indexOf('const sequenceDeviation = await detectStopSequenceDeviation')
     );
 
-    expect(transaction).toContain('await lockRoutePlanForCompletion(transaction, input)');
-    expect(transaction.indexOf('await lockRoutePlanForCompletion(transaction, input)'))
+    expect(transaction).toContain('await lockRoutePlanForSerializedEvent(transaction, input)');
+    expect(transaction.indexOf('await lockRoutePlanForSerializedEvent(transaction, input)'))
       .toBeLessThan(transaction.indexOf('await validateVersionedOrderedContract(transaction, input)'));
-    expect(transaction.indexOf('await lockRoutePlanForCompletion(transaction, input)'))
+    expect(transaction.indexOf('await lockRoutePlanForSerializedEvent(transaction, input)'))
       .toBeLessThan(transaction.indexOf('await evaluateCompletionInvariant(transaction, input'));
   });
 

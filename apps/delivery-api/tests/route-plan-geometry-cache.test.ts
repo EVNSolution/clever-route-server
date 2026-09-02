@@ -60,6 +60,40 @@ describe('route geometry cache metadata', () => {
     });
   });
 
+  test('preserves persisted arrivals while enriching stops with cached OSRM leg data', () => {
+    const detail = routeDetail('2026-07-16T12:00:00.000Z');
+    detail.routePlan.status = 'IN_PROGRESS';
+    detail.stops[0]!.estimatedArrivalAt = '2026-07-16T13:05:00.000Z';
+
+    const result = applyCachedRouteGeometry(detail, {
+      generatedAt: '2026-07-16T11:00:00.000Z',
+      geometry: {
+        type: 'LineString',
+        coordinates: [[-79.38, 43.65], [-79.25, 43.77], [-79.33, 43.85]]
+      },
+      metrics: { distanceMeters: 30000, durationSeconds: 1500 },
+      provider: 'osrm',
+      providerVersion: null,
+      shapeSignature: computeRouteShapeSignature(detail),
+      source: 'SNAPSHOT',
+      stopPoints: [
+        routeStopPoint('stop-1', 1, 600, 10000),
+        routeStopPoint('stop-2', 2, 900, 20000)
+      ]
+    });
+
+    expect(result.stops[0]).toMatchObject({
+      distanceFromPreviousMeters: 10000,
+      durationFromPreviousSeconds: 600,
+      estimatedArrivalAt: '2026-07-16T13:05:00.000Z'
+    });
+    expect(result.stops[1]).toMatchObject({
+      distanceFromPreviousMeters: 20000,
+      durationFromPreviousSeconds: 900,
+      estimatedArrivalAt: null
+    });
+  });
+
   test('keeps estimated arrivals null until a complete scheduled start exists', () => {
     const detail = routeDetail(null);
     const result = applyCachedRouteGeometry(detail, {

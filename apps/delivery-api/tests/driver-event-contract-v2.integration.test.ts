@@ -1410,7 +1410,237 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
       await prisma.$disconnect();
     }
   }, 15_000);
+
+  live('does not let a late-arriving past progress event overwrite newer persisted ETAs', async () => {
+    assertDisposableDatabase();
+    const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    const repository = new PrismaDriverEventRepository(prisma);
+    const fixture = etaFixture(21);
+    try {
+      await seedEtaFixture(prisma, fixture);
+
+      const newer = await repository.recordDriverEvent(etaEventInput(fixture, {
+        clientEventId: 'eta-newer-progress',
+        deliveryStopId: fixture.stopIds[0]!,
+        occurredAt: new Date('2026-08-24T10:00:00.000Z')
+      }));
+      const expectedLastEta = newer.etaUpdate?.updatedStops[1]?.estimatedArrivalAt;
+      expect(expectedLastEta).toBe('2026-08-24T10:30:00.000Z');
+
+      const latePast = await repository.recordDriverEvent(etaEventInput(fixture, {
+        clientEventId: 'eta-late-past-progress',
+        deliveryStopId: fixture.stopIds[1]!,
+        occurredAt: new Date('2026-08-24T09:00:00.000Z')
+      }));
+
+      expect(latePast.etaUpdate).toBeUndefined();
+      expect((await prisma.routePlanStop.findUniqueOrThrow({
+        where: { routePlanId_deliveryStopId: { deliveryStopId: fixture.stopIds[2]!, routePlanId: fixture.routePlanId } }
+      })).estimatedArrivalAt?.toISOString()).toBe(expectedLastEta);
+    } finally {
+      await prisma.$disconnect();
+    }
+  });
+
+  live('clamps a future occurredAt to the PostgreSQL receipt time before ordering and ETA calculation', async () => {
+    assertDisposableDatabase();
+    const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    const repository = new PrismaDriverEventRepository(prisma);
+    const fixture = etaFixture(22);
+    try {
+      await seedEtaFixture(prisma, fixture);
+
+      const result = await repository.recordDriverEvent(etaEventInput(fixture, {
+        clientEventId: 'eta-future-progress',
+        deliveryStopId: fixture.stopIds[0]!,
+        occurredAt: new Date('2099-01-01T00:00:00.000Z')
+      }));
+
+      const serverReceivedAt = new Date(result.etaUpdate!.serverReceivedAt);
+      expect(result.etaUpdate).toMatchObject({
+        actualArrivalAt: serverReceivedAt.toISOString(),
+        etaCalculatedAt: serverReceivedAt.toISOString()
+      });
+      expect(result.etaUpdate?.updatedStops[0]?.estimatedArrivalAt)
+        .toBe(new Date(serverReceivedAt.getTime() + 15 * 60_000).toISOString());
+
+      const next = await repository.recordDriverEvent(etaEventInput(fixture, {
+        clientEventId: 'eta-after-future-progress',
+        deliveryStopId: fixture.stopIds[1]!,
+        occurredAt: new Date(serverReceivedAt.getTime() + 1_000)
+      }));
+      expect(next.etaUpdate).toMatchObject({
+        deliveryStopId: fixture.stopIds[1],
+        trigger: 'STOP_ARRIVED'
+      });
+    } finally {
+      await prisma.$disconnect();
+    }
+  });
+
+  live('excludes progress events from another shop, driver, or route version when selecting the current ETA event', async () => {
+    assertDisposableDatabase();
+    const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    const repository = new PrismaDriverEventRepository(prisma);
+    const fixture = etaFixture(23);
+    const otherShopFixture = etaFixture(24);
+    try {
+      await seedEtaFixture(prisma, fixture);
+      await seedEtaFixture(prisma, otherShopFixture);
+      await prisma.driverEvent.createMany({ data: [
+        {
+          clientEventId: 'eta-other-driver', driverId: fixture.otherDriverId, eventType: 'PICKUP_COMPLETED',
+          occurredAt: new Date('2099-01-01T00:00:00.000Z'), payload: {}, routePlanId: fixture.routePlanId,
+          routeVersionId: fixture.routeVersionId, shopId: fixture.shopId
+        },
+        {
+          clientEventId: 'eta-other-version', driverId: fixture.driverId, eventType: 'PICKUP_COMPLETED',
+          occurredAt: new Date('2099-01-01T00:00:00.000Z'), payload: {}, routePlanId: fixture.routePlanId,
+          routeVersionId: fixture.archivedRouteVersionId, shopId: fixture.shopId
+        },
+        {
+          clientEventId: 'eta-other-shop', driverId: otherShopFixture.driverId, eventType: 'PICKUP_COMPLETED',
+          occurredAt: new Date('2099-01-01T00:00:00.000Z'), payload: {}, routePlanId: otherShopFixture.routePlanId,
+          routeVersionId: otherShopFixture.routeVersionId, shopId: otherShopFixture.shopId
+        }
+      ] });
+
+      const result = await repository.recordDriverEvent(etaEventInput(fixture, {
+        clientEventId: 'eta-correct-scope',
+        deliveryStopId: fixture.stopIds[0]!,
+        occurredAt: new Date('2026-08-24T10:00:00.000Z')
+      }));
+
+      expect(result.etaUpdate).toMatchObject({
+        inputRouteVersionId: fixture.routeVersionId,
+        trigger: 'STOP_ARRIVED'
+      });
+      expect(result.etaUpdate?.updatedStops).toHaveLength(2);
+    } finally {
+      await prisma.$disconnect();
+    }
+  });
+
+  live('waits for the route row lock before applying an ETA progress event', async () => {
+    assertDisposableDatabase();
+    const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    const repository = new PrismaDriverEventRepository(prisma);
+    const fixture = etaFixture(25);
+    const lockHolder = new pg.Client({ connectionString: databaseUrl });
+    await lockHolder.connect();
+    try {
+      await seedEtaFixture(prisma, fixture);
+      await lockHolder.query('BEGIN');
+      await lockHolder.query('SELECT id FROM route_plans WHERE id = $1 FOR UPDATE', [fixture.routePlanId]);
+
+      let settled = false;
+      const recording = repository.recordDriverEvent(etaEventInput(fixture, {
+        clientEventId: 'eta-route-lock',
+        deliveryStopId: fixture.stopIds[0]!,
+        occurredAt: new Date('2026-08-24T10:00:00.000Z')
+      })).finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(settled).toBe(false);
+
+      await lockHolder.query('COMMIT');
+      await expect(recording).resolves.toMatchObject({
+        duplicate: false,
+        etaUpdate: { trigger: 'STOP_ARRIVED' }
+      });
+    } finally {
+      await lockHolder.query('ROLLBACK').catch(() => undefined);
+      await lockHolder.end();
+      await prisma.$disconnect();
+    }
+  });
 });
+
+type EtaFixture = ReturnType<typeof etaFixture>;
+
+function etaFixture(index: number) {
+  const suffix = index.toString().padStart(12, '0');
+  return {
+    archivedRouteVersionId: `85000000-0000-4000-8000-${suffix}`,
+    driverId: `82000000-0000-4000-8000-${suffix}`,
+    groupingId: `84000000-0000-4000-8000-${suffix}`,
+    groupingVersionId: `84500000-0000-4000-8000-${suffix}`,
+    orderIds: [1, 2, 3].map((sequence) => `8600000${sequence}-0000-4000-8000-${suffix}`),
+    otherDriverId: `82500000-0000-4000-8000-${suffix}`,
+    routePlanId: `83000000-0000-4000-8000-${suffix}`,
+    routeVersionId: `85500000-0000-4000-8000-${suffix}`,
+    shopDomain: `eta-${index}.invalid`,
+    shopId: `81000000-0000-4000-8000-${suffix}`,
+    stopIds: [1, 2, 3].map((sequence) => `8700000${sequence}-0000-4000-8000-${suffix}`)
+  };
+}
+
+async function seedEtaFixture(prisma: PrismaClient, fixture: EtaFixture): Promise<void> {
+  await prisma.shop.create({ data: { id: fixture.shopId, shopDomain: fixture.shopDomain } });
+  await prisma.driver.createMany({ data: [
+    { displayName: 'ETA driver', id: fixture.driverId, shopId: fixture.shopId },
+    { displayName: 'Other ETA driver', id: fixture.otherDriverId, shopId: fixture.shopId }
+  ] });
+  await prisma.routePlan.create({ data: {
+    constraints: {}, driverId: fixture.driverId, id: fixture.routePlanId, metrics: {}, name: 'ETA integration',
+    optimizerVersion: 'test', planDate: new Date('2026-08-24T00:00:00.000Z'), shopId: fixture.shopId, status: 'IN_PROGRESS'
+  } });
+  await prisma.routeGrouping.create({ data: {
+    id: fixture.groupingId, name: 'ETA integration', planDate: new Date('2026-08-24T00:00:00.000Z'),
+    shopId: fixture.shopId, status: 'READY'
+  } });
+  await prisma.routeGroupingVersion.create({ data: {
+    groupingId: fixture.groupingId, id: fixture.groupingVersionId, shopId: fixture.shopId, status: 'CURRENT', version: 1
+  } });
+  await prisma.routeGroupingChildVersion.createMany({ data: [
+    {
+      driverId: fixture.driverId, groupingId: fixture.groupingId, groupingVersionId: fixture.groupingVersionId,
+      id: fixture.archivedRouteVersionId, routePlanId: fixture.routePlanId, shopId: fixture.shopId,
+      snapshot: { stops: fixture.stopIds.map((deliveryStopId, sequence) => ({ deliveryStopId, sequence: sequence + 1 })) },
+      status: 'ARCHIVED', version: 0
+    },
+    {
+      driverId: fixture.driverId, groupingId: fixture.groupingId, groupingVersionId: fixture.groupingVersionId,
+      id: fixture.routeVersionId, routePlanId: fixture.routePlanId, shopId: fixture.shopId,
+      snapshot: { stops: fixture.stopIds.map((deliveryStopId, sequence) => ({ deliveryStopId, sequence: sequence + 1 })) },
+      status: 'CURRENT', version: 1
+    }
+  ] });
+  await prisma.order.createMany({ data: fixture.orderIds.map((id, index) => ({
+    currentRouteVersionId: fixture.routeVersionId, id, name: `ETA-${index + 1}`, rawPayload: {},
+    shopId: fixture.shopId, shopifyOrderGid: `gid://shopify/Order/eta-${fixture.shopId}-${index + 1}`
+  })) });
+  await prisma.deliveryStop.createMany({ data: fixture.stopIds.map((id, index) => ({
+    id, orderId: fixture.orderIds[index]!, serviceMinutes: 5, shopId: fixture.shopId, status: 'ASSIGNED'
+  })) });
+  await prisma.routePlanStop.createMany({ data: fixture.stopIds.map((deliveryStopId, index) => ({
+    deliveryStopId,
+    distanceFromPreviousMeters: index === 0 ? 0 : 1_000,
+    durationFromPreviousSeconds: index === 0 ? 0 : 600,
+    estimatedArrivalAt: new Date(`2026-08-24T09:${String(index * 15).padStart(2, '0')}:00.000Z`),
+    routePlanId: fixture.routePlanId,
+    sequence: index + 1,
+    shopId: fixture.shopId
+  })) });
+}
+
+function etaEventInput(
+  fixture: EtaFixture,
+  input: { clientEventId: string; deliveryStopId: string; occurredAt: Date }
+) {
+  return {
+    clientEventId: input.clientEventId,
+    deliveryStopId: input.deliveryStopId,
+    driverId: fixture.driverId,
+    eventType: 'STOP_ARRIVED' as const,
+    latitude: null,
+    longitude: null,
+    occurredAt: input.occurredAt,
+    payload: {},
+    routePlanId: fixture.routePlanId,
+    shopDomain: fixture.shopDomain,
+    shopId: fixture.shopId
+  };
+}
 
 function admissionInput(input: { clientEventId: string; driverId: string; requestId: string; routePlanId: string; shopId: string }) {
   return {
