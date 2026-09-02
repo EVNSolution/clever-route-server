@@ -26,7 +26,7 @@ RUN npm --prefix apps/delivery-api run prisma:generate \
   && test -f apps/delivery-api/dist/scripts/process-driver-account-deletion.js
 
 FROM build AS pruned
-RUN npm --prefix apps/delivery-api prune --omit=dev
+RUN npm --prefix apps/delivery-api prune --omit=dev --omit=optional
 
 FROM base AS runtime
 ENV NODE_ENV=production
@@ -45,6 +45,7 @@ COPY apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh ./scripts/dsv-g007-mig
 RUN ln -s ../../node_modules ./apps/delivery-api/node_modules \
   && chmod 0755 ./scripts/dsv-g007-migrate-deploy.sh
 COPY apps/delivery-api/docs/api ./docs/api
+RUN node -e "Promise.all([import('@prisma/client'), import('firebase-admin/app'), import('firebase-admin/messaging')])"
 USER clever
 EXPOSE 3000
 CMD ["node", "dist/server.js"]
