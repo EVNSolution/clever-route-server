@@ -50,6 +50,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   DELIVERY_API_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api
+  DELIVERY_API_MIGRATION_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api-migration
   ROUTE_OPS_WEB_STATIC_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-route-ops-web-static
 
 # This workflow is the lean rollout/runtime lane. Do not add broad CI-grade lint/typecheck/test suites here; use CI workflow_dispatch full_verify for that.
@@ -192,6 +193,7 @@ jobs:
           print(f"deployed_commit={values.get('COMMIT_SHA', '')}")
           print(f"runtime_commit={values.get('API_RUNTIME_REVISION', values.get('COMMIT_SHA', ''))}")
           print(f"delivery_api_image={values.get('DELIVERY_API_IMAGE', '')}")
+          print(f"delivery_api_migration_image={values.get('DELIVERY_API_MIGRATION_IMAGE', values.get('DELIVERY_API_IMAGE', ''))}")
           print(f"route_ops_web_static_image={values.get('ROUTE_OPS_WEB_STATIC_IMAGE', '')}")
           PY
 
@@ -202,6 +204,7 @@ jobs:
           DEPLOYED_COMMIT: ${{ steps.current.outputs.deployed_commit }}
           API_RUNTIME_COMMIT: ${{ steps.current.outputs.runtime_commit }}
           CURRENT_DELIVERY_API_IMAGE: ${{ steps.current.outputs.delivery_api_image }}
+          CURRENT_DELIVERY_API_MIGRATION_IMAGE: ${{ steps.current.outputs.delivery_api_migration_image }}
           CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.current.outputs.route_ops_web_static_image }}
           PUBLISH_IMAGES: ${{ inputs.publish_images }}
         run: |
@@ -295,6 +298,27 @@ jobs:
           cache-from: type=registry,ref=${{ env.DELIVERY_API_IMAGE_REPO }}:buildcache
           cache-to: type=registry,ref=${{ env.DELIVERY_API_IMAGE_REPO }}:buildcache,mode=max
 
+      - name: Build and push delivery API migration image
+        id: build_migration
+        if: steps.changes.outputs.build_api == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/delivery-api/Dockerfile
+          target: migration
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.DELIVERY_API_MIGRATION_IMAGE_REPO }}:${{ github.sha }}
+            ${{ env.DELIVERY_API_MIGRATION_IMAGE_REPO }}:${{ inputs.channel_tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.clever-route.prisma-schema-sha=${{ hashFiles('apps/delivery-api/prisma/schema.prisma') }}
+            org.clever-route.image-role=migration
+          cache-from: type=registry,ref=${{ env.DELIVERY_API_MIGRATION_IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.DELIVERY_API_MIGRATION_IMAGE_REPO }}:buildcache,mode=max
+
       - name: Resolve deploy image refs
         id: images
         shell: bash
@@ -304,10 +328,13 @@ jobs:
           BUILD_API: ${{ steps.changes.outputs.build_api }}
           BUILD_WEB: ${{ steps.changes.outputs.build_web }}
           API_DIGEST: ${{ steps.build_api.outputs.digest }}
+          MIGRATION_DIGEST: ${{ steps.build_migration.outputs.digest }}
           WEB_DIGEST: ${{ steps.build_web.outputs.digest }}
           CURRENT_DELIVERY_API_IMAGE: ${{ steps.current.outputs.delivery_api_image }}
+          CURRENT_DELIVERY_API_MIGRATION_IMAGE: ${{ steps.current.outputs.delivery_api_migration_image }}
           CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.current.outputs.route_ops_web_static_image }}
           DELIVERY_API_IMAGE_REPO: ${{ env.DELIVERY_API_IMAGE_REPO }}
+          DELIVERY_API_MIGRATION_IMAGE_REPO: ${{ env.DELIVERY_API_MIGRATION_IMAGE_REPO }}
           ROUTE_OPS_WEB_STATIC_IMAGE_REPO: ${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}
         run: |
           set -euo pipefail
@@ -328,10 +355,13 @@ jobs:
           }
           if [ "$BUILD_API" = "true" ]; then
             delivery_api_image="${DELIVERY_API_IMAGE_REPO}@${API_DIGEST}"
+            delivery_api_migration_image="${DELIVERY_API_MIGRATION_IMAGE_REPO}@${MIGRATION_DIGEST}"
           elif [ "$PUBLISH_IMAGES" = "false" ]; then
             delivery_api_image="$(resolve_digest_ref "${DELIVERY_API_IMAGE_REPO}:${CHANNEL_TAG}")"
+            delivery_api_migration_image="$(resolve_digest_ref "${DELIVERY_API_MIGRATION_IMAGE_REPO}:${CHANNEL_TAG}")"
           else
             delivery_api_image="$(resolve_digest_ref "$CURRENT_DELIVERY_API_IMAGE")"
+            delivery_api_migration_image="$(resolve_digest_ref "$CURRENT_DELIVERY_API_MIGRATION_IMAGE")"
           fi
           if [ "$BUILD_WEB" = "true" ]; then
             route_ops_web_static_image="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}@${WEB_DIGEST}"
@@ -341,6 +371,7 @@ jobs:
             route_ops_web_static_image="$(resolve_digest_ref "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE")"
           fi
           echo "delivery_api_image=$delivery_api_image" >> "$GITHUB_OUTPUT"
+          echo "delivery_api_migration_image=$delivery_api_migration_image" >> "$GITHUB_OUTPUT"
           echo "route_ops_web_static_image=$route_ops_web_static_image" >> "$GITHUB_OUTPUT"
           mkdir -p deploy-selection
           cat > deploy-selection/route-ops-simple-image-selection.json <<JSON
@@ -350,8 +381,10 @@ jobs:
             "buildApi": $BUILD_API,
             "buildWeb": $BUILD_WEB,
             "deliveryApiImage": "$delivery_api_image",
+            "deliveryApiMigrationImage": "$delivery_api_migration_image",
             "routeOpsWebStaticImage": "$route_ops_web_static_image",
             "previousDeliveryApiImage": "$CURRENT_DELIVERY_API_IMAGE",
+            "previousDeliveryApiMigrationImage": "$CURRENT_DELIVERY_API_MIGRATION_IMAGE",
             "previousRouteOpsWebStaticImage": "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE"
           }
           JSON
@@ -369,6 +402,7 @@ jobs:
         shell: bash
         env:
           ROUTE_OPS_RUNTIME_IMAGE: ${{ steps.images.outputs.delivery_api_image }}
+          ROUTE_OPS_MIGRATION_IMAGE: ${{ steps.images.outputs.delivery_api_migration_image }}
           ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.images.outputs.route_ops_web_static_image }}
           ROUTE_OPS_SIMPLE_CHANNEL_TAG: ${{ inputs.channel_tag }}
           DSV_MIGRATION_APPROVED: ${{ inputs.approve_dsv_migration && '1' || '' }}

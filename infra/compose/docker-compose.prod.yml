@@ -76,7 +76,7 @@ services:
           - delivery-api
 
   clever-route-api-migrate:
-    image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}
+    image: ${DELIVERY_API_MIGRATION_IMAGE:-${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}}
     depends_on:
       postgres:
         condition: service_healthy
