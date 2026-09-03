@@ -69,3 +69,18 @@ test('keeps the audited dependency set identical to the production image boundar
   assert.match(dockerfile, /import\('firebase-admin\/messaging'\)/u);
   assert.match(dockerfile, /import\('@prisma\/client'\)/u);
 });
+
+test('keeps Prisma CLI in a separate migration image without weakening the runtime image', () => {
+  const dockerfile = readFileSync(resolve(repositoryRoot, 'apps/delivery-api/Dockerfile'), 'utf8');
+  const migrationStage = dockerfile.slice(
+    dockerfile.indexOf('FROM base AS migration'),
+    dockerfile.indexOf('FROM base AS runtime')
+  );
+  const runtimeStage = dockerfile.slice(dockerfile.indexOf('FROM base AS runtime'));
+
+  assert.match(migrationStage, /COPY --from=build \/app\/apps\/delivery-api\/node_modules \.\/node_modules/u);
+  assert.match(migrationStage, /test -x \.\/apps\/delivery-api\/node_modules\/\.bin\/prisma/u);
+  assert.match(migrationStage, /USER clever/u);
+  assert.match(runtimeStage, /COPY --from=pruned \/app\/apps\/delivery-api\/node_modules \.\/node_modules/u);
+  assert.doesNotMatch(runtimeStage, /COPY --from=build \/app\/apps\/delivery-api\/node_modules/u);
+});

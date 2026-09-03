@@ -13,8 +13,10 @@ CHANNEL_TAG="${ROUTE_OPS_SIMPLE_CHANNEL_TAG:-prod}"
 COMMIT_SHA="$(git rev-parse --short=40 HEAD)"
 PRISMA_SCHEMA_SHA="$(shasum -a 256 apps/delivery-api/prisma/schema.prisma | awk '{print $1}')"
 RUNTIME_IMAGE_REPO="${ROUTE_OPS_RUNTIME_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api}"
+MIGRATION_IMAGE_REPO="${ROUTE_OPS_MIGRATION_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api-migration}"
 STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
 RUNTIME_IMAGE="${ROUTE_OPS_RUNTIME_IMAGE:-${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}}"
+MIGRATION_IMAGE="${ROUTE_OPS_MIGRATION_IMAGE:-${MIGRATION_IMAGE_REPO}:${CHANNEL_TAG}}"
 STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${STATIC_IMAGE_REPO}:${CHANNEL_TAG}}"
 STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${CHANNEL_TAG}}"
 VROOM_IMAGE="${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08}"
@@ -39,15 +41,17 @@ usage() {
 Usage: $0 [--dry-run] [--publish] [--no-send]
 
 Simple Route Ops SSM deploy lane: no S3 deploy-control bundle, no EC2 build,
-no separate migrate image, no prod-prev image retagging, and no ingress/Caddy
+no prod-prev image retagging, and no ingress/Caddy
 mutation. GitHub Actions should publish digest-addressable images first, then
-pass ROUTE_OPS_RUNTIME_IMAGE and ROUTE_OPS_WEB_STATIC_IMAGE as repo@sha256 refs.
+pass ROUTE_OPS_RUNTIME_IMAGE, ROUTE_OPS_MIGRATION_IMAGE, and
+ROUTE_OPS_WEB_STATIC_IMAGE as repo@sha256 refs.
 The SSM command only pulls, audits custom-order ownership, runs migration,
 stages static assets, recreates clever-route-api, and healthchecks.
 
 Env:
   ROUTE_OPS_SIMPLE_CHANNEL_TAG   default: prod
   ROUTE_OPS_RUNTIME_IMAGE        optional full runtime image ref, preferably repo@sha256
+  ROUTE_OPS_MIGRATION_IMAGE      optional full migration image ref, preferably repo@sha256
   ROUTE_OPS_WEB_STATIC_IMAGE     optional full static image ref, preferably repo@sha256
   ROUTE_OPS_FORCE_STATIC_RESTAGE  set to 1 to stage static even when digest matches current
   ROUTE_OPS_FIREBASE_CREDENTIALS_PARAM encrypted SSM parameter containing FCM credentials
@@ -122,7 +126,18 @@ build_and_push() {
     --cache-from "type=registry,ref=${RUNTIME_IMAGE_REPO}:buildcache" \
     --cache-to "type=registry,ref=${RUNTIME_IMAGE_REPO}:buildcache,mode=max" \
     -t "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}" .
-  for image in "${STATIC_IMAGE_REPO}:${CHANNEL_TAG}" "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}"; do
+  docker buildx build --platform linux/amd64 \
+    -f apps/delivery-api/Dockerfile \
+    --target migration \
+    --push \
+    --provenance=false \
+    --label "org.opencontainers.image.revision=$COMMIT_SHA" \
+    --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
+    --label "org.clever-route.image-role=migration" \
+    --cache-from "type=registry,ref=${MIGRATION_IMAGE_REPO}:buildcache" \
+    --cache-to "type=registry,ref=${MIGRATION_IMAGE_REPO}:buildcache,mode=max" \
+    -t "${MIGRATION_IMAGE_REPO}:${CHANNEL_TAG}" .
+  for image in "${STATIC_IMAGE_REPO}:${CHANNEL_TAG}" "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}" "${MIGRATION_IMAGE_REPO}:${CHANNEL_TAG}"; do
     docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}'
   done
 }
@@ -157,6 +172,7 @@ CHANNEL_TAG=__CHANNEL_TAG__
 PRISMA_SCHEMA_SHA=__PRISMA_SCHEMA_SHA__
 PROOF_READY_FILTER_CONTRACT_SHA=__PROOF_READY_FILTER_CONTRACT_SHA__
 DELIVERY_API_IMAGE=__RUNTIME_IMAGE__
+DELIVERY_API_MIGRATION_IMAGE=__MIGRATION_IMAGE__
 ROUTE_OPS_WEB_STATIC_IMAGE=__STATIC_IMAGE__
 ROUTE_OPS_WEB_STATIC_VOLUME=__STATIC_VOLUME__
 VROOM_IMAGE=__VROOM_IMAGE__
@@ -186,7 +202,7 @@ mkdir -p .deploy
 lock_dir=.deploy/route-ops-simple-deploy.lock.d
 if ! mkdir "$lock_dir" 2>/dev/null; then echo 'another simple deploy is running' >&2; exit 65; fi
 trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
-printf 'simple deploy preflight: commit=%s channel=%s runtime=%s static=%s volume=%s dryRun=%s forceStaticRestage=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$DRY_RUN" "$FORCE_STATIC_RESTAGE"
+printf 'simple deploy preflight: commit=%s channel=%s runtime=%s migration=%s static=%s volume=%s dryRun=%s forceStaticRestage=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATION_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$DRY_RUN" "$FORCE_STATIC_RESTAGE"
 command -v docker >/dev/null
 command -v aws >/dev/null
 command -v python3 >/dev/null
@@ -226,6 +242,7 @@ IMAGE_TAG=$CHANNEL_TAG
 COMMIT_SHA=$COMMIT_SHA
 API_RUNTIME_REVISION=$COMMIT_SHA
 DELIVERY_API_IMAGE=$DELIVERY_API_IMAGE
+DELIVERY_API_MIGRATION_IMAGE=$DELIVERY_API_MIGRATION_IMAGE
 ROUTE_OPS_WEB_STATIC_IMAGE=$ROUTE_OPS_WEB_STATIC_IMAGE
 ROUTE_OPS_WEB_STATIC_VOLUME=$ROUTE_OPS_WEB_STATIC_VOLUME
 VROOM_IMAGE=$VROOM_IMAGE
@@ -451,9 +468,13 @@ token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --qu
 printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/dev/null
 token=''
 static_stage_reason="$(should_stage_static)"
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api clever-route-api-migrate vroom vroom-korea
 runtime_revision="$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
 [[ "$runtime_revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate delivery API image revision is invalid' >&2; exit 1; }
+migration_revision="$(docker image inspect "$DELIVERY_API_MIGRATION_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+[ "$migration_revision" = "$runtime_revision" ] || { echo 'candidate migration image revision does not match runtime' >&2; exit 1; }
+[ "$(docker image inspect "$DELIVERY_API_MIGRATION_IMAGE" --format '{{ index .Config.Labels "org.clever-route.image-role" }}')" = "migration" ] \
+  || { echo 'candidate migration image role is invalid' >&2; exit 1; }
 sed -i.bak "s/^API_RUNTIME_REVISION=.*/API_RUNTIME_REVISION=$runtime_revision/" .deploy/simple-candidate-image.env
 rm -f .deploy/simple-candidate-image.env.bak
 [ "$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.clever-route.route-completion-invariant-capability" }}')" = "1" ] \
@@ -491,7 +512,7 @@ if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE="$APP_DIR/.deploy/candidate-retention/
   exit 1
 fi
 .deploy/route-ops-docker-cleanup.sh --enforce
-printf '{"ts":"%s","commitSha":"%s","runtimeCommitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$runtime_revision" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","commitSha":"%s","runtimeCommitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","deliveryApiMigrationImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$runtime_revision" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATION_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
 printf 'simple deploy completed: commit=%s channel=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG"
 HOST_SCRIPT
   python3 - "$path" "$inner_path" <<'PY'
@@ -515,6 +536,7 @@ replacements = {
     '__PRISMA_SCHEMA_SHA__': shlex.quote(os.environ['PRISMA_SCHEMA_SHA']),
     '__PROOF_READY_FILTER_CONTRACT_SHA__': shlex.quote(os.environ['PROOF_READY_FILTER_CONTRACT_SHA']),
     '__RUNTIME_IMAGE__': shlex.quote(os.environ['RUNTIME_IMAGE']),
+    '__MIGRATION_IMAGE__': shlex.quote(os.environ['MIGRATION_IMAGE']),
     '__STATIC_IMAGE__': shlex.quote(os.environ['STATIC_IMAGE']),
     '__STATIC_VOLUME__': shlex.quote(os.environ['STATIC_VOLUME']),
     '__VROOM_IMAGE__': shlex.quote(os.environ['VROOM_IMAGE']),
@@ -563,7 +585,7 @@ test -f apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts \
 test -f apps/delivery-api/tests/dsv-v1-read-query.service.test.ts \
   || fail 'missing DSV READY-filter contract'
 PROOF_READY_FILTER_CONTRACT_SHA="$(shasum -a 256 apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts apps/delivery-api/tests/dsv-v1-read-query.service.test.ts | shasum -a 256 | awk '{print $1}')"
-export AWS_REGION APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA PROOF_READY_FILTER_CONTRACT_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 FIREBASE_CREDENTIALS_PARAM UVIS_ENV_PARAM COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64 RETENTION_RUNNER_B64 RETENTION_INSTALLER_B64 RETENTION_SERVICE_B64 RETENTION_TIMER_B64
+export AWS_REGION APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA PROOF_READY_FILTER_CONTRACT_SHA RUNTIME_IMAGE MIGRATION_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 FIREBASE_CREDENTIALS_PARAM UVIS_ENV_PARAM COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64 RETENTION_RUNNER_B64 RETENTION_INSTALLER_B64 RETENTION_SERVICE_B64 RETENTION_TIMER_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-params_path="$(DSV_MIGRATION_APPROVED=1 DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333 DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444 DSV_PRODUCTION_BASELINE_APPROVED=1 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555 ROUTE_OPS_UVIS_ENV_PARAM=/clever/route-ops/uvis/runtime-env ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
+params_path="$(DSV_MIGRATION_APPROVED=1 DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333 DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444 DSV_PRODUCTION_BASELINE_APPROVED=1 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555 ROUTE_OPS_UVIS_ENV_PARAM=/clever/route-ops/uvis/runtime-env ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_MIGRATION_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migration@sha256:6666666666666666666666666666666666666666666666666666666666666666 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
 proof_ready_contract_sha="$(shasum -a 256 apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts apps/delivery-api/tests/dsv-v1-read-query.service.test.ts | shasum -a 256 | awk '{print $1}')"
 cleanup() { rm -f "$params_path"; }
 trap cleanup EXIT
@@ -25,7 +25,7 @@ web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 compose = pathlib.Path('infra/compose/docker-compose.prod.yml').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
-    '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea',
+    '--profile osrm --profile vroom --profile korea pull clever-route-api clever-route-api-migrate vroom vroom-korea',
     '--profile osrm --profile vroom --profile korea pull route-ops-web-static',
     'run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js',
     'run --rm clever-route-api-migrate',
@@ -36,6 +36,7 @@ checks = {
     'uses_run_shell_command': command.startswith('bash -lc '),
     'channel_rendered': 'CHANNEL_TAG=prod-test' in command,
     'digest_runtime_rendered': 'DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111' in command,
+    'digest_migration_rendered': 'DELIVERY_API_MIGRATION_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migration@sha256:6666666666666666666666666666666666666666666666666666666666666666' in command,
     'digest_static_rendered': 'ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222' in command,
     'migration_evidence_rendered': 'DSV_MIGRATION_APPROVED=1' in command and 'DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333' in command and 'DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444' in command,
     'production_baseline_evidence_rendered': 'DSV_PRODUCTION_BASELINE_APPROVED=1' in command and 'DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555' in command,
@@ -60,8 +61,9 @@ checks = {
     'uvis_runtime_env_permissions': 'path.chmod(0o600)' in command,
     'uvis_not_in_candidate_image_env': 'UVIS_COMPANY_SERIAL_KEY=$' not in command and 'UVIS_ACCESS_KEY_URL=$' not in command and 'UVIS_ENABLED=$' not in command,
     'uvis_not_in_static_image_workflow': 'ROUTE_OPS_UVIS_ENV_PARAM: ${{ vars.ROUTE_OPS_UVIS_ENV_PARAM }}' in workflow and 'secrets.UVIS' not in workflow,
-    'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
+    'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull clever-route-api clever-route-api-migrate vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
     'migrate_uses_compose_service': 'run --rm clever-route-api-migrate' in command,
+    'migrate_compose_uses_separate_image': 'image: ${DELIVERY_API_MIGRATION_IMAGE:-${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}}' in compose,
     'custom_ownership_audit_uses_candidate_runtime': 'run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js' in command,
     'custom_ownership_audit_before_migrate': command.index('run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js') < command.index('run --rm clever-route-api-migrate'),
     'migrate_before_static_stage': command.index('run --rm clever-route-api-migrate') < command.index('simple deploy static stage required', command.index('run --rm clever-route-api-migrate')),
@@ -102,7 +104,7 @@ checks = {
     'main_ci_unquotes_non_ascii_paths_before_classification': 'git -c core.quotePath=false diff --name-only' in ci_workflow and 'git -c core.quotePath=false ls-files' in ci_workflow,
     'main_ci_runs_for_simple_deploy_contract_changes': '      - ".github/workflows/route-ops-simple-deploy.yml"' in ci_workflow and '      - "scripts/ssm-simple-route-ops-deploy.sh"' in ci_workflow and '      - "tests/deploy/ssm-simple-route-ops-deploy.test.sh"' in ci_workflow,
     'workflow_uses_runtime_revision_for_api_scope': 'API_RUNTIME_COMMIT: ${{ steps.current.outputs.runtime_commit }}' in workflow and 'api_files="$(git -c core.quotePath=false diff --name-only "$API_RUNTIME_COMMIT" HEAD)"' in workflow and '''printf '%s\\n' "$api_files" | grep -Eq '^(apps/delivery-api/|\.dockerignore$)' '''.strip() in workflow,
-    'workflow_has_no_migrate_build': 'clever-route-api-migrate' not in workflow and 'target: migrate' not in workflow,
+    'workflow_builds_separate_migration_image': 'DELIVERY_API_MIGRATION_IMAGE_REPO:' in workflow and 'target: migration' in workflow and 'org.clever-route.image-role=migration' in workflow,
     'ssm_wait_covers_real_deploy_duration': 'SSM_WAIT_TIMEOUT_SECONDS:-1800' in wrapper and 'aws ssm wait command-executed' not in wrapper and '--query Status' in wrapper and 'sleep 5' in wrapper,
     'manual_publish_uses_buildx': 'docker buildx build --platform linux/amd64' in wrapper and '--push' in wrapper and '--provenance=false' in wrapper,
     'manual_publish_uses_registry_cache': f'--cache-from "type=registry,ref=${{STATIC_IMAGE_REPO}}:buildcache"' in wrapper and f'--cache-to "type=registry,ref=${{RUNTIME_IMAGE_REPO}}:buildcache,mode=max"' in wrapper,

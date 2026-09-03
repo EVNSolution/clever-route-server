@@ -28,6 +28,20 @@ RUN npm --prefix apps/delivery-api run prisma:generate \
 FROM build AS pruned
 RUN npm --prefix apps/delivery-api prune --omit=dev --omit=optional
 
+FROM base AS migration
+ENV NODE_ENV=production
+RUN addgroup --system clever && adduser --system --ingroup clever clever
+COPY --from=build /app/apps/delivery-api/package.json ./package.json
+COPY --from=build /app/apps/delivery-api/package.json ./apps/delivery-api/package.json
+COPY --from=build /app/apps/delivery-api/node_modules ./node_modules
+COPY --from=build /app/apps/delivery-api/prisma ./prisma
+COPY --from=build /app/apps/delivery-api/prisma ./apps/delivery-api/prisma
+COPY --from=build /app/apps/delivery-api/scripts ./scripts
+RUN ln -s ../../node_modules ./apps/delivery-api/node_modules \
+  && test -x ./apps/delivery-api/node_modules/.bin/prisma \
+  && chmod 0755 ./scripts/dsv-g007-migrate-deploy.sh
+USER clever
+
 FROM base AS runtime
 ENV NODE_ENV=production
 ENV ROUTE_OPS_WEB_DIST_PATH=/app/external/route-ops-web/dist
