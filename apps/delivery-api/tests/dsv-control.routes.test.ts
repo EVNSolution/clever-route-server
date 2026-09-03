@@ -100,8 +100,8 @@ describe('DSV control routes', () => {
   });
 
   test.each([
-    { asciiFileName: 'CLEVER_DSV_Operator_User_Guide_20260811.pdf', guide: 'operator' },
-    { asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.2.pdf', guide: 'driver' },
+    { asciiFileName: 'CLEVER_DSV_Operator_User_Guide_Rev1.1.pdf', guide: 'operator' },
+    { asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.3.pdf', guide: 'driver' },
   ])('serves the $guide guide only to authenticated settings readers with byte ranges and downloads', async ({ asciiFileName, guide }) => {
     const { app } = await createHarness();
     try {
