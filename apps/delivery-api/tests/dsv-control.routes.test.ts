@@ -100,8 +100,8 @@ describe('DSV control routes', () => {
   });
 
   test.each([
-    { asciiFileName: 'CLEVER_DSV_Operator_User_Guide_Rev1.1.pdf', guide: 'operator' },
-    { asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.3.pdf', guide: 'driver' },
+    { asciiFileName: 'CLEVER_DSV_Operator_User_Guide_Rev1.2.pdf', guide: 'operator' },
+    { asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.4.pdf', guide: 'driver' },
   ])('serves the $guide guide only to authenticated settings readers with byte ranges and downloads', async ({ asciiFileName, guide }) => {
     const { app } = await createHarness();
     try {
@@ -137,6 +137,26 @@ describe('DSV control routes', () => {
       });
       expect(invalid.statusCode).toBe(416);
       expect(invalid.headers['content-range']).toMatch(/^bytes \*\/\d+$/u);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('serves the current driver guide from the public installation page boundary', async () => {
+    const { app } = await createHarness();
+    try {
+      const response = await app.inject({
+        headers: { range: 'bytes=0-3' },
+        method: 'GET',
+        url: '/api/dsv/public/guides/driver?download=1',
+      });
+
+      expect(response.statusCode).toBe(206);
+      expect(response.headers['cache-control']).toBe('public, max-age=300, must-revalidate');
+      expect(response.headers['content-disposition']).toContain('attachment');
+      expect(response.headers['content-disposition']).toContain('CLEVER_Driver_App_Guide_Checklist_Rev1.4.pdf');
+      expect(response.headers['content-type']).toContain('application/pdf');
+      expect(response.rawPayload.toString('ascii')).toBe('%PDF');
     } finally {
       await app.close();
     }

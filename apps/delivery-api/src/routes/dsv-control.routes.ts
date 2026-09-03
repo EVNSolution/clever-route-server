@@ -114,9 +114,9 @@ import {
 
 const apiRoot = '/api/dsv';
 const cookiePath = `${apiRoot}/`;
-const operatorGuideFileName = 'CLEVER_DSV_관제_운영자_사용자_가이드_Rev1.1.pdf';
+const operatorGuideFileName = 'CLEVER_DSV_관제_운영자_사용자_가이드_Rev1.2.pdf';
 const operatorGuidePath = fileURLToPath(new URL(`../../assets/dsv-guides/${operatorGuideFileName}`, import.meta.url));
-const driverGuideFileName = 'CLEVER_Driver_설치_현장교육_가이드_Rev1.3.pdf';
+const driverGuideFileName = 'CLEVER_Driver_설치_현장교육_가이드_Rev1.4.pdf';
 const driverGuidePath = fileURLToPath(new URL(`../../assets/dsv-guides/${driverGuideFileName}`, import.meta.url));
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const applyCommandIdHeader = 'idempotency-key';
@@ -475,17 +475,25 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
 
   app.get<{ Querystring: { download?: string } }>(`${apiRoot}/guides/operator`, async (request, reply) =>
     withDsvSession(request, reply, dependencies, async () => sendGuide(request, reply, {
-      asciiFileName: 'CLEVER_DSV_Operator_User_Guide_Rev1.1.pdf',
+      asciiFileName: 'CLEVER_DSV_Operator_User_Guide_Rev1.2.pdf',
       fileName: operatorGuideFileName,
       path: operatorGuidePath,
     }), ['dsv:settings:read']));
 
   app.get<{ Querystring: { download?: string } }>(`${apiRoot}/guides/driver`, async (request, reply) =>
     withDsvSession(request, reply, dependencies, async () => sendGuide(request, reply, {
-      asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.3.pdf',
+      asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.4.pdf',
       fileName: driverGuideFileName,
       path: driverGuidePath,
     }), ['dsv:settings:read']));
+
+  app.get<{ Querystring: { download?: string } }>(`${apiRoot}/public/guides/driver`, async (request, reply) =>
+    sendGuide(request, reply, {
+      asciiFileName: 'CLEVER_Driver_App_Guide_Checklist_Rev1.4.pdf',
+      cacheControl: 'public, max-age=300, must-revalidate',
+      fileName: driverGuideFileName,
+      path: driverGuidePath,
+    }));
 
   app.patch(`${apiRoot}/settings/operations`, async (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
@@ -1482,7 +1490,7 @@ function sendData<T>(reply: FastifyReply, data: T, statusCode = 200): unknown {
 async function sendGuide(
   request: FastifyRequest<{ Querystring: { download?: string } }>,
   reply: FastifyReply,
-  guide: { asciiFileName: string; fileName: string; path: string },
+  guide: { asciiFileName: string; cacheControl?: string; fileName: string; path: string },
 ): Promise<unknown> {
   let size: number;
   try {
@@ -1496,7 +1504,7 @@ async function sendGuide(
   reply
     .type('application/pdf')
     .header('Accept-Ranges', 'bytes')
-    .header('Cache-Control', 'private, no-store')
+    .header('Cache-Control', guide.cacheControl ?? 'private, no-store')
     .header('Content-Disposition', `${disposition}; filename="${guide.asciiFileName}"; filename*=UTF-8''${encodeURIComponent(guide.fileName)}`);
 
   if (range === null) {
