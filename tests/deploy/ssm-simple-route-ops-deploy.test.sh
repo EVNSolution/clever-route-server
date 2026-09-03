@@ -5,19 +5,22 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 params_path="$(DSV_MIGRATION_APPROVED=1 DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333 DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444 DSV_PRODUCTION_BASELINE_APPROVED=1 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555 ROUTE_OPS_UVIS_ENV_PARAM=/clever/route-ops/uvis/runtime-env ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_MIGRATION_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migration@sha256:6666666666666666666666666666666666666666666666666666666666666666 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
+shopify_params_path="$(ROUTE_OPS_RUN_MIGRATIONS=0 ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_MIGRATION_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migration@sha256:6666666666666666666666666666666666666666666666666666666666666666 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
 proof_ready_contract_sha="$(shasum -a 256 apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts apps/delivery-api/tests/dsv-v1-read-query.service.test.ts | shasum -a 256 | awk '{print $1}')"
-cleanup() { rm -f "$params_path"; }
+cleanup() { rm -f "$params_path" "$shopify_params_path"; }
 trap cleanup EXIT
 
-python3 - "$params_path" "$proof_ready_contract_sha" <<'PY'
+python3 - "$params_path" "$shopify_params_path" "$proof_ready_contract_sha" <<'PY'
 import json
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
-proof_ready_contract_sha = sys.argv[2]
+shopify_path = pathlib.Path(sys.argv[2])
+proof_ready_contract_sha = sys.argv[3]
 payload = json.loads(path.read_text())
 command = payload['commands'][0]
+shopify_command = json.loads(shopify_path.read_text())['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
 workflow = pathlib.Path('.github/workflows/route-ops-simple-deploy.yml').read_text()
 ci_workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
@@ -25,7 +28,8 @@ web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 compose = pathlib.Path('infra/compose/docker-compose.prod.yml').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
-    '--profile osrm --profile vroom --profile korea pull clever-route-api clever-route-api-migrate vroom vroom-korea',
+    '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea',
+    'pull clever-route-api-migrate',
     '--profile osrm --profile vroom --profile korea pull route-ops-web-static',
     'run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js',
     'run --rm clever-route-api-migrate',
@@ -40,6 +44,7 @@ checks = {
     'digest_static_rendered': 'ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222' in command,
     'migration_evidence_rendered': 'DSV_MIGRATION_APPROVED=1' in command and 'DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333' in command and 'DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444' in command,
     'production_baseline_evidence_rendered': 'DSV_PRODUCTION_BASELINE_APPROVED=1' in command and 'DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555' in command,
+    'shopify_deploy_disables_migrations': 'RUN_MIGRATIONS=0' in shopify_command and 'DSV_MIGRATION_APPROVED=1' not in shopify_command,
     'compose_synced_to_host': 'COMPOSE_FILE_B64=' in command and 'base64 -d > "$COMPOSE_FILE"' in command,
     'runtime_env_fails_before_synced_file_mutation': 'missing required runtime env: apps/delivery-api/.env' in command and command.index('missing required runtime env: apps/delivery-api/.env') < command.index('base64 -d > "$COMPOSE_FILE"'),
     'does_not_mutate_ingress': 'CADDYFILE_B64=' not in command and 'base64 -d > "$CADDYFILE"' not in command and 'caddy reload --config /etc/caddy/Caddyfile' not in command and 'caddy validate --config /etc/caddy/Caddyfile' not in command and '/etc/caddy/Caddyfile' not in command,
@@ -61,8 +66,9 @@ checks = {
     'uvis_runtime_env_permissions': 'path.chmod(0o600)' in command,
     'uvis_not_in_candidate_image_env': 'UVIS_COMPANY_SERIAL_KEY=$' not in command and 'UVIS_ACCESS_KEY_URL=$' not in command and 'UVIS_ENABLED=$' not in command,
     'uvis_not_in_static_image_workflow': 'ROUTE_OPS_UVIS_ENV_PARAM: ${{ vars.ROUTE_OPS_UVIS_ENV_PARAM }}' in workflow and 'secrets.UVIS' not in workflow,
-    'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull clever-route-api clever-route-api-migrate vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
+    'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea' in command and 'pull clever-route-api-migrate' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
     'migrate_uses_compose_service': 'run --rm clever-route-api-migrate' in command,
+    'migrate_is_conditionally_scoped': 'if [ "$RUN_MIGRATIONS" = "1" ]; then' in command and 'simple deploy migrations skipped: Prisma inputs unchanged and migration lane not requested' in command,
     'migrate_compose_uses_separate_image': 'image: ${DELIVERY_API_MIGRATION_IMAGE:-${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}}' in compose,
     'custom_ownership_audit_uses_candidate_runtime': 'run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js' in command,
     'custom_ownership_audit_before_migrate': command.index('run --rm --no-deps clever-route-api node dist/scripts/audit-custom-route-order-ownership.js') < command.index('run --rm clever-route-api-migrate'),
@@ -92,7 +98,9 @@ checks = {
     'history_append': '"lane":"simple-ssm"' in command and '"staticStage":"%s"' in command,
     'gh_write_packages_warning_only': 'does not show write:packages; continuing because docker push is the authoritative GHCR publish check' in wrapper and 'GHCR publish requires a GitHub/GHCR token with write:packages' not in wrapper,
     'workflow_uses_node24_docker_build_actions': 'uses: docker/setup-buildx-action@v4' in workflow and 'uses: docker/build-push-action@v7' in workflow,
-    'workflow_requires_migration_approval_evidence': 'approve_dsv_migration:' in workflow and 'restore_rehearsal_sha256:' in workflow and 'approve_dsv_migration=true is required for a production rollout' in workflow and 'restore_rehearsal_sha256 must be 64 lowercase hex characters' in workflow,
+    'workflow_requires_migration_approval_evidence': 'run_migrations:' in workflow and 'approve_dsv_migration:' in workflow and 'restore_rehearsal_sha256:' in workflow and 'if [ "$RUN_MIGRATIONS" = "true" ] && [ "$DRY_RUN" != "true" ]; then' in workflow and 'approve_dsv_migration=true is required for a production rollout' in workflow and 'restore_rehearsal_sha256 must be 64 lowercase hex characters' in workflow,
+    'workflow_fails_closed_for_unapproved_prisma_changes': "grep -Eq '^apps/delivery-api/prisma/'" in workflow and 'Prisma inputs changed since the deployed API revision; run_migrations=true and reviewed migration evidence are required.' in workflow,
+    'workflow_skips_migration_image_for_shopify_scope': "if: steps.changes.outputs.build_api == 'true' && steps.changes.outputs.run_migrations == 'true'" in workflow and "ROUTE_OPS_RUN_MIGRATIONS: ${{ steps.changes.outputs.run_migrations == 'true' && '1' || '0' }}" in workflow,
     'workflow_exposes_one_time_production_baseline': 'approve_production_baseline:' in workflow and 'DSV_PRODUCTION_BASELINE_APPROVED:' in workflow and 'production_baseline_manifest_sha256' in workflow,
     'workflow_always_prepares_private_registry_resolution': '      - name: Login to GHCR\n        # docker/login-action' in workflow and '      - name: Set up Docker Buildx\n        uses: docker/setup-buildx-action@v4' in workflow,
     'workflow_fails_closed_when_digest_resolution_fails': 'if ! digest="$(docker buildx imagetools inspect' in workflow and '[[ "$digest" == sha256:* ]] || return 1' in workflow,
