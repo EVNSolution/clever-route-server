@@ -17,7 +17,7 @@ MIGRATION_IMAGE_REPO="${ROUTE_OPS_MIGRATION_IMAGE_REPO:-ghcr.io/evnsolution/clev
 STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
 RUNTIME_IMAGE="${ROUTE_OPS_RUNTIME_IMAGE:-${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}}"
 MIGRATION_IMAGE="${ROUTE_OPS_MIGRATION_IMAGE:-${MIGRATION_IMAGE_REPO}:${CHANNEL_TAG}}"
-RUN_MIGRATIONS="${ROUTE_OPS_RUN_MIGRATIONS:-1}"
+RUN_MIGRATIONS="${ROUTE_OPS_RUN_MIGRATIONS:-0}"
 STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${STATIC_IMAGE_REPO}:${CHANNEL_TAG}}"
 STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${CHANNEL_TAG}}"
 VROOM_IMAGE="${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08}"
@@ -53,7 +53,7 @@ Env:
   ROUTE_OPS_SIMPLE_CHANNEL_TAG   default: prod
   ROUTE_OPS_RUNTIME_IMAGE        optional full runtime image ref, preferably repo@sha256
   ROUTE_OPS_MIGRATION_IMAGE      optional full migration image ref, preferably repo@sha256
-  ROUTE_OPS_RUN_MIGRATIONS       1 to run guarded migrations, 0 to skip; default: 1
+  ROUTE_OPS_RUN_MIGRATIONS       1 to explicitly run guarded migrations, 0 to skip; default: 0
   ROUTE_OPS_WEB_STATIC_IMAGE     optional full static image ref, preferably repo@sha256
   ROUTE_OPS_FORCE_STATIC_RESTAGE  set to 1 to stage static even when digest matches current
   ROUTE_OPS_FIREBASE_CREDENTIALS_PARAM encrypted SSM parameter containing FCM credentials
@@ -150,6 +150,14 @@ build_and_push() {
 
 [[ "$RUN_MIGRATIONS" == "0" || "$RUN_MIGRATIONS" == "1" ]] \
   || fail "ROUTE_OPS_RUN_MIGRATIONS must be 0 or 1"
+if [ "$RUN_MIGRATIONS" = "0" ]; then
+  MIGRATION_IMAGE=''
+  DSV_MIGRATION_APPROVED=''
+  DSV_MIGRATION_MANIFEST_SHA256=''
+  DSV_RESTORE_REHEARSAL_SHA256=''
+  DSV_PRODUCTION_BASELINE_APPROVED=''
+  DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=''
+fi
 
 resolve_instance() {
   read -r count instance_id ping_status <<EOF_RESOLVE
