@@ -30,13 +30,13 @@ const { imageSize } = require('image-size');
 const ROOT = __dirname;
 const CAPTURE = path.join(ROOT, 'captures');
 const LEGACY = path.join(CAPTURE, 'legacy');
-const OUTPUT = path.join(ROOT, 'CLEVER_DSV_관제_운영자_사용자_가이드_Rev1.1.docx');
+const OUTPUT = path.join(ROOT, 'CLEVER_DSV_관제_운영자_사용자_가이드_Rev1.2.docx');
 const LOGO = path.join(ROOT, 'evs-logo.png');
 
 const PRODUCT_NAME = 'CLEVER DSV';
 const DOC_TYPE = '사용자 가이드 / User Guide';
 const DOC_NO = 'EVN-UG-2026-1.0-0001';
-const REVISION = '1.1';
+const REVISION = '1.2';
 const WRITTEN_DATE = '2026. 09. 03.';
 
 const BLACK = '000000';
@@ -171,7 +171,8 @@ const releaseTable = new Table({
     ] }),
     new TableRow({ children: [cell('1.0', 1600, { alignment: AlignmentType.CENTER }), cell('2026. 08. 11.', 1800, { alignment: AlignmentType.CENTER }), cell('EV&Solution', 2200, { alignment: AlignmentType.CENTER }), cell('CLEVER DSV 관제 운영자 사용자 가이드 최초 발행', 9798)] }),
     new TableRow({ children: [cell('1.1', 1600, { alignment: AlignmentType.CENTER }), cell(WRITTEN_DATE, 1800, { alignment: AlignmentType.CENTER }), cell('EV&Solution', 2200, { alignment: AlignmentType.CENTER }), cell('배송원 앱 설치를 공개 설치 페이지와 직접 회원가입 절차로 갱신', 9798)] }),
-    ...Array.from({ length: 3 }, () => new TableRow({ children: [cell('', 1600), cell('', 1800), cell('', 2200), cell('', 9798)] })),
+    new TableRow({ children: [cell('1.2', 1600, { alignment: AlignmentType.CENTER }), cell(WRITTEN_DATE, 1800, { alignment: AlignmentType.CENTER }), cell('EV&Solution', 2200, { alignment: AlignmentType.CENTER }), cell('단일 온도, 차량 자취, 배차 삭제와 현재 설정 화면을 반영', 9798)] }),
+    ...Array.from({ length: 2 }, () => new TableRow({ children: [cell('', 1600), cell('', 1800), cell('', 2200), cell('', 9798)] })),
   ],
 });
 
@@ -183,14 +184,14 @@ const copyrightNotice = [
 
 const chapters = [
   ['1', '계정 시작', '계정 초대, 계정 활성화, 관리자 로그인', '1-3'],
-  ['2', '관제', '기준일, 차량, 배송지, 온도, 상태 알림', '4-10'],
-  ['3', '배차', '조회, 선택, 배정, 검색, 파일 업로드, 0박스 주의', '11-22'],
-  ['4', '이력', '배송 이력, 날짜, 상세, 이벤트', '23-26'],
-  ['5', '운송자원', '배송원, 앱 설치, 회원가입, 차량', '27-32'],
-  ['6', '고객사', '고객사, 배송지, 고객 계정, 초대 이메일', '33-38'],
-  ['7', '운송조건', '운송조건 조회와 편집', '39-40'],
-  ['8', '설정', '출발 위치, 운영 기준, 이메일, 계정', '41-46'],
-  ['9', '고객 배송조회', '위치, 검색, 상세, 로그인, 초대 오류', '47-51'],
+  ['2', '관제', '기준일, 차량, 자취, 배송지, 온도, 상태 알림', '4-11'],
+  ['3', '배차', '조회, 선택, 배정, 삭제, 검색, 파일 업로드, 0박스 주의', '12-23'],
+  ['4', '이력', '배송 이력, 날짜, 상세, 이벤트', '24-27'],
+  ['5', '운송자원', '배송원, 앱 설치, 회원가입, 차량', '28-33'],
+  ['6', '고객사', '고객사, 배송지, 고객 계정, 초대 이메일', '34-39'],
+  ['7', '운송조건', '운송조건 조회와 편집', '40-41'],
+  ['8', '설정', '출발 위치, 운영 기준, 이메일, 계정', '42-47'],
+  ['9', '고객 배송조회', '위치, 검색, 상세, 로그인, 초대 오류', '48-52'],
 ];
 
 const chapterTable = new Table({
@@ -228,8 +229,9 @@ const pages = [
   { chapter: 2, section: '관제', title: '관제 조회 기준일', image: '02-control-date-picker.png', steps: ['관제 기준일 영역을 눌러 달력을 엽니다.', '확인할 날짜를 선택합니다.', '선택한 날짜의 차량과 주문 정보가 다시 조회되는지 확인합니다.', '오늘 화면으로 돌아올 때는 현재 날짜를 다시 선택합니다.'] },
   { chapter: 2, section: '관제', title: '관제 차량 목록', image: '02-control-actual-overview.png', steps: ['전체와 배정 필터로 차량 표시 범위를 바꿉니다.', '차량별 주문 건수와 색상 표식을 확인합니다.', '차량을 선택하면 지도와 상세 정보가 해당 차량 기준으로 바뀝니다.', '온도 버튼을 누르면 차량 온도 기록을 조회합니다.'] },
   { chapter: 2, section: '관제', title: '관제 차량 상세', image: '02-control-actual-vehicle-detail.png', steps: ['선택한 차량 번호와 운전자 정보를 확인합니다.', '최근 위치와 위치 지연 시간을 확인합니다.', '운송 정보 영역에서 필요한 연락처와 운영 정보를 확인합니다.', '자세히 보기로 등록된 차량 상세 화면으로 이동합니다.'] },
+  { chapter: 2, section: '관제', title: '차량 자취 보기', image: '02-control-trace-mode.png', steps: ['차량 상세에서 자취 보기를 눌러 해당 날짜의 이동 기록을 엽니다.', '타임라인은 00:00부터 24:00까지 해당 날짜에 수집된 모든 위치를 표시합니다.', '재생 버튼과 시점 막대로 차량 이동을 시간 순서대로 확인합니다.', '필요하면 차량 따라가기를 사용하고, 확인 후 자취 닫기를 누릅니다.'], warning: '자취 보기에는 운행 중 위치뿐 아니라 sleep 상태에서 수집된 위치도 함께 표시됩니다.' },
   { chapter: 2, section: '관제', title: '관제 배송지 목록', image: '02-control-current-vehicle-destination-expanded.png', steps: ['선택 차량의 배송지를 예상 도착 순서로 확인합니다.', '배송지 행의 주문 건수와 총 박스 수를 함께 확인합니다.', '배송지 행을 누르면 주소와 주문번호별 운송 상태, 박스 수가 펼쳐집니다.', '같은 배송지 행을 다시 누르면 상세 정보가 접힙니다.', '0박스 주문도 주문번호별 상세에 그대로 표시됩니다.'] },
-  { chapter: 2, section: '관제', title: '관제 온도 조회', image: '02-control-temperature.png', steps: ['차량의 온도 버튼을 눌러 온도 팝업을 엽니다.', '조회 기간과 센서별 현재 온도를 확인합니다.', '온도 그래프의 시간대별 변화와 허용 범위를 확인합니다.', '센서 누락이나 기준 이탈이 있으면 운영 절차에 따라 확인합니다.'], warning: '온도 기준 이탈은 의약품 운송 품질에 영향을 줄 수 있으므로 즉시 확인합니다.' },
+  { chapter: 2, section: '관제', title: '관제 온도 조회', image: '02-control-temperature-single.png', steps: ['차량의 온도 버튼을 눌러 온도 팝업을 엽니다.', '조회 기간과 냉동 배송 위치의 현재 온도를 확인합니다.', '온도 그래프의 시간대별 변화와 선택한 운송조건의 허용 범위를 확인합니다.', '온도 누락이나 기준 이탈이 있으면 운영 절차에 따라 확인합니다.'], warning: '온도 기준 이탈은 의약품 운송 품질에 영향을 줄 수 있으므로 즉시 확인합니다.' },
   { chapter: 2, section: '관제', title: '관제 상태 알림', image: '02-control-notifications.png', steps: ['알림 버튼을 눌러 최신 관제 알림을 엽니다.', '지연, GPS 미수신, 증빙 누락 등 알림 유형을 확인합니다.', '알림의 발생 시각과 관련 차량을 확인합니다.', '처리가 필요한 항목은 운영 담당자에게 전달합니다.'] },
 
   { chapter: 3, section: '배차', title: '배차 화면', image: '03-dispatch-actual-map.png', steps: ['배차일과 전체, 배정, 미배정 주문 수를 확인합니다.', '지도, 목록, 고객사 보기 중 작업에 맞는 보기를 선택합니다.', '상태 필터로 표시할 주문 범위를 좁힙니다.', '오른쪽 배송원 목록에서 차량과 배정 건수를 확인합니다.'] },
@@ -237,7 +239,7 @@ const pages = [
   { chapter: 3, section: '배차', title: '배차 지도 선택', image: '03-dispatch-actual-assigned-map.png', steps: ['영역 선택을 눌러 지도 선택 모드로 전환합니다.', '지도에서 배정할 배송지를 선택합니다.', '선택 집계의 배송지 수와 주문 수를 확인합니다.', '배송원을 선택한 후 선택 배정을 실행합니다.'] },
   { chapter: 3, section: '배차', title: '배차 주문 목록', image: '03-dispatch-actual-assigned-list.png', steps: ['목록 보기를 선택해 주문을 행 단위로 확인합니다.', '체크박스로 배정 또는 해제할 주문을 선택합니다.', '주문번호, 배송처, 주소, 고객사, 상태를 확인합니다.', '목록 선택 결과가 지도와 배송원 집계에 반영되는지 확인합니다.'] },
   { chapter: 3, section: '배차', title: '배차 배송원 목록', image: '03-dispatch-actual-assigned-customer.png', steps: ['배송원, 차량, 배정 건수를 확인합니다.', '열 제목을 눌러 배송원, 차량, 배정 건수 기준으로 정렬합니다.', '배송원을 선택하면 해당 배송원의 배정 주문을 확인합니다.', '차량 미등록 배송원은 배정 전에 차량 등록 상태를 확인합니다.'] },
-  { chapter: 3, section: '배차', title: '배차 처리', image: '03-dispatch-actual-assigned-list.png', steps: ['배정할 주문과 배송원을 선택합니다.', '선택 집계에서 배송지와 주문 건수를 확인합니다.', '선택 배정으로 주문을 배송원에게 연결합니다.', '필요한 경우 배정 해제로 연결을 취소합니다.', '처리 후 배정 건수와 주문 상태가 갱신되었는지 확인합니다.'] },
+  { chapter: 3, section: '배차', title: '배차 처리', image: '03-dispatch-selection-actions.png', steps: ['처리할 주문과 필요한 경우 배송원을 선택합니다.', '선택 집계에서 배송지와 주문 건수를 확인합니다.', '선택 배정으로 주문을 배송원에게 연결합니다.', '배정 해제로 배송원 연결만 취소하거나 배송 삭제로 선택 주문을 배차일에서 제거합니다.', '처리 후 배정 건수와 주문 상태가 갱신되었는지 확인합니다.'], warning: '배송 삭제는 선택 주문을 배차에서 제거하는 작업이므로 대상과 건수를 확인한 뒤 실행합니다.' },
   { chapter: 3, section: '배차', title: '배차 주문 검색', image: '03-dispatch-actual-list.png', steps: ['오더번호 검색란에 전체 또는 일부 번호를 입력합니다.', '배송처 검색란에 배송처 이름을 입력합니다.', '검색을 눌러 조건에 맞는 주문만 표시합니다.', '0박스 주문도 일반 주문과 동일하게 주문번호와 배송처로 검색됩니다.'] },
   { chapter: 3, section: '배차', title: '배차 파일 업로드', image: '03-dispatch-upload-panel.png', steps: ['주문 업로드를 눌러 업로드 영역을 엽니다.', 'CSV 또는 XLSX 배차 파일을 선택하거나 끌어 놓습니다.', '예제 업로드로 요구되는 열 구성을 확인할 수 있습니다.', '파일을 선택한 뒤 배차일과 미리보기 내용을 확인합니다.'] },
   { chapter: 3, section: '배차', title: '배차 업로드 편집', image: '03-dispatch-upload-preview.png', steps: ['미리보기 표에서 열 이름과 데이터 형식을 확인합니다.', '수정할 셀을 더블클릭해 값을 편집합니다.', '주소 확인 결과와 특이사항을 확인합니다.', '정상, 변경, 주의, 오류 집계를 확인합니다.', '오류가 0건일 때만 업로드 확정 가능 여부를 확인합니다.'] },
@@ -250,9 +252,9 @@ const pages = [
   { chapter: 4, section: '이력', title: '배송 상세', image: 'legacy/legacy-26.png', steps: ['선택한 주문의 주문번호와 배송처를 확인합니다.', '운송 상태와 배정 차량, 배송원을 확인합니다.', '예정 시각과 실제 처리 시각을 비교합니다.', '온도 또는 증빙 정보가 연결된 경우 함께 확인합니다.'] },
   { chapter: 4, section: '이력', title: '배송 이벤트', image: 'legacy/legacy-27.png', steps: ['배송 이벤트를 발생 순서대로 확인합니다.', '각 이벤트의 상태와 발생 시각을 확인합니다.', '지연 또는 예외 이벤트가 있는지 확인합니다.', '필요한 경우 운영 담당자와 이력 정보를 공유합니다.'] },
 
-  { chapter: 5, section: '운송자원', title: '운송자원 화면', image: '05-resources-overview.png', steps: ['관리에서 운송자원 영역을 선택합니다.', '배송원 리스트와 선택 배송원 상세를 확인합니다.', '차량 리스트와 선택 차량 상세를 확인합니다.', '등록, 수정, 초대 기능은 선택 대상과 권한을 확인한 뒤 사용합니다.'] },
+  { chapter: 5, section: '운송자원', title: '운송자원 화면', image: '05-resources-current-overview.png', steps: ['관리에서 운송자원 영역을 선택합니다.', '배송원 리스트와 선택 배송원 상세를 확인합니다.', '차량 리스트와 선택 차량 상세를 확인합니다.', '등록, 수정, 삭제와 앱 설치 안내는 선택 대상과 권한을 확인한 뒤 사용합니다.'] },
   { chapter: 5, section: '운송자원', title: '배송원 관리', image: 'legacy/legacy-29.png', steps: ['배송원 목록에서 관리할 배송원을 선택합니다.', '이름, 연락처와 앱 연결 상태를 확인합니다.', '등록 또는 수정으로 배송원 정보를 관리합니다.', '차량 연결 여부를 확인합니다.'], warning: '배송원 정보 변경은 현재 배차와 앱 로그인에 영향을 줄 수 있습니다.' },
-  { chapter: 5, section: '운송자원', title: '배송원 앱 설치', image: 'legacy/legacy-30.png', steps: ['앱 설치 안내 팝업을 엽니다.', '배송원에게 https://dsv.cleversystem.ai/driver-app 주소를 전달합니다.', '지원되는 기기에서는 운영체제 공유 시트를 사용하고, 지원하지 않거나 공유가 취소되면 복사된 주소를 전달합니다.', '배송원은 설치 페이지에서 운영체제별 배포 상태를 확인하고 설치합니다.'], warning: '배송원 설치는 공개 설치 페이지에서 안내하는 운영체제별 경로만 사용합니다.' },
+  { chapter: 5, section: '운송자원', title: '배송원 앱 설치', image: '05-resources-driver-install.png', steps: ['앱 설치 안내 팝업을 엽니다.', '배송원에게 https://dsv.cleversystem.ai/driver-app 주소를 전달합니다.', '지원되는 기기에서는 운영체제 공유 시트를 사용하고, 지원하지 않거나 공유가 취소되면 복사된 주소를 전달합니다.', '배송원은 설치 페이지에서 운영체제별 배포 상태를 확인하고 현장 교육 가이드 PDF도 내려받을 수 있습니다.'], warning: '배송원 설치는 공개 설치 페이지에서 안내하는 운영체제별 경로만 사용합니다.' },
   { chapter: 5, section: '운송자원', title: '배송원 회원가입', image: 'legacy/legacy-31.png', steps: ['설치 후 CLEVER Driver 로그인 화면에서 회원가입을 누릅니다.', '배송원이 DSV에 등록된 본인 이름과 휴대전화 번호를 정확히 입력합니다.', '로그인 ID와 비밀번호를 설정해 회원가입을 완료합니다.', '이름과 연락처가 일치하면 배송 업무가 자동 연결되는지 확인합니다.'], warning: '연결 대기 상태가 표시되면 새 계정을 반복 생성하지 말고 DSV 등록 이름과 연락처를 확인합니다.' },
   { chapter: 5, section: '운송자원', title: '차량 상세', image: 'legacy/legacy-32.png', steps: ['차량 목록에서 차량을 선택합니다.', '차량 번호와 연결 배송원을 확인합니다.', '차량 종류와 온도 센서 정보를 확인합니다.', '운영 상태와 최근 사용 정보를 확인합니다.'] },
   { chapter: 5, section: '운송자원', title: '차량 관리', image: 'legacy/legacy-33.png', steps: ['등록 또는 수정으로 차량 정보를 입력합니다.', '차량 번호와 차량 종류를 확인합니다.', '배송원 연결 정보를 확인합니다.', '센서 또는 연동 식별자가 있는 경우 정확히 입력합니다.'], warning: '차량 정보 변경은 배차와 관제 표시 범위에 영향을 줄 수 있습니다.' },
@@ -270,7 +272,7 @@ const pages = [
   { chapter: 8, section: '설정', title: '출발 위치 설정', image: 'legacy/legacy-42.png', steps: ['출발지 주소를 입력하거나 주소 검색을 사용합니다.', '지도에서 위치를 클릭하거나 마커를 이동합니다.', '위도와 경도 값을 확인합니다.', '저장 후 관제와 배차 지도의 출발 위치를 확인합니다.'] },
   { chapter: 8, section: '설정', title: '운영 기준 설정', image: 'legacy/legacy-43.png', steps: ['준비 시작과 출발 예정 시간을 입력합니다.', 'ETA 지연 알림 기준을 입력합니다.', 'GPS 미수신과 도착 후 대기시간 기준을 입력합니다.', '알림 수신 항목을 선택합니다.', '저장 후 설정값이 유지되는지 확인합니다.'] },
   { chapter: 8, section: '설정', title: '이메일 테스트', image: 'legacy/legacy-44.png', steps: ['인증된 발신자 이메일을 확인합니다.', '수신자를 쉼표로 구분해 최대 10명까지 입력합니다.', '제목과 본문에 고객사 배송조회 주소와 안내를 작성합니다.', '수신자와 발송 내용 확인 항목을 선택합니다.', '1회 발송 결과를 확인합니다.'], warning: '테스트 발송도 실제 이메일을 전송합니다. 수신자와 본문을 확인하기 전에는 확인 항목을 선택하지 않습니다.' },
-  { chapter: 8, section: '설정', title: '구간 지원 설정', image: 'legacy/legacy-45.png', steps: ['지원할 구간의 출발지와 도착지를 입력합니다.', '필요한 운영 조건을 선택합니다.', '지도 또는 주소 정보를 확인합니다.', '저장 후 지원 구간 목록에 반영되었는지 확인합니다.'] },
+  { chapter: 8, section: '설정', title: '내 계정 설정', image: 'legacy/legacy-45.png', steps: ['현재 비밀번호를 입력해 본인 계정임을 확인합니다.', '필요한 경우 새 로그인 ID를 입력합니다.', '새 비밀번호와 비밀번호 확인을 같은 값으로 입력합니다.', '변경 전 확인 사항을 읽고 저장합니다.'], warning: '직전에 사용한 비밀번호는 다시 사용할 수 없으며, 변경 후 다른 로그인 세션은 종료됩니다.' },
   { chapter: 8, section: '설정', title: '관리자 계정', image: '06-settings-current-accounts.png', steps: ['계정 탭에서 CLEVER 개발 관리자와 DSV 관제 운영 계정을 구분합니다.', '권한 열을 눌러 개발 관리 또는 관제 운영 순서로 정렬합니다.', '계정별 상태와 마지막 로그인 시각을 확인합니다.', '현재 로그인한 개발 관리자 계정은 비활성화할 수 없습니다.', '다른 운영 계정은 해당 행의 비활성화 또는 활성화 버튼으로 관리합니다.'], warning: '개발 관리 권한과 고객사 관제 운영 권한을 혼동하지 않습니다.' },
   { chapter: 8, section: '설정', title: '운영 계정 초대 이메일', image: '06-settings-current-account-invite.png', steps: ['수신자 이메일, 표시 이름, 안내 문장을 왼쪽 입력 영역에 작성합니다.', '오른쪽 미리보기에서 보내는 계정과 제목을 확인합니다.', '본문 전체와 48시간 일회성 링크 예시를 확인합니다.', '실제 이메일에는 수신자 전용 일회성 링크가 포함되는 점을 확인합니다.', '내용 확인 후 초대 이메일을 전송합니다.'], warning: '개발 관리자만 DSV 관제 운영 계정을 초대하며 개발 관리 권한은 부여하지 않습니다.' },
 

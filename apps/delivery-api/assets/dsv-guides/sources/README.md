@@ -16,9 +16,9 @@ node operator/generate-guide.cjs
 
 Render both DOCX files with `FONTCONFIG_FILE` set to `fontconfig-pretendard.conf`. The Codex renderer uses an isolated home directory, so this explicit font configuration is required for Korean glyphs. Adjust the `<dir>` entry when the workstation font directory differs. Copy the verified PDFs to the parent directory. The current output names are:
 
-- `operator/CLEVER_DSV_관제_운영자_사용자_가이드_Rev1.1.docx`
-- `../CLEVER_DSV_관제_운영자_사용자_가이드_Rev1.1.pdf`
+- `operator/CLEVER_DSV_관제_운영자_사용자_가이드_Rev1.2.docx`
+- `../CLEVER_DSV_관제_운영자_사용자_가이드_Rev1.2.pdf`
 
 ## Driver guide
 
-`driver/CLEVER_Driver_설치_현장교육_가이드_Rev1.3.docx` is the editable source. It supersedes the earlier direct APK installation material. Future revisions must keep installation behind `https://dsv.cleversystem.ai/driver-app` and must not add a QR code, a Google Drive APK, unknown-source installation, or a one-time driver invitation link.
+`driver/CLEVER_Driver_설치_현장교육_가이드_Rev1.4.docx` is the editable source. It supersedes the earlier direct APK installation material. Future revisions must keep installation behind `https://dsv.cleversystem.ai/driver-app` and must not add a QR code, a Google Drive APK, unknown-source installation, or a one-time driver invitation link.
