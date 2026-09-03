@@ -21,6 +21,11 @@ on:
         required: true
         type: boolean
         default: false
+      run_migrations:
+        description: "Run the guarded production migration lane when Prisma inputs changed"
+        required: true
+        type: boolean
+        default: false
       approve_dsv_migration:
         description: "Approve the guarded DSV production migration for this rollout"
         required: true
@@ -119,11 +124,12 @@ jobs:
           APPROVED: ${{ inputs.approve_dsv_migration }}
           DRY_RUN: ${{ inputs.dry_run }}
           RESTORE_REHEARSAL_SHA256: ${{ inputs.restore_rehearsal_sha256 }}
+          RUN_MIGRATIONS: ${{ inputs.run_migrations }}
         run: |
           set -euo pipefail
           manifest_sha256="$(shasum -a 256 docs/migration/g007-baseline-manifest.md | awk '{print $1}')"
           production_baseline_manifest_sha256="$(shasum -a 256 apps/delivery-api/prisma/production-baselines/dsv-production-20260723.json | awk '{print $1}')"
-          if [ "$DRY_RUN" != "true" ]; then
+          if [ "$RUN_MIGRATIONS" = "true" ] && [ "$DRY_RUN" != "true" ]; then
             test "$APPROVED" = "true" || { echo "approve_dsv_migration=true is required for a production rollout" >&2; exit 1; }
             [[ "$RESTORE_REHEARSAL_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "restore_rehearsal_sha256 must be 64 lowercase hex characters" >&2; exit 1; }
           fi
@@ -207,6 +213,7 @@ jobs:
           CURRENT_DELIVERY_API_MIGRATION_IMAGE: ${{ steps.current.outputs.delivery_api_migration_image }}
           CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.current.outputs.route_ops_web_static_image }}
           PUBLISH_IMAGES: ${{ inputs.publish_images }}
+          RUN_MIGRATIONS: ${{ inputs.run_migrations }}
         run: |
           set -euo pipefail
           files=""
@@ -224,6 +231,14 @@ jobs:
           printf '%s\n' "$api_files" > api-changed-files.txt
           build_api=false
           build_web=false
+          prisma_changed=false
+          if printf '%s\n' "$api_files" | grep -Eq '^apps/delivery-api/prisma/'; then
+            prisma_changed=true
+          fi
+          if [ "$prisma_changed" = "true" ] && [ "$RUN_MIGRATIONS" != "true" ]; then
+            echo "Prisma inputs changed since the deployed API revision; run_migrations=true and reviewed migration evidence are required." >&2
+            exit 1
+          fi
           if [ "$PUBLISH_IMAGES" = "true" ]; then
             if [ -z "$CURRENT_DELIVERY_API_IMAGE" ] || printf '%s\n' "$api_files" | grep -Eq '^(apps/delivery-api/|\.dockerignore$)'; then
               build_api=true
@@ -235,6 +250,8 @@ jobs:
           {
             echo "build_api=$build_api"
             echo "build_web=$build_web"
+            echo "prisma_changed=$prisma_changed"
+            echo "run_migrations=$RUN_MIGRATIONS"
             echo "changed_files<<EOF_CHANGED"
             cat changed-files.txt
             echo "EOF_CHANGED"
@@ -300,7 +317,7 @@ jobs:
 
       - name: Build and push delivery API migration image
         id: build_migration
-        if: steps.changes.outputs.build_api == 'true'
+        if: steps.changes.outputs.build_api == 'true' && steps.changes.outputs.run_migrations == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -327,6 +344,7 @@ jobs:
           PUBLISH_IMAGES: ${{ inputs.publish_images }}
           BUILD_API: ${{ steps.changes.outputs.build_api }}
           BUILD_WEB: ${{ steps.changes.outputs.build_web }}
+          RUN_MIGRATIONS: ${{ steps.changes.outputs.run_migrations }}
           API_DIGEST: ${{ steps.build_api.outputs.digest }}
           MIGRATION_DIGEST: ${{ steps.build_migration.outputs.digest }}
           WEB_DIGEST: ${{ steps.build_web.outputs.digest }}
@@ -355,7 +373,11 @@ jobs:
           }
           if [ "$BUILD_API" = "true" ]; then
             delivery_api_image="${DELIVERY_API_IMAGE_REPO}@${API_DIGEST}"
-            delivery_api_migration_image="${DELIVERY_API_MIGRATION_IMAGE_REPO}@${MIGRATION_DIGEST}"
+            if [ "$RUN_MIGRATIONS" = "true" ]; then
+              delivery_api_migration_image="${DELIVERY_API_MIGRATION_IMAGE_REPO}@${MIGRATION_DIGEST}"
+            else
+              delivery_api_migration_image="$(resolve_digest_ref "$CURRENT_DELIVERY_API_MIGRATION_IMAGE")"
+            fi
           elif [ "$PUBLISH_IMAGES" = "false" ]; then
             delivery_api_image="$(resolve_digest_ref "${DELIVERY_API_IMAGE_REPO}:${CHANNEL_TAG}")"
             delivery_api_migration_image="$(resolve_digest_ref "${DELIVERY_API_MIGRATION_IMAGE_REPO}:${CHANNEL_TAG}")"
@@ -380,6 +402,8 @@ jobs:
             "channelTag": "$CHANNEL_TAG",
             "buildApi": $BUILD_API,
             "buildWeb": $BUILD_WEB,
+            "runMigrations": $RUN_MIGRATIONS,
+            "prismaChanged": ${{ steps.changes.outputs.prisma_changed }},
             "deliveryApiImage": "$delivery_api_image",
             "deliveryApiMigrationImage": "$delivery_api_migration_image",
             "routeOpsWebStaticImage": "$route_ops_web_static_image",
@@ -403,6 +427,7 @@ jobs:
         env:
           ROUTE_OPS_RUNTIME_IMAGE: ${{ steps.images.outputs.delivery_api_image }}
           ROUTE_OPS_MIGRATION_IMAGE: ${{ steps.images.outputs.delivery_api_migration_image }}
+          ROUTE_OPS_RUN_MIGRATIONS: ${{ steps.changes.outputs.run_migrations == 'true' && '1' || '0' }}
           ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.images.outputs.route_ops_web_static_image }}
           ROUTE_OPS_SIMPLE_CHANNEL_TAG: ${{ inputs.channel_tag }}
           DSV_MIGRATION_APPROVED: ${{ inputs.approve_dsv_migration && '1' || '' }}
