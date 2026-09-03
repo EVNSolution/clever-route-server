@@ -17,6 +17,6 @@ export default tseslint.config(
     }
   },
   {
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'eslint.config.mjs']
+    ignores: ['assets/dsv-guides/sources/**', 'dist/**', 'coverage/**', 'node_modules/**', 'eslint.config.mjs']
   }
 );
