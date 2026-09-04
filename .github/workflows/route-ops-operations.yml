@@ -66,7 +66,7 @@ on:
         type: boolean
         default: false
       source_sha:
-        description: "[completion operations] Exact deployed main SHA"
+        description: "[completion operations] Exact deployed runtime SHA"
         required: false
         type: string
         default: ""
@@ -103,12 +103,14 @@ env:
   DELIVERY_API_MIGRATION_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api-migration
   ROUTE_OPS_WEB_STATIC_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-route-ops-web-static
 
-# One manual entry point, one runner, and one AWS credential setup. The operation
-# flag selects the existing fail-closed production wrapper; CI-grade tests stay in CI.
+# One manual entry point routes through an explicit job graph. The selected operation
+# branch owns its fail-closed wrapper; CI-grade tests stay in CI.
 jobs:
-  operate:
+  route:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.route.outputs.operation }}
     steps:
       - name: Require main branch
         if: github.ref != 'refs/heads/main'
@@ -138,6 +140,16 @@ jobs:
             exit 1
           fi
 
+      - name: Select operation branch
+        id: route
+        run: echo "operation=${{ inputs.operation }}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: route
+    if: needs.route.outputs.operation == 'deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -507,25 +519,44 @@ jobs:
           fi
           scripts/ssm-simple-route-ops-deploy.sh "${args[@]}"
 
-      - name: Validate completion operation inputs
-        if: contains(fromJSON('["completion_evidence","alarm_canary","invariant_mode"]'), inputs.operation)
-        env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+      - name: Operation summary
+        if: always()
         run: |
-          set -euo pipefail
-          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "source_sha must be the exact 40-character deployed main SHA." >&2
-            exit 1
-          }
+          {
+            echo "### Route Ops operation"
+            echo "- operation: ${{ inputs.operation }}"
+            echo "- source: ${{ steps.source.outputs.sha }}"
+            echo "- dry run: ${{ inputs.dry_run }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  edge_caddy:
+    needs: route
+    if: needs.route.outputs.operation == 'edge_caddy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Require source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
 
       - name: Validate Edge Caddy wrapper
-        if: inputs.operation == 'edge_caddy'
         run: |
           bash -n scripts/ssm-edge-caddy-deploy.sh tests/deploy/ssm-edge-caddy-deploy.test.sh
           tests/deploy/ssm-edge-caddy-deploy.test.sh
 
       - name: Run Edge Caddy operation
-        if: inputs.operation == 'edge_caddy'
         shell: bash
         env:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
@@ -539,14 +570,34 @@ jobs:
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           scripts/ssm-edge-caddy-deploy.sh "${args[@]}"
 
+  backup_setup:
+    needs: route
+    if: needs.route.outputs.operation == 'backup_setup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Require source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
       - name: Validate backup wrapper
-        if: inputs.operation == 'backup_setup'
         run: |
           chmod +x scripts/backup-route-ops-data.sh scripts/ssm-install-route-ops-backup.sh tests/deploy/route-ops-backup.test.sh
           tests/deploy/route-ops-backup.test.sh
 
       - name: Run backup setup operation
-        if: inputs.operation == 'backup_setup'
         shell: bash
         env:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
@@ -559,15 +610,35 @@ jobs:
           if [ "${{ inputs.run_backup }}" = true ]; then args+=(--run-backup); fi
           scripts/ssm-install-route-ops-backup.sh "${args[@]}"
 
+  docker_cleanup:
+    needs: route
+    if: needs.route.outputs.operation == 'docker_cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Require source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
       - name: Validate Docker cleanup wrapper
-        if: inputs.operation == 'docker_cleanup'
         run: |
           chmod +x scripts/route-ops-docker-cleanup.sh scripts/ssm-route-ops-docker-cleanup.sh tests/deploy/route-ops-docker-cleanup.test.sh
           bash -n scripts/route-ops-docker-cleanup.sh scripts/ssm-route-ops-docker-cleanup.sh tests/deploy/route-ops-docker-cleanup.test.sh
           tests/deploy/route-ops-docker-cleanup.test.sh
 
       - name: Run Docker cleanup operation
-        if: inputs.operation == 'docker_cleanup'
         shell: bash
         env:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
@@ -581,18 +652,48 @@ jobs:
             scripts/ssm-route-ops-docker-cleanup.sh
           fi
 
+  completion_evidence:
+    needs: route
+    if: needs.route.outputs.operation == 'completion_evidence'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Validate completion operation inputs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "source_sha must be the exact 40-character deployed runtime SHA." >&2
+            exit 1
+          }
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Require source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+
       - name: Require exact successful main SHA for completion evidence
-        if: inputs.operation == 'completion_evidence'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$SOURCE_SHA&per_page=1" --jq '.total_count')" -gt 0
 
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
       - name: Collect completion evidence
-        if: inputs.operation == 'completion_evidence'
         env:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -612,7 +713,6 @@ jobs:
           jq -e --arg sha "$SOURCE_SHA" '.sourceSha == $sha and .runtime.revision == $sha and .runtime.capabilityVersion == 1 and (.runtime.imageId | startswith("sha256:")) and (.runtime.imageRepoDigest | contains("@sha256:")) and (.currentMode | IN("OBSERVE", "GUARDED", "FULL"))' route-completion-rollout-evidence.json
 
       - name: Upload completion evidence
-        if: inputs.operation == 'completion_evidence'
         uses: actions/upload-artifact@v7
         with:
           name: route-completion-rollout-evidence
@@ -620,14 +720,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Require exact main SHA for alarm canary
-        if: inputs.operation == 'alarm_canary'
+  alarm_canary:
+    needs: route
+    if: needs.route.outputs.operation == 'alarm_canary'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Validate alarm canary inputs
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
-        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Require source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
 
       - name: Exercise alarm actions and require subscriber receipts
-        if: inputs.operation == 'alarm_canary'
         env:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
           OBSERVE_ALARM: ${{ vars.ROUTE_COMPLETION_ALARM_NAME }}
@@ -660,7 +783,6 @@ jobs:
           jq -n --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sha "$SOURCE_SHA" --arg topic "$TOPIC_ARN" --slurpfile observe "$tmp_dir/observe.json" --slurpfile reject "$tmp_dir/reject.json" '{schemaVersion:1, sourceSha:$sha, topicArn:$topic, generatedAt:$generatedAt, deliveries:($observe + $reject)}' > route-completion-alarm-canary-receipt.json
 
       - name: Upload alarm canary receipts
-        if: inputs.operation == 'alarm_canary'
         uses: actions/upload-artifact@v7
         with:
           name: route-completion-alarm-canary-receipt
@@ -668,24 +790,56 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  invariant_mode:
+    needs: route
+    if: needs.route.outputs.operation == 'invariant_mode'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Validate invariant operation inputs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Require source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
       - name: Require exact successful main SHA for invariant elevation
-        if: inputs.operation == 'invariant_mode' && inputs.target_mode != 'OBSERVE'
+        if: inputs.target_mode != 'OBSERVE'
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&head_sha=$SOURCE_SHA&per_page=1" --jq '.total_count')" -gt 0
 
       - name: Validate invariant mode wrapper
-        if: inputs.operation == 'invariant_mode'
         run: |
           chmod +x scripts/ssm-route-completion-invariant-mode.sh scripts/verify-route-completion-alarm.sh tests/deploy/route-completion-invariant-rollout.test.sh
           tests/deploy/route-completion-invariant-rollout.test.sh
 
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
       - name: Verify completion evidence provenance
-        if: inputs.operation == 'invariant_mode' && inputs.target_mode != 'OBSERVE'
+        if: inputs.target_mode != 'OBSERVE'
         id: evidence
         env:
           ARTIFACT_ID: ${{ inputs.evidence_artifact_id }}
@@ -718,7 +872,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Require elevated emergency rollback approval
-        if: inputs.operation == 'invariant_mode' && inputs.target_mode == 'OBSERVE'
+        if: inputs.target_mode == 'OBSERVE'
         env:
           EMERGENCY_ALLOWED_ACTORS: ${{ vars.ROUTE_COMPLETION_EMERGENCY_ROLLBACK_ALLOWED_ACTORS }}
           GITHUB_ACTOR_NAME: ${{ github.actor }}
@@ -727,7 +881,7 @@ jobs:
           case ",${EMERGENCY_ALLOWED_ACTORS// /}," in *",$GITHUB_ACTOR_NAME,"*) ;; *) exit 1 ;; esac
 
       - name: Verify alarm canary provenance
-        if: inputs.operation == 'invariant_mode' && inputs.target_mode != 'OBSERVE'
+        if: inputs.target_mode != 'OBSERVE'
         env:
           ARTIFACT_ID: ${{ inputs.alarm_receipt_artifact_id }}
           GH_TOKEN: ${{ github.token }}
@@ -750,7 +904,6 @@ jobs:
           test "$(find alarm-receipt -type f -name route-completion-alarm-canary-receipt.json | wc -l | tr -d ' ')" = 1
 
       - name: Change invariant mode through SSM
-        if: inputs.operation == 'invariant_mode'
         env:
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
           ROUTE_COMPLETION_SOURCE_SHA: ${{ inputs.source_sha }}
@@ -772,12 +925,22 @@ jobs:
           fi
           scripts/ssm-route-completion-invariant-mode.sh
 
-      - name: Operation summary
-        if: always()
+  summary:
+    if: always()
+    needs: [route, deploy, edge_caddy, backup_setup, docker_cleanup, completion_evidence, alarm_canary, invariant_mode]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize operation graph
         run: |
           {
-            echo "### Route Ops operation"
+            echo "### Route Ops operation graph"
             echo "- operation: ${{ inputs.operation }}"
-            echo "- source: ${{ steps.source.outputs.sha }}"
-            echo "- dry run: ${{ inputs.dry_run }}"
+            echo "- selected branch: ${{ needs.route.outputs.operation }}"
+            echo "- deploy: ${{ needs.deploy.result }}"
+            echo "- edge_caddy: ${{ needs.edge_caddy.result }}"
+            echo "- backup_setup: ${{ needs.backup_setup.result }}"
+            echo "- docker_cleanup: ${{ needs.docker_cleanup.result }}"
+            echo "- completion_evidence: ${{ needs.completion_evidence.result }}"
+            echo "- alarm_canary: ${{ needs.alarm_canary.result }}"
+            echo "- invariant_mode: ${{ needs.invariant_mode.result }}"
           } >> "$GITHUB_STEP_SUMMARY"

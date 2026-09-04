@@ -32,6 +32,11 @@ gh workflow run CI --repo EVNSolution/clever-route-server --ref main
 
 ## Operations
 
+`Route Ops operations`는 `route` 관문 뒤에 operation별 job branch가 있는 단일 흐름이다.
+실행 화면에서 `route → deploy` 또는 `route → edge_caddy`처럼 선택된 경로가 보이며,
+선택되지 않은 branch는 skipped로 종료된다. operation을 늘릴 때는 새 workflow를
+만들지 말고 이 job graph에 branch를 추가한다.
+
 GitHub의 `Route Ops operations`에서 `operation`을 먼저 선택한다. 다른 operation용
 입력값은 기본값 그대로 둔다.
 
@@ -41,7 +46,7 @@ GitHub의 `Route Ops operations`에서 `operation`을 먼저 선택한다. 다�
 | `edge_caddy` | Caddy 설정 검증·reload | 없음 | 먼저 `dry_run=true` |
 | `backup_setup` | backup timer 설치·검증 | 없음 | 먼저 `dry_run=true` |
 | `docker_cleanup` | 안전한 dangling image/cache 정리 | 없음 | 먼저 `dry_run=true` |
-| `completion_evidence` | 배포 SHA의 read-only invariant 증거 | `source_sha` | 배포 직후 |
+| `completion_evidence` | API runtime SHA의 read-only invariant 증거 | `source_ref`, `source_sha` | 배포 직후 |
 | `alarm_canary` | 두 alarm의 실제 subscriber receipt 검증 | `source_sha` | mode 승격 전 |
 | `invariant_mode` | OBSERVE/GUARDED/FULL 전환 | `source_sha`, 승격 시 artifact ID 2개 | evidence와 canary 이후 |
 
@@ -87,13 +92,18 @@ gh workflow run "Route Ops operations" \
 
 ### Route completion mode 승격
 
-1. `operation=completion_evidence`, `source_sha=<deployed SHA>`
+1. `operation=completion_evidence`, `source_ref=<API runtime SHA>`, `source_sha=<API runtime SHA>`
 2. `operation=alarm_canary`, 같은 `source_sha`
 3. 두 run의 artifact ID를 확인한다.
 4. `operation=invariant_mode`, `target_mode=GUARDED` 또는 `FULL`,
    `evidence_artifact_id`, `alarm_receipt_artifact_id`를 입력한다.
 
 `OBSERVE` 긴급 복귀는 별도 emergency actor allowlist를 계속 요구한다.
+
+`source_ref`는 checkout할 main history ref이며 `source_sha`와 동일해야 한다. 배포에서
+`publish_images=false`로 기존 image를 재사용했다면 `current-image.env`의
+`API_RUNTIME_REVISION`을 두 입력에 사용한다. workflow-only coordinator SHA와 실제
+컨테이너 revision이 다를 때는 runtime revision을 증거 기준으로 삼는다.
 
 ## 시간 기준
 
