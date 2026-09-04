@@ -36,7 +36,7 @@ test('keeps UVIS configuration server-only', () => {
   const example = read('apps/delivery-api/.env.example');
   const productionCompose = read('infra/compose/docker-compose.prod.yml');
   const dsvCompose = read('infra/compose/docker-compose.dsv-dev.yml');
-  const deployWorkflow = read('.github/workflows/route-ops-simple-deploy.yml');
+  const deployWorkflow = read('.github/workflows/route-ops-operations.yml');
   const webDockerfile = read('apps/route-ops-web/Dockerfile');
 
   assert.match(example, /^UVIS_ENABLED=false$/mu);

@@ -163,8 +163,9 @@ describe('API documentation routes', () => {
       execFileSync('ruby', [
         '-e',
         [
+          'require "date"',
           'require "yaml"',
-          'doc = YAML.load(STDIN.read)',
+          'doc = YAML.safe_load(STDIN.read, permitted_classes: [Date])',
           'schemas = doc.dig("components", "schemas")',
           'create = schemas.fetch("CustomRouteStopCreateInput").fetch("allOf").fetch(1)',
           'required = create.fetch("required")',
@@ -653,8 +654,9 @@ function parseOpenApiYaml(openApiYaml: string): void {
   execFileSync('ruby', [
     '-e',
     [
+      'require "date"',
       'require "yaml"',
-      'doc = YAML.load(STDIN.read)',
+      'doc = YAML.safe_load(STDIN.read, permitted_classes: [Date])',
       'raise "expected OpenAPI 3.1.0" unless doc["openapi"] == "3.1.0"',
       'raise "expected paths" unless doc["paths"].is_a?(Hash)',
       'raise "expected schemas" unless doc.dig("components", "schemas").is_a?(Hash)'

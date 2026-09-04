@@ -15,7 +15,7 @@ function check(name, files, expected) {
 
 function deliveryApiJobRunsOnMainPush(files) {
   const result = classifyRouteOpsChanges(files);
-  return (result.api_changed && result.critical_changed) || result.full_required;
+  return result.api_changed || result.customer_email_changed || result.full_required;
 }
 
 function releaseStaticChecksRun(files) {
@@ -67,6 +67,12 @@ check('web-only UI change', ['apps/route-ops-web/src/pages/RoutesPage.tsx', 'app
   web_artifact_required: false,
 });
 
+check('customer email wrapper change stays scoped to its compiled contract', ['scripts/ssm-customer-email-reconciliation.sh'], {
+  api_changed: false,
+  customer_email_changed: true,
+  full_required: false,
+});
+
 check('delivery route-plan API change keeps web artifact for broad API tests', ['apps/delivery-api/src/modules/route-plans/route-plan.repository.ts'], {
   web_changed: false,
   api_changed: true,
@@ -95,21 +101,7 @@ check('prisma migration change keeps web artifact for broad API tests', ['apps/d
   api_test_profile: 'route_ops',
 });
 
-check('deploy workflow change', ['scripts/ssm-simple-route-ops-deploy.sh', '.github/workflows/route-ops-simple-deploy.yml'], {
-  deploy_changed: true,
-  workflow_changed: true,
-  critical_changed: true,
-  full_required: true,
-});
-
-check('edge caddy workflow change', ['scripts/ssm-edge-caddy-deploy.sh', '.github/workflows/edge-caddy-deploy.yml'], {
-  deploy_changed: true,
-  workflow_changed: true,
-  critical_changed: true,
-  full_required: true,
-});
-
-check('backup workflow change', ['scripts/backup-route-ops-data.sh', 'scripts/ssm-install-route-ops-backup.sh', '.github/workflows/route-ops-backup.yml'], {
+check('operations workflow change', ['scripts/ssm-simple-route-ops-deploy.sh', '.github/workflows/route-ops-operations.yml'], {
   deploy_changed: true,
   workflow_changed: true,
   critical_changed: true,
@@ -148,6 +140,20 @@ check('deploy script only stays deploy-critical without API artifact', ['scripts
   full_required: false,
   web_artifact_required: false,
 });
+
+for (const operationContractPath of [
+  'scripts/ssm-route-ops-docker-cleanup.sh',
+  'scripts/ssm-route-completion-invariant-mode.sh',
+  'scripts/verify-route-completion-alarm.sh',
+  'tests/deploy/route-ops-docker-cleanup.test.sh',
+  'tests/deploy/route-completion-invariant-rollout.test.sh',
+]) {
+  check(`operations contract triggers release checks: ${operationContractPath}`, [operationContractPath], {
+    deploy_changed: true,
+    critical_changed: true,
+  });
+  assert.equal(releaseStaticChecksRun([operationContractPath]), true);
+}
 
 for (const migrationDeployPath of [
   'apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh',
@@ -318,24 +324,16 @@ for (const contractPath of [
 }
 
 const ciWorkflow = readFileSync('.github/workflows/ci.yml', 'utf8');
-const retentionStep = ciWorkflow.match(
-  /- name: Retention runtime tests\n(?<body>[\s\S]*?)(?=\n\s+- name: Build delivery API)/u,
+assert.match(
+  ciWorkflow,
+  /- name: Delivery API test profile[\s\S]*?run: npm --prefix apps\/delivery-api run test/u,
+  'normal API validation must run the package test suite instead of maintaining a partial file list',
 );
-assert.ok(retentionStep?.groups?.body, 'CI must define a dedicated retention runtime test step');
-const retentionStepTokens = retentionStep.groups.body.trim().split(/\s+/u);
-for (const testPath of [
-  'tests/driver-event-attempt-retention.test.ts',
-  'tests/route-operational-evidence-retention.test.ts',
-  'tests/shopify-webhook-retention.test.ts',
-  'tests/driver-proof-media.cleanup.test.ts',
-  'tests/package-scripts.test.ts',
-  'tests/driver-event-attempt-retention-script.test.ts',
-]) {
-  assert.ok(
-    retentionStepTokens.includes(testPath),
-    `Retention runtime CI step must run ${testPath}`,
-  );
-}
+assert.doesNotMatch(
+  ciWorkflow,
+  /tests\/driver-event-attempt-retention\.test\.ts/u,
+  'full package tests must not be duplicated as a manually maintained retention list',
+);
 
 check('shopify auth/session verifier is critical', ['apps/delivery-api/src/modules/shopify/session-token-verifier.ts', 'apps/delivery-api/tests/shopify-session-token-verifier.test.ts'], {
   api_changed: true,

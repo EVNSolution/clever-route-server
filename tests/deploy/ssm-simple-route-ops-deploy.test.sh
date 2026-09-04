@@ -22,7 +22,7 @@ payload = json.loads(path.read_text())
 command = payload['commands'][0]
 shopify_command = json.loads(shopify_path.read_text())['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
-workflow = pathlib.Path('.github/workflows/route-ops-simple-deploy.yml').read_text()
+workflow = pathlib.Path('.github/workflows/route-ops-operations.yml').read_text()
 ci_workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
 web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 compose = pathlib.Path('infra/compose/docker-compose.prod.yml').read_text()
@@ -95,7 +95,7 @@ checks = {
     'completion_invariant_workflow_image_label': 'org.clever-route.route-completion-invariant-capability=1' in workflow,
     'proof_ready_contract_sha_rendered': f'PROOF_READY_FILTER_CONTRACT_SHA={proof_ready_contract_sha}' in command,
     'proof_ready_contract_hash_needs_no_node_dependencies': 'shasum -a 256 apps/delivery-api/tests/driver-proof-media-read-inventory.test.ts apps/delivery-api/tests/dsv-v1-read-query.service.test.ts' in wrapper and 'npm test -- driver-proof-media-read-inventory.test.ts' not in wrapper,
-    'main_ci_runs_proof_ready_contracts': 'tests/driver-proof-media-read-inventory.test.ts' in ci_workflow and 'tests/dsv-v1-read-query.service.test.ts' in ci_workflow,
+    'main_ci_runs_delivery_api_package_tests': '- name: Delivery API test profile' in ci_workflow and 'run: npm --prefix apps/delivery-api run test' in ci_workflow,
     'workflow_requires_exact_successful_main_ci': 'actions: read' in workflow and 'actions/workflows/ci.yml/runs' in workflow and '-f branch=main' in workflow and '-f event=push' in workflow and '-f status=success' in workflow and '-f head_sha="$SOURCE_SHA"' in workflow and 'GH_TOKEN: ${{ github.token }}' in workflow and 'test "$count" -gt 0' in workflow,
     'workflow_ci_gate_precedes_aws': workflow.index('Require successful main CI for exact source SHA') < workflow.index('Configure AWS credentials through OIDC'),
     'workflow_does_not_reinstall_for_deploy': 'npm ci' not in workflow and 'npm install' not in workflow,
@@ -108,11 +108,11 @@ checks = {
     'gh_write_packages_warning_only': 'does not show write:packages; continuing because docker push is the authoritative GHCR publish check' in wrapper and 'GHCR publish requires a GitHub/GHCR token with write:packages' not in wrapper,
     'workflow_uses_node24_docker_build_actions': 'uses: docker/setup-buildx-action@v4' in workflow and 'uses: docker/build-push-action@v7' in workflow,
     'workflow_requires_migration_approval_evidence': 'run_migrations:' in workflow and 'approve_dsv_migration:' in workflow and 'restore_rehearsal_sha256:' in workflow and 'if [ "$RUN_MIGRATIONS" = "true" ] && [ "$DRY_RUN" != "true" ]; then' in workflow and 'approve_dsv_migration=true is required for a production rollout' in workflow and 'restore_rehearsal_sha256 must be 64 lowercase hex characters' in workflow,
-    'workflow_does_not_enter_dsv_evidence_lane_without_migrations': '      - name: Resolve DSV migration approval evidence\n        if: inputs.run_migrations == true' in workflow,
+    'workflow_does_not_enter_dsv_evidence_lane_without_migrations': "      - name: Resolve DSV migration approval evidence\n        if: inputs.operation == 'deploy' && inputs.run_migrations == true" in workflow,
     'workflow_fails_closed_for_unapproved_prisma_changes': "grep -Eq '^apps/delivery-api/prisma/'" in workflow and 'Prisma inputs changed since the deployed API revision; run_migrations=true and reviewed migration evidence are required.' in workflow,
     'workflow_skips_migration_image_for_shopify_scope': "if: steps.changes.outputs.build_api == 'true' && steps.changes.outputs.run_migrations == 'true'" in workflow and "ROUTE_OPS_RUN_MIGRATIONS: ${{ steps.changes.outputs.run_migrations == 'true' && '1' || '0' }}" in workflow and 'delivery_api_migration_image=""' in workflow and 'if [ "$RUN_MIGRATIONS" = "true" ]; then' in workflow,
     'workflow_exposes_one_time_production_baseline': 'approve_production_baseline:' in workflow and 'DSV_PRODUCTION_BASELINE_APPROVED:' in workflow and 'production_baseline_manifest_sha256' in workflow,
-    'workflow_always_prepares_private_registry_resolution': '      - name: Login to GHCR\n        # docker/login-action' in workflow and '      - name: Set up Docker Buildx\n        uses: docker/setup-buildx-action@v4' in workflow,
+    'workflow_prepares_private_registry_resolution_for_deploy': "      - name: Login to GHCR\n        if: inputs.operation == 'deploy'" in workflow and 'uses: docker/login-action@' in workflow and "      - name: Set up Docker Buildx\n        if: inputs.operation == 'deploy'" in workflow and 'uses: docker/setup-buildx-action@v4' in workflow,
     'workflow_fails_closed_when_digest_resolution_fails': 'if ! digest="$(docker buildx imagetools inspect' in workflow and '[[ "$digest" == sha256:* ]] || return 1' in workflow,
     'workflow_uses_registry_cache': 'cache-from: type=registry,ref=${{ env.DELIVERY_API_IMAGE_REPO }}:buildcache' in workflow and 'cache-to: type=registry,ref=${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:buildcache,mode=max' in workflow,
     'workflow_publishes_sha_and_channel_tags': '${{ env.DELIVERY_API_IMAGE_REPO }}:${{ github.sha }}' in workflow and '${{ env.DELIVERY_API_IMAGE_REPO }}:${{ inputs.channel_tag }}' in workflow and '${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ github.sha }}' in workflow and '${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ inputs.channel_tag }}' in workflow,
@@ -120,7 +120,7 @@ checks = {
     'workflow_splits_image_scope': "grep -Eq '^(apps/delivery-api/|\\.dockerignore$)'" in workflow and "grep -Eq '^(apps/route-ops-web/|\\.dockerignore$)'" in workflow,
     'workflow_unquotes_non_ascii_paths_before_scope_match': 'git -c core.quotePath=false diff --name-only' in workflow and 'git -c core.quotePath=false ls-files' in workflow,
     'main_ci_unquotes_non_ascii_paths_before_classification': 'git -c core.quotePath=false diff --name-only' in ci_workflow and 'git -c core.quotePath=false ls-files' in ci_workflow,
-    'main_ci_runs_for_simple_deploy_contract_changes': '      - ".github/workflows/route-ops-simple-deploy.yml"' in ci_workflow and '      - "scripts/ssm-simple-route-ops-deploy.sh"' in ci_workflow and '      - "tests/deploy/ssm-simple-route-ops-deploy.test.sh"' in ci_workflow,
+    'main_ci_runs_for_all_non_documentation_changes': '  pull_request:' in ci_workflow and '    paths-ignore:' in ci_workflow and '      - "docs/**"' in ci_workflow and '      - "**/*.md"' in ci_workflow,
     'workflow_uses_runtime_revision_for_api_scope': 'API_RUNTIME_COMMIT: ${{ steps.current.outputs.runtime_commit }}' in workflow and 'api_files="$(git -c core.quotePath=false diff --name-only "$API_RUNTIME_COMMIT" HEAD)"' in workflow and '''printf '%s\\n' "$api_files" | grep -Eq '^(apps/delivery-api/|\.dockerignore$)' '''.strip() in workflow,
     'workflow_builds_separate_migration_image': 'DELIVERY_API_MIGRATION_IMAGE_REPO:' in workflow and 'target: migration' in workflow and 'org.clever-route.image-role=migration' in workflow,
     'ssm_wait_covers_real_deploy_duration': 'SSM_WAIT_TIMEOUT_SECONDS:-1800' in wrapper and 'aws ssm wait command-executed' not in wrapper and '--query Status' in wrapper and 'sleep 5' in wrapper,

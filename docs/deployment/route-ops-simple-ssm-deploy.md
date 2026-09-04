@@ -19,7 +19,7 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 ## Files
 
 - Script: `scripts/ssm-simple-route-ops-deploy.sh`
-- GitHub workflow: `.github/workflows/route-ops-simple-deploy.yml`
+- GitHub workflow: `.github/workflows/route-ops-operations.yml` with `operation=deploy`
 - Compose: `infra/compose/docker-compose.prod.yml`
 - Edge/Caddy: owned by `docs/deployment/edge-caddy-deploy.md`, not this lane
 - Runtime env: `apps/delivery-api/.env`
@@ -172,16 +172,18 @@ scripts/ssm-simple-route-ops-deploy.sh --dry-run
 GitHub Actions production deploy:
 
 ```bash
-gh workflow run "Route Ops simple deploy" --repo EVNSolution/clever-route-server --ref main \
-  -f channel_tag=prod -f source_ref=main -f publish_images=true -f dry_run=false
+gh workflow run "Route Ops operations" --repo EVNSolution/clever-route-server --ref main \
+  -f operation=deploy -f channel_tag=prod -f source_ref=main \
+  -f publish_images=true -f dry_run=false
 ```
 
 If images were already published but SSM dispatch failed, preserve the previous rollback env
 and rerun only the SSM phase against the already-published channel digest refs:
 
 ```bash
-gh workflow run "Route Ops simple deploy" --repo EVNSolution/clever-route-server --ref main \
-  -f channel_tag=prod -f source_ref=<published-sha> -f publish_images=false -f dry_run=false
+gh workflow run "Route Ops operations" --repo EVNSolution/clever-route-server --ref main \
+  -f operation=deploy -f channel_tag=prod -f source_ref=<published-sha> \
+  -f publish_images=false -f dry_run=false
 ```
 
 ## Rollback
