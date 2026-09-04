@@ -33,7 +33,7 @@ export type DriverRouteEtaUpdate = {
   updatedStops: DriverRouteEtaStopUpdate[];
 };
 
-export type DriverRouteEtaTrigger = 'ROUTE_STARTED' | 'STOP_ARRIVED' | 'STOP_DELIVERED' | 'PICKUP_COMPLETED';
+export type DriverRouteEtaTrigger = 'ROUTE_STARTED' | 'STOP_ARRIVED' | 'STOP_DELIVERED' | 'STOP_FAILED' | 'PICKUP_COMPLETED';
 
 export type DriverRouteEtaSnapshot = {
   calculatedAt: string | null;
@@ -170,6 +170,7 @@ export function calculateCompletionEtaUpdate(input: {
   inputRouteVersionId?: string | null;
   serverReceivedAt: Date;
   stops: DriverRouteEtaStop[];
+  trigger?: 'STOP_DELIVERED' | 'STOP_FAILED';
 }): DriverRouteEtaUpdate {
   const sortedStops = [...input.stops].sort((left, right) => left.sequence - right.sequence);
   const completedIndex = sortedStops.findIndex((stop) => stop.deliveryStopId === input.completedDeliveryStopId);
@@ -187,6 +188,7 @@ export function calculateCompletionEtaUpdate(input: {
     ? null
     : addServiceTime(input.arrivedAt.getTime(), completedStop.serviceMinutes);
   const completionAnchorMs = arrivalServiceCompletedMs ?? deliveredAt.getTime();
+  const trigger = input.trigger ?? 'STOP_DELIVERED';
   let cursorMs: number | null = completionAnchorMs;
   const updatedStops = sortedStops.slice(completedIndex + 1).map((stop) => {
     cursorMs = addDuration(cursorMs, stop.durationFromPreviousSeconds);
@@ -205,12 +207,12 @@ export function calculateCompletionEtaUpdate(input: {
     etaCalculatedAt: input.serverReceivedAt.toISOString(),
     etaFailureCode: failure?.code ?? null,
     etaFailureMessage: failure?.message ?? null,
-    etaSource: 'STOP_DELIVERED',
+    etaSource: trigger,
     etaStatus: failure === null ? 'READY' : 'FAILED',
     inputRouteVersionId: input.inputRouteVersionId ?? null,
     previousEstimatedArrivalAt: previousEstimatedArrivalAt?.toISOString() ?? null,
     serverReceivedAt: input.serverReceivedAt.toISOString(),
-    trigger: 'STOP_DELIVERED',
+    trigger,
     updatedStops
   };
 }

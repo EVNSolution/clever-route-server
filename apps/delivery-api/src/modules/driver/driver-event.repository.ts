@@ -1235,10 +1235,6 @@ async function applyDriverEventStateTransition(
       }
     });
     if (updated.count !== 1) throw new DriverEventStopTransitionConflictError();
-    if (input.eventType === 'STOP_FAILED') {
-      return {};
-    }
-
     const stops = await loadRouteEtaStops(prisma, routePlanId);
     const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
     if (!await isCurrentEtaProgressEvent(prisma, schemaCapabilities, input, eventRouteVersionId, eventId)) {
@@ -1260,7 +1256,8 @@ async function applyDriverEventStateTransition(
       eventOccurredAt: input.occurredAt,
       inputRouteVersionId,
       serverReceivedAt,
-      stops
+      stops,
+      trigger: input.eventType
     });
     await persistEtaUpdate(prisma, schemaCapabilities, shopId, routePlanId, etaUpdate);
     if (pickupCompletedAt === null) {
@@ -1368,7 +1365,8 @@ async function buildCurrentEtaSnapshot(
 function isEtaSnapshotRecoveryEvent(eventType: string): boolean {
   return eventType === 'PICKUP_COMPLETED'
     || eventType === 'STOP_ARRIVED'
-    || eventType === 'STOP_DELIVERED';
+    || eventType === 'STOP_DELIVERED'
+    || eventType === 'STOP_FAILED';
 }
 
 async function buildCurrentEtaSnapshotForDuplicate(
