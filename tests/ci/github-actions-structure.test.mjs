@@ -23,6 +23,7 @@ assert.equal((ci.match(/npm --prefix apps\/route-ops-web ci/g) ?? []).length, 1,
 
 assert.match(operations, /^name: Route Ops operations$/m);
 assert.match(operations, /^run-name: Route Ops \/ \$\{\{ inputs\.operation \}\} \/ \$\{\{ inputs\.source_ref \}\}$/m);
+assert.match(operations, /^  route:\n/m, 'operation graph must have a routing job');
 for (const operation of [
   'deploy',
   'edge_caddy',
@@ -33,11 +34,10 @@ for (const operation of [
   'invariant_mode',
 ]) {
   assert.match(operations, new RegExp(`^          - ${operation}$`, 'm'), `missing operation ${operation}`);
+  assert.match(operations, new RegExp(`^  ${operation}:\\n    needs: route\\n    if: needs\\.route\\.outputs\\.operation == '${operation}'$`, 'm'), `missing graph branch ${operation}`);
 }
-assert.equal((operations.match(/uses: actions\/checkout@/g) ?? []).length, 1, 'operations checkout must run once');
-assert.equal((operations.match(/uses: aws-actions\/configure-aws-credentials@/g) ?? []).length, 1, 'AWS credentials must be configured once');
-assert.match(operations, /inputs\.operation == 'deploy'/);
-assert.match(operations, /inputs\.operation == 'edge_caddy'/);
-assert.match(operations, /inputs\.operation == 'invariant_mode'/);
+assert.equal((operations.match(/uses: actions\/checkout@/g) ?? []).length, 7, 'each operation branch must checkout once');
+assert.equal((operations.match(/uses: aws-actions\/configure-aws-credentials@/g) ?? []).length, 7, 'each AWS operation branch must configure credentials once');
+assert.match(operations, /^  summary:\n/m, 'operation graph must converge on a summary job');
 
 console.log('GitHub Actions structure contract passed');

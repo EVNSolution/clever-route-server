@@ -101,6 +101,6 @@ grep -Fq 'id-token: write' "$workflow"
 grep -Fq 'dry_run:' "$workflow"
 grep -Fq 'run_backup:' "$workflow"
 grep -Fq 'scripts/ssm-install-route-ops-backup.sh' "$workflow"
-grep -Fq "inputs.operation == 'backup_setup'" "$workflow"
+grep -Fq "needs.route.outputs.operation == 'backup_setup'" "$workflow"
 
 printf '{"ok":true,"backup":"%s"}\n' "$worker"
