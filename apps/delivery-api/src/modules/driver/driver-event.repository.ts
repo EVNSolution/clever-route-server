@@ -318,8 +318,8 @@ export class PrismaDriverEventRepository {
             completionInvariant: null,
             duplicate: true,
             eventId: duplicate.id,
-            ...(input.eventType === 'PICKUP_COMPLETED'
-              ? { etaSnapshot: await buildCurrentEtaSnapshot(transaction, requireRoutePlanId(input), duplicate.createdAt ?? null) }
+            ...(isEtaSnapshotRecoveryEvent(input.eventType)
+              ? { etaSnapshot: await buildCurrentEtaSnapshotForDuplicate(transaction, input) }
               : {})
           };
         }
@@ -457,8 +457,8 @@ export class PrismaDriverEventRepository {
           return {
             duplicate: true,
             eventId: duplicate.id,
-            ...(input.eventType === 'PICKUP_COMPLETED'
-              ? { etaSnapshot: await buildCurrentEtaSnapshot(this.prisma, requireRoutePlanId(input), duplicate.createdAt ?? null) }
+            ...(isEtaSnapshotRecoveryEvent(input.eventType)
+              ? { etaSnapshot: await buildCurrentEtaSnapshotForDuplicate(this.prisma, input) }
               : {})
           };
         }
@@ -1363,6 +1363,32 @@ async function buildCurrentEtaSnapshot(
     pickupCompletedAt,
     stops: await loadRouteEtaStops(prisma, routePlanId, { hydrateGeometryCache: false })
   });
+}
+
+function isEtaSnapshotRecoveryEvent(eventType: string): boolean {
+  return eventType === 'PICKUP_COMPLETED'
+    || eventType === 'STOP_ARRIVED'
+    || eventType === 'STOP_DELIVERED';
+}
+
+async function buildCurrentEtaSnapshotForDuplicate(
+  prisma: Pick<DriverEventPrismaClient, 'driverEvent' | 'routePlanStop' | 'routePlanGeometryCache'>,
+  input: RecordDriverEventInput
+): Promise<DriverRouteEtaSnapshot> {
+  const pickup = await prisma.driverEvent.findFirst({
+    orderBy: { createdAt: 'asc' },
+    select: { createdAt: true, occurredAt: true },
+    where: {
+      driverId: input.driverId,
+      eventType: 'PICKUP_COMPLETED',
+      routePlanId: requireRoutePlanId(input),
+      shopId: input.shopId
+    }
+  });
+  const pickupCompletedAt = pickup === null
+    ? null
+    : effectiveOccurredAt(pickup.occurredAt ?? pickup.createdAt, pickup.createdAt);
+  return buildCurrentEtaSnapshot(prisma, requireRoutePlanId(input), pickupCompletedAt);
 }
 
 async function loadPickupCompletedAt(

@@ -13,7 +13,7 @@ import {
 } from './driver-route-eta.js';
 
 export const ROLLING_ETA_BACKFILL_SCHEMA = 'rolling_eta_backfill_plan_v1';
-export const ROLLING_ETA_BACKFILL_CHANGE_CONTROL_REF = 'EVNSolution/clever-change-control#279';
+export const ROLLING_ETA_BACKFILL_CHANGE_CONTROL_REF = 'EVNSolution/clever-change-control#283';
 export const ROLLING_ETA_BACKFILL_APP_ID = 'clever-route-kfood';
 
 const PROGRESS_EVENT_TYPES = ['ROUTE_STARTED', 'PICKUP_COMPLETED', 'STOP_ARRIVED', 'STOP_DELIVERED'] as const;

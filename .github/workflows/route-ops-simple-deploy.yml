@@ -118,6 +118,7 @@ jobs:
           test "$count" -gt 0
 
       - name: Resolve DSV migration approval evidence
+        if: inputs.run_migrations == true
         id: migration
         shell: bash
         env:
@@ -373,17 +374,20 @@ jobs:
           }
           if [ "$BUILD_API" = "true" ]; then
             delivery_api_image="${DELIVERY_API_IMAGE_REPO}@${API_DIGEST}"
-            if [ "$RUN_MIGRATIONS" = "true" ]; then
+          elif [ "$PUBLISH_IMAGES" = "false" ]; then
+            delivery_api_image="$(resolve_digest_ref "${DELIVERY_API_IMAGE_REPO}:${CHANNEL_TAG}")"
+          else
+            delivery_api_image="$(resolve_digest_ref "$CURRENT_DELIVERY_API_IMAGE")"
+          fi
+          delivery_api_migration_image=""
+          if [ "$RUN_MIGRATIONS" = "true" ]; then
+            if [ "$BUILD_API" = "true" ]; then
               delivery_api_migration_image="${DELIVERY_API_MIGRATION_IMAGE_REPO}@${MIGRATION_DIGEST}"
+            elif [ "$PUBLISH_IMAGES" = "false" ]; then
+              delivery_api_migration_image="$(resolve_digest_ref "${DELIVERY_API_MIGRATION_IMAGE_REPO}:${CHANNEL_TAG}")"
             else
               delivery_api_migration_image="$(resolve_digest_ref "$CURRENT_DELIVERY_API_MIGRATION_IMAGE")"
             fi
-          elif [ "$PUBLISH_IMAGES" = "false" ]; then
-            delivery_api_image="$(resolve_digest_ref "${DELIVERY_API_IMAGE_REPO}:${CHANNEL_TAG}")"
-            delivery_api_migration_image="$(resolve_digest_ref "${DELIVERY_API_MIGRATION_IMAGE_REPO}:${CHANNEL_TAG}")"
-          else
-            delivery_api_image="$(resolve_digest_ref "$CURRENT_DELIVERY_API_IMAGE")"
-            delivery_api_migration_image="$(resolve_digest_ref "$CURRENT_DELIVERY_API_MIGRATION_IMAGE")"
           fi
           if [ "$BUILD_WEB" = "true" ]; then
             route_ops_web_static_image="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}@${WEB_DIGEST}"

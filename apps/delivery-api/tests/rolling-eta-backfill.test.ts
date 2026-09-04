@@ -32,8 +32,8 @@ describe('rolling ETA backfill replay', () => {
       version: stopValue.etaInputRouteVersionId
     }))).toEqual([
       { eta: '2026-08-27T09:10:00.000Z', source: 'ROUTE_STARTED', version: 'version-current' },
-      { eta: '2026-08-27T09:33:00.000Z', source: 'STOP_DELIVERED', version: 'version-current' },
-      { eta: '2026-08-27T09:48:00.000Z', source: 'STOP_DELIVERED', version: 'version-current' }
+      { eta: '2026-08-27T09:30:00.000Z', source: 'STOP_DELIVERED', version: 'version-current' },
+      { eta: '2026-08-27T09:45:00.000Z', source: 'STOP_DELIVERED', version: 'version-current' }
     ]);
   });
 

@@ -186,7 +186,7 @@ export function calculateCompletionEtaUpdate(input: {
   const arrivalServiceCompletedMs = input.arrivedAt === undefined || input.arrivedAt === null
     ? null
     : addServiceTime(input.arrivedAt.getTime(), completedStop.serviceMinutes);
-  const completionAnchorMs = Math.max(deliveredAt.getTime(), arrivalServiceCompletedMs ?? Number.NEGATIVE_INFINITY);
+  const completionAnchorMs = arrivalServiceCompletedMs ?? deliveredAt.getTime();
   let cursorMs: number | null = completionAnchorMs;
   const updatedStops = sortedStops.slice(completedIndex + 1).map((stop) => {
     cursorMs = addDuration(cursorMs, stop.durationFromPreviousSeconds);
