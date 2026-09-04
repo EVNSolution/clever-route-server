@@ -10,8 +10,12 @@ on:
     paths:
       - ".github/workflows/ci.yml"
       - ".github/workflows/route-ops-simple-deploy.yml"
+      - "apps/delivery-api/package.json"
+      - "apps/delivery-api/package-lock.json"
       - "apps/delivery-api/src/modules/customer-email/customer-email-reconciliation.ts"
       - "apps/delivery-api/src/scripts/reconcile-customer-email.ts"
+      - "apps/route-ops-web/package.json"
+      - "apps/route-ops-web/package-lock.json"
       - "scripts/ssm-simple-route-ops-deploy.sh"
       - "scripts/ssm-customer-email-reconciliation.sh"
       - "tests/deploy/ssm-simple-route-ops-deploy.test.sh"
