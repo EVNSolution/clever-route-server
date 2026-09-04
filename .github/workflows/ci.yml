@@ -155,6 +155,10 @@ jobs:
           steps.classify.outputs.customer_email_changed == 'true'
         run: npm --prefix apps/delivery-api ci --no-audit --no-fund
 
+      - name: Dependency security audit
+        if: steps.classify.outputs.dependency_changed == 'true'
+        run: npm --prefix apps/delivery-api run audit:production
+
       - name: Prepare delivery API
         if: >-
           github.event_name == 'workflow_dispatch' ||
@@ -162,7 +166,6 @@ jobs:
           steps.classify.outputs.api_changed == 'true' ||
           steps.classify.outputs.customer_email_changed == 'true'
         run: |
-          npm --prefix apps/delivery-api run audit:production
           npm --prefix apps/delivery-api run prisma:generate
           npm --prefix apps/delivery-api run lint
           npm --prefix apps/delivery-api run typecheck

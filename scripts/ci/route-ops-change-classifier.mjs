@@ -9,6 +9,7 @@ const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-ca
 const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|route-ops-docker-cleanup|ssm-route-ops-docker-cleanup|ssm-route-completion-invariant-mode|verify-route-completion-alarm|osrm-ontario|monitor-route-ops-production)\.sh$/;
 const PROOF_READY_CONTRACT_RE = /^apps\/delivery-api\/(?:src\/modules\/(?:driver\/driver-proof-media\.repository|dsv\/dsv-v1-read-query\.service)\.ts|tests\/(?:driver-proof-media-read-inventory|dsv-v1-read-query\.service)\.test\.ts)$/;
 const RETENTION_RUNTIME_CONTRACT_RE = /^(?:scripts\/(?:run|install)-driver-event-attempt-retention\.sh|infra\/systemd\/clever-driver-event-attempt-retention\.(?:service|timer)|tests\/deploy\/route-ops-retention-runtime\.test\.sh|apps\/delivery-api\/(?:Dockerfile|package(?:-lock)?\.json|tsconfig\.build\.json|src\/scripts\/cleanup-(?:driver-event-attempts|shopify-webhook-events|driver-proof-media)\.ts|tests\/(?:driver-event-attempt-retention(?:-script)?|route-operational-evidence-retention|shopify-webhook-retention|driver-proof-media\.cleanup|package-scripts)\.test\.ts|tests\/deploy\/driver-event-attempt-retention-schedule\.test\.sh))$/;
+const DEPENDENCY_MANIFEST_RE = /^(?:package(?:-lock)?\.json|apps\/delivery-api\/package(?:-lock)?\.json)$/;
 
 if (isCliEntryPoint()) {
   const args = new Set(process.argv.slice(2));
@@ -173,6 +174,10 @@ export function classifyRouteOpsChanges(files, options = {}) {
     DEPLOY_WORKFLOW_RE,
   ]);
 
+  // npm audit is intentionally limited to dependency graph changes. Running it
+  // for every API source edit adds several minutes without changing the result.
+  const dependency_changed = force || any(files, [DEPENDENCY_MANIFEST_RE]);
+
   return {
     changed_files_count: files.length,
     route_ops_changed: routeOpsChanged,
@@ -184,6 +189,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     docs_only: docsOnly,
     critical_changed: criticalChanged,
     full_required: fullRequired,
+    dependency_changed,
     web_artifact_required: webArtifactRequired,
     api_test_profile,
   };
