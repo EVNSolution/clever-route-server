@@ -80,6 +80,7 @@ check('delivery route-plan API change keeps web artifact for broad API tests', [
   full_required: false,
   web_artifact_required: true,
   api_test_profile: 'route_ops',
+  dependency_changed: false,
 });
 
 check('route grouping allocation changes are critical API changes', [
@@ -117,6 +118,17 @@ check('docs-only change', ['README.md', 'docs/deployment/route-ops-ci-deploy-val
 check('shared lockfile change', ['package-lock.json'], {
   critical_changed: true,
   full_required: true,
+  dependency_changed: true,
+});
+
+check('delivery API source change skips dependency audit', ['apps/delivery-api/src/routes/orders.routes.ts'], {
+  api_changed: true,
+  dependency_changed: false,
+});
+
+check('delivery API dependency manifest triggers dependency audit', ['apps/delivery-api/package.json'], {
+  api_changed: true,
+  dependency_changed: true,
 });
 
 check('route optimizer integration change keeps web artifact for broad API tests', ['apps/delivery-api/src/modules/route-plans/vroom-route-optimizer.client.ts'], {
@@ -342,6 +354,7 @@ check('shopify auth/session verifier is critical', ['apps/delivery-api/src/modul
 
 const forced = classifyRouteOpsChanges(['docs/note.md'], { forceFullVerify: true });
 assert.equal(forced.full_required, true, 'force full verify sets full_required');
+assert.equal(forced.dependency_changed, true, 'force full verify runs dependency audit');
 assert.equal(forced.web_artifact_required, true, 'force full verify preserves web artifact build');
 
 
