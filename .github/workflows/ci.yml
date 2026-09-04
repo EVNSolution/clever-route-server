@@ -127,7 +127,7 @@ jobs:
           steps.classify.outputs.full_required == 'true' ||
           steps.classify.outputs.web_changed == 'true' ||
           (steps.classify.outputs.api_changed == 'true' && steps.classify.outputs.web_artifact_required == 'true')
-        run: npm --prefix apps/route-ops-web ci
+        run: npm --prefix apps/route-ops-web ci --no-audit --no-fund
 
       - name: Validate Route Ops Web
         if: >-
@@ -153,7 +153,7 @@ jobs:
           steps.classify.outputs.full_required == 'true' ||
           steps.classify.outputs.api_changed == 'true' ||
           steps.classify.outputs.customer_email_changed == 'true'
-        run: npm --prefix apps/delivery-api ci
+        run: npm --prefix apps/delivery-api ci --no-audit --no-fund
 
       - name: Prepare delivery API
         if: >-
