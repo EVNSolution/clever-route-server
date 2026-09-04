@@ -37,6 +37,32 @@ describe('rolling ETA backfill replay', () => {
     ]);
   });
 
+  it('uses the failed event time as the next-leg anchor when arrival is unavailable', () => {
+    const replay = replayRollingEta({
+      currentRouteVersionId: 'version-current',
+      events: [
+        event('route-start', 'ROUTE_STARTED', '2026-08-27T09:00:00.000Z'),
+        event('stop-1-failed', 'STOP_FAILED', '2026-08-27T09:28:00.000Z', 'delivery-1')
+      ],
+      stops: [
+        stop('stop-1', 'delivery-1', 1, 600),
+        stop('stop-2', 'delivery-2', 2, 300),
+        stop('stop-3', 'delivery-3', 3, 600)
+      ]
+    });
+
+    expect(replay.unsafeReason).toBeNull();
+    expect(replay.replayedEvents).toBe(2);
+    expect(replay.stops.map((stopValue) => ({
+      eta: stopValue.estimatedArrivalAt?.toISOString(),
+      source: stopValue.etaSource
+    }))).toEqual([
+      { eta: '2026-08-27T09:10:00.000Z', source: 'ROUTE_STARTED' },
+      { eta: '2026-08-27T09:33:00.000Z', source: 'STOP_FAILED' },
+      { eta: '2026-08-27T09:48:00.000Z', source: 'STOP_FAILED' }
+    ]);
+  });
+
   it('orders events by clamped occurred time and server receipt time', () => {
     const replay = replayRollingEta({
       currentRouteVersionId: null,

@@ -16,7 +16,7 @@ export const ROLLING_ETA_BACKFILL_SCHEMA = 'rolling_eta_backfill_plan_v1';
 export const ROLLING_ETA_BACKFILL_CHANGE_CONTROL_REF = 'EVNSolution/clever-change-control#283';
 export const ROLLING_ETA_BACKFILL_APP_ID = 'clever-route-kfood';
 
-const PROGRESS_EVENT_TYPES = ['ROUTE_STARTED', 'PICKUP_COMPLETED', 'STOP_ARRIVED', 'STOP_DELIVERED'] as const;
+const PROGRESS_EVENT_TYPES = ['ROUTE_STARTED', 'PICKUP_COMPLETED', 'STOP_ARRIVED', 'STOP_DELIVERED', 'STOP_FAILED'] as const;
 
 type ProgressEventType = typeof PROGRESS_EVENT_TYPES[number];
 type RollingEtaPrisma = PrismaClient | Prisma.TransactionClient;
@@ -366,7 +366,7 @@ export function replayRollingEta(input: {
     if (event.driverId === null) {
       return { ignoredEvents: 0, replayedEvents: 0, stops: input.stops, unsafeReason: 'PROGRESS_EVENT_DRIVER_UNAVAILABLE' };
     }
-    if ((event.eventType === 'STOP_ARRIVED' || event.eventType === 'STOP_DELIVERED')
+    if ((event.eventType === 'STOP_ARRIVED' || event.eventType === 'STOP_DELIVERED' || event.eventType === 'STOP_FAILED')
       && (event.deliveryStopId === null || !stopIds.has(event.deliveryStopId))) {
       return { ignoredEvents: 0, replayedEvents: 0, stops: input.stops, unsafeReason: 'PROGRESS_EVENT_STOP_NOT_IN_CURRENT_ROUTE' };
     }
@@ -408,7 +408,8 @@ export function replayRollingEta(input: {
         });
         break;
       }
-      case 'STOP_DELIVERED': {
+      case 'STOP_DELIVERED':
+      case 'STOP_FAILED': {
         const deliveryStopId = event.deliveryStopId!;
         update = calculateCompletionEtaUpdate({
           arrivedAt: earliestArrivalAt(seenEvents, event.driverId, deliveryStopId),
@@ -416,7 +417,8 @@ export function replayRollingEta(input: {
           eventOccurredAt: event.occurredAt,
           inputRouteVersionId: input.currentRouteVersionId,
           serverReceivedAt,
-          stops
+          stops,
+          trigger: event.eventType
         });
         break;
       }
