@@ -20,6 +20,7 @@ export type DsvDriverAuthDependencies = {
 
 const DRIVER_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const LOGIN_ID_PATTERN = /^[a-z0-9._-]{4,40}$/u;
+const EMAIL_LOGIN_ID_PATTERN = /^(?=.{3,254}$)(?=[^@]{1,64}@)[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u;
 const PHONE_PATTERN = /^01\d{8,9}$/u;
 
 export function registerDsvDriverAuthRoutes(
@@ -161,7 +162,7 @@ function readRegistrationInput(value: unknown) {
   const legacyFieldsAreNull = (object.residentNumberFront === undefined || object.residentNumberFront === null)
     && (object.signupInviteToken === undefined || object.signupInviteToken === null);
   if (
-    !LOGIN_ID_PATTERN.test(loginId)
+    !isValidLoginId(loginId)
     || name.length === 0
     || name.length > 80
     || password.length < 8
@@ -177,9 +178,13 @@ function readLoginInput(value: unknown) {
   if (object === null || !hasOnlyKeys(object, ['loginId', 'password'])) return null;
   const loginId = typeof object.loginId === 'string' ? normalizeDsvDriverLoginId(object.loginId) : '';
   const password = typeof object.password === 'string' ? object.password : '';
-  return LOGIN_ID_PATTERN.test(loginId) && password.length >= 8 && password.length <= 128
+  return isValidLoginId(loginId) && password.length >= 8 && password.length <= 128
     ? { loginId, password }
     : null;
+}
+
+function isValidLoginId(value: string): boolean {
+  return LOGIN_ID_PATTERN.test(value) || EMAIL_LOGIN_ID_PATTERN.test(value);
 }
 
 function readRefreshInput(value: unknown) {
