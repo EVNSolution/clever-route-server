@@ -701,6 +701,68 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.$queryRaw.mock.calls.some(([query]) => sqlText(query).includes('UPDATE route_plan_stops'))).toBe(false);
   });
 
+  test('returns the current ETA snapshot when a delivered stop ACK is retried', async () => {
+    const { prisma } = createPrismaHarness({
+      driverEventCreateError: new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        clientVersion: 'test',
+        code: 'P2002'
+      }),
+      existingEvent: {
+        deliveryStopId: 'stop-id',
+        eventType: 'STOP_DELIVERED',
+        id: 'original-delivery-id',
+        routePlanId: 'route-plan-id'
+      },
+      pickupEvent: {
+        createdAt: new Date('2026-06-01T05:30:01.000Z'),
+        id: 'pickup-id',
+        occurredAt: new Date('2026-06-01T05:30:00.000Z')
+      },
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5, status: 'DELIVERED' },
+          deliveryStopId: 'stop-id',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          etaCalculatedAt: new Date('2026-06-01T06:00:00.000Z'),
+          estimatedArrivalAt: new Date('2026-06-01T05:40:00.000Z'),
+          sequence: 1
+        },
+        {
+          deliveryStop: { serviceMinutes: 5, status: 'ASSIGNED' },
+          deliveryStopId: 'stop-2',
+          distanceFromPreviousMeters: 2000,
+          durationFromPreviousSeconds: 900,
+          etaCalculatedAt: new Date('2026-06-01T06:17:00.000Z'),
+          estimatedArrivalAt: new Date('2026-06-01T06:37:00.000Z'),
+          sequence: 2
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'client-event-id',
+      deliveryStopId: 'stop-id',
+      eventType: 'STOP_DELIVERED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toMatchObject({
+      duplicate: true,
+      etaSnapshot: {
+        nextStopEta: {
+          deliveryStopId: 'stop-2',
+          estimatedArrivalAt: '2026-06-01T06:37:00.000Z'
+        },
+        pickupCompletedAt: '2026-06-01T05:30:00.000Z',
+        status: 'READY'
+      },
+      eventId: 'original-delivery-id'
+    });
+    expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
+    expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
+    expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
+  });
+
   test('returns duplicate pickup snapshot with missing duration without hydrating geometry cache', async () => {
     const { prisma } = createPrismaHarness({
       pickupEvent: { createdAt: new Date('2026-06-01T06:00:00.000Z'), id: 'original-pickup-id' },
@@ -1469,7 +1531,19 @@ describe('PrismaDriverEventRepository', () => {
       deliveryStopId: 'stop-id',
       eventType: 'STOP_DELIVERED',
       routePlanId: 'route-plan-id'
-    }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-stop-delivered-id' });
+    }))).resolves.toEqual({
+      duplicate: true,
+      etaSnapshot: {
+        calculatedAt: null,
+        failureCode: null,
+        failureMessage: null,
+        nextStopEta: null,
+        pickupCompletedAt: null,
+        remainingRouteEta: null,
+        status: 'PRE_PICKUP'
+      },
+      eventId: 'recorded-stop-delivered-id'
+    });
 
     expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();

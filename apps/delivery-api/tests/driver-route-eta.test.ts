@@ -111,14 +111,14 @@ describe('driver route ETA', () => {
     ]);
   });
 
-  test('uses the later of delivery time and arrival plus service as the completion anchor', () => {
+  test('keeps arrival plus service as the completion anchor', () => {
     const update = calculateCompletionEtaUpdate({
       arrivedAt: new Date('2026-07-20T10:18:00.000Z'),
       completedDeliveryStopId: 'stop-1',
       eventOccurredAt: new Date('2026-07-20T10:20:00.000Z'),
       serverReceivedAt: new Date('2026-07-20T10:25:00.000Z'),
       stops: [
-        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z'), serviceMinutes: null },
+        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z') },
         { ...stops[1]!, estimatedArrivalAt: new Date('2026-07-20T10:30:00.000Z') },
         { ...stops[2]!, estimatedArrivalAt: new Date('2026-07-20T10:40:00.000Z') }
       ]
@@ -144,7 +144,7 @@ describe('driver route ETA', () => {
     });
   });
 
-  test('uses delivery time when it is later than arrival plus service', () => {
+  test('does not replace the arrival plus service anchor with a later delivery event', () => {
     const update = calculateCompletionEtaUpdate({
       arrivedAt: new Date('2026-07-20T10:18:00.000Z'),
       completedDeliveryStopId: 'stop-1',
@@ -157,10 +157,10 @@ describe('driver route ETA', () => {
       ]
     });
 
-    expect(update.delaySeconds).toBe(720);
+    expect(update.delaySeconds).toBe(480);
     expect(update.updatedStops).toEqual([
-      { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:42:00.000Z', sequence: 2 },
-      { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:52:00.000Z', sequence: 3 }
+      { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:38:00.000Z', sequence: 2 },
+      { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:48:00.000Z', sequence: 3 }
     ]);
   });
 
