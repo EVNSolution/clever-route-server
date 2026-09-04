@@ -10,12 +10,6 @@ on:
       - "**/*.md"
       - "deliverables/**"
   workflow_dispatch:
-    inputs:
-      full_verify:
-        description: "Run the complete API, Web, deploy-contract, and disposable-DB profile"
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -73,7 +67,7 @@ jobs:
         id: classify
         shell: bash
         env:
-          FULL_VERIFY: ${{ github.event_name == 'workflow_dispatch' && inputs.full_verify == true }}
+          FULL_VERIFY: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")

@@ -4,7 +4,7 @@ GitHub Actions에는 두 개의 진입점만 사용한다.
 
 | Workflow | 용도 | 자동 실행 |
 | --- | --- | --- |
-| `CI` | 코드·배포 계약 검증 | `main` push, 문서 전용을 제외한 PR, 수동 full verify |
+| `CI` | 코드·배포 계약 검증 | `main` push, 문서 전용을 제외한 PR, 수동 full profile |
 | `Route Ops operations` | 배포와 운영 조작 | 없음. 승인된 운영자가 수동 실행 |
 
 ## CI
@@ -24,11 +24,10 @@ GitHub Actions에는 두 개의 진입점만 사용한다.
 CI hard timeout은 20분이다. 목표 시간을 넘기면 같은 run을 반복하지 말고 해당 step의
 install, test, disposable DB 시간을 확인한다.
 
-수동 full verify:
+수동 full profile:
 
 ```bash
-gh workflow run CI --repo EVNSolution/clever-route-server --ref main \
-  -f full_verify=true
+gh workflow run CI --repo EVNSolution/clever-route-server --ref main
 ```
 
 ## Operations
