@@ -21,4 +21,4 @@ Render both DOCX files with `FONTCONFIG_FILE` set to `fontconfig-pretendard.conf
 
 ## Driver guide
 
-`driver/CLEVER_Driver_설치_현장교육_가이드_Rev1.4.docx` is the editable source. It supersedes the earlier direct APK installation material. Future revisions must keep installation behind `https://dsv.cleversystem.ai/driver-app` and must not add a QR code, a Google Drive APK, unknown-source installation, or a one-time driver invitation link.
+`driver/CLEVER_Driver_설치_현장교육_가이드_Rev1.5.docx` is the editable source. Keep the public entry point at `https://dsv.cleversystem.ai/driver-app`; Android installation and updates use the fixed Google Drive file `clever-driver-latest.apk` linked from that page. Do not publish a second file ID, a QR code, or a one-time driver invitation link. Only advise the Android “install unknown apps” permission for the browser used to download the APK from the official DSV page.
