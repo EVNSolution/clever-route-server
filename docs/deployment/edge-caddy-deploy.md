@@ -8,7 +8,7 @@ other's routing layer.
 ## Ownership boundary
 
 - Script: `scripts/ssm-edge-caddy-deploy.sh`
-- GitHub workflow: `.github/workflows/edge-caddy-deploy.yml`
+- GitHub workflow: `.github/workflows/route-ops-operations.yml` with `operation=edge_caddy`
 - Caddyfile: `infra/caddy/Caddyfile`
 - Runtime lane intentionally excluded: no image build, no `clever-route-api` recreate,
   no Prisma migration, no Route Ops static staging, and no Shopify app container deploy.
@@ -66,15 +66,15 @@ scripts/ssm-edge-caddy-deploy.sh --dry-run
 GitHub Actions dry-run:
 
 ```bash
-gh workflow run "Edge Caddy deploy" --repo EVNSolution/clever-route-server --ref main \
-  -f source_ref=main -f dry_run=true -f skip_smoke=false
+gh workflow run "Route Ops operations" --repo EVNSolution/clever-route-server --ref main \
+  -f operation=edge_caddy -f source_ref=main -f dry_run=true -f skip_smoke=false
 ```
 
 GitHub Actions production reload:
 
 ```bash
-gh workflow run "Edge Caddy deploy" --repo EVNSolution/clever-route-server --ref main \
-  -f source_ref=main -f dry_run=false -f skip_smoke=false
+gh workflow run "Route Ops operations" --repo EVNSolution/clever-route-server --ref main \
+  -f operation=edge_caddy -f source_ref=main -f dry_run=false -f skip_smoke=false
 ```
 
 Use `skip_smoke=true` only for a deliberate incident-response exception; otherwise the
@@ -92,7 +92,8 @@ For an ingress-affecting change, deploy in this order:
 4. Affected app/runtime production deploy.
 5. Public smoke for every hostname touched.
 
-For backend-only Route Ops releases, skip this lane and use `Route Ops simple deploy`.
+For backend-only Route Ops releases, skip this operation and use
+`Route Ops operations` with `operation=deploy`.
 Add new host blocks here only after their upstream service names are approved and
 reachable on the shared Docker network.
 

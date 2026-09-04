@@ -6,7 +6,7 @@ cd "$ROOT"
 
 worker="scripts/backup-route-ops-data.sh"
 installer="scripts/ssm-install-route-ops-backup.sh"
-workflow=".github/workflows/route-ops-backup.yml"
+workflow=".github/workflows/route-ops-operations.yml"
 
 for path in "$worker" "$installer" "$workflow"; do
   test -f "$path" || { echo "missing backup artifact: $path" >&2; exit 1; }
@@ -101,5 +101,6 @@ grep -Fq 'id-token: write' "$workflow"
 grep -Fq 'dry_run:' "$workflow"
 grep -Fq 'run_backup:' "$workflow"
 grep -Fq 'scripts/ssm-install-route-ops-backup.sh' "$workflow"
+grep -Fq "inputs.operation == 'backup_setup'" "$workflow"
 
 printf '{"ok":true,"backup":"%s"}\n' "$worker"

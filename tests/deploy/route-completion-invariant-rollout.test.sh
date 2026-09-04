@@ -5,17 +5,18 @@ cd "$(dirname "$0")/../.."
 grep -Fq 'DRIVER_ROUTE_COMPLETION_INVARIANT_MODE=OBSERVE' apps/delivery-api/.env.example
 grep -Fq 'driver:route-completion-invariant:report' apps/delivery-api/package.json
 grep -Fq 'ROUTE_COMPLETION_INCOMPLETE' apps/delivery-api/docs/api/openapi.yaml
-grep -Fq 'workflow_dispatch:' .github/workflows/route-completion-invariant-mode.yml
-grep -Fq 'source_sha:' .github/workflows/route-completion-invariant-mode.yml
-grep -Fq 'target_mode:' .github/workflows/route-completion-invariant-mode.yml
-grep -Fq 'evidence_artifact_id:' .github/workflows/route-completion-invariant-mode.yml
-grep -Fq 'alarm_receipt_artifact_id:' .github/workflows/route-completion-invariant-mode.yml
-grep -Fq 'Route completion alarm canary' .github/workflows/route-completion-alarm-canary.yml
-grep -Fq 'route-completion-alarm-canary-receipt' .github/workflows/route-completion-invariant-mode.yml
-grep -Fq 'Route completion invariant evidence' .github/workflows/route-completion-invariant-evidence.yml
-grep -Fq 'validate-route-completion-rollout-evidence.mjs' .github/workflows/route-completion-invariant-mode.yml
-grep -Fq 'verify-route-completion-alarm.sh' .github/workflows/route-completion-invariant-mode.yml
-grep -Fq 'scripts/ssm-route-completion-invariant-mode.sh' .github/workflows/route-completion-invariant-mode.yml
+workflow=.github/workflows/route-ops-operations.yml
+grep -Fq 'workflow_dispatch:' "$workflow"
+grep -Fq 'source_sha:' "$workflow"
+grep -Fq 'target_mode:' "$workflow"
+grep -Fq 'evidence_artifact_id:' "$workflow"
+grep -Fq 'alarm_receipt_artifact_id:' "$workflow"
+grep -Fq 'alarm_canary' "$workflow"
+grep -Fq 'route-completion-alarm-canary-receipt' "$workflow"
+grep -Fq 'completion_evidence' "$workflow"
+grep -Fq 'validate-route-completion-rollout-evidence.mjs' "$workflow"
+grep -Fq 'verify-route-completion-alarm.sh' "$workflow"
+grep -Fq 'scripts/ssm-route-completion-invariant-mode.sh' "$workflow"
 
 bash -n scripts/ssm-route-completion-invariant-mode.sh scripts/verify-route-completion-alarm.sh
 rendered="$(ROUTE_COMPLETION_SOURCE_SHA=0123456789012345678901234567890123456789 \

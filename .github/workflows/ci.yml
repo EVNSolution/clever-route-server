@@ -2,117 +2,108 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/route-ops-simple-deploy.yml"
-      - "apps/delivery-api/package.json"
-      - "apps/delivery-api/package-lock.json"
-      - "apps/delivery-api/src/modules/customer-email/customer-email-reconciliation.ts"
-      - "apps/delivery-api/src/scripts/reconcile-customer-email.ts"
-      - "apps/route-ops-web/package.json"
-      - "apps/route-ops-web/package-lock.json"
-      - "scripts/ssm-simple-route-ops-deploy.sh"
-      - "scripts/ssm-customer-email-reconciliation.sh"
-      - "tests/deploy/ssm-simple-route-ops-deploy.test.sh"
-      - "tests/deploy/ssm-customer-email-reconciliation.test.sh"
-      - "tests/fixtures/customer-email-reconciliation-host/**"
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "deliverables/**"
   workflow_dispatch:
-    inputs:
-      full_verify:
-        description: "Run the full Route Ops verification lane manually"
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# One runner keeps checkout, Node setup, and dependency installation single-pass.
+# Deploys consume this exact-SHA result and never repeat CI-grade tests.
 jobs:
-  route-ops-changes:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
-    outputs:
-      changed_files_count: ${{ steps.classify.outputs.changed_files_count }}
-      route_ops_changed: ${{ steps.classify.outputs.route_ops_changed }}
-      web_changed: ${{ steps.classify.outputs.web_changed }}
-      api_changed: ${{ steps.classify.outputs.api_changed }}
-      deploy_changed: ${{ steps.classify.outputs.deploy_changed }}
-      workflow_changed: ${{ steps.classify.outputs.workflow_changed }}
-      docs_only: ${{ steps.classify.outputs.docs_only }}
-      critical_changed: ${{ steps.classify.outputs.critical_changed }}
-      full_required: ${{ steps.classify.outputs.full_required }}
-      web_artifact_required: ${{ steps.classify.outputs.web_artifact_required }}
-      api_test_profile: ${{ steps.classify.outputs.api_test_profile }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 2
-      - name: Detect Route Ops changed files
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/delivery-api/package-lock.json
+            apps/route-ops-web/package-lock.json
+
+      - name: Detect changed files
         id: files
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
-            before="${{ github.event.before }}"
-            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
-              if git fetch --no-tags --depth=1 origin "$before" && git -c core.quotePath=false diff --name-only "$before" "$GITHUB_SHA" > changed-files.txt; then
-                :
+          case "${{ github.event_name }}" in
+            push)
+              before="${{ github.event.before }}"
+              if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] \
+                && git cat-file -e "${before}^{commit}" 2>/dev/null; then
+                git -c core.quotePath=false diff --name-only "$before" "$GITHUB_SHA" > changed-files.txt
               else
-                echo "Could not determine exact push diff; classifying all tracked files fail-closed." >&2
                 git -c core.quotePath=false ls-files > changed-files.txt
               fi
-            else
+              ;;
+            pull_request)
+              git fetch --no-tags origin "${{ github.base_ref }}"
+              base="$(git merge-base HEAD "origin/${{ github.base_ref }}")"
+              git -c core.quotePath=false diff --name-only "$base" HEAD > changed-files.txt
+              ;;
+            *)
               git -c core.quotePath=false ls-files > changed-files.txt
-            fi
-          else
-            git -c core.quotePath=false ls-files > changed-files.txt
-          fi
+              ;;
+          esac
           cat changed-files.txt
-      - name: Classify Route Ops changes
+
+      - name: Classify validation profile
         id: classify
         shell: bash
         env:
-          FULL_VERIFY: ${{ github.event_name == 'workflow_dispatch' && inputs.full_verify == true }}
+          FULL_VERIFY: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
-          if [ "$FULL_VERIFY" = "true" ]; then
-            args+=(--full-verify)
-          fi
+          if [ "$FULL_VERIFY" = "true" ]; then args+=(--full-verify); fi
           node scripts/ci/route-ops-change-classifier.mjs "${args[@]}" < changed-files.txt
           cat "$GITHUB_OUTPUT"
 
-  route-ops-hygiene:
-    runs-on: ubuntu-latest
-    timeout-minutes: 4
-    needs: route-ops-changes
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-      - name: Ignore hygiene
-        run: node scripts/check-ignore-hygiene.mjs
-      - name: Secret scan staged/worktree
-        run: scripts/scan-secrets.sh --worktree
-      - name: Secret scan regression
-        run: tests/security/scan-secrets.test.sh
-      - name: Route Ops classifier tests
-        if: needs.route-ops-changes.outputs.workflow_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true'
-        run: node tests/ci/route-ops-change-classifier.test.mjs
-      - name: Route Ops release static checks
-        if: needs.route-ops-changes.outputs.deploy_changed == 'true' || needs.route-ops-changes.outputs.workflow_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true'
+      - name: Repository hygiene
         run: |
-          for script in scripts/ssm-simple-route-ops-deploy.sh scripts/ssm-edge-caddy-deploy.sh scripts/backup-route-ops-data.sh scripts/ssm-install-route-ops-backup.sh scripts/osrm-ontario.sh scripts/monitor-route-ops-production.sh apps/delivery-api/scripts/guard-prisma-db-push.sh apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh apps/delivery-api/scripts/dsv-g007-rehearsal.sh tests/deploy/ssm-simple-route-ops-deploy.test.sh tests/deploy/ssm-edge-caddy-deploy.test.sh tests/deploy/route-ops-backup.test.sh tests/deploy/route-ops-prisma-db-push-guard.test.sh tests/deploy/route-ops-prisma-migrate-deploy.test.sh tests/deploy/dsv-g007-rehearsal.test.sh tests/deploy/monitor-route-ops-production.test.sh tests/deploy/route-ops-retention-runtime.test.sh apps/delivery-api/tests/deploy/driver-event-attempt-retention-schedule.test.sh; do
+          node scripts/check-ignore-hygiene.mjs
+          scripts/scan-secrets.sh --worktree
+          tests/security/scan-secrets.test.sh
+
+      - name: Workflow and classifier contracts
+        if: steps.classify.outputs.workflow_changed == 'true' || steps.classify.outputs.full_required == 'true'
+        run: |
+          node tests/ci/github-actions-structure.test.mjs
+          node tests/ci/route-ops-change-classifier.test.mjs
+
+      - name: Release wrapper contracts
+        if: steps.classify.outputs.deploy_changed == 'true' || steps.classify.outputs.workflow_changed == 'true' || steps.classify.outputs.full_required == 'true'
+        run: |
+          for script in \
+            scripts/ssm-simple-route-ops-deploy.sh \
+            scripts/ssm-edge-caddy-deploy.sh \
+            scripts/backup-route-ops-data.sh \
+            scripts/ssm-install-route-ops-backup.sh \
+            scripts/route-ops-docker-cleanup.sh \
+            scripts/ssm-route-ops-docker-cleanup.sh \
+            scripts/ssm-route-completion-invariant-mode.sh \
+            scripts/verify-route-completion-alarm.sh \
+            scripts/osrm-ontario.sh \
+            scripts/monitor-route-ops-production.sh \
+            apps/delivery-api/scripts/guard-prisma-db-push.sh \
+            apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh \
+            apps/delivery-api/scripts/dsv-g007-rehearsal.sh; do
             bash -n "$script"
           done
           tests/deploy/route-ops-prisma-db-push-guard.test.sh
@@ -121,6 +112,8 @@ jobs:
           tests/deploy/ssm-simple-route-ops-deploy.test.sh
           tests/deploy/ssm-edge-caddy-deploy.test.sh
           tests/deploy/route-ops-backup.test.sh
+          tests/deploy/route-ops-docker-cleanup.test.sh
+          tests/deploy/route-completion-invariant-rollout.test.sh
           tests/deploy/monitor-route-ops-production.test.sh
           tests/deploy/route-ops-retention-runtime.test.sh
           apps/delivery-api/tests/deploy/driver-event-attempt-retention-schedule.test.sh
@@ -128,114 +121,58 @@ jobs:
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh prepare
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh smoke
 
-  customer-email-reconciliation-wrapper:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    needs:
-      - route-ops-changes
-      - route-ops-hygiene
-    if: >-
-      github.event_name == 'pull_request' ||
-      needs.route-ops-changes.outputs.deploy_changed == 'true' ||
-      needs.route-ops-changes.outputs.full_required == 'true'
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/delivery-api/package-lock.json
-      - name: Install delivery API dependencies
-        run: npm --prefix apps/delivery-api ci
-      - name: Build compiled reconciliation CLI
-        run: |
-          npm --prefix apps/delivery-api run prisma:generate
-          npm --prefix apps/delivery-api run build
-      - name: Test customer email reconciliation wrapper
-        run: tests/deploy/ssm-customer-email-reconciliation.test.sh
-
-  route-ops-web:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    needs:
-      - route-ops-changes
-      - route-ops-hygiene
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' &&
-        ((needs.route-ops-changes.outputs.critical_changed == 'true' &&
-          needs.route-ops-changes.outputs.web_artifact_required == 'true') ||
-         needs.route-ops-changes.outputs.full_required == 'true'))
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/route-ops-web/package-lock.json
-      - name: Install Route Ops web dependencies
+      - name: Install Route Ops Web dependencies
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          steps.classify.outputs.web_changed == 'true' ||
+          (steps.classify.outputs.api_changed == 'true' && steps.classify.outputs.web_artifact_required == 'true')
         run: npm --prefix apps/route-ops-web ci
-      - name: Lint Route Ops web
-        if: needs.route-ops-changes.outputs.web_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
-        run: npm --prefix apps/route-ops-web run lint
-      - name: Typecheck Route Ops web
-        if: needs.route-ops-changes.outputs.web_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
-        run: npm --prefix apps/route-ops-web run typecheck
-      - name: Test Route Ops web
-        if: needs.route-ops-changes.outputs.web_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
-        run: npm --prefix apps/route-ops-web run test
-      - name: Build Route Ops web
-        run: npm --prefix apps/route-ops-web run build
-      - name: Upload Route Ops web dist
-        uses: actions/upload-artifact@v7
-        with:
-          name: route-ops-web-dist
-          path: apps/route-ops-web/dist
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
 
-  delivery-api-route-ops:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs:
-      - route-ops-changes
-      - route-ops-hygiene
-      - route-ops-web
-    if: >-
-      always() &&
-      needs.route-ops-hygiene.result == 'success' &&
-      (needs.route-ops-web.result == 'success' || needs.route-ops-web.result == 'skipped') &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-         ((needs.route-ops-changes.outputs.api_changed == 'true' &&
-           needs.route-ops-changes.outputs.critical_changed == 'true') ||
-          needs.route-ops-changes.outputs.full_required == 'true')))
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/delivery-api/package-lock.json
+      - name: Validate Route Ops Web
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          steps.classify.outputs.web_changed == 'true'
+        run: |
+          npm --prefix apps/route-ops-web run lint
+          npm --prefix apps/route-ops-web run typecheck
+          npm --prefix apps/route-ops-web run test
+
+      - name: Build Route Ops Web artifact for API tests
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          steps.classify.outputs.web_changed == 'true' ||
+          (steps.classify.outputs.api_changed == 'true' && steps.classify.outputs.web_artifact_required == 'true')
+        run: npm --prefix apps/route-ops-web run build
+
       - name: Install delivery API dependencies
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          steps.classify.outputs.api_changed == 'true' ||
+          steps.classify.outputs.customer_email_changed == 'true'
         run: npm --prefix apps/delivery-api ci
-      - name: Audit production dependency boundary
-        run: npm --prefix apps/delivery-api run audit:production
-      - name: Prisma generate
-        run: npm --prefix apps/delivery-api run prisma:generate
-      - name: Lint delivery API
-        run: npm --prefix apps/delivery-api run lint
-      - name: Typecheck delivery API
-        run: npm --prefix apps/delivery-api run typecheck
-      - name: Download Route Ops web dist
-        if: needs.route-ops-changes.outputs.web_artifact_required == 'true' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
-        uses: actions/download-artifact@v8
-        with:
-          name: route-ops-web-dist
-          path: apps/route-ops-web/dist
-      - name: Route geometry targeted tests
-        if: needs.route-ops-changes.outputs.api_test_profile == 'route_geometry' && needs.route-ops-changes.outputs.full_required != 'true' && github.event_name != 'workflow_dispatch'
+
+      - name: Prepare delivery API
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          steps.classify.outputs.api_changed == 'true' ||
+          steps.classify.outputs.customer_email_changed == 'true'
+        run: |
+          npm --prefix apps/delivery-api run audit:production
+          npm --prefix apps/delivery-api run prisma:generate
+          npm --prefix apps/delivery-api run lint
+          npm --prefix apps/delivery-api run typecheck
+
+      - name: Route geometry test profile
+        if: >-
+          steps.classify.outputs.api_changed == 'true' &&
+          steps.classify.outputs.api_test_profile == 'route_geometry' &&
+          steps.classify.outputs.full_required != 'true' &&
+          github.event_name != 'workflow_dispatch'
         run: >
           npm --prefix apps/delivery-api run test --
           tests/osrm-route-geometry.client.test.ts
@@ -243,64 +180,62 @@ jobs:
           tests/refresh-route-geometry-cache.script.test.ts
           tests/route-plan.service.test.ts
           tests/route-plan.repository.test.ts
-      - name: Route Ops targeted tests
-        if: needs.route-ops-changes.outputs.api_test_profile != 'route_geometry' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
-        run: >
-          npm --prefix apps/delivery-api run test --
-          tests/admin-commerce-auth.test.ts
-          tests/admin-commerce-connections-ui.routes.test.ts
-          tests/admin-ui-route-inventory.test.ts
-          tests/admin-ui-route-planning.optimize.test.ts
-          tests/route-grouping.service.test.ts
-          tests/vroom-route-optimizer.client.test.ts
-          tests/admin-route-plans.routes.test.ts
-          tests/admin-notification.dependencies.test.ts
-          tests/admin-notification.repository.test.ts
-          tests/admin-notification.service.test.ts
-          tests/admin-notification.stream.test.ts
-          tests/admin-notification.postgres-stream.test.ts
-          tests/order-sync.repository.test.ts
-          tests/driver-auth.repository.test.ts
-          tests/driver-auth.routes.test.ts
-          tests/driver.dependencies.test.ts
-          tests/driver-commerce-domain.test.ts
-          tests/driver-token-verifier.test.ts
-          tests/driver-token-access.repository.test.ts
-          tests/driver-consent.repository.test.ts
-          tests/driver-event.repository.test.ts
-          tests/driver-assigned-route.repository.test.ts
-          tests/driver-route-access.repository.test.ts
-          tests/driver-route-access.routes.test.ts
-          tests/driver-proof-media.repository.test.ts
-          tests/driver-proof-media-read-inventory.test.ts
-          tests/driver-self-service.repository.test.ts
-          tests/geocoding.service.test.ts
-          tests/osrm-route-geometry.client.test.ts
-          tests/woocommerce-order-sync.service.test.ts
-          tests/route-plan.repository.test.ts
-          tests/route-plan.service.test.ts
-          tests/route-membership-mutation-authority.test.ts
-          tests/route-scope-config.test.ts
-          tests/prisma-schema.test.ts
-          tests/dsv-v1-read-query.service.test.ts
-      - name: Completion invariant disposable PostgreSQL tests
-        if: needs.route-ops-changes.outputs.api_test_profile != 'route_geometry' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
+
+      - name: Delivery API test profile
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          (steps.classify.outputs.api_changed == 'true' &&
+           steps.classify.outputs.api_test_profile != 'route_geometry')
+        run: npm --prefix apps/delivery-api run test
+
+      - name: Disposable PostgreSQL test profile
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          (steps.classify.outputs.api_changed == 'true' &&
+           steps.classify.outputs.critical_changed == 'true' &&
+           steps.classify.outputs.api_test_profile != 'route_geometry')
         env:
           CLEVER_RUN_DISPOSABLE_DB_TESTS: "1"
         run: npm --prefix apps/delivery-api run test:db:disposable
-      - name: Retention runtime tests
-        run: >
-          npm --prefix apps/delivery-api run test --
-          tests/driver-event-attempt-retention.test.ts
-          tests/route-operational-evidence-retention.test.ts
-          tests/shopify-webhook-retention.test.ts
-          tests/driver-proof-media.cleanup.test.ts
-          tests/package-scripts.test.ts
-          tests/driver-event-attempt-retention-script.test.ts
-      - name: Build delivery API
+
+      - name: Build delivery API once
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          steps.classify.outputs.api_changed == 'true' ||
+          steps.classify.outputs.customer_email_changed == 'true'
         run: npm --prefix apps/delivery-api run build
-      - name: Compose config validation with image placeholders
+
+      - name: Customer email reconciliation wrapper
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.customer_email_changed == 'true' ||
+          steps.classify.outputs.full_required == 'true'
+        run: tests/deploy/ssm-customer-email-reconciliation.test.sh
+
+      - name: Compose config
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          steps.classify.outputs.full_required == 'true' ||
+          steps.classify.outputs.deploy_changed == 'true' ||
+          (steps.classify.outputs.api_changed == 'true' && steps.classify.outputs.critical_changed == 'true')
         run: |
           cp apps/delivery-api/.env.example apps/delivery-api/.env
           npm run compose:config
           rm -f apps/delivery-api/.env
+
+      - name: Validation summary
+        if: always()
+        run: |
+          {
+            echo "### CI profile"
+            echo "- changed files: ${{ steps.classify.outputs.changed_files_count }}"
+            echo "- web: ${{ steps.classify.outputs.web_changed }}"
+            echo "- api: ${{ steps.classify.outputs.api_changed }}"
+            echo "- customer email: ${{ steps.classify.outputs.customer_email_changed }}"
+            echo "- deploy: ${{ steps.classify.outputs.deploy_changed }}"
+            echo "- full: ${{ steps.classify.outputs.full_required }}"
+            echo "- API tests: ${{ steps.classify.outputs.api_test_profile }}"
+          } >> "$GITHUB_STEP_SUMMARY"
