@@ -252,6 +252,108 @@ describe('DSV Driver app auth routes', () => {
     }
   });
 
+  test('accepts normalized email addresses for registration and login', async () => {
+    const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.resolve(session));
+    const login = vi.fn<DsvDriverAuthRepository['login']>(() => Promise.resolve(session));
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { login, register } as never },
+    });
+
+    try {
+      const registration = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId: ' Driver.Name+DSV@Example.CO.KR ',
+          name: 'QA 배송원 01',
+          password: 'test-password-01',
+          phone: '01090000001',
+        },
+        url: '/api/dsv/driver/auth/register',
+      });
+      const loginResponse = await app.inject({
+        method: 'POST',
+        payload: { loginId: ' Driver.Name+DSV@Example.CO.KR ', password: 'test-password-01' },
+        url: '/api/dsv/driver/auth/login',
+      });
+
+      expect(registration.statusCode).toBe(201);
+      expect(loginResponse.statusCode).toBe(200);
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ loginId: 'driver.name+dsv@example.co.kr' }));
+      expect(login).toHaveBeenCalledWith({ loginId: 'driver.name+dsv@example.co.kr', password: 'test-password-01' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('accepts an email login identifier at the 254-character limit', async () => {
+    const loginId = `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`;
+    const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.resolve(session));
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { register } as never },
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId,
+          name: 'QA 배송원 01',
+          password: 'test-password-01',
+          phone: '01090000001',
+        },
+        url: '/api/dsv/driver/auth/register',
+      });
+
+      expect(loginId).toHaveLength(254);
+      expect(response.statusCode).toBe(201);
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ loginId }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects invalid email login identifiers for registration and login', async () => {
+    const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.resolve(session));
+    const login = vi.fn<DsvDriverAuthRepository['login']>(() => Promise.resolve(session));
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { login, register } as never },
+    });
+
+    try {
+      const invalidLoginIds = [
+        'driver name@example.com',
+        'driver@@example.com',
+        'driver@',
+        `${'a'.repeat(65)}@example.com`,
+        `${'a'.repeat(64)}@${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}.com`,
+      ];
+      for (const loginId of invalidLoginIds) {
+        const registration = await app.inject({
+          method: 'POST',
+          payload: {
+            loginId,
+            name: 'QA 배송원 01',
+            password: 'test-password-01',
+            phone: '01090000001',
+          },
+          url: '/api/dsv/driver/auth/register',
+        });
+        const loginResponse = await app.inject({
+          method: 'POST',
+          payload: { loginId, password: 'test-password-01' },
+          url: '/api/dsv/driver/auth/login',
+        });
+
+        expect(registration.statusCode).toBe(400);
+        expect(loginResponse.statusCode).toBe(400);
+      }
+      expect(register).not.toHaveBeenCalled();
+      expect(login).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('refreshes a DSV account session without asking for the password again', async () => {
     const refresh = vi.fn<DsvDriverAuthRepository['refresh']>(() => Promise.resolve(session));
     const app = await buildApp({
