@@ -135,12 +135,20 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
             data: {
               accountId: account.id,
               authSubject: `driver-${candidate.id}`,
+              displayName: name,
               inviteCode: null,
               inviteCodeExpiresAt: null,
+              phone,
             },
             where: { accountId: null, id: candidate.id, status: 'ACTIVE' },
           });
-          if (linked.count === 1) linkedDrivers.push(candidate);
+          if (linked.count === 1) {
+            await transaction.dsvDriverProfile.update({
+              data: { lookupName: name },
+              where: { driverId: candidate.id },
+            });
+            linkedDrivers.push(candidate);
+          }
         }
         await transaction.driverAccountSession.create({
           data: {
@@ -251,6 +259,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
 
   private async linkMatchingDrivers(account: AccountWithDrivers): Promise<AccountWithDrivers> {
     if (account.name === null || account.drivers.length > 0) return account;
+    const canonicalName = account.name;
     const candidates = (await this.prisma.driver.findMany({
       select: {
         id: true,
@@ -267,14 +276,24 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
     ));
     if (candidates.length === 0) return account;
     for (const candidate of candidates) {
-      await this.prisma.driver.updateMany({
-        data: {
-          accountId: account.id,
-          authSubject: `driver-${candidate.id}`,
-          inviteCode: null,
-          inviteCodeExpiresAt: null,
-        },
-        where: { accountId: null, id: candidate.id },
+      await this.prisma.$transaction(async (transaction) => {
+        const linked = await transaction.driver.updateMany({
+          data: {
+            accountId: account.id,
+            authSubject: `driver-${candidate.id}`,
+            displayName: canonicalName,
+            inviteCode: null,
+            inviteCodeExpiresAt: null,
+            phone: account.phone,
+          },
+          where: { accountId: null, id: candidate.id },
+        });
+        if (linked.count === 1) {
+          await transaction.dsvDriverProfile.update({
+            data: { lookupName: canonicalName },
+            where: { driverId: candidate.id },
+          });
+        }
       });
     }
     return this.prisma.driverAccount.findUniqueOrThrow({
