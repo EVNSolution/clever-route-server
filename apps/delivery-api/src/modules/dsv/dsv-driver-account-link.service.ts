@@ -120,20 +120,32 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
         throw new DsvDriverAccountLinkCandidateError('NOT_FOUND');
       }
       const nameMatches = account.name.trim() === driver.displayName.trim();
+      const canonicalName = account.name.trim();
       const accountPhone = normalizeDsvDriverPhone(account.phone);
       const driverPhone = normalizeDsvDriverPhone(driver.phone ?? '');
       const phoneMatches = driverPhone !== '' && driverPhone === accountPhone;
       if (!nameMatches && !phoneMatches) throw new DsvDriverAccountLinkCandidateError();
+      const conflictingProfile = await tx.dsvDriverProfile.findFirst({
+        select: { driverId: true },
+        where: { driverId: { not: driver.id }, lookupName: canonicalName, shopId: shop.id },
+      });
+      if (conflictingProfile !== null) throw new DsvDriverAccountLinkCandidateError();
       const linked = await tx.driver.updateMany({
         data: {
           accountId: account.id,
           authSubject: `driver-${driver.id}`,
+          displayName: canonicalName,
           inviteCode: null,
           inviteCodeExpiresAt: null,
+          phone: accountPhone,
         },
         where: { accountId: null, id: driver.id, shopId: shop.id, status: 'ACTIVE' },
       });
       if (linked.count !== 1) throw new DsvDriverAccountLinkCandidateError();
+      await tx.dsvDriverProfile.update({
+        data: { lookupName: canonicalName },
+        where: { driverId: driver.id },
+      });
       await tx.dsvAuditEvent.create({
         data: {
           actorId: input.actorId,
@@ -144,6 +156,7 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
           principalType: 'DSV_ADMIN',
           redactedDiff: {
             accountLinked: true,
+            canonicalIdentityApplied: true,
             matchBasis: nameMatches ? 'NAME' : 'PHONE',
           } satisfies Prisma.InputJsonObject,
           redactionClass: 'PII_REDACTED',

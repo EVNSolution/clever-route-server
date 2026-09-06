@@ -24,6 +24,9 @@ describe('Prisma DSV driver auth repository', () => {
       shop: { shopDomain: 'dsv-production.local' },
     };
     const transaction = {
+      dsvDriverProfile: {
+        update: vi.fn(() => Promise.resolve({ driverId: matchingDriver.id })),
+      },
       driver: {
         findMany: vi.fn(() => Promise.resolve([matchingDriver, differentPhoneDriver])),
         updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
@@ -61,10 +64,16 @@ describe('Prisma DSV driver auth repository', () => {
       data: {
         accountId: account.id,
         authSubject: 'driver-matching-driver-id',
+        displayName: account.name,
         inviteCode: null,
         inviteCodeExpiresAt: null,
+        phone: account.phone,
       },
       where: { accountId: null, id: matchingDriver.id, status: 'ACTIVE' },
+    });
+    expect(transaction.dsvDriverProfile.update).toHaveBeenCalledWith({
+      data: { lookupName: account.name },
+      where: { driverId: matchingDriver.id },
     });
     expect(result.account).toMatchObject({
       connectionStatus: 'LINKED',
@@ -148,10 +157,18 @@ describe('Prisma DSV driver auth repository', () => {
         shop: { shopDomain: 'dsv-production.local' },
       }],
     };
+    const transaction = {
+      dsvDriverProfile: {
+        update: vi.fn(() => Promise.resolve({ driverId: 'driver-id' })),
+      },
+      driver: {
+        updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      },
+    };
     const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
       driver: {
         findMany: vi.fn(() => Promise.resolve([{ id: 'driver-id', phone: '010-1234-5678' }])),
-        updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
       },
       driverAccount: { findUniqueOrThrow: vi.fn(() => Promise.resolve(linkedAccount)) },
       driverAccountSession: {
@@ -163,14 +180,20 @@ describe('Prisma DSV driver auth repository', () => {
 
     const result = await repository.refresh({ refreshToken: 'refresh-token' });
 
-    expect(prisma.driver.updateMany).toHaveBeenCalledWith({
+    expect(transaction.driver.updateMany).toHaveBeenCalledWith({
       data: {
         accountId: 'account-id',
         authSubject: 'driver-driver-id',
+        displayName: unlinkedAccount.name,
         inviteCode: null,
         inviteCodeExpiresAt: null,
+        phone: unlinkedAccount.phone,
       },
       where: { accountId: null, id: 'driver-id' },
+    });
+    expect(transaction.dsvDriverProfile.update).toHaveBeenCalledWith({
+      data: { lookupName: unlinkedAccount.name },
+      where: { driverId: 'driver-id' },
     });
     expect(result.account.connectionStatus).toBe('LINKED');
   });

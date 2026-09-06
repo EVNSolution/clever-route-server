@@ -64,13 +64,17 @@ describe('PrismaDsvDriverAccountLinkService', () => {
     ]));
   });
 
-  test('approves one partial match without overwriting either identity and records a redacted audit', async () => {
+  test('approves one partial match using the signup identity and records a redacted audit', async () => {
     const driverUpdate = vi.fn(() => Promise.resolve({ count: 1 }));
     const auditCreate = vi.fn((input: unknown) => {
       void input;
       return Promise.resolve({ id: 'audit-id' });
     });
     const transaction = {
+      dsvDriverProfile: {
+        findFirst: vi.fn(() => Promise.resolve(null)),
+        update: vi.fn(() => Promise.resolve({ driverId: 'driver-id' })),
+      },
       driver: {
         findFirst: vi.fn(() => Promise.resolve({ accountId: null, displayName: '정재연', id: 'driver-id', phone: '01011112222', status: 'ACTIVE' })),
         updateMany: driverUpdate,
@@ -97,27 +101,69 @@ describe('PrismaDsvDriverAccountLinkService', () => {
       data: {
         accountId: 'account-id',
         authSubject: 'driver-driver-id',
+        displayName: '정재연',
         inviteCode: null,
         inviteCodeExpiresAt: null,
+        phone: '01033334444',
       },
       where: { accountId: null, id: 'driver-id', shopId: 'shop-id', status: 'ACTIVE' },
+    });
+    expect(transaction.dsvDriverProfile.update).toHaveBeenCalledWith({
+      data: { lookupName: '정재연' },
+      where: { driverId: 'driver-id' },
     });
     const auditInput = auditCreate.mock.calls[0]?.[0] as { data: Record<string, unknown> } | undefined;
     expect(auditInput?.data).toMatchObject({
       actorId: 'admin-id',
       entityId: 'driver-id',
       eventType: 'DRIVER_ACCOUNT_LINK_APPROVED',
-      redactedDiff: { accountLinked: true, matchBasis: 'NAME' },
+      redactedDiff: { accountLinked: true, canonicalIdentityApplied: true, matchBasis: 'NAME' },
       redactionClass: 'PII_REDACTED',
       requestId: 'request-id',
       shopId: 'shop-id',
     });
-    expect(JSON.stringify(driverUpdate.mock.calls)).not.toContain('01011112222');
-    expect(JSON.stringify(driverUpdate.mock.calls)).not.toContain('01033334444');
+    expect(JSON.stringify(auditCreate.mock.calls)).not.toContain('01011112222');
+    expect(JSON.stringify(auditCreate.mock.calls)).not.toContain('01033334444');
+  });
+
+  test('rejects a canonical name that belongs to another DSV profile', async () => {
+    const transaction = {
+      dsvDriverProfile: {
+        findFirst: vi.fn(() => Promise.resolve({ driverId: 'other-driver-id' })),
+        update: vi.fn(),
+      },
+      driver: {
+        findFirst: vi.fn(() => Promise.resolve({ accountId: null, displayName: '이전 이름', id: 'driver-id', phone: '01033334444', status: 'ACTIVE' })),
+        updateMany: vi.fn(),
+      },
+      driverAccount: {
+        findFirst: vi.fn(() => Promise.resolve({ id: 'account-id', name: '정본 이름', phone: '01033334444', status: 'ACTIVE' })),
+      },
+      dsvAuditEvent: { create: vi.fn() },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
+      shop: { findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' })) },
+    };
+    const service = new PrismaDsvDriverAccountLinkService(prisma as never);
+
+    await expect(service.approve({
+      accountId: 'account-id',
+      actorId: 'admin-id',
+      driverId: 'driver-id',
+      requestId: 'request-id',
+      shopDomain: 'dsv.example',
+    })).rejects.toBeInstanceOf(DsvDriverAccountLinkCandidateError);
+    expect(transaction.driver.updateMany).not.toHaveBeenCalled();
+    expect(transaction.dsvDriverProfile.update).not.toHaveBeenCalled();
   });
 
   test('rejects an unrelated account and driver pair', async () => {
     const transaction = {
+      dsvDriverProfile: {
+        findFirst: vi.fn(() => Promise.resolve(null)),
+        update: vi.fn(),
+      },
       driver: {
         findFirst: vi.fn(() => Promise.resolve({ accountId: null, displayName: '배송원', id: 'driver-id', phone: '01011112222', status: 'ACTIVE' })),
         updateMany: vi.fn(),
