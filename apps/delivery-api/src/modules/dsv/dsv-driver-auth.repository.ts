@@ -92,6 +92,7 @@ type AccountWithDrivers = Prisma.DriverAccountGetPayload<{
 type LinkedDriverRecord = {
   displayName: string;
   id: string;
+  isStoreReviewData?: boolean;
   phone: string | null;
   shop: { shopDomain: string };
 };
@@ -125,6 +126,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
           include: { shop: { select: { shopDomain: true } } },
           where: {
             accountId: null,
+            isStoreReviewData: false,
             displayName: name,
             dsvProfile: { isNot: null },
             status: 'ACTIVE',
@@ -140,7 +142,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
               inviteCodeExpiresAt: null,
               phone,
             },
-            where: { accountId: null, id: candidate.id, status: 'ACTIVE' },
+            where: { accountId: null, id: candidate.id, isStoreReviewData: false, status: 'ACTIVE' },
           });
           if (linked.count === 1) {
             await transaction.dsvDriverProfile.update({
@@ -267,6 +269,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
       },
       where: {
         accountId: null,
+        isStoreReviewData: account.isStoreReviewAccount === true,
         displayName: account.name,
         dsvProfile: { isNot: null },
         status: 'ACTIVE',
@@ -286,7 +289,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
             inviteCodeExpiresAt: null,
             phone: account.phone,
           },
-          where: { accountId: null, id: candidate.id },
+          where: { accountId: null, id: candidate.id, isStoreReviewData: account.isStoreReviewAccount === true },
         });
         if (linked.count === 1) {
           await transaction.dsvDriverProfile.update({
@@ -330,6 +333,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
 function accountView(
   account: {
     id: string;
+    isStoreReviewAccount?: boolean;
     loginId: string | null;
     name: string | null;
     phone: string;
@@ -339,7 +343,7 @@ function accountView(
   if (account.loginId === null || account.name === null) {
     throw new Error('DSV driver account identity is incomplete');
   }
-  const linkedDrivers = drivers.map((driver) => ({
+  const linkedDrivers = drivers.filter((driver) => (driver.isStoreReviewData === true) === (account.isStoreReviewAccount === true)).map((driver) => ({
     driverId: driver.id,
     name: driver.displayName,
     shopDomain: driver.shop.shopDomain,

@@ -13,7 +13,7 @@ import {
 } from '../src/modules/dsv/dsv-dispatch-import.service.js';
 import type { DsvManualEmailService } from '../src/modules/dsv/dsv-manual-email.service.js';
 import { DsvAdminAccountManagementError, type DsvAdminAccountManager } from '../src/modules/dsv/dsv-admin-account.repository.js';
-import { dsvAdminScopes, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
+import { DsvForbiddenError, dsvAdminScopes, dsvOperatorScopes, type DsvPrincipal } from '../src/modules/dsv/dsv-principal.js';
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
 import { DsvResourceConflictError } from '../src/modules/dsv/dsv-resource.service.js';
@@ -26,6 +26,7 @@ import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-can
 import type { DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
 import type { DsvAdminOperatorInvitationService } from '../src/modules/dsv/dsv-admin-account-invitations.service.js';
 import type { DsvDriverAccountLinkService } from '../src/modules/dsv/dsv-driver-account-link.service.js';
+import type { DsvStoreReviewAccess } from '../src/modules/dsv/dsv-store-review-access.js';
 
 const stopId = '11111111-1111-4111-8111-111111111111';
 const destinationId = '22222222-2222-4222-8222-222222222222';
@@ -245,6 +246,33 @@ describe('DSV control routes', () => {
         data: null,
         error: { code: 'UNAUTHORIZED', message: 'DSV login required' },
       });
+      expect(repository.getDeliveryStopContext).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('blocks direct legacy access to hidden review data before calling the repository', async () => {
+    const assertAccessible = vi.fn((principal: DsvPrincipal) => Promise.reject(new DsvForbiddenError({
+        principal,
+        requiredScopes: ['dsv:accounts:read'],
+      })));
+    const storeReviewAccess: DsvStoreReviewAccess = { assertAccessible };
+    const { app, repository } = await createHarness({ storeReviewAccess });
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'GET',
+        url: `/api/dsv/control/delivery-stops/${stopId}/context`,
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ error: { code: 'DSV_FORBIDDEN' } });
+      expect(assertAccessible).toHaveBeenCalledWith(
+        expect.objectContaining({ actorId: adminAccountId, shopId }),
+        { deliveryStopIds: [stopId] },
+      );
       expect(repository.getDeliveryStopContext).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -2118,6 +2146,7 @@ describe('DSV control routes', () => {
       expect(resourceService.assignDriver).toHaveBeenCalledWith({
         actor: adminAccountId,
         driverId: '66666666-6666-4666-8666-666666666666',
+        principal: expect.objectContaining({ actorId: adminAccountId, principalType: 'DSV_ADMIN', shopId }) as unknown,
         shopDomain: 'tomatonofood.com',
         vehicleId: '77777777-7777-4777-8777-777777777777',
       });
@@ -2239,6 +2268,7 @@ async function createHarness(overrides: {
   manualEmailService?: DsvManualEmailService;
   logLines?: string[];
   operatorInvitationService?: DsvAdminOperatorInvitationService;
+  storeReviewAccess?: DsvStoreReviewAccess;
 } = {}): Promise<{
   adminAccounts: DsvControlDependencies['adminAccounts'];
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -2259,6 +2289,7 @@ async function createHarness(overrides: {
   const resourceService = createResourceService();
   const driverAccountLinkService = overrides.driverAccountLinkService ?? createDriverAccountLinkService();
   const invalidateSession = vi.fn(() => Promise.resolve());
+  const storeReviewAccess = overrides.storeReviewAccess ?? { assertAccessible: vi.fn(() => Promise.resolve()) };
   const adminAccounts = {
     authenticate: vi.fn(({ loginId, password }: { loginId: string; password: string }) =>
       Promise.resolve(loginId.trim().toLowerCase() === 'operator' && password === 'correct-password'
@@ -2301,6 +2332,7 @@ async function createHarness(overrides: {
     secureCookies: false,
     sessionSecret: '12345678901234567890123456789012',
     settingsService,
+    storeReviewAccess,
   };
   return {
     adminAccounts,

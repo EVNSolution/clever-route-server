@@ -1,6 +1,10 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { canAccessDsvStoreReviewData, type DsvPrincipal } from './dsv-principal.js';
+import { PrismaDsvStoreReviewAccess, type DsvStoreReviewAccess } from './dsv-store-review-access.js';
+
+type DsvResourceAccess = { principal: DsvPrincipal };
 
 export type DsvDriverInput = {
   age: number;
@@ -48,14 +52,14 @@ export type DsvResourceSnapshot = {
 };
 
 export type DsvResourceService = {
-  assignDriver(input: { actor: string; driverId: string; shopDomain: string; vehicleId: string }): Promise<DsvVehicleDriverAssignmentView>;
+  assignDriver(input: DsvResourceAccess & { actor: string; driverId: string; shopDomain: string; vehicleId: string }): Promise<DsvVehicleDriverAssignmentView>;
   createDriver(input: DsvDriverInput & { shopDomain: string }): Promise<DsvDriverView>;
   createVehicle(input: DsvVehicleInput & { shopDomain: string }): Promise<DsvVehicleView>;
-  deleteDriver(input: { driverId: string; shopDomain: string }): Promise<void>;
+  deleteDriver(input: DsvResourceAccess & { driverId: string; shopDomain: string }): Promise<void>;
   deleteVehicle(input: { shopDomain: string; vehicleId: string }): Promise<void>;
-  list(input: { shopDomain: string }): Promise<DsvResourceSnapshot | null>;
-  unassignDriver(input: { assignmentId: string; shopDomain: string; vehicleId: string }): Promise<void>;
-  updateDriver(input: DsvDriverInput & { driverId: string; shopDomain: string }): Promise<DsvDriverView>;
+  list(input: DsvResourceAccess & { shopDomain: string }): Promise<DsvResourceSnapshot | null>;
+  unassignDriver(input: DsvResourceAccess & { assignmentId: string; shopDomain: string; vehicleId: string }): Promise<void>;
+  updateDriver(input: DsvDriverInput & DsvResourceAccess & { driverId: string; shopDomain: string }): Promise<DsvDriverView>;
   updateVehicle(input: DsvVehicleInput & { shopDomain: string; vehicleId: string }): Promise<DsvVehicleView>;
 };
 
@@ -81,16 +85,23 @@ export class DsvResourceConflictError extends Error {
 }
 
 export class PrismaDsvResourceService implements DsvResourceService {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly reviewDataAccess: DsvStoreReviewAccess;
 
-  async list(input: { shopDomain: string }): Promise<DsvResourceSnapshot | null> {
+  constructor(private readonly prisma: PrismaClient, reviewDataAccess?: DsvStoreReviewAccess) {
+    this.reviewDataAccess = reviewDataAccess ?? new PrismaDsvStoreReviewAccess(prisma);
+  }
+
+  async list(input: DsvResourceAccess & { shopDomain: string }): Promise<DsvResourceSnapshot | null> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) return null;
+    const reviewWhere = canAccessDsvStoreReviewData(input.principal)
+      ? {}
+      : { isStoreReviewData: false };
     const [drivers, vehicles, assignments] = await Promise.all([
       this.prisma.driver.findMany({
         include: { dsvProfile: true },
         orderBy: [{ displayName: 'asc' }],
-        where: { dsvProfile: { isNot: null }, shopId: shop.id },
+        where: { dsvProfile: { isNot: null }, shopId: shop.id, ...reviewWhere },
       }),
       this.prisma.vehicle.findMany({
         include: { dsvProfile: true, dsvTelematicsDevice: true },
@@ -99,7 +110,7 @@ export class PrismaDsvResourceService implements DsvResourceService {
       }),
       this.prisma.dsvVehicleDriverAssignment.findMany({
         orderBy: [{ createdAt: 'asc' }],
-        where: { shopId: shop.id },
+        where: { driver: reviewWhere, shopId: shop.id },
       }),
     ]);
     return {
@@ -129,7 +140,8 @@ export class PrismaDsvResourceService implements DsvResourceService {
     }
   }
 
-  async updateDriver(input: DsvDriverInput & { driverId: string; shopDomain: string }): Promise<DsvDriverView> {
+  async updateDriver(input: DsvDriverInput & DsvResourceAccess & { driverId: string; shopDomain: string }): Promise<DsvDriverView> {
+    await this.reviewDataAccess.assertAccessible(input.principal, { driverIds: [input.driverId] });
     const shop = await this.requireShop(input.shopDomain);
     try {
       const driver = await this.prisma.$transaction(async (tx) => {
@@ -157,7 +169,8 @@ export class PrismaDsvResourceService implements DsvResourceService {
     }
   }
 
-  async deleteDriver(input: { driverId: string; shopDomain: string }): Promise<void> {
+  async deleteDriver(input: DsvResourceAccess & { driverId: string; shopDomain: string }): Promise<void> {
+    await this.reviewDataAccess.assertAccessible(input.principal, { driverIds: [input.driverId] });
     const shop = await this.requireShop(input.shopDomain);
     const result = await this.prisma.driver.deleteMany({ where: { dsvProfile: { isNot: null }, id: input.driverId, shopId: shop.id } });
     if (result.count === 0) throw new DsvResourceNotFoundError('driver');
@@ -240,9 +253,11 @@ export class PrismaDsvResourceService implements DsvResourceService {
   async assignDriver(input: {
     actor: string;
     driverId: string;
+    principal: DsvPrincipal;
     shopDomain: string;
     vehicleId: string;
   }): Promise<DsvVehicleDriverAssignmentView> {
+    await this.reviewDataAccess.assertAccessible(input.principal, { driverIds: [input.driverId] });
     const shop = await this.requireShop(input.shopDomain);
     const [driver, vehicle, existingDriverAssignment, existingVehicleAssignment] = await Promise.all([
       this.prisma.driver.findFirst({
@@ -277,7 +292,8 @@ export class PrismaDsvResourceService implements DsvResourceService {
     }
   }
 
-  async unassignDriver(input: { assignmentId: string; shopDomain: string; vehicleId: string }): Promise<void> {
+  async unassignDriver(input: DsvResourceAccess & { assignmentId: string; shopDomain: string; vehicleId: string }): Promise<void> {
+    await this.reviewDataAccess.assertAccessible(input.principal, { assignmentIds: [input.assignmentId] });
     const shop = await this.requireShop(input.shopDomain);
     const result = await this.prisma.dsvVehicleDriverAssignment.deleteMany({
       where: { id: input.assignmentId, shopId: shop.id, vehicleId: input.vehicleId },

@@ -139,6 +139,7 @@ type LockedSellerOrder = {
   customerId: string | null;
   destinationId: string | null;
   id: string;
+  isStoreReviewData: boolean;
 };
 
 type MovementPlan = {
@@ -209,7 +210,7 @@ export class DsvAssignmentCommandService {
       }
       if (replayed.length > 0) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
 
-      const lockedOrders: Array<{ currentRouteVersionId: string | null }> = [];
+      const lockedOrders: LockedSellerOrder[] = [];
       for (const command of commands) lockedOrders.push(await this.lockSellerOrder(tx, shop.id, command.input.sellerOrderId));
       const firstOrder = lockedOrders[0];
       const firstCommand = commands[0];
@@ -231,7 +232,13 @@ export class DsvAssignmentCommandService {
         owners.push(owner);
       }
 
-      const target = await this.resolveAdminTargetRoute(tx, grouping, shop.id, firstCommand.input);
+      const target = await this.resolveAdminTargetRoute(
+        tx,
+        grouping,
+        shop.id,
+        firstCommand.input,
+        firstOrder.isStoreReviewData,
+      );
       if (target.driverId !== input.targetDriverId) throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
       assertTransferTargetOpen(target);
       if (target.routePlanId === null) {
@@ -241,7 +248,7 @@ export class DsvAssignmentCommandService {
       }
 
       const sellerOrderIds = commands.map((command) => command.input.sellerOrderId);
-      const saved = await this.saveDraft(tx, {
+      const saved = await this.saveDraft(tx, shop.id, {
         expectedUpdatedAt: grouping.updatedAt,
         groupingId: grouping.id,
         routes: moveOrdersToDriverRoute(grouping, sellerOrderIds, target, input.targetVehicleId),
@@ -374,7 +381,7 @@ export class DsvAssignmentCommandService {
       }
       if (replayed.length > 0) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
 
-      const lockedOrders: Array<{ currentRouteVersionId: string | null }> = [];
+      const lockedOrders: LockedSellerOrder[] = [];
       for (const command of commands) lockedOrders.push(await this.lockSellerOrder(tx, shop.id, command.input.sellerOrderId));
       const firstOrder = lockedOrders[0];
       const firstCommand = commands[0];
@@ -397,8 +404,8 @@ export class DsvAssignmentCommandService {
       }
 
       const sellerOrderIds = commands.map((command) => command.input.sellerOrderId);
-      const target = firstUnassignedRoute(grouping) ?? null;
-      const saved = await this.saveDraft(tx, {
+      const target = await this.findCompatibleUnassignedRoute(tx, grouping, shop.id, firstOrder.isStoreReviewData);
+      const saved = await this.saveDraft(tx, shop.id, {
         expectedUpdatedAt: grouping.updatedAt,
         groupingId: grouping.id,
         routes: moveOrdersToUnassignedRoute(grouping, sellerOrderIds, target),
@@ -551,7 +558,7 @@ export class DsvAssignmentCommandService {
           ownerByOrderId.set(sellerOrderId, owner);
           affectedRouteScopes.push({ groupingId, routePlanId: owner.routePlanId });
         }
-        const saved = await this.saveDraftAtomically(tx, {
+        const saved = await this.saveDraftAtomically(tx, shop.id, {
           expectedUpdatedAt: grouping.updatedAt,
           groupingId,
           removedOrderIds: groupedSellerOrderIds,
@@ -663,10 +670,10 @@ export class DsvAssignmentCommandService {
       commandName: 'unassignSellerOrder',
       input,
       payload: assignmentPayload('unassignSellerOrder', input),
-      plan: async (tx, grouping, _shopId, currentRouteVersionId) => {
+      plan: async (tx, grouping, shopId, currentRouteVersionId, isStoreReviewData) => {
         const source = await this.requireOwner(tx, input.sellerOrderId, grouping, currentRouteVersionId);
         assertTransferSourceOpen(source);
-        const target = firstUnassignedRoute(grouping) ?? null;
+        const target = await this.findCompatibleUnassignedRoute(tx, grouping, shopId, isStoreReviewData);
         return {
           assignmentStatus: 'UNASSIGNED',
           etaStatus: 'NOT_REQUIRED',
@@ -686,9 +693,9 @@ export class DsvAssignmentCommandService {
       commandName: 'reassignSellerOrder',
       input,
       payload: assignmentPayload('reassignSellerOrder', input),
-      plan: async (tx, grouping, shopId, currentRouteVersionId) => {
+      plan: async (tx, grouping, shopId, currentRouteVersionId, isStoreReviewData) => {
         const source = await this.requireOwner(tx, input.sellerOrderId, grouping, currentRouteVersionId);
-        const target = await this.resolveAdminTargetRoute(tx, grouping, shopId, input);
+        const target = await this.resolveAdminTargetRoute(tx, grouping, shopId, input, isStoreReviewData);
         if (target.driverId !== input.targetDriverId) throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
         assertTransferSourceOpen(source);
         assertTransferTargetOpen(target);
@@ -716,13 +723,13 @@ export class DsvAssignmentCommandService {
       commandName: 'releaseSellerOrder',
       input: driverCommandBase(input),
       payload: assignmentPayload('releaseSellerOrder', input),
-      plan: async (tx, grouping, _shopId, currentRouteVersionId) => {
+      plan: async (tx, grouping, shopId, currentRouteVersionId, isStoreReviewData) => {
         const source = await this.requireOwner(tx, input.sellerOrderId, grouping, currentRouteVersionId);
         if (source.routePlanId !== input.routePlanId || source.driverId !== input.driverId) {
           throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
         }
         assertTransferSourceOpen(source);
-        const target = firstUnassignedRoute(grouping) ?? null;
+        const target = await this.findCompatibleUnassignedRoute(tx, grouping, shopId, isStoreReviewData);
         return {
           assignmentStatus: 'UNASSIGNED',
           etaStatus: 'NOT_REQUIRED',
@@ -770,6 +777,7 @@ export class DsvAssignmentCommandService {
       grouping: RouteGroupingDetailDto,
       shopId: string,
       currentRouteVersionId: string | null,
+      isStoreReviewData: boolean,
     ) => Promise<MovementPlan>;
   }): Promise<DsvAssignmentResult> {
     const shop = await this.prisma.shop.findUnique({
@@ -792,8 +800,8 @@ export class DsvAssignmentCommandService {
       const order = await this.lockSellerOrder(tx, shop.id, input.input.sellerOrderId);
       const grouping = await this.loadGroupingForSellerOrder(tx, shop.id, input.input.shopDomain, input.input.sellerOrderId, order.currentRouteVersionId);
       assertExpectedVersion(input.input.expectedVersion, order.currentRouteVersionId);
-      const movement = await input.plan(tx, grouping, shop.id, order.currentRouteVersionId);
-      const saved = await this.saveDraft(tx, {
+      const movement = await input.plan(tx, grouping, shop.id, order.currentRouteVersionId, order.isStoreReviewData);
+      const saved = await this.saveDraft(tx, shop.id, {
         expectedUpdatedAt: grouping.updatedAt,
         groupingId: grouping.id,
         routes: movement.routes,
@@ -1165,14 +1173,17 @@ export class DsvAssignmentCommandService {
     grouping: RouteGroupingDetailDto,
     shopId: string,
     input: DsvAdminReassignInput,
+    isStoreReviewData: boolean,
   ): Promise<RouteGroupingChildDto> {
     if (input.targetRoutePlanId !== undefined && input.targetRoutePlanId !== null) {
       return requireTargetRoute(grouping, input.targetRoutePlanId);
     }
-    const existingReadyRoute = grouping.children
+    const existingReadyRoutes = grouping.children
       .filter((child) => child.driverId === input.targetDriverId && child.displayStatus === 'READY' && child.routePlanId !== null)
-      .sort((left, right) => (left.sortOrder ?? Number.MAX_SAFE_INTEGER) - (right.sortOrder ?? Number.MAX_SAFE_INTEGER))[0];
-    if (existingReadyRoute !== undefined) return existingReadyRoute;
+      .sort((left, right) => (left.sortOrder ?? Number.MAX_SAFE_INTEGER) - (right.sortOrder ?? Number.MAX_SAFE_INTEGER));
+    for (const route of existingReadyRoutes) {
+      if (await this.routeAcceptsStoreReviewData(tx, route, shopId, isStoreReviewData)) return route;
+    }
     await this.validateSpecifiedNewRouteVehicle(tx, shopId, input.targetDriverId, input.targetVehicleId);
     return newDriverRoute(grouping, input.targetDriverId);
   }
@@ -1181,10 +1192,10 @@ export class DsvAssignmentCommandService {
     tx: DsvAssignmentTransactionClient,
     shopId: string,
     sellerOrderId: string,
-  ): Promise<{ currentRouteVersionId: string | null }> {
+  ): Promise<LockedSellerOrder> {
     await lockSellerOrder(tx, shopId, sellerOrderId);
     const order = await tx.order.findFirst({
-      select: { currentRouteVersionId: true },
+      select: { currentRouteVersionId: true, customerId: true, destinationId: true, id: true, isStoreReviewData: true },
       where: { id: sellerOrderId, shopId },
     });
     if (order === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
@@ -1193,13 +1204,19 @@ export class DsvAssignmentCommandService {
 
   private async saveDraft(
     tx: DsvAssignmentTransactionClient,
+    shopId: string,
     input: Parameters<RouteGroupingService['saveDraft']>[0],
   ): Promise<RouteGroupingDetailDto | null> {
     try {
+      await assertStoreReviewDraftConsistency(tx, shopId, input.routes);
+      let saved: RouteGroupingDetailDto | null;
       if (this.routeGroupingService.saveDraftInTransaction !== undefined) {
-        return await this.routeGroupingService.saveDraftInTransaction(tx, input);
+        saved = await this.routeGroupingService.saveDraftInTransaction(tx, input);
+      } else {
+        saved = await this.routeGroupingService.saveDraft(input);
       }
-      return await this.routeGroupingService.saveDraft(input);
+      if (saved !== null) await syncStoreReviewRoutePlans(tx, shopId, saved);
+      return saved;
     } catch (error: unknown) {
       if (error instanceof RouteGroupingConflictError) {
         throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
@@ -1213,13 +1230,17 @@ export class DsvAssignmentCommandService {
 
   private async saveDraftAtomically(
     tx: DsvAssignmentTransactionClient,
+    shopId: string,
     input: Parameters<RouteGroupingService['saveDraft']>[0],
   ): Promise<RouteGroupingDetailDto | null> {
     if (this.routeGroupingService.saveDraftInTransaction === undefined) {
       throw new Error('Transactional route grouping draft save is required for seller order deletion');
     }
     try {
-      return await this.routeGroupingService.saveDraftInTransaction(tx, input);
+      await assertStoreReviewDraftConsistency(tx, shopId, input.routes);
+      const saved = await this.routeGroupingService.saveDraftInTransaction(tx, input);
+      if (saved !== null) await syncStoreReviewRoutePlans(tx, shopId, saved);
+      return saved;
     } catch (error: unknown) {
       if (error instanceof RouteGroupingConflictError) {
         throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
@@ -1229,6 +1250,32 @@ export class DsvAssignmentCommandService {
       }
       throw error;
     }
+  }
+
+  private async findCompatibleUnassignedRoute(
+    tx: DsvAssignmentTransactionClient,
+    grouping: RouteGroupingDetailDto,
+    shopId: string,
+    isStoreReviewData: boolean,
+  ): Promise<RouteGroupingChildDto | null> {
+    const candidates = grouping.children
+      .filter((child) => child.driverId === null && child.displayStatus === 'READY')
+      .sort((left, right) => (left.sortOrder ?? Number.MAX_SAFE_INTEGER) - (right.sortOrder ?? Number.MAX_SAFE_INTEGER));
+    for (const candidate of candidates) {
+      if (await this.routeAcceptsStoreReviewData(tx, candidate, shopId, isStoreReviewData)) return candidate;
+    }
+    return null;
+  }
+
+  private async routeAcceptsStoreReviewData(
+    tx: DsvAssignmentTransactionClient,
+    route: RouteGroupingChildDto,
+    shopId: string,
+    isStoreReviewData: boolean,
+  ): Promise<boolean> {
+    const flags = await readStoreReviewFlags(tx, shopId, [route]);
+    const routeFlags = flags.get(routeIdentity(route)) ?? new Set<boolean>();
+    return routeFlags.size === 0 || (routeFlags.size === 1 && routeFlags.has(isStoreReviewData));
   }
 
   private async invalidateAffectedEtas(
@@ -1344,12 +1391,6 @@ function newDriverRoute(grouping: RouteGroupingDetailDto, driverId: string): Rou
     stopsCount: 0,
     updatedAt: grouping.updatedAt,
   };
-}
-
-function firstUnassignedRoute(grouping: RouteGroupingDetailDto): RouteGroupingChildDto | undefined {
-  return grouping.children
-    .filter((child) => child.driverId === null && child.displayStatus === 'READY')
-    .sort((left, right) => (left.sortOrder ?? Number.MAX_SAFE_INTEGER) - (right.sortOrder ?? Number.MAX_SAFE_INTEGER))[0];
 }
 
 function moveOrder(
@@ -1600,6 +1641,88 @@ async function lockAssignmentCommand(tx: Pick<DsvAssignmentTransactionClient, '$
 
 async function lockSellerOrder(tx: Pick<DsvAssignmentTransactionClient, '$queryRaw'>, shopId: string, sellerOrderId: string): Promise<void> {
   await tx.$queryRaw<{ id: string }[]>`SELECT id FROM orders WHERE id = ${sellerOrderId}::uuid AND "shopId" = ${shopId}::uuid FOR UPDATE`;
+}
+
+type StoreReviewRoute = Pick<RouteGroupingDraftRouteInput, 'driverId' | 'orderIds' | 'routePlanId' | 'tempId'>;
+
+function routeIdentity(route: StoreReviewRoute): string {
+  return route.routePlanId ?? route.tempId ?? `orders:${route.orderIds.join(',')}`;
+}
+
+async function readStoreReviewFlags(
+  tx: DsvAssignmentTransactionClient,
+  shopId: string,
+  routes: StoreReviewRoute[],
+  includeRoutePlans = true,
+): Promise<Map<string, Set<boolean>>> {
+  const orderIds = [...new Set(routes.flatMap((route) => route.orderIds))];
+  const driverIds = [...new Set(routes.flatMap((route) => route.driverId === null || route.driverId === undefined ? [] : [route.driverId]))];
+  const routePlanIds = includeRoutePlans
+    ? [...new Set(routes.flatMap((route) => route.routePlanId === null || route.routePlanId === undefined ? [] : [route.routePlanId]))]
+    : [];
+  const [orders, drivers, routePlans] = await Promise.all([
+    tx.order.findMany({
+      select: { id: true, isStoreReviewData: true },
+      where: { id: { in: orderIds }, shopId },
+    }),
+    tx.driver.findMany({
+      select: { id: true, isStoreReviewData: true },
+      where: { id: { in: driverIds }, shopId },
+    }),
+    tx.routePlan.findMany({
+      select: { id: true, isStoreReviewData: true },
+      where: { id: { in: routePlanIds }, shopId },
+    }),
+  ]);
+  if (orders.length !== orderIds.length || drivers.length !== driverIds.length || routePlans.length !== routePlanIds.length) {
+    throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+  }
+  const orderFlags = new Map(orders.map((order) => [order.id, order.isStoreReviewData]));
+  const driverFlags = new Map(drivers.map((driver) => [driver.id, driver.isStoreReviewData]));
+  const routePlanFlags = new Map(routePlans.map((routePlan) => [routePlan.id, routePlan.isStoreReviewData]));
+  return new Map(routes.map((route) => {
+    const flags = new Set<boolean>();
+    for (const orderId of route.orderIds) flags.add(orderFlags.get(orderId) ?? false);
+    if (route.driverId !== null && route.driverId !== undefined) flags.add(driverFlags.get(route.driverId) ?? false);
+    if (includeRoutePlans && route.routePlanId !== null && route.routePlanId !== undefined) {
+      flags.add(routePlanFlags.get(route.routePlanId) ?? false);
+    }
+    return [routeIdentity(route), flags];
+  }));
+}
+
+async function assertStoreReviewDraftConsistency(
+  tx: DsvAssignmentTransactionClient,
+  shopId: string,
+  routes: RouteGroupingDraftRouteInput[],
+): Promise<void> {
+  const flags = await readStoreReviewFlags(tx, shopId, routes);
+  if ([...flags.values()].some((routeFlags) => routeFlags.size > 1)) {
+    throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
+  }
+}
+
+async function syncStoreReviewRoutePlans(
+  tx: DsvAssignmentTransactionClient,
+  shopId: string,
+  grouping: RouteGroupingDetailDto,
+): Promise<void> {
+  const routes: StoreReviewRoute[] = grouping.children.map((child) => ({
+    driverId: child.driverId,
+    orderIds: child.orderIds,
+    routePlanId: child.routePlanId,
+  }));
+  const flags = await readStoreReviewFlags(tx, shopId, routes, false);
+  for (const route of routes) {
+    if (route.routePlanId === null || route.routePlanId === undefined) continue;
+    const routeFlags = flags.get(routeIdentity(route));
+    if (routeFlags === undefined || routeFlags.size === 0) continue;
+    if (routeFlags.size > 1) throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
+    await tx.routePlan.updateMany({
+      data: { isStoreReviewData: routeFlags.has(true) },
+      where: { id: route.routePlanId, shopId },
+    });
+  }
 }
 
 async function lockSellerOrders(

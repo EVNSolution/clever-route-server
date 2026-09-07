@@ -3841,6 +3841,12 @@ async function createDraftChildRoutePlan(
 ): Promise<{ id: string; name: string }> {
   const depot = readDepotFromShop(group);
   const name = stripGeneratedChildRouteVersion(input.name.trim() || `#${input.routeIdx ?? input.sortOrder ?? 1}`);
+  const isStoreReviewData = await resolveRouteStoreReviewData(
+    tx,
+    group.shopId,
+    input.driverId,
+    input.assignments.map((assignment) => assignment.order.isStoreReviewData),
+  );
   const metrics = input.optimized?.metrics === undefined || input.optimized?.metrics === null
     ? routeMetrics(input.assignments)
     : toJson(input.optimized.metrics);
@@ -3852,6 +3858,7 @@ async function createDraftChildRoutePlan(
       createdBy: ROUTE_GROUPING_DRAFT_SAVE_ACTOR,
       ...(depot === null ? {} : { depotLatitude: decimalString(depot.latitude), depotLongitude: decimalString(depot.longitude) }),
       driverId: input.driverId,
+      isStoreReviewData,
       metrics,
       name,
       optimizerVersion: OPTIMIZER_VERSION,
@@ -3904,6 +3911,12 @@ async function createDraftChildRoutePlan(
 
 async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: OptimizedChildRouteCandidate, actor: string): Promise<{ id: string; name: string }> {
   const name = candidate.name.trim() || `#${candidate.routeIdx ?? 1}`;
+  const isStoreReviewData = await resolveRouteStoreReviewData(
+    tx,
+    group.shopId,
+    candidate.driverId,
+    candidate.assignments.map((assignment) => assignment.order.isStoreReviewData),
+  );
   const routePlan = await tx.routePlan.create({
     data: {
       constraints: routeConstraints(group, candidate.depot),
@@ -3911,6 +3924,7 @@ async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: Op
       depotLatitude: decimalString(candidate.depot.latitude),
       depotLongitude: decimalString(candidate.depot.longitude),
       driverId: candidate.driverId,
+      isStoreReviewData,
       metrics: routeMetrics(candidate.assignments),
       name,
       optimizerVersion: OPTIMIZER_VERSION,
@@ -3929,12 +3943,19 @@ async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: Op
 async function createChildRoutePlanFromSnapshot(tx: Tx, group: LoadedGrouping, snapshot: ChildSnapshot, actor: string): Promise<{ id: string; name: string }> {
   const depot = readDepotFromShop(group);
   const name = stripGeneratedChildRouteVersion(snapshot.name);
+  const orderFlags = snapshot.stops.map((stop) => {
+    const assignment = group.orders.find((candidate) => candidate.orderId === stop.orderId);
+    if (assignment === undefined) throw new RouteGroupingValidationError(['route contains an order outside the current grouping']);
+    return assignment.order.isStoreReviewData;
+  });
+  const isStoreReviewData = await resolveRouteStoreReviewData(tx, group.shopId, snapshot.driverId, orderFlags);
   const routePlan = await tx.routePlan.create({
     data: {
       constraints: routeConstraints(group, depot),
       createdBy: actor,
       ...(depot === null ? {} : { depotLatitude: decimalString(depot.latitude), depotLongitude: decimalString(depot.longitude) }),
       driverId: snapshot.driverId,
+      isStoreReviewData,
       metrics: { stopsCount: snapshot.stops.length },
       name,
       optimizerVersion: OPTIMIZER_VERSION,
@@ -3946,6 +3967,27 @@ async function createChildRoutePlanFromSnapshot(tx: Tx, group: LoadedGrouping, s
   });
   await tx.routePlanStop.createMany({ data: snapshot.stops.map((stop, index) => ({ deliveryStopId: stop.deliveryStopId, routePlanId: routePlan.id, shopId: group.shopId, sequence: index + 1 })) });
   return routePlan;
+}
+
+async function resolveRouteStoreReviewData(
+  tx: Tx,
+  shopId: string,
+  driverId: string | null,
+  orderFlags: boolean[],
+): Promise<boolean> {
+  const flags = new Set(orderFlags);
+  if (driverId !== null) {
+    const driver = await tx.driver.findFirst({
+      select: { isStoreReviewData: true },
+      where: { id: driverId, shopId },
+    });
+    if (driver === null) throw new RouteGroupingValidationError(['route driver not found']);
+    flags.add(driver.isStoreReviewData);
+  }
+  if (flags.size > 1) {
+    throw new RouteGroupingValidationError(['Route data classifications are incompatible']);
+  }
+  return flags.has(true);
 }
 
 async function createChildRouteGeometryCache(

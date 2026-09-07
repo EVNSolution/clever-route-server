@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import {
+  canAccessDsvStoreReviewData,
   DsvForbiddenError,
   requireDsvScopes,
 } from '../modules/dsv/dsv-principal.js';
@@ -65,11 +66,12 @@ import {
   type DsvOrderMessageService,
 } from '../modules/dsv/dsv-order-message.service.js';
 import type { DsvOperationalNotificationService } from '../modules/dsv/dsv-operational-notification.service.js';
+import type { DsvStoreReviewAccess } from '../modules/dsv/dsv-store-review-access.js';
 import type { DsvDriverNotificationRuntime } from '../modules/dsv/dsv-driver-notification.runtime.js';
 import type { DsvMapProfile } from '../modules/dsv/dsv-map-profile.config.js';
 import type { DsvRouteOptimizationSchedulerPort } from '../modules/dsv/dsv-route-optimization.scheduler.js';
 import type { RouteGeometryProvider } from '../modules/route-plans/route-plan.service.js';
-import type { RoutePlanDetail, RoutePlanService } from '../modules/route-plans/route-plan.types.js';
+import type { RoutePlanDetail, RoutePlanService, RoutePlanSummary } from '../modules/route-plans/route-plan.types.js';
 import {
   clearAdminWebSessionCookie,
   verifyAdminWebCsrfToken,
@@ -105,6 +107,7 @@ export type DsvV1ReadDependencies = {
   driverNotificationRuntime?: DsvDriverNotificationRuntime;
   orderMessageService?: DsvOrderMessageService;
   operationalNotificationService?: DsvOperationalNotificationService;
+  storeReviewAccess: Pick<DsvStoreReviewAccess, 'assertAccessible'>;
   timeConstraintCommandService?: DsvTimeConstraintCommandService;
 };
 
@@ -169,7 +172,8 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
         deliveryDate: serviceDate,
         shopDomain,
       });
-      const details = await Promise.all(routePlans.map((routePlan) => routePlanService.getRoutePlanDetail({
+      const accessibleRoutePlans = await filterAccessibleRoutePlans(dependencies, admin, routePlans);
+      const details = await Promise.all(accessibleRoutePlans.map((routePlan) => routePlanService.getRoutePlanDetail({
         appId: 'clever',
         routePlanId: routePlan.id,
         shopDomain,
@@ -348,7 +352,7 @@ function registerOperationalNotificationRoutes(app: FastifyInstance, dependencie
       requireDsvScopes(principal, ['dsv:dispatches:read']);
       const service = dependencies.operationalNotificationService;
       if (service === undefined) return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV operational notification service is not configured');
-      return sendV1Data(reply, request, await service.list({ shopDomain: requireAdminShopDomain(principal) }));
+      return sendV1Data(reply, request, await service.list({ principal, shopDomain: requireAdminShopDomain(principal) }));
     }));
 }
 
@@ -366,6 +370,7 @@ function registerDispatchChangeRequestRoutes(app: FastifyInstance, dependencies:
       const command = readActiveRemovalCommand(request);
       if (sellerOrderId === null || command === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid active removal payload');
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { orderIds: [sellerOrderId] });
         return sendV1Data(reply, request, await service.requestActiveRemoval({
           actor: dsvV1AdminCommandActor(principal, request),
           ...command,
@@ -390,6 +395,7 @@ function registerDispatchChangeRequestRoutes(app: FastifyInstance, dependencies:
       const command = readRecoverUnassignedCommand(request);
       if (sellerOrderId === null || command === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid recovery payload');
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { orderIds: [sellerOrderId] });
         return sendV1Data(reply, request, await service.recoverCancelledToUnassigned({
           actor: dsvV1AdminCommandActor(principal, request),
           ...command,
@@ -414,6 +420,7 @@ function registerDispatchChangeRequestRoutes(app: FastifyInstance, dependencies:
       const command = readCancelChangeRequestCommand(request);
       if (changeRequestId === null || command === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid dispatch change cancel payload');
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { changeRequestIds: [changeRequestId] });
         return sendV1Data(reply, request, await service.cancel({
           actor: dsvV1AdminCommandActor(principal, request),
           ...command,
@@ -440,6 +447,7 @@ function registerOrderMessageRoutes(app: FastifyInstance, dependencies: DsvV1Rea
       const body = readCreateOrderMessageBody(request);
       if (sellerOrderId === null || body === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid order message payload');
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { orderIds: [sellerOrderId] });
         return sendV1Data(reply, request, await service.create({
           actor: dsvV1AdminCommandActor(principal, request),
           ...body,
@@ -460,6 +468,7 @@ function registerOrderMessageRoutes(app: FastifyInstance, dependencies: DsvV1Rea
       const sellerOrderId = readUuidParam(request, 'sellerOrderId');
       if (sellerOrderId === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid seller order id');
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { orderIds: [sellerOrderId] });
         return sendV1Data(reply, request, { messages: await service.listCustomerMessages({ customerId: principal.customerId, sellerOrderId, shopId: principal.shopId }) });
       } catch (error) {
         return sendOrderMessageError(reply, request, error);
@@ -479,6 +488,7 @@ function registerOrderMessageRoutes(app: FastifyInstance, dependencies: DsvV1Rea
       const body = readCustomerNotificationSettingsBody(request);
       if (customerId === null || body === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid customer notification settings payload');
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { customerIds: [customerId] });
         return sendV1Data(reply, request, await service.updateCustomerNotificationSettings({
           customerId,
           ...body,
@@ -808,6 +818,7 @@ function registerTimeConstraintCommandRoutes(app: FastifyInstance, dependencies:
         return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid time constraint confirmation payload');
       }
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { orderIds: [sellerOrderId] });
         return sendV1Data(reply, request, await service.confirm({
           actor: dsvV1AdminCommandActor(principal, request),
           ...command,
@@ -836,6 +847,7 @@ function registerTimeConstraintCommandRoutes(app: FastifyInstance, dependencies:
         return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid time constraint clear payload');
       }
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { orderIds: [sellerOrderId] });
         return sendV1Data(reply, request, await service.clear({
           actor: dsvV1AdminCommandActor(principal, request),
           ...command,
@@ -1320,6 +1332,34 @@ function requireRoutePlanService(
     throw new DsvV1DependencyError('DSV route plan read service is not configured');
   }
   return dependencies.routePlanService;
+}
+
+async function assertStoreReviewAccessible(
+  dependencies: DsvV1ReadDependencies,
+  principal: DsvPrincipal,
+  resources: Parameters<DsvStoreReviewAccess['assertAccessible']>[1],
+): Promise<void> {
+  await dependencies.storeReviewAccess.assertAccessible(principal, resources);
+}
+
+async function filterAccessibleRoutePlans(
+  dependencies: DsvV1ReadDependencies,
+  principal: DsvAdminPrincipal,
+  routePlans: readonly RoutePlanSummary[],
+): Promise<RoutePlanSummary[]> {
+  if (canAccessDsvStoreReviewData(principal)) {
+    return [...routePlans];
+  }
+  const accessibility = await Promise.all(routePlans.map(async (routePlan) => {
+    try {
+      await dependencies.storeReviewAccess.assertAccessible(principal, { routePlanIds: [routePlan.id] });
+      return true;
+    } catch (error) {
+      if (error instanceof DsvForbiddenError) return false;
+      throw error;
+    }
+  }));
+  return routePlans.filter((_, index) => accessibility[index] === true);
 }
 
 function requireAdminPrincipal(principal: DsvPrincipal): DsvAdminPrincipal {

@@ -13,22 +13,30 @@ describe('DriverDeliverySpaceService', () => {
     const findFirst = vi.fn(() => Promise.resolve({
       groupingId: 'group-1',
       id: 'child-version-1',
+      routePlan: { isStoreReviewData: true },
       version: 7
     }));
     const repository = new PrismaDriverDeliverySpaceRepository({
       driverBundleHandoffRequest: {} as never,
       driverRouteNotificationAttempt: {} as never,
       dsvDispatchImportRow: {} as never,
-      routeGroupingChildVersion: { findFirst } as never
+      routeGroupingChildVersion: { findFirst } as never,
+      routePlan: {} as never
     });
 
     await expect(repository.findRouteContext(scope())).resolves.toEqual({
       childVersionId: 'child-version-1',
       groupingId: 'group-1',
-      groupingVersion: 7
+      groupingVersion: 7,
+      isStoreReviewData: true
     });
     expect(findFirst).toHaveBeenCalledWith({
-      select: { groupingId: true, id: true, version: true },
+      select: {
+        groupingId: true,
+        id: true,
+        routePlan: { select: { isStoreReviewData: true } },
+        version: true
+      },
       where: {
         driverId: 'driver-1',
         routePlanId: 'route-driver',
@@ -38,6 +46,32 @@ describe('DriverDeliverySpaceService', () => {
     });
   });
 
+  test('filters bundle rows by both import and seller-order review mode in Prisma', async () => {
+    const findMany = vi.fn(() => Promise.resolve([]));
+    const repository = new PrismaDriverDeliverySpaceRepository({
+      driverBundleHandoffRequest: {} as never,
+      driverRouteNotificationAttempt: {} as never,
+      dsvDispatchImportRow: { findMany } as never,
+      routeGroupingChildVersion: {} as never,
+      routePlan: {} as never
+    });
+
+    await repository.listBundleOrders({ groupingId: 'group-1', isStoreReviewData: true, shopId: 'shop-1' });
+
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        destinationId: { not: null },
+        importRecord: { isStoreReviewData: true },
+        sellerOrder: {
+          currentRouteVersion: { groupingId: 'group-1', status: 'CURRENT', supersededAt: null },
+          isStoreReviewData: true
+        },
+        shopId: 'shop-1',
+        status: 'APPLIED'
+      }
+    }));
+  });
+
   test('maps the active-handoff unique constraint to a delivery-space conflict', async () => {
     const repository = new PrismaDriverDeliverySpaceRepository({
       driverBundleHandoffRequest: {
@@ -45,7 +79,8 @@ describe('DriverDeliverySpaceService', () => {
       } as never,
       driverRouteNotificationAttempt: {} as never,
       dsvDispatchImportRow: {} as never,
-      routeGroupingChildVersion: {} as never
+      routeGroupingChildVersion: {} as never,
+      routePlan: {} as never
     });
 
     await expect(repository.createHandoff({
@@ -233,6 +268,69 @@ describe('DriverDeliverySpaceService', () => {
     expect(harness.reassignMany).toHaveBeenCalledTimes(1);
   });
 
+  test('hides review recipients and cross-mode handoffs from a normal driver in a mixed grouping', async () => {
+    const harness = setup(bundleOrders('mine'), {
+      accessibleRoutePlanIds: ['route-driver', 'route-recipient'],
+      activeHandoffs: true,
+      handoffTarget: 'review',
+      mixedRecipients: true
+    });
+
+    await expect(harness.service.getSpace(scope())).resolves.toMatchObject({
+      incomingHandoffs: [],
+      outgoingHandoffs: [],
+      recipients: [{ driverId: 'driver-2', driverName: '양우진' }]
+    });
+    await expect(harness.service.proposeHandoff({
+      ...scope(),
+      destinationId: 'dest-a',
+      expectedVersion: 'v1',
+      targetDriverId: 'driver-3'
+    })).rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED' });
+    await expect(harness.service.cancelHandoff({ ...scope(), requestId: 'handoff-1' }))
+      .rejects.toMatchObject({ code: 'HANDOFF_REQUEST_NOT_FOUND' });
+  });
+
+  test('shows only review recipients to a review driver in a mixed grouping', async () => {
+    const reviewRows = bundleOrders('mine').map((row) => ({
+      ...row,
+      driverId: 'driver-3',
+      routePlanId: 'route-review'
+    }));
+    const harness = setup(reviewRows, {
+      accessibleRoutePlanIds: ['route-review', 'route-review-recipient'],
+      isStoreReviewData: true,
+      mixedRecipients: true
+    });
+
+    await expect(harness.service.getSpace(scope({ driverId: 'driver-3', routePlanId: 'route-review' })))
+      .resolves.toMatchObject({
+        mine: [{ destinationId: 'dest-a' }],
+        recipients: [{ driverId: 'driver-4', driverName: '검토 배송원' }]
+      });
+  });
+
+  test('keeps mixed-mode public bundles in the bearer route mode', async () => {
+    const normalRows = bundleOrders('public');
+    const reviewRows = bundleOrders('public').map((row) => ({
+      ...row,
+      destinationId: 'dest-review',
+      destinationName: '검토 배송지',
+      orderId: `review-${row.orderId}`,
+      routePlanId: 'route-review-public'
+    }));
+    const normalHarness = setup(normalRows, { reviewRows });
+    const reviewHarness = setup(normalRows, { isStoreReviewData: true, reviewRows });
+
+    await expect(normalHarness.service.getSpace(scope())).resolves.toMatchObject({
+      available: [expect.objectContaining({ destinationId: 'dest-a' })]
+    });
+    await expect(reviewHarness.service.getSpace(scope({ driverId: 'driver-3', routePlanId: 'route-review' })))
+      .resolves.toMatchObject({
+        available: [expect.objectContaining({ destinationId: 'dest-review' })]
+      });
+  });
+
   test('keeps closed-route and stale-version failures on previous dates', async () => {
     const harness = setup(bundleOrders('mine'), { planDate: '2026-08-02' });
     await expect(harness.service.release({ ...scope(), destinationId: 'dest-a', expectedVersion: 'stale' }))
@@ -257,9 +355,20 @@ describe('DriverDeliverySpaceService', () => {
 
 function setup(
   rows: Awaited<ReturnType<DriverDeliverySpaceRepositoryContract['listBundleOrders']>>,
-  options: { handoffStatus?: 'PROCESSING' | 'PROPOSED'; now?: Date; planDate?: string; recipients?: boolean } = {}
+  options: {
+    accessibleRoutePlanIds?: string[];
+    activeHandoffs?: boolean;
+    handoffStatus?: 'PROCESSING' | 'PROPOSED';
+    handoffTarget?: 'normal' | 'review';
+    isStoreReviewData?: boolean;
+    mixedRecipients?: boolean;
+    now?: Date;
+    planDate?: string;
+    recipients?: boolean;
+    reviewRows?: Awaited<ReturnType<DriverDeliverySpaceRepositoryContract['listBundleOrders']>>;
+  } = {}
 ) {
-  const grouping = groupingDetail(options.planDate, options.recipients);
+  const grouping = groupingDetail(options.planDate, options.recipients, options.mixedRecipients);
   const getGrouping = vi.fn(() => Promise.resolve(grouping));
   const reassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-driver' }));
   const unassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-public' }));
@@ -273,8 +382,8 @@ function setup(
     sourceDriverId: 'driver-1',
     sourceRoutePlanId: 'route-driver',
     status: options.handoffStatus ?? 'PROPOSED',
-    targetDriverId: 'driver-2',
-    targetRoutePlanId: 'route-recipient'
+    targetDriverId: options.handoffTarget === 'review' ? 'driver-3' : 'driver-2',
+    targetRoutePlanId: options.handoffTarget === 'review' ? 'route-review' : 'route-recipient'
   };
   const recordHandoffNotification = vi.fn(() => Promise.resolve());
   const dispatchByIdempotencyKey = vi.fn(() => Promise.resolve({ attemptId: 'attempt-1', status: 'SENT' as const }));
@@ -283,14 +392,22 @@ function setup(
   }) => Promise.resolve({ ...handoff, status: input.status }));
   const repository: DriverDeliverySpaceRepositoryContract = {
     createHandoff: vi.fn(() => Promise.resolve(handoff)),
+    filterAccessibleRoutePlanIds: vi.fn((input: { routePlanIds: readonly string[] }) => Promise.resolve(
+      options.accessibleRoutePlanIds === undefined
+        ? [...input.routePlanIds]
+        : input.routePlanIds.filter((routePlanId) => options.accessibleRoutePlanIds?.includes(routePlanId) === true)
+    )),
     findRouteContext: vi.fn((input: { driverId: string }) => Promise.resolve({
       childVersionId: input.driverId === 'driver-2' ? 'child-recipient' : 'child-driver',
       groupingId: 'group-1',
-      groupingVersion: 1
+      groupingVersion: 1,
+      isStoreReviewData: options.isStoreReviewData ?? false
     })),
     getHandoff: vi.fn(() => Promise.resolve(handoff)),
-    listActiveHandoffs: vi.fn(() => Promise.resolve([])),
-    listBundleOrders: vi.fn(() => Promise.resolve(rows)),
+    listActiveHandoffs: vi.fn(() => Promise.resolve(options.activeHandoffs === true ? [handoff] : [])),
+    listBundleOrders: vi.fn((input: { isStoreReviewData: boolean }) => Promise.resolve(
+      input.isStoreReviewData ? options.reviewRows ?? rows : rows
+    )),
     recordHandoffNotification,
     updateHandoffStatus
   };
@@ -327,28 +444,43 @@ function baseScope() {
   return { accountId: 'account-1', driverId: 'driver-1', routePlanId: 'route-driver', shopDomain: 'dsv.test', shopId: 'shop-1', tokenVersion: 1 };
 }
 
-function groupingDetail(planDate = '2026-08-03', recipients = false): RouteGroupingDetailDto {
+function groupingDetail(planDate = '2026-08-03', recipients = false, mixedRecipients = false): RouteGroupingDetailDto {
+  const recipientChildren = recipients || mixedRecipients ? [recipientChild({
+    driverId: 'driver-2',
+    driverName: '양우진',
+    routePlanId: 'route-recipient'
+  })] : [];
+  if (mixedRecipients) {
+    recipientChildren.push(
+      recipientChild({ driverId: 'driver-3', driverName: '검토 기사', routePlanId: 'route-review' }),
+      recipientChild({ driverId: 'driver-4', driverName: '검토 배송원', routePlanId: 'route-review-recipient' })
+    );
+  }
   return {
-    assignments: [], branches: [], children: recipients ? [{
+    assignments: [], branches: [], children: recipientChildren, currentVersion: 1, dateRangeEnd: planDate, dateRangeStart: planDate,
+    displayStatus: 'READY', id: 'group-1', linkedInventoryId: null, name: '배송', planDate, polygons: [],
+    status: 'READY', totalOrders: 0, unresolvedOrders: 0, updatedAt: 'v1', warningState: []
+  };
+}
+
+function recipientChild(input: { driverId: string; driverName: string; routePlanId: string }): RouteGroupingDetailDto['children'][number] {
+  return {
       childVersion: 1,
       color: null,
       displayStatus: 'READY',
-      driverId: 'driver-2',
-      driverName: '양우진',
+      driverId: input.driverId,
+      driverName: input.driverName,
       notificationStatus: 'NOT_REQUIRED',
       orderIds: [],
       routeGeometry: null,
       routeMetrics: null,
       routePlan: null,
-      routePlanId: 'route-recipient',
+      routePlanId: input.routePlanId,
       routeIdx: null,
       routeStopPoints: [],
       sortOrder: 2,
       stops: [],
       stopsCount: 0,
       updatedAt: 'v1'
-    }] : [], currentVersion: 1, dateRangeEnd: planDate, dateRangeStart: planDate,
-    displayStatus: 'READY', id: 'group-1', linkedInventoryId: null, name: '배송', planDate, polygons: [],
-    status: 'READY', totalOrders: 0, unresolvedOrders: 0, updatedAt: 'v1', warningState: []
   };
 }

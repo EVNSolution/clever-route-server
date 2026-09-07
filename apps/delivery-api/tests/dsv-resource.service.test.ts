@@ -5,10 +5,18 @@ import {
   PrismaDsvResourceService,
 } from '../src/modules/dsv/dsv-resource.service.js';
 import type { DsvResourceConflictError, DsvResourceNotFoundError } from '../src/modules/dsv/dsv-resource.service.js';
+import { createDsvAdminPrincipal, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
 
 const shopId = '99999999-9999-4999-8999-999999999999';
 const driverId = '66666666-6666-4666-8666-666666666666';
 const vehicleId = '77777777-7777-4777-8777-777777777777';
+const adminPrincipal = createDsvAdminPrincipal({ actorId: 'admin', shopDomain: 'tomatonofood.com', shopId });
+const operatorPrincipal = createDsvAdminPrincipal({
+  actorId: 'operator',
+  scopes: dsvOperatorScopes,
+  shopDomain: 'tomatonofood.com',
+  shopId,
+});
 
 describe('PrismaDsvResourceService', () => {
   test('creates a driver profile through the parent composite relation', async () => {
@@ -212,6 +220,7 @@ describe('PrismaDsvResourceService', () => {
     await expect(service.assignDriver({
       actor: 'operator',
       driverId,
+      principal: adminPrincipal,
       shopDomain: 'tomatonofood.com',
       vehicleId,
     })).rejects.toMatchObject({
@@ -260,6 +269,7 @@ describe('PrismaDsvResourceService', () => {
     await expect(service.assignDriver({
       actor: 'operator',
       driverId,
+      principal: adminPrincipal,
       shopDomain: 'tomatonofood.com',
       vehicleId,
     })).rejects.toMatchObject({
@@ -294,10 +304,45 @@ describe('PrismaDsvResourceService', () => {
     await expect(service.assignDriver({
       actor: 'operator',
       driverId,
+      principal: adminPrincipal,
       shopDomain: 'tomatonofood.com',
       vehicleId,
     })).rejects.toMatchObject({
       resource: 'vehicle',
     } satisfies Partial<DsvResourceNotFoundError>);
+  });
+
+  test('filters review drivers and their assignments before returning legacy resources', async () => {
+    const prisma = {
+      driver: { findMany: vi.fn().mockResolvedValue([]) },
+      dsvVehicleDriverAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+      shop: { findUnique: vi.fn().mockResolvedValue({ id: shopId }) },
+      vehicle: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const service = new PrismaDsvResourceService(prisma as never);
+
+    await service.list({ principal: operatorPrincipal, shopDomain: 'tomatonofood.com' });
+
+    expect(prisma.driver.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ isStoreReviewData: false, shopId }) as unknown,
+    }));
+    expect(prisma.dsvVehicleDriverAssignment.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { driver: { isStoreReviewData: false }, shopId },
+    }));
+  });
+
+  test('checks direct review access before mutating a driver', async () => {
+    const blocked = new Error('blocked');
+    const reviewDataAccess = { assertAccessible: vi.fn().mockRejectedValue(blocked) };
+    const prisma = { shop: { findUnique: vi.fn() } };
+    const service = new PrismaDsvResourceService(prisma as never, reviewDataAccess);
+
+    await expect(service.deleteDriver({
+      driverId,
+      principal: operatorPrincipal,
+      shopDomain: 'tomatonofood.com',
+    })).rejects.toBe(blocked);
+    expect(reviewDataAccess.assertAccessible).toHaveBeenCalledWith(operatorPrincipal, { driverIds: [driverId] });
+    expect(prisma.shop.findUnique).not.toHaveBeenCalled();
   });
 });

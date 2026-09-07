@@ -34,9 +34,10 @@ describe('PrismaDriverTokenAccessRepository', () => {
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
       select: {
         driver: {
-          select: { accountId: true, authSubject: true, id: true, status: true }
+          select: { account: { select: { isStoreReviewAccount: true } }, accountId: true, authSubject: true, id: true, isStoreReviewData: true, status: true }
         },
         id: true,
+        isStoreReviewData: true,
         shop: { select: { id: true, shopDomain: true } }
       },
       where: {
@@ -135,6 +136,7 @@ describe('PrismaDriverTokenAccessRepository', () => {
       select: { tokenVersion: true },
       where: {
         authSubject: { not: null },
+        isStoreReviewData: false,
         id: 'driver-id',
         shop: { shopDomain: 'dev1.tomatonofood.com' },
         status: 'ACTIVE'

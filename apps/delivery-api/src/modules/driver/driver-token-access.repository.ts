@@ -49,6 +49,7 @@ export class PrismaDriverTokenAccessRepository {
       select: { tokenVersion: true },
       where: {
         authSubject: { not: null },
+        isStoreReviewData: false,
         id: input.driverId,
         shop: { shopDomain: normalizeDriverCommerceDomain(input.shopDomain) },
         status: 'ACTIVE'
@@ -69,9 +70,13 @@ export class PrismaDriverTokenAccessRepository {
     const routePlan = await this.prisma.routePlan.findFirst({
       select: {
         driver: {
-          select: { accountId: true, authSubject: true, id: true, status: true }
+          select: {
+            account: { select: { isStoreReviewAccount: true } },
+            accountId: true, authSubject: true, id: true, isStoreReviewData: true, status: true,
+          }
         },
         id: true,
+        isStoreReviewData: true,
         shop: { select: { id: true, shopDomain: true } }
       },
       where: {
@@ -92,6 +97,11 @@ export class PrismaDriverTokenAccessRepository {
       routePlan.driver.authSubject === null ||
       routePlan.driver.status !== 'ACTIVE'
     ) {
+      return null;
+    }
+
+    if ((routePlan.isStoreReviewData === true) !== (routePlan.driver.isStoreReviewData === true)
+      || (routePlan.driver.isStoreReviewData === true) !== (routePlan.driver.account?.isStoreReviewAccount === true)) {
       return null;
     }
 

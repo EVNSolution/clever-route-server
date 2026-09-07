@@ -68,6 +68,7 @@ import {
   DsvDriverAccountLinkCandidateError,
   type DsvDriverAccountLinkService,
 } from '../modules/dsv/dsv-driver-account-link.service.js';
+import type { DsvStoreReviewAccess } from '../modules/dsv/dsv-store-review-access.js';
 import {
   DsvForbiddenError,
   createDsvAdminPrincipal,
@@ -186,6 +187,7 @@ export type DsvControlDependencies = {
   secureCookies: boolean;
   sessionSecret: string;
   settingsService: Pick<PrismaAdminStoreSettingsService, 'getSettings' | 'saveSettings'>;
+  storeReviewAccess: DsvStoreReviewAccess;
 };
 
 export function registerDsvControlRoutes(app: FastifyInstance, dependencies: DsvControlDependencies): void {
@@ -411,18 +413,20 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:session:read']));
 
   app.get<{ Params: { customerId: string } }>(`${apiRoot}/customers/:customerId/accounts`, (request, reply) =>
-    withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
+    withDsvSession(request, reply, dependencies, async ({ principal, shopDomain }) => {
       const service = requireCustomerAccountService(dependencies);
       if (!uuidPattern.test(request.params.customerId)) return sendError(reply, 400, 'BAD_REQUEST', 'customerId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { customerIds: [request.params.customerId] });
       return sendData(reply, {
         accounts: await service.listAccounts({ customerId: request.params.customerId, shopDomain }),
       });
     }, ['dsv:customers:read']));
 
   app.post<{ Params: { customerId: string } }>(`${apiRoot}/customers/:customerId/accounts/invitations`, (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal, shopDomain }) => {
       const service = requireCustomerAccountService(dependencies);
       if (!uuidPattern.test(request.params.customerId)) return sendError(reply, 400, 'BAD_REQUEST', 'customerId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { customerIds: [request.params.customerId] });
       const input = readCustomerAccountInvitationBody(request.body);
       if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid customer account invitation payload');
       try {
@@ -442,9 +446,10 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:customers:write']));
 
   app.post<{ Params: { accountId: string } }>(`${apiRoot}/customer-accounts/:accountId/reinvite`, (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal, shopDomain }) => {
       const service = requireCustomerAccountService(dependencies);
       if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', 'accountId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { customerAccountIds: [request.params.accountId] });
       try {
         return sendData(reply, await service.reinvite({
           accountId: request.params.accountId,
@@ -458,9 +463,10 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:customers:write']));
 
   app.post<{ Params: { accountId: string } }>(`${apiRoot}/customer-accounts/:accountId/password-reset`, (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal, shopDomain }) => {
       const service = requireCustomerAccountService(dependencies);
       if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', 'accountId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { customerAccountIds: [request.params.accountId] });
       try {
         return sendData(reply, await service.requestPasswordReset({
           accountId: request.params.accountId,
@@ -474,9 +480,10 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:customers:write']));
 
   app.patch<{ Params: { accountId: string } }>(`${apiRoot}/customer-accounts/:accountId/status`, (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal, shopDomain }) => {
       const service = requireCustomerAccountService(dependencies);
       if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', 'accountId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { customerAccountIds: [request.params.accountId] });
       const status = readCustomerAccountStatus(request.body);
       if (status === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid customer account status');
       try {
@@ -700,8 +707,8 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:conditions:read']));
 
   app.get(`${apiRoot}/resources`, async (request, reply) =>
-    withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
-      const resources = await dependencies.resourceService.list({ shopDomain });
+    withDsvSession(request, reply, dependencies, async ({ principal, shopDomain }) => {
+      const resources = await dependencies.resourceService.list({ principal, shopDomain });
       return resources === null
         ? sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found')
         : sendData(reply, resources);
@@ -756,12 +763,12 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:resources:write']));
 
   app.patch(`${apiRoot}/drivers/:driverId`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ principal, shopDomain }) => {
       const driverId = readUuidParam(request, 'driverId');
       const input = readDriverInput(request.body);
       if (driverId === null || input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid driver update');
       try {
-        const driver = await dependencies.resourceService.updateDriver({ ...input, driverId, shopDomain });
+        const driver = await dependencies.resourceService.updateDriver({ ...input, driverId, principal, shopDomain });
         return sendData(reply, { driver });
       } catch (error) {
         return sendResourceError(reply, error);
@@ -769,11 +776,11 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:resources:write']));
 
   app.delete(`${apiRoot}/drivers/:driverId`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ principal, shopDomain }) => {
       const driverId = readUuidParam(request, 'driverId');
       if (driverId === null) return sendError(reply, 400, 'BAD_REQUEST', 'driverId must be a UUID');
       try {
-        await dependencies.resourceService.deleteDriver({ driverId, shopDomain });
+        await dependencies.resourceService.deleteDriver({ driverId, principal, shopDomain });
         return sendData(reply, { driverId });
       } catch (error) {
         return sendResourceError(reply, error);
@@ -818,12 +825,12 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:resources:write']));
 
   app.post(`${apiRoot}/vehicles/:vehicleId/drivers`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor: actorId, shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor: actorId, principal, shopDomain }) => {
       const vehicleId = readUuidParam(request, 'vehicleId');
       const driverId = readUuidBodyField(request.body, 'driverId');
       if (vehicleId === null || driverId === null) return sendError(reply, 400, 'BAD_REQUEST', 'Vehicle and driver ids must be UUIDs');
       try {
-        const assignment = await dependencies.resourceService.assignDriver({ actor: actorId, driverId, shopDomain, vehicleId });
+        const assignment = await dependencies.resourceService.assignDriver({ actor: actorId, driverId, principal, shopDomain, vehicleId });
         return sendData(reply, { assignment }, 201);
       } catch (error) {
         return sendResourceError(reply, error);
@@ -831,12 +838,12 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:resources:write']));
 
   app.delete(`${apiRoot}/vehicles/:vehicleId/drivers/:assignmentId`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ principal, shopDomain }) => {
       const vehicleId = readUuidParam(request, 'vehicleId');
       const assignmentId = readUuidParam(request, 'assignmentId');
       if (vehicleId === null || assignmentId === null) return sendError(reply, 400, 'BAD_REQUEST', 'Vehicle and assignment ids must be UUIDs');
       try {
-        await dependencies.resourceService.unassignDriver({ assignmentId, shopDomain, vehicleId });
+        await dependencies.resourceService.unassignDriver({ assignmentId, principal, shopDomain, vehicleId });
         return sendData(reply, { assignmentId });
       } catch (error) {
         return sendResourceError(reply, error);
@@ -950,9 +957,10 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:imports:write']));
 
   app.get(`${apiRoot}/dispatch-imports/:importId`, async (request, reply) =>
-    withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
+    withDsvSession(request, reply, dependencies, async ({ principal, shopDomain }) => {
       const importId = readUuidParam(request, 'importId');
       if (importId === null) return sendError(reply, 400, 'BAD_REQUEST', 'importId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { importIds: [importId] });
       const dispatchImport = await dependencies.dispatchImportService.getImport({ importId, shopDomain });
       return dispatchImport === null
         ? sendError(reply, 404, 'NOT_FOUND', 'Dispatch import not found')
@@ -968,6 +976,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       const command = readDsvUnassignCommand(request);
       if (sellerOrderId === null) return sendError(reply, 400, 'BAD_REQUEST', 'sellerOrderId must be a UUID');
       if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order unassign payload');
+      await dependencies.storeReviewAccess.assertAccessible(session.principal, { orderIds: [sellerOrderId] });
       try {
         const assignmentResult = await dependencies.assignmentCommandService.unassign({
           actor: dsvAdminCommandActor(session, request),
@@ -992,6 +1001,11 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       const command = readDsvReassignCommand(request);
       if (sellerOrderId === null) return sendError(reply, 400, 'BAD_REQUEST', 'sellerOrderId must be a UUID');
       if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order reassign payload');
+      await dependencies.storeReviewAccess.assertAccessible(session.principal, {
+        driverIds: [command.targetDriverId],
+        orderIds: [sellerOrderId],
+        ...(command.targetRoutePlanId === undefined ? {} : { routePlanIds: [command.targetRoutePlanId] }),
+      });
       try {
         const assignmentResult = await dependencies.assignmentCommandService.reassign({
           actor: dsvAdminCommandActor(session, request),
@@ -1020,6 +1034,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       const command = readDsvUnassignCommand(request);
       if (sellerOrderId === null) return sendError(reply, 400, 'BAD_REQUEST', 'sellerOrderId must be a UUID');
       if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order unassign payload');
+      await dependencies.storeReviewAccess.assertAccessible(session.principal, { orderIds: [sellerOrderId] });
       try {
         const assignmentResult = await dependencies.assignmentCommandService.unassign({
           actor: dsvAdminCommandActor(session, request),
@@ -1044,6 +1059,11 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       const command = readDsvReassignCommand(request);
       if (sellerOrderId === null) return sendError(reply, 400, 'BAD_REQUEST', 'sellerOrderId must be a UUID');
       if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order reassign payload');
+      await dependencies.storeReviewAccess.assertAccessible(session.principal, {
+        driverIds: [command.targetDriverId],
+        orderIds: [sellerOrderId],
+        ...(command.targetRoutePlanId === undefined ? {} : { routePlanIds: [command.targetRoutePlanId] }),
+      });
       try {
         const assignmentResult = await dependencies.assignmentCommandService.reassign({
           actor: dsvAdminCommandActor(session, request),
@@ -1070,6 +1090,11 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
       const command = readDsvBatchReassignCommand(request);
       if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order batch reassign payload');
+      await dependencies.storeReviewAccess.assertAccessible(session.principal, {
+        driverIds: [command.targetDriverId],
+        orderIds: command.items.map(({ sellerOrderId }) => sellerOrderId),
+        ...(command.targetRoutePlanId === undefined ? {} : { routePlanIds: [command.targetRoutePlanId] }),
+      });
       try {
         const result = await dependencies.assignmentCommandService.reassignMany({
           actor: dsvAdminCommandActor(session, request),
@@ -1093,6 +1118,9 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
       const command = readDsvBatchUnassignCommand(request);
       if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order batch unassign payload');
+      await dependencies.storeReviewAccess.assertAccessible(session.principal, {
+        orderIds: command.items.map(({ sellerOrderId }) => sellerOrderId),
+      });
       try {
         const result = await dependencies.assignmentCommandService.unassignMany({
           actor: dsvAdminCommandActor(session, request),
@@ -1113,6 +1141,9 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
       const command = readDsvBatchDeleteCommand(request);
       if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order batch deletion payload');
+      await dependencies.storeReviewAccess.assertAccessible(session.principal, {
+        orderIds: command.items.map(({ sellerOrderId }) => sellerOrderId),
+      });
       try {
         const result = await dependencies.assignmentCommandService.deleteMany({
           actor: dsvAdminCommandActor(session, request),
@@ -1128,11 +1159,12 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:dispatches:write']));
 
   app.post(`${apiRoot}/dispatch-imports/:importId/apply`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor: actorId, shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor: actorId, principal, shopDomain }) => {
       const importId = readUuidParam(request, 'importId');
       const command = readDispatchImportApplyCommand(request);
       if (importId === null) return sendError(reply, 400, 'BAD_REQUEST', 'importId must be a UUID');
       if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid dispatch import apply payload');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { importIds: [importId] });
 
       const dispatchImport = await dependencies.dispatchImportService.getImport({ importId, shopDomain });
       if (dispatchImport === null) return sendError(reply, 404, 'NOT_FOUND', 'Dispatch import not found');
@@ -1158,9 +1190,10 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:imports:apply']));
 
   app.get(`${apiRoot}/control/delivery-stops/:deliveryStopId/context`, async (request, reply) =>
-    withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
+    withDsvSession(request, reply, dependencies, async ({ principal, shopDomain }) => {
       const deliveryStopId = readUuidParam(request, 'deliveryStopId');
       if (deliveryStopId === null) return sendError(reply, 400, 'BAD_REQUEST', 'deliveryStopId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { deliveryStopIds: [deliveryStopId] });
       const context = await dependencies.repository.getDeliveryStopContext({ deliveryStopId, shopDomain });
       return context === null
         ? sendError(reply, 404, 'NOT_FOUND', 'Delivery stop not found')
@@ -1168,9 +1201,10 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:control:read']));
 
   app.get(`${apiRoot}/destinations/:destinationId/tips`, async (request, reply) =>
-    withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
+    withDsvSession(request, reply, dependencies, async ({ principal, shopDomain }) => {
       const destinationId = readUuidParam(request, 'destinationId');
       if (destinationId === null) return sendError(reply, 400, 'BAD_REQUEST', 'destinationId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { destinationIds: [destinationId] });
       const statusValue = readQuery(request, 'status') ?? 'active';
       if (!includes(destinationTipStatuses, statusValue)) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid tip status');
       const tips = await dependencies.repository.listDestinationTips({ destinationId, shopDomain, status: statusValue });
@@ -1178,7 +1212,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:destinations:read']));
 
   app.post(`${apiRoot}/destinations/:destinationId/tips`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor: actorId, shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor: actorId, principal, shopDomain }) => {
       const destinationId = readUuidParam(request, 'destinationId');
       if (destinationId === null) return sendError(reply, 400, 'BAD_REQUEST', 'destinationId must be a UUID');
       const body = objectBody(request.body);
@@ -1190,6 +1224,10 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       if (category === null || severity === null || title === null || text === null || sourceDeliveryStopId === undefined) {
         return sendError(reply, 400, 'BAD_REQUEST', 'Invalid destination tip payload');
       }
+      await dependencies.storeReviewAccess.assertAccessible(principal, {
+        deliveryStopIds: sourceDeliveryStopId === null ? [] : [sourceDeliveryStopId],
+        destinationIds: [destinationId],
+      });
       try {
         const tip = await dependencies.repository.createDestinationTip({
           actor: actorId,
@@ -1209,7 +1247,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:destinations:write']));
 
   app.patch(`${apiRoot}/destinations/:destinationId/tips/:tipId`, async (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async ({ actor: actorId, shopDomain }) => {
+    withDsvMutation(request, reply, dependencies, async ({ actor: actorId, principal, shopDomain }) => {
       const destinationId = readUuidParam(request, 'destinationId');
       const tipId = readUuidParam(request, 'tipId');
       if (destinationId === null || tipId === null) return sendError(reply, 400, 'BAD_REQUEST', 'Destination and tip ids must be UUIDs');
@@ -1226,6 +1264,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       if ([category, severity, status, title, text].every((value) => value === undefined)) {
         return sendError(reply, 400, 'BAD_REQUEST', 'Destination tip update is empty');
       }
+      await dependencies.storeReviewAccess.assertAccessible(principal, { destinationIds: [destinationId] });
       try {
         const tip = await dependencies.repository.updateDestinationTip({
           actor: actorId,

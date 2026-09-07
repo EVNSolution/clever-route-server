@@ -133,6 +133,7 @@ describe('loadDsvControlDependencies', () => {
       throw new Error('DSV control dependencies did not load assignment commands');
     }
 
+    vi.spyOn(dependencies.storeReviewAccess, 'assertAccessible').mockResolvedValue();
     vi.spyOn(dependencies.repository, 'hasShop').mockResolvedValue(true);
     vi.spyOn(dependencies.repository, 'resolveShopId').mockResolvedValue('shop-1');
     vi.spyOn(DsvAssignmentCommandService.prototype, 'unassign').mockResolvedValue({

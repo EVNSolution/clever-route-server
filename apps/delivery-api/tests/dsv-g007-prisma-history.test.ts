@@ -163,9 +163,10 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(102);
+    expect(migrations).toHaveLength(103);
     expect(migrations).toContain('20260907000000_restore_active_job_uniqueness');
     expect(migrations).toContain('20260907010000_dsv_driver_inquiries');
+    expect(migrations).toContain('20260907120000_store_review_data_visibility');
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -392,7 +393,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260831160000_customer_email_delivery_evidence')).toBeLessThan(
       migrations.indexOf('20260901070000_complete_driver_account_deletion_lifecycle')
     );
-    expect(migrations.at(-1)).toBe('20260907010000_dsv_driver_inquiries');
+    expect(migrations.indexOf('20260907010000_dsv_driver_inquiries')).toBeLessThan(
+      migrations.indexOf('20260907120000_store_review_data_visibility')
+    );
+    expect(migrations.at(-1)).toBe('20260907120000_store_review_data_visibility');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {

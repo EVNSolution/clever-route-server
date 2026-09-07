@@ -14,9 +14,15 @@ import {
 import {
   createDsvAdminPrincipal,
   createDsvCustomerUserPrincipalFromAccount,
+  dsvOperatorScopes,
+  DsvForbiddenError,
 } from '../src/modules/dsv/dsv-principal.js';
+import type { DsvScope } from '../src/modules/dsv/dsv-principal.js';
 import { DsvV1ReadQueryError } from '../src/modules/dsv/dsv-v1-read-query.service.js';
 import type { DsvV1CustomerDeliveryInquiryRow } from '../src/modules/dsv/dsv-v1-read.dto.js';
+import {
+  type DsvDispatchChangeRequestService,
+} from '../src/modules/dsv/dsv-dispatch-change-request.service.js';
 import {
   DsvTimeConstraintCommandError,
   type DsvTimeConstraintCommandService,
@@ -296,6 +302,163 @@ describe('DSV v1 read routes', () => {
         deliveryDate: '2026-07-23',
         shopDomain: 'tomatonofood.com',
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('omits store review route plans from control geometry for operators', async () => {
+    const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
+      if (resources.routePlanIds?.includes('22222222-2222-4222-8222-222222222222') === true) {
+        return Promise.reject(new DsvForbiddenError({ principal, requiredScopes: ['dsv:accounts:read'] }));
+      }
+      return Promise.resolve();
+    });
+    const { app, routePlanService } = await createHarness({
+      adminScopes: dsvOperatorScopes,
+      storeReviewAccess,
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    routePlanService.listRoutePlans.mockResolvedValueOnce([
+      { ...routePlanSummary(), id: '11111111-1111-4111-8111-111111111111' },
+      { ...routePlanSummary(), id: '22222222-2222-4222-8222-222222222222' },
+    ]);
+    routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+      routePlan: { ...routePlanSummary(), id: '11111111-1111-4111-8111-111111111111' },
+    }));
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/control/routes?serviceDate=2026-07-23',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(parseJsonBody<{ data: { routes: Array<{ routePlanId: string }> } }>(response).data.routes)
+        .toEqual([expect.objectContaining({ routePlanId: '11111111-1111-4111-8111-111111111111' })]);
+      expect(routePlanService.getRoutePlanDetail).toHaveBeenCalledTimes(1);
+      expect(storeReviewAccess.assertAccessible).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN' }),
+        { routePlanIds: ['22222222-2222-4222-8222-222222222222'] },
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('blocks operator writes to store review orders before command services run', async () => {
+    const protectedOrderId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
+      if (resources.orderIds?.includes(protectedOrderId) === true) {
+        return Promise.reject(new DsvForbiddenError({ principal, requiredScopes: ['dsv:accounts:read'] }));
+      }
+      return Promise.resolve();
+    });
+    const createOrderMessage = vi.fn<DsvOrderMessageService['create']>();
+    const orderMessageService: DsvOrderMessageService = {
+      create: createOrderMessage,
+      listCustomerMessages: vi.fn(),
+      markDriverMessageRead: vi.fn(),
+      updateCustomerNotificationSettings: vi.fn(),
+    };
+    const confirmTimeConstraint = vi.fn<DsvTimeConstraintCommandService['confirm']>();
+    const timeConstraintCommandService: DsvTimeConstraintCommandService = {
+      clear: vi.fn(),
+      confirm: confirmTimeConstraint,
+    };
+    const { app } = await createHarness({
+      adminScopes: dsvOperatorScopes,
+      orderMessageService,
+      storeReviewAccess,
+      timeConstraintCommandService,
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const message = await app.inject({
+        headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: { audience: 'DRIVER', body: '운행 전 확인', commandId: 'message-command-1' },
+        url: `/api/dsv/v1/seller-orders/${protectedOrderId}/messages`,
+      });
+      expect(message.statusCode).toBe(403);
+      expect(createOrderMessage).not.toHaveBeenCalled();
+
+      const confirm = await app.inject({
+        headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-confirm',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: 'UNASSIGNED',
+          timeWindowEnd: '11:00',
+          timeWindowStart: '10:30',
+        },
+        url: `/api/dsv/v1/seller-orders/${protectedOrderId}/time-constraint/confirm`,
+      });
+      expect(confirm.statusCode).toBe(403);
+      expect(confirmTimeConstraint).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('blocks operator dispatch changes through order and change-request ids', async () => {
+    const protectedOrderId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const protectedChangeRequestId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
+      if (
+        resources.orderIds?.includes(protectedOrderId) === true
+        || resources.changeRequestIds?.includes(protectedChangeRequestId) === true
+      ) {
+        return Promise.reject(new DsvForbiddenError({ principal, requiredScopes: ['dsv:accounts:read'] }));
+      }
+      return Promise.resolve();
+    });
+    const cancelDispatchChange = vi.fn<DsvDispatchChangeRequestService['cancel']>();
+    const recoverDispatch = vi.fn<DsvDispatchChangeRequestService['recoverCancelledToUnassigned']>();
+    const requestActiveRemoval = vi.fn<DsvDispatchChangeRequestService['requestActiveRemoval']>();
+    const dispatchChangeRequestService: DsvDispatchChangeRequestService = {
+      cancel: cancelDispatchChange,
+      recoverCancelledToUnassigned: recoverDispatch,
+      requestActiveRemoval,
+    };
+    const { app } = await createHarness({
+      adminScopes: dsvOperatorScopes,
+      dispatchChangeRequestService,
+      storeReviewAccess,
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const activeRemoval = await app.inject({
+        headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'remove-command',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: 'route-version-1',
+        },
+        url: `/api/dsv/v1/seller-orders/${protectedOrderId}/active-removal/request`,
+      });
+      expect(activeRemoval.statusCode).toBe(403);
+
+      const recovery = await app.inject({
+        headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: { commandId: 'recover-command' },
+        url: `/api/dsv/v1/seller-orders/${protectedOrderId}/recover-unassigned`,
+      });
+      expect(recovery.statusCode).toBe(403);
+
+      const cancellation = await app.inject({
+        headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: { commandId: 'cancel-command', expectedVersion: 'PENDING_ACK' },
+        url: `/api/dsv/v1/dispatch-change-requests/${protectedChangeRequestId}/cancel`,
+      });
+      expect(cancellation.statusCode).toBe(403);
+      expect(requestActiveRemoval).not.toHaveBeenCalled();
+      expect(recoverDispatch).not.toHaveBeenCalled();
+      expect(cancelDispatchChange).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -1351,8 +1514,11 @@ function timeConstraintCommandResult(status: 'CLEARED' | 'CONFIRMED') {
 }
 
 async function createHarness(options: {
+  adminScopes?: readonly DsvScope[];
+  dispatchChangeRequestService?: DsvDispatchChangeRequestService;
   mapProfile?: false;
   orderMessageService?: DsvOrderMessageService;
+  storeReviewAccess?: DsvV1ReadDependencies['storeReviewAccess'];
   timeConstraintCommandService?: DsvTimeConstraintCommandService;
 } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -1364,9 +1530,10 @@ async function createHarness(options: {
   const queryService = createQueryService();
   const routeGeometryProvider = createRouteGeometryProvider();
   const routePlanService = createRoutePlanService();
-  const sessionResolver = createSessionResolver();
+  const sessionResolver = createSessionResolver(options.adminScopes);
   const dependencies: DsvV1ReadDependencies = {
     cookieName,
+    ...(options.dispatchChangeRequestService === undefined ? {} : { dispatchChangeRequestService: options.dispatchChangeRequestService }),
     ...(options.mapProfile === false ? {} : { mapProfile: dsvMapProfile() }),
     queryService,
     routeGeometryProvider,
@@ -1375,6 +1542,7 @@ async function createHarness(options: {
     sessionResolver,
     sessionSecret,
     ...(options.orderMessageService === undefined ? {} : { orderMessageService: options.orderMessageService }),
+    storeReviewAccess: options.storeReviewAccess ?? createStoreReviewAccess(() => Promise.resolve()),
     ...(options.timeConstraintCommandService === undefined ? {} : { timeConstraintCommandService: options.timeConstraintCommandService }),
   };
   return { app: await buildApp({ dsvV1Read: dependencies }), queryService, routeGeometryProvider, routePlanService, sessionResolver };
@@ -1581,12 +1749,16 @@ type MockSessionResolver = {
   [Key in keyof DsvV1SessionResolver]: ReturnType<typeof vi.fn<DsvV1SessionResolver[Key]>>;
 };
 
-function createSessionResolver(): MockSessionResolver {
+function createSessionResolver(adminScopes?: readonly DsvScope[]): MockSessionResolver {
   return {
     invalidate: vi.fn(() => Promise.resolve()),
     resolve: vi.fn((subject) => {
       if (subject === 'dsv-shop:tomatonofood.com') {
-        return Promise.resolve(createDsvAdminPrincipal({ shopDomain: 'tomatonofood.com', shopId }));
+        return Promise.resolve(createDsvAdminPrincipal({
+          ...(adminScopes === undefined ? {} : { scopes: adminScopes }),
+          shopDomain: 'tomatonofood.com',
+          shopId,
+        }));
       }
       if (subject === `dsv-customer-account:${accountId}:1`) {
         return Promise.resolve(createDsvCustomerUserPrincipalFromAccount({
@@ -1601,6 +1773,12 @@ function createSessionResolver(): MockSessionResolver {
       return Promise.reject(new DsvV1AuthenticationError());
     }),
   };
+}
+
+function createStoreReviewAccess(
+  implementation: DsvV1ReadDependencies['storeReviewAccess']['assertAccessible'],
+): DsvV1ReadDependencies['storeReviewAccess'] {
+  return { assertAccessible: vi.fn(implementation) };
 }
 
 function signedCookie(subject: string, ttlMs = 60_000): { cookie: string; csrfToken: string } {

@@ -57,13 +57,19 @@ export type DriverSellerOrderAssignmentCommandKernel = {
 
 type DriverSellerOrderRouteContext = {
   groupingId: string;
+  isStoreReviewData: boolean;
 };
 
 export type DriverSellerOrderContextRepositoryContract = {
+  filterAccessibleOrderIds(input: {
+    isStoreReviewData: boolean;
+    orderIds: readonly string[];
+    shopId: string;
+  }): Promise<string[]>;
   findRouteContext(input: Pick<DriverRouteAccessScope, 'driverId' | 'routePlanId' | 'shopId'>): Promise<DriverSellerOrderRouteContext | null>;
 };
 
-type DriverSellerOrderContextPrismaClient = Pick<PrismaClient, 'routeGroupingChildVersion'>;
+type DriverSellerOrderContextPrismaClient = Pick<PrismaClient, 'order' | 'routeGroupingChildVersion'>;
 
 export class PrismaDriverSellerOrderContextRepository implements DriverSellerOrderContextRepositoryContract {
   constructor(private readonly prisma: DriverSellerOrderContextPrismaClient) {}
@@ -73,7 +79,8 @@ export class PrismaDriverSellerOrderContextRepository implements DriverSellerOrd
   ): Promise<DriverSellerOrderRouteContext | null> {
     const child = await this.prisma.routeGroupingChildVersion.findFirst({
       select: {
-        groupingId: true
+        groupingId: true,
+        routePlan: { select: { isStoreReviewData: true } }
       },
       where: {
         driverId: input.driverId,
@@ -83,8 +90,28 @@ export class PrismaDriverSellerOrderContextRepository implements DriverSellerOrd
       }
     });
 
-    if (child === null) return null;
-    return { groupingId: child.groupingId };
+    if (child === null || child.routePlan === null) return null;
+    return {
+      groupingId: child.groupingId,
+      isStoreReviewData: child.routePlan.isStoreReviewData
+    };
+  }
+
+  async filterAccessibleOrderIds(input: {
+    isStoreReviewData: boolean;
+    orderIds: readonly string[];
+    shopId: string;
+  }): Promise<string[]> {
+    if (input.orderIds.length === 0) return [];
+    const orders = await this.prisma.order.findMany({
+      select: { id: true },
+      where: {
+        id: { in: [...input.orderIds] },
+        isStoreReviewData: input.isStoreReviewData,
+        shopId: input.shopId
+      }
+    });
+    return orders.map((order) => order.id);
   }
 }
 
@@ -168,12 +195,19 @@ export class DriverSellerOrderAssignmentService implements DriverSellerOrderAssi
   ) {}
 
   async listUnassigned(input: DriverRouteAccessScope): Promise<DriverSellerOrder[]> {
-    const { grouping } = await this.loadScopedGrouping(input);
+    const { context, grouping } = await this.loadScopedGrouping(input);
     const assignments = assignmentMap(grouping);
-
-    return grouping.children
+    const candidateOrderIds = grouping.children
       .filter((child) => child.driverId === null && child.displayStatus === 'READY' && child.routePlanId !== null)
-      .flatMap((child) => child.orderIds)
+      .flatMap((child) => child.orderIds);
+    const accessibleOrderIds = new Set(await this.contextRepository.filterAccessibleOrderIds({
+      isStoreReviewData: context.isStoreReviewData,
+      orderIds: candidateOrderIds,
+      shopId: input.shopId
+    }));
+
+    return candidateOrderIds
+      .filter((orderId) => accessibleOrderIds.has(orderId))
       .map((orderId) => assignments.get(orderId))
       .filter((assignment): assignment is RouteGroupingAssignmentDto => assignment !== undefined)
       .sort((left, right) => left.sourceSequence - right.sourceSequence)

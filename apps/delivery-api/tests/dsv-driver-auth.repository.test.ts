@@ -54,6 +54,7 @@ describe('Prisma DSV driver auth repository', () => {
       include: { shop: { select: { shopDomain: true } } },
       where: {
         accountId: null,
+        isStoreReviewData: false,
         displayName: account.name,
         dsvProfile: { isNot: null },
         status: 'ACTIVE',
@@ -69,7 +70,7 @@ describe('Prisma DSV driver auth repository', () => {
         inviteCodeExpiresAt: null,
         phone: account.phone,
       },
-      where: { accountId: null, id: matchingDriver.id, status: 'ACTIVE' },
+      where: { accountId: null, id: matchingDriver.id, isStoreReviewData: false, status: 'ACTIVE' },
     });
     expect(transaction.dsvDriverProfile.update).toHaveBeenCalledWith({
       data: { lookupName: account.name },
@@ -189,7 +190,7 @@ describe('Prisma DSV driver auth repository', () => {
         inviteCodeExpiresAt: null,
         phone: unlinkedAccount.phone,
       },
-      where: { accountId: null, id: 'driver-id' },
+      where: { accountId: null, id: 'driver-id', isStoreReviewData: false },
     });
     expect(transaction.dsvDriverProfile.update).toHaveBeenCalledWith({
       data: { lookupName: unlinkedAccount.name },

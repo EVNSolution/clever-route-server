@@ -34,6 +34,28 @@ describe('DriverSellerOrderAssignmentService', () => {
     ]);
   });
 
+  test('lists only normal unassigned orders for a normal driver route in a mixed grouping', async () => {
+    const grouping = createMixedReviewGrouping();
+    const service = createService({ accessibleOrderIds: ['order-3'], grouping });
+
+    await expect(service.listUnassigned(scope)).resolves.toEqual([
+      expect.objectContaining({ orderId: 'order-3' })
+    ]);
+  });
+
+  test('lists only review unassigned orders for a store review driver route in a mixed grouping', async () => {
+    const grouping = createMixedReviewGrouping();
+    const service = createService({
+      accessibleOrderIds: ['order-4'],
+      grouping,
+      isStoreReviewData: true
+    });
+
+    await expect(service.listUnassigned(scope)).resolves.toEqual([
+      expect.objectContaining({ orderId: 'order-4' })
+    ]);
+  });
+
   test('acquires one indivisible SellerOrder into the authenticated driver route', async () => {
     const grouping = createGrouping();
     const saveDraft = vi.fn((input: SaveRouteGroupingDraftInput) => Promise.resolve(applyDraft(grouping, input)));
@@ -227,9 +249,11 @@ function commandScope(input: { expectedVersion?: string | null } = {}) {
 }
 
 function createService(input: {
+  accessibleOrderIds?: string[];
   commandKernel?: ConstructorParameters<typeof DriverSellerOrderAssignmentService>[2];
   getGrouping?: ReturnType<typeof vi.fn>;
   grouping: RouteGroupingDetailDto;
+  isStoreReviewData?: boolean;
   saveDraft?: ReturnType<typeof vi.fn>;
   vehicleId?: string | null;
 }): DriverSellerOrderAssignmentService {
@@ -238,8 +262,11 @@ function createService(input: {
   const routeGroupingService = { getGrouping, saveDraft } as unknown as RouteGroupingService;
   return new DriverSellerOrderAssignmentService(
     {
+      filterAccessibleOrderIds: vi.fn((filter: { orderIds: readonly string[] }) =>
+        Promise.resolve(input.accessibleOrderIds ?? [...filter.orderIds])),
       findRouteContext: vi.fn(() => Promise.resolve({
         groupingId: input.grouping.id,
+        isStoreReviewData: input.isStoreReviewData ?? false,
         vehicleId: input.vehicleId === undefined ? 'vehicle-1' : input.vehicleId
       }))
     },
@@ -293,6 +320,18 @@ function createGrouping(): RouteGroupingDetailDto {
     unresolvedOrders: 0,
     updatedAt: '2026-07-22T00:00:00.000Z',
     warningState: []
+  };
+}
+
+function createMixedReviewGrouping(): RouteGroupingDetailDto {
+  const grouping = createGrouping();
+  return {
+    ...grouping,
+    assignments: [...grouping.assignments, assignment('order-4', 4)],
+    children: grouping.children.map((route) => route.routePlanId === 'route-unassigned'
+      ? { ...route, orderIds: ['order-3', 'order-4'], stopsCount: 2 }
+      : route),
+    totalOrders: grouping.totalOrders + 1
   };
 }
 

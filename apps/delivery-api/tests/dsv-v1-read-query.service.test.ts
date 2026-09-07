@@ -320,7 +320,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(prisma.deliveryStop.findMany).toHaveBeenCalledOnce();
     const query = firstMockArg<DeliveryStopFindManyQuery>(prisma.deliveryStop.findMany);
     expect(query?.where?.shopId).toBe('shop-a');
-    expect(query?.where?.order).toEqual({ shopId: 'shop-a' });
+    expect(query?.where?.order).toEqual({ isStoreReviewData: false, shopId: 'shop-a' });
     expect(query?.select?.driverProofMedia.where).toEqual({ shopId: 'shop-a', uploadStatus: 'READY' });
   });
 
@@ -339,7 +339,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       skip: 50,
       take: 50,
       where: {
-        order: { shopId: 'shop-a' },
+        order: { isStoreReviewData: false, shopId: 'shop-a' },
         shopId: 'shop-a',
       },
     }));
@@ -678,7 +678,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(prisma.dsvVehicleDriverAssignment.findMany).toHaveBeenCalledWith({
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { driverId: true, id: true, vehicleId: true },
-      where: { shopId: 'shop-a', vehicleId: { in: ['vehicle-a', 'vehicle-b'] } },
+      where: {
+        driver: { isStoreReviewData: false },
+        shopId: 'shop-a',
+        vehicleId: { in: ['vehicle-a', 'vehicle-b'] },
+      },
     });
     expect(JSON.stringify(result.items.flatMap((item) => item.driverAssignments))).not.toMatch(
       /kind|displayName|phone|vehicleId/u
@@ -1048,10 +1052,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
       shopId: 'shop-a',
     });
     expect(routePlanQuery?.where).toEqual({
-        planDate: new Date('2026-08-04T00:00:00.000Z'),
-        shopId: 'shop-a',
-        status: { not: 'CANCELLED' },
-        vehicleId: 'vehicle-a',
+      isStoreReviewData: false,
+      planDate: new Date('2026-08-04T00:00:00.000Z'),
+      shopId: 'shop-a',
+      status: { not: 'CANCELLED' },
+      vehicleId: 'vehicle-a',
     });
     expect(prisma.uvisVehicleTelemetrySample.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
@@ -1438,12 +1443,126 @@ describe('PrismaDsvV1ReadQueryService', () => {
       trailMarker: { kind: 'RESTART', latitude: 38.0, longitude: 128.0, observedAt: '2026-08-03T23:32:30.000Z' },
     }]);
   });
+
+  test('filters store-review rows before pagination, counts, and summaries for non-developer principals', async () => {
+    const customerListPrisma = prismaMock({ $queryRaw: vi.fn(() => Promise.resolve([])) });
+    const destinationListPrisma = prismaMock({ $queryRaw: vi.fn(() => Promise.resolve([])) });
+    const recordsPrisma = prismaMock({
+      deliveryStop: {
+        count: vi.fn(() => Promise.resolve(0)),
+        findMany: vi.fn(() => Promise.resolve([])),
+      },
+    });
+    const dispatchPrisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([])) },
+    });
+    const driverPrisma = prismaMock({ driver: { findMany: vi.fn(() => Promise.resolve([])) } });
+
+    await new PrismaDsvV1ReadQueryService(dispatchPrisma as never).listDispatches(adminPrincipal(), {
+      serviceDate: '2026-07-22',
+    });
+    await new PrismaDsvV1ReadQueryService(recordsPrisma as never).listRecords(adminPrincipal());
+    await new PrismaDsvV1ReadQueryService(driverPrisma as never).listDrivers(adminPrincipal());
+    await new PrismaDsvV1ReadQueryService(customerListPrisma as never).listCustomers(adminPrincipal());
+    await new PrismaDsvV1ReadQueryService(destinationListPrisma as never).listDestinations(adminPrincipal());
+
+    expect(firstMockArg<OrderFindManyQuery>(dispatchPrisma.order.findMany)?.where).toMatchObject({
+      isStoreReviewData: false,
+      shopId: 'shop-a',
+    });
+    expect(recordsPrisma.deliveryStop.count).toHaveBeenCalledWith({
+      where: { order: { isStoreReviewData: false, shopId: 'shop-a' }, shopId: 'shop-a' },
+    });
+    expect(firstMockArg<OrderFindManyQuery>(driverPrisma.driver.findMany)?.where).toMatchObject({
+      isStoreReviewData: false,
+      shopId: 'shop-a',
+    });
+    const customerSql = sqlText((customerListPrisma.$queryRaw as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+    expect(customerSql).toContain('AND "isStoreReviewData" = false');
+    expect(customerSql).toContain('AND orders."isStoreReviewData" = false');
+    const destinationSql = sqlText((destinationListPrisma.$queryRaw as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+    expect(destinationSql).toContain('AND "isStoreReviewData" = false');
+  });
+
+  test('developer admin retains store-review rows in admin reads and customer-scope adapters', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never);
+
+    await service.listDispatches(developerAdminPrincipal(), { serviceDate: '2026-07-22' });
+    await service.listCustomerDeliveriesForAdmin(developerAdminPrincipal(), 'review-customer', {
+      serviceDate: '2026-07-22',
+    });
+    await service.listCustomerRouteScopeForAdmin(developerAdminPrincipal(), 'review-customer', '2026-07-22');
+
+    for (const [query] of (prisma.order.findMany as ReturnType<typeof vi.fn>).mock.calls) {
+      expect((query as { where: unknown }).where).not.toHaveProperty('isStoreReviewData');
+    }
+  });
+
+  test('developer admin retains review route sessions and review driver assignments', async () => {
+    const gpsPrisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: null })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const vehiclePrisma = prismaMock({
+      dsvVehicleDriverAssignment: { findMany: vi.fn(() => Promise.resolve([])) },
+      vehicle: { findMany: vi.fn(() => Promise.resolve([{
+        dsvProfile: { note: null, typeLabel: null },
+        dsvTelematicsDevice: null,
+        id: 'vehicle-a',
+        label: 'Vehicle A',
+        licensePlate: null,
+        status: 'ACTIVE',
+        vehicleType: 'VAN',
+      }])) },
+    });
+
+    await new PrismaDsvV1ReadQueryService(gpsPrisma as never).listVehicleGpsTrailHistory(
+      developerAdminPrincipal(),
+      { serviceDate: '2026-07-22', vehicleId: 'vehicle-a' },
+    );
+    await new PrismaDsvV1ReadQueryService(vehiclePrisma as never).listVehicles(developerAdminPrincipal());
+
+    expect(firstMockArg<OrderFindManyQuery>(gpsPrisma.routePlan.findMany)?.where).not.toHaveProperty('isStoreReviewData');
+    expect(firstMockArg<OrderFindManyQuery>(vehiclePrisma.dsvVehicleDriverAssignment.findMany)?.where)
+      .not.toHaveProperty('driver');
+  });
+
+  test('customer principals cannot read store-review orders or route scope', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never);
+
+    await service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-07-22' });
+    await service.listCustomerRouteScope(customerPrincipal(), '2026-07-22');
+
+    for (const [query] of (prisma.order.findMany as ReturnType<typeof vi.fn>).mock.calls) {
+      expect((query as { where: unknown }).where).toMatchObject({ isStoreReviewData: false, shopId: 'shop-a' });
+    }
+  });
 });
 
 function adminPrincipal(): DsvAdminPrincipal {
   return {
     principalType: 'DSV_ADMIN',
     scopes: ['dsv:dispatches:read'],
+    shopId: 'shop-a',
+  };
+}
+
+function developerAdminPrincipal(): DsvAdminPrincipal {
+  return {
+    principalType: 'DSV_ADMIN',
+    scopes: ['dsv:accounts:read', 'dsv:dispatches:read'],
     shopId: 'shop-a',
   };
 }
@@ -1491,7 +1610,7 @@ type OrderFindManyQuery = {
 type DeliveryStopFindManyQuery = {
   select?: { driverProofMedia: { where: { shopId: string; uploadStatus: string } } };
   where?: {
-    order?: { shopId: string };
+    order?: { isStoreReviewData?: boolean; shopId: string };
     shopId?: string;
   };
 };
