@@ -10,7 +10,6 @@ import {
   type RouteGroupingService
 } from '../route-grouping/route-grouping.types.js';
 import type { DriverRouteAccessScope } from './driver-token-access.repository.js';
-import { driverServiceDate } from './driver-route-timezone.js';
 
 export type DriverDeliveryBundle = {
   address: string;
@@ -329,8 +328,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
   ) {}
 
   async getSpace(input: DriverRouteAccessScope): Promise<DriverDeliverySpace> {
-    const { bundles, grouping } = await this.context(input);
-    const visibleBundles = isToday(grouping.planDate, this.now()) ? bundles : [];
+    const { bundles: visibleBundles, grouping } = await this.context(input);
     const handoffs = visibleBundles.length === 0 ? [] : await this.repository.listActiveHandoffs({
       driverId: input.driverId,
       groupingId: grouping.id,
@@ -353,16 +351,14 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
         input.driverId,
         'outgoing'
       ),
-      recipients: isToday(grouping.planDate, this.now())
-        ? deliveryRecipients(grouping.children, input.driverId).map(({ driverId, driverName }) => ({ driverId, driverName }))
-        : [],
+      recipients: deliveryRecipients(grouping.children, input.driverId)
+        .map(({ driverId, driverName }) => ({ driverId, driverName })),
       version: grouping.updatedAt
     };
   }
 
   async release(input: DriverDeliverySpaceCommand): Promise<DriverDeliverySpaceCommandResult> {
     const { bundles, grouping } = await this.context(input);
-    assertToday(grouping.planDate, this.now());
     assertVersion(grouping.updatedAt, input.expectedVersion);
     const bundle = requireBundle(bundles, input.destinationId);
     if (!isMine(bundle, input)) {
@@ -385,7 +381,6 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
 
   async acquire(input: DriverDeliverySpaceCommand): Promise<DriverDeliverySpaceCommandResult> {
     const { bundles, grouping } = await this.context(input);
-    assertToday(grouping.planDate, this.now());
     assertVersion(grouping.updatedAt, input.expectedVersion);
     const bundle = requireBundle(bundles, input.destinationId);
     if (!isAvailable(bundle)) {
@@ -414,7 +409,6 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
 
   async proposeHandoff(input: DriverDeliverySpaceTransferCommand): Promise<DriverBundleHandoffRequest> {
     const { bundles, grouping } = await this.context(input);
-    assertToday(grouping.planDate, this.now());
     assertVersion(grouping.updatedAt, input.expectedVersion);
     const bundle = requireBundle(bundles, input.destinationId);
     if (!isMine(bundle, input)) {
@@ -553,7 +547,6 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
     allowAlreadyApplied = false
   ): Promise<DriverDeliverySpaceCommandResult> {
     const { bundles, grouping } = await this.context(input);
-    assertToday(grouping.planDate, this.now());
     const bundle = requireBundle(bundles, input.destinationId);
     if (allowAlreadyApplied && isOwnedBy(bundle, input.targetDriverId, input.routePlanId)) {
       return { bundle: expose(bundle), routePlanId: input.routePlanId, version: grouping.updatedAt };
@@ -728,16 +721,6 @@ function requireBundle(bundles: InternalBundle[], destinationId: string): Intern
 
 function assertVersion(actual: string, expected: string): void {
   if (actual !== expected) throw error('DESTINATION_BUNDLE_ASSIGNMENT_CHANGED', '배송 배정이 변경되었습니다.');
-}
-
-function assertToday(planDate: string, now: Date): void {
-  if (!isToday(planDate, now)) {
-    throw error('DESTINATION_BUNDLE_TRANSFER_CLOSED', '공용 배송은 당일 배차에서만 변경할 수 있습니다.');
-  }
-}
-
-function isToday(planDate: string, now: Date): boolean {
-  return planDate === driverServiceDate(now);
 }
 
 function commandId(action: 'acquire' | 'release', input: DriverDeliverySpaceCommand, orderId: string): string {

@@ -203,26 +203,44 @@ describe('DriverDeliverySpaceService', () => {
     }));
   });
 
-  test('hides and rejects public delivery bundles outside the current Seoul service date', async () => {
+  test.each(['2026-08-03', '2026-08-05'])('uses selected route bundles and atomic commands for service date %s', async (planDate) => {
     const options = {
       now: new Date('2026-08-04T14:59:59.000Z'),
-      planDate: '2026-08-03'
+      planDate
     };
     const publicHarness = setup(bundleOrders('public'), options);
     const mineHarness = setup(bundleOrders('mine'), options);
 
     await expect(publicHarness.service.getSpace(scope())).resolves.toMatchObject({
-      available: []
+      available: [{ destinationId: 'dest-a', orderCount: 2 }]
     });
     await expect(mineHarness.service.getSpace(scope())).resolves.toMatchObject({
-      mine: []
+      mine: [{ destinationId: 'dest-a', orderCount: 2 }]
     });
     await expect(publicHarness.service.acquire({ ...scope(), destinationId: 'dest-a', expectedVersion: 'v1' }))
-      .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_TRANSFER_CLOSED' });
+      .resolves.toMatchObject({ routePlanId: 'route-driver' });
     await expect(mineHarness.service.release({ ...scope(), destinationId: 'dest-a', expectedVersion: 'v1' }))
+      .resolves.toMatchObject({ routePlanId: 'route-public' });
+    expect(publicHarness.reassignMany).toHaveBeenCalledTimes(1);
+    expect(mineHarness.unassignMany).toHaveBeenCalledTimes(1);
+  });
+
+  test('shows recipients and accepts a handoff for the selected previous date', async () => {
+    const harness = setup(bundleOrders('mine'), { planDate: '2026-08-02', recipients: true });
+    await expect(harness.service.getSpace(scope())).resolves.toMatchObject({ recipients: [{ driverId: 'driver-2' }] });
+    await harness.service.proposeHandoff({ ...scope(), destinationId: 'dest-a', expectedVersion: 'v1', targetDriverId: 'driver-2' });
+    await harness.service.acceptHandoff({ ...scope({ driverId: 'driver-2', routePlanId: 'route-recipient' }), requestId: 'handoff-1' });
+    expect(harness.reassignMany).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps closed-route and stale-version failures on previous dates', async () => {
+    const harness = setup(bundleOrders('mine'), { planDate: '2026-08-02' });
+    await expect(harness.service.release({ ...scope(), destinationId: 'dest-a', expectedVersion: 'stale' }))
+      .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_ASSIGNMENT_CHANGED' });
+    expect(harness.unassignMany).not.toHaveBeenCalled();
+    harness.unassignMany.mockRejectedValueOnce(new DsvAssignmentCommandError('SELLER_ORDER_TRANSFER_CLOSED'));
+    await expect(harness.service.release({ ...scope(), destinationId: 'dest-a', expectedVersion: 'v1' }))
       .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_TRANSFER_CLOSED' });
-    expect(publicHarness.reassignMany).not.toHaveBeenCalled();
-    expect(mineHarness.unassignMany).not.toHaveBeenCalled();
   });
 
   test('uses the Seoul calendar date at the UTC day boundary', async () => {
