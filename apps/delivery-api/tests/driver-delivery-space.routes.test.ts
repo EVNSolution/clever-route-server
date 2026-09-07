@@ -24,7 +24,7 @@ describe('driver delivery space routes', () => {
       const response = await app.inject({
         headers: { authorization: `Bearer ${driverToken()}` },
         method: 'GET',
-        url: '/driver/delivery-space'
+        url: '/driver/delivery-space?serviceDate=2026-08-02&routePlanId=other-route&driverId=other-driver'
       });
 
       expect(response.statusCode).toBe(200);
