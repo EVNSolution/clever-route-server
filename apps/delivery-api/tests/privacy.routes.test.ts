@@ -94,6 +94,7 @@ describe('privacy routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toContain('text/html');
       expect(response.body).toContain('CLEVER Driver 개인정보 처리방침');
+      expect(response.body).toContain('2026-09-07');
       expect(response.body).toContain('https://clever-route-api.cleversystem.ai/driver-app/privacy');
       expect(response.body).toContain('이브이앤솔루션 주식회사');
       expect(response.body).toContain('서울특별시 동작구 노량진로 10');
@@ -102,6 +103,21 @@ describe('privacy routes', () => {
       expect(response.body).toContain('계정 삭제');
       expect(response.body).toContain('기기 화면에만 표시');
       expect(response.body).toContain('백그라운드 위치를 수집하거나 서버로 전송하지 않습니다');
+      expect(response.body).toContain('현재 iOS 및 Android 버전');
+      expect(response.body).toContain('The current iOS and Android versions do not collect background location');
+      expect(response.body).toContain('사용자가 선택적으로 입력한 배송지 메모와 도착 안내');
+      expect(response.body).toContain('Android에서 알림 권한을 허용하고 알림을 등록하는 경우');
+      expect(response.body).toContain('FCM 푸시 토큰, Android 기기 식별자, 앱 식별자와 버전, 언어 및 시간대');
+      expect(response.body).toContain('운영 서버에서 로그인 계정과 연결하여 처리');
+      expect(response.body).toContain('요청 경로, 요청 식별자, 응답 상태, 응답 시간 및 오류 정보');
+      expect(response.body).toContain('경로·배송지 식별자가 포함될 수 있습니다');
+      expect(response.body).toContain('Google Firebase Cloud Messaging(FCM)');
+      expect(response.body).toContain('FCM에는 푸시 토큰과 알림 내용, 배차 경로 식별자 및 알림 유형');
+      expect(response.body).toContain('기기 설정에서 알림 권한을 거부하거나 해제');
+      expect(response.body).not.toContain('DriverSyncHeartbeat');
+      expect(response.body).not.toContain('sync-health');
+      expect(response.body).not.toContain('기본 90일');
+      expect(response.body).not.toContain('제출된 iOS 버전은');
       expect(response.body).not.toContain('pending operator/legal confirmation');
     } finally {
       await app.close();

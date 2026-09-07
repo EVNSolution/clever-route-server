@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 
 const LAST_UPDATED = '2026-05-22';
 const PUBLIC_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/privacy';
-const DRIVER_LAST_UPDATED = '2026-09-01';
+const DRIVER_LAST_UPDATED = '2026-09-07';
 const DRIVER_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/driver-app/privacy';
 const DRIVER_SUPPORT_URL = 'https://clever-route-api.cleversystem.ai/driver-app/support';
 const ROUTES_APP_LAST_UPDATED = '2026-09-01';
@@ -233,9 +233,10 @@ function renderDriverPrivacyPage(): string {
       <h2>2. 처리하는 정보 / Information we process</h2>
       <ul>
         <li><strong>계정 정보:</strong> 이름, 휴대전화 번호, 로그인 아이디, 서버 계정 식별자</li>
-        <li><strong>배송 업무 정보:</strong> 배정된 경로와 배송지, 주문·물품 표시 정보, 배송 상태, 시작·완료 이벤트와 타임스탬프</li>
+        <li><strong>배송 업무 정보:</strong> 배정된 경로와 배송지, 주문·물품 표시 정보, 배송 상태, 시작·완료 이벤트와 타임스탬프, 사용자가 선택적으로 입력한 배송지 메모와 도착 안내</li>
         <li><strong>배송 증빙:</strong> 사용자가 카메라로 촬영하거나 사진 앨범에서 선택해 업로드한 사진과 파일 메타데이터</li>
-        <li><strong>보안·운영 정보:</strong> 로그인과 세션 기록, 오류·접근 기록, 계정 삭제 요청 기록</li>
+        <li><strong>알림 등록 정보:</strong> Android에서 알림 권한을 허용하고 알림을 등록하는 경우 FCM 푸시 토큰, Android 기기 식별자, 앱 식별자와 버전, 언어 및 시간대를 운영 서버에서 로그인 계정과 연결하여 처리합니다.</li>
+        <li><strong>보안·운영 정보:</strong> 로그인과 세션 기록, 계정 삭제 요청 기록, 요청 경로, 요청 식별자, 응답 상태, 응답 시간 및 오류 정보. 서버 로그는 민감한 값을 가리는 처리를 적용하지만 경로·배송지 식별자가 포함될 수 있습니다.</li>
       </ul>
     </section>
 
@@ -244,6 +245,7 @@ function renderDriverPrivacyPage(): string {
       <ul>
         <li>배송원 계정 생성, 본인 확인, 로그인과 DSV 배송원 정보 연결</li>
         <li>배정된 배송 업무 표시, 경로 안내, 배송 상태와 증빙 처리</li>
+        <li>알림을 등록한 Android 기기에 배차 변경과 배송지 전달 요청 알림 제공</li>
         <li>서비스 보안, 오류 대응, 고객 지원과 운영 기록 확인</li>
         <li>계정 및 개인정보 열람·정정·삭제 요청 처리</li>
       </ul>
@@ -251,13 +253,14 @@ function renderDriverPrivacyPage(): string {
 
     <section>
       <h2>4. 위치 정보 / Location</h2>
-      <p>사용자가 지도 화면을 열고 위치 권한을 허용한 경우 현재 위치는 배송 지도의 기기 화면에만 표시됩니다. 제출된 iOS 버전은 백그라운드 위치를 수집하거나 서버로 전송하지 않습니다.</p>
-      <p>When the user opens the map and grants permission, current location is displayed only on the device. The submitted iOS version does not collect background location or upload the device's current location.</p>
+      <p>사용자가 지도 화면을 열고 위치 권한을 허용한 경우 현재 위치는 배송 지도의 기기 화면에만 표시됩니다. 현재 iOS 및 Android 버전은 백그라운드 위치를 수집하거나 서버로 전송하지 않습니다.</p>
+      <p>When the user opens the map and grants permission, current location is displayed only on the device. The current iOS and Android versions do not collect background location or upload the device's current location.</p>
     </section>
 
     <section>
       <h2>5. 처리 위탁 및 외부 서비스 / Service providers</h2>
       <p>서비스 제공을 위해 승인된 서버·데이터베이스·파일 저장소와 지도·경로 안내 서비스가 사용될 수 있습니다. 해당 제공자는 계약된 서비스 제공과 보안 운영에 필요한 범위에서만 정보를 처리합니다.</p>
+      <p>Android 알림 전송에는 Google Firebase Cloud Messaging(FCM)을 사용합니다. FCM에는 푸시 토큰과 알림 내용, 배차 경로 식별자 및 알림 유형 등 알림 전달·처리에 필요한 메타데이터를 전송합니다.</p>
       <p>개인정보는 법령상 요구, 이용자 보호 또는 서비스 제공을 위해 필요한 경우를 제외하고 판매하거나 광고·추적 목적으로 제공하지 않습니다.</p>
     </section>
 
@@ -269,6 +272,7 @@ function renderDriverPrivacyPage(): string {
 
     <section>
       <h2>7. 이용자 권리와 문의 / Your choices and contact</h2>
+      <p>알림은 선택 사항이며 기기 설정에서 알림 권한을 거부하거나 해제할 수 있습니다.</p>
       <p>개인정보 열람, 정정, 처리 정지 또는 삭제 문의는 <a href="mailto:chase@evnsolution.com">chase@evnsolution.com</a> 또는 <a href="tel:070-8028-3180">070-8028-3180</a>으로 접수할 수 있습니다.</p>
       <p>일반 앱 지원은 <a href="${DRIVER_SUPPORT_URL}">${DRIVER_SUPPORT_URL}</a>에서 확인할 수 있습니다.</p>
     </section>`,
