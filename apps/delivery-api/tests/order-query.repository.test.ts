@@ -262,6 +262,50 @@ describe('PrismaOrderQueryRepository page query', () => {
     expect(whereJson).toContain('2026-08-04T00:00:00.000Z');
   });
 
+  test('uses one pickup-completion cutoff for page rows and exact count', async () => {
+    const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>(() => Promise.resolve([]));
+    const count = vi.fn<(query: unknown) => Promise<number>>(() => Promise.resolve(4));
+    const now = new Date('2026-09-05T04:00:00.000Z');
+    const repository = new PrismaOrderQueryRepository(
+      prismaHarness({ count, findMany, missingSequence: null }),
+      'test-secret',
+      () => now
+    );
+
+    await repository.listPage({
+      filters: { deliveryState: 'delivered' },
+      page: 1,
+      shopDomain: 'example.myshopify.com'
+    });
+
+    const countWhere = (count.mock.calls.at(-1)?.[0] as { where: unknown }).where;
+    const rowsWhere = (firstCallArg(findMany) as { where: { AND: unknown[] } }).where;
+    expect(rowsWhere).toEqual(countWhere);
+    const whereJson = JSON.stringify(countWhere);
+    expect(whereJson).toContain('PICKUP');
+    expect(whereJson).toContain('2026-09-05T04:00:00.000Z');
+    expect(whereJson).toContain('DELIVERED');
+  });
+
+  test('uses the same pickup-completion semantics in delivery-state facets', async () => {
+    const count = vi.fn<(query: unknown) => Promise<number>>(() => Promise.resolve(1));
+    const groupBy = vi.fn(() => Promise.resolve([]));
+    const now = new Date('2026-09-05T04:00:00.000Z');
+    const repository = new PrismaOrderQueryRepository({
+      order: { count },
+      orderDeliveryFact: { groupBy },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ id: 'shop-1' })) }
+    } as unknown as PrismaClient, 'test-secret', () => now);
+
+    await repository.facets({ shopDomain: 'example.myshopify.com' });
+
+    const stateQueries = count.mock.calls.slice(1).map((call) => JSON.stringify(call[0]));
+    const delivered = stateQueries.find((query) => query.includes('DELIVERED') && query.includes('PICKUP'));
+    const pastDue = stateQueries.find((query) => query.includes('deliveryDate') && query.includes('NOT'));
+    expect(delivered).toContain('2026-09-05T04:00:00.000Z');
+    expect(pastDue).toContain('PICKUP');
+  });
+
   test('treats legacy Shopify open and restocked statuses as unfulfilled', async () => {
     const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>(() => Promise.resolve([]));
     const repository = new PrismaOrderQueryRepository(

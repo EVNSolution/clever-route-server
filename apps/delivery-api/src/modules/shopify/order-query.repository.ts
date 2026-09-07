@@ -68,7 +68,8 @@ export class OrdersPaginationNotReadyError extends Error {
 export class PrismaOrderQueryRepository {
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly secret: string
+    private readonly secret: string,
+    private readonly now: () => Date = () => new Date()
   ) {}
 
   async listPage(input: {
@@ -87,6 +88,7 @@ export class PrismaOrderQueryRepository {
       throw new Error('page cannot be combined with cursors');
     }
     const filters = input.filters ?? {};
+    const now = this.now();
     const shop = await this.findShop(input);
     if (shop === null) return emptyPage(createOrdersFilterHash(filters, this.secret));
     const appId = normalizeShopifyAppId(input.appId);
@@ -97,6 +99,7 @@ export class PrismaOrderQueryRepository {
         filterHash,
         filters,
         page: input.page,
+        now,
         ...(input.readWatermark === undefined ? {} : { readWatermark: input.readWatermark }),
         shopId: shop.id
       });
@@ -110,7 +113,7 @@ export class PrismaOrderQueryRepository {
       shopId: shop.id
     }, this.secret);
     const readWatermark = cursor?.readWatermark ?? new Date().toISOString();
-    await this.ensureVisibleOrderSequencesReady(shop.id, filters);
+    await this.ensureVisibleOrderSequencesReady(shop.id, filters, now);
     const tupleWhere: Prisma.OrderWhereInput = cursor === null ? {} : boundary === 'after'
       ? {
           AND: [
@@ -138,7 +141,7 @@ export class PrismaOrderQueryRepository {
       take: ORDERS_PAGE_SIZE + 1,
       where: {
         AND: [
-          toCanonicalOrderWhere(shop.id, filters),
+          toCanonicalOrderWhere(shop.id, filters, now),
           { createdAt: { lte: new Date(readWatermark) }, displayOrderSequence: { not: null } },
           tupleWhere
         ]
@@ -171,17 +174,18 @@ export class PrismaOrderQueryRepository {
     filterHash: string;
     filters: ListCanonicalOrdersFilters;
     page: number;
+    now: Date;
     readWatermark?: string;
     shopId: string;
   }): Promise<OrdersPageResult> {
     if (!Number.isSafeInteger(input.page) || input.page < 1) throw new Error('invalid page');
     const readWatermark = input.readWatermark ?? new Date().toISOString();
     if (!Number.isFinite(Date.parse(readWatermark))) throw new Error('invalid readWatermark');
-    await this.ensureVisibleOrderSequencesReady(input.shopId, input.filters);
+    await this.ensureVisibleOrderSequencesReady(input.shopId, input.filters, input.now);
 
     const where: Prisma.OrderWhereInput = {
       AND: [
-        toCanonicalOrderWhere(input.shopId, input.filters),
+        toCanonicalOrderWhere(input.shopId, input.filters, input.now),
         { createdAt: { lte: new Date(readWatermark) }, displayOrderSequence: { not: null } }
       ]
     };
@@ -216,6 +220,7 @@ export class PrismaOrderQueryRepository {
 
   async facets(input: { appId?: string; filters?: ListCanonicalOrdersFilters; shopDomain: string }) {
     const filters = input.filters ?? {};
+    const now = this.now();
     const shop = await this.findShop(input);
     const filterHash = createOrdersFilterHash(filters, this.secret);
     if (shop === null) return { countPrecision: 'exact' as const, facets: emptyFacets(), filterHash, totalCount: 0 };
@@ -226,13 +231,13 @@ export class PrismaOrderQueryRepository {
     };
     const deliveryStates = ['unplanned', 'planned', 'assigned_undelivered', 'past_due', 'delivered', 'fulfilled', 'unfulfilled'] as const;
     const [totalCount, areas, dates, weekdays, services, stateCounts] = await Promise.all([
-      this.prisma.order.count({ where: toCanonicalOrderWhere(shop.id, filters) }),
-      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryArea'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shop.id, without('deliveryArea')) } }),
-      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryDate'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shop.id, without('deliveryDate')) } }),
-      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryWeekday'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shop.id, without('deliveryWeekday')) } }),
-      this.prisma.orderDeliveryFact.groupBy({ by: ['serviceType'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shop.id, without('serviceType')) } }),
+      this.prisma.order.count({ where: toCanonicalOrderWhere(shop.id, filters, now) }),
+      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryArea'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shop.id, without('deliveryArea'), now) } }),
+      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryDate'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shop.id, without('deliveryDate'), now) } }),
+      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryWeekday'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shop.id, without('deliveryWeekday'), now) } }),
+      this.prisma.orderDeliveryFact.groupBy({ by: ['serviceType'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shop.id, without('serviceType'), now) } }),
       Promise.all(deliveryStates.map(async (value) => ({
-        count: await this.prisma.order.count({ where: toCanonicalOrderWhere(shop.id, { ...without('deliveryState'), deliveryState: value }) }),
+        count: await this.prisma.order.count({ where: toCanonicalOrderWhere(shop.id, { ...without('deliveryState'), deliveryState: value }, now) }),
         value
       })))
     ]);
@@ -256,7 +261,8 @@ export class PrismaOrderQueryRepository {
     const filterHash = createOrdersFilterHash(filters, this.secret);
     if (shop === null) return { filterHash, generatedAt: new Date().toISOString(), omittedCount: 0, points: [] };
     const boundedLimit = Math.min(Math.max(input.limit, 1), 2_000);
-    const where = toCanonicalOrderWhere(shop.id, filters);
+    const now = this.now();
+    const where = toCanonicalOrderWhere(shop.id, filters, now);
     const [orders, totalCount] = await this.prisma.$transaction([
       this.prisma.order.findMany({
         orderBy: [{ displayOrderSequence: 'desc' }, { id: 'desc' }],
@@ -313,7 +319,7 @@ export class PrismaOrderQueryRepository {
     const shop = await this.findShop(input);
     if (shop === null || input.actor.trim() === '') throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
     const appId = normalizeShopifyAppId(input.appId);
-    const now = new Date();
+    const now = this.now();
     const expiresAt = new Date(now.getTime() + SNAPSHOT_TTL_MS);
     const token = randomBytes(32).toString('base64url');
     const tokenHash = keyedHash(this.secret, token);
@@ -324,7 +330,7 @@ export class PrismaOrderQueryRepository {
       const members = await tx.order.findMany({
         select: { id: true },
         where: { AND: [
-          toCanonicalOrderWhere(shop.id, filters),
+          toCanonicalOrderWhere(shop.id, filters, now),
           { createdAt: { lte: now }, displayOrderSequence: { not: null } }
         ] }
       });
@@ -539,8 +545,8 @@ export class PrismaOrderQueryRepository {
     return encodeOrdersCursor({ ...context, orderId: record.id, sequence: String(record.displayOrderSequence) }, this.secret);
   }
 
-  private async ensureVisibleOrderSequencesReady(shopId: string, filters: ListCanonicalOrdersFilters) {
-    const baseWhere = toCanonicalOrderWhere(shopId, filters);
+  private async ensureVisibleOrderSequencesReady(shopId: string, filters: ListCanonicalOrdersFilters, now: Date) {
+    const baseWhere = toCanonicalOrderWhere(shopId, filters, now);
     const repairCandidates = await this.prisma.order.findMany({
       select: { id: true, name: true, sourceOrderNumber: true },
       take: ORDERS_SEQUENCE_INLINE_REPAIR_LIMIT + 1,

@@ -1,4 +1,5 @@
 import type { CanonicalOrderRow } from './order-sync.mapper.js';
+import { isPickupComplete } from './pickup-order-completion.js';
 
 export const OPERATE_DELIVERY_STATUSES = ['preparing', 'ready', 'in_progress', 'completed'] as const;
 export type OperateDeliveryStatus = (typeof OPERATE_DELIVERY_STATUSES)[number];
@@ -21,8 +22,8 @@ export function deriveOrderHealth(row: CanonicalOrderRow): OrderHealth {
   return 'normal';
 }
 
-export function deriveOperateDeliveryStatus(row: CanonicalOrderRow): OperateDeliveryStatus {
-  if (row.deliveryStopStatus === 'DELIVERED') {
+export function deriveOperateDeliveryStatus(row: CanonicalOrderRow, now: Date = new Date()): OperateDeliveryStatus {
+  if (row.deliveryStopStatus === 'DELIVERED' || isCompletedPickup(row, now)) {
     return 'completed';
   }
 
@@ -39,6 +40,15 @@ export function deriveOperateDeliveryStatus(row: CanonicalOrderRow): OperateDeli
   }
 
   return 'preparing';
+}
+
+function isCompletedPickup(row: CanonicalOrderRow, now: Date): boolean {
+  return isPickupComplete({
+    cancelledAt: row.cancelledAt,
+    deliveryDate: row.deliveryDate,
+    serviceType: row.serviceType,
+    timeWindowEnd: row.pickupCompleteAfter ?? null
+  }, now);
 }
 
 function hasActiveRouteState(row: CanonicalOrderRow): boolean {
