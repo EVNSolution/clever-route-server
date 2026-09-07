@@ -10,6 +10,8 @@ import {
   PrismaDsvDispatchImportService,
 } from '../src/modules/dsv/dsv-dispatch-import.service.js';
 import { sha256CanonicalJson } from '../src/modules/dsv/dsv-dispatch-preview-diff.js';
+import { createDsvAdminPrincipal, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
+import { PrismaDsvV1ReadQueryService } from '../src/modules/dsv/dsv-v1-read-query.service.js';
 
 const safeTargetClass = 'safe-local-g003-temp-cluster';
 const databaseUrl = process.env.DATABASE_URL ?? '';
@@ -47,6 +49,75 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     expect(staged.rows).toHaveLength(1);
     expect(staged.rows[0]?.normalized).toMatchObject({ sellerOrderKey: fixture.sellerOrderKey });
     await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toEqual(countsBefore);
+  });
+
+  test('does not let a normal import match the Google Play review driver', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'review-driver-isolation');
+    const input = withAssignedFixtureResources(fixture.input);
+    await prisma.driver.update({
+      data: { isStoreReviewData: true },
+      where: { id: fixture.driverId },
+    });
+
+    const preview = await new PrismaDsvDispatchImportService(prisma).preview({
+      ...input,
+      shopDomain: fixture.shopDomain,
+    });
+
+    expect(preview.canApply).toBe(false);
+    expect(preview.rows[0]).toMatchObject({
+      driverId: null,
+      status: 'NEEDS_REVIEW',
+    });
+    expect(preview.rows[0]?.issues).toContainEqual(expect.objectContaining({
+      code: 'DISPATCH_IMPORT_CANONICAL_CONFLICT',
+      severity: 'error',
+    }));
+  });
+
+  test('keeps a review import canonical graph and generated route marked as review-only', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'review-graph-propagation');
+    const input = withAssignedFixtureResources(fixture.input);
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const staged = await service.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    await prisma.$transaction([
+      prisma.driver.update({ data: { isStoreReviewData: true }, where: { id: fixture.driverId } }),
+      prisma.dsvDispatchImport.update({ data: { isStoreReviewData: true }, where: { id: staged.id } }),
+    ]);
+
+    const applied = await service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-review-graph-propagation',
+    ));
+    const row = applied.rows[0];
+    expect(row).toBeDefined();
+    const [customer, destination, order, routePlan] = await Promise.all([
+      prisma.customer.findUniqueOrThrow({ where: { id: row?.customerId ?? '' } }),
+      prisma.deliveryCustomerProfile.findUniqueOrThrow({ where: { id: row?.destinationId ?? '' } }),
+      prisma.order.findUniqueOrThrow({ where: { id: row?.sellerOrderId ?? '' } }),
+      prisma.routePlan.findFirstOrThrow({
+        where: { routeStops: { some: { deliveryStopId: row?.deliveryStopId ?? '' } }, shopId: fixture.shopId },
+      }),
+    ]);
+
+    expect([customer, destination, order, routePlan].every((record) => record.isStoreReviewData)).toBe(true);
+  });
+
+  test('shows a review driver to developer admins but not operators in the real query service', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'review-driver-query-visibility');
+    await prisma.driver.update({ data: { isStoreReviewData: true }, where: { id: fixture.driverId } });
+    const service = new PrismaDsvV1ReadQueryService(prisma);
+
+    const operator = await service.listDrivers(createDsvAdminPrincipal({
+      scopes: dsvOperatorScopes,
+      shopId: fixture.shopId,
+    }));
+    const developer = await service.listDrivers(createDsvAdminPrincipal({ shopId: fixture.shopId }));
+
+    expect(operator.items.map((driver) => driver.driverId)).not.toContain(fixture.driverId);
+    expect(developer.items.map((driver) => driver.driverId)).toContain(fixture.driverId);
   });
 
   test('applies a consolidated order with zero shipped boxes', async () => {
@@ -1633,6 +1704,17 @@ function dispatchInput(sellerOrderKey: string): DsvDispatchImportInput {
       shippedBoxes: 3,
       vehiclePlate: '',
     }],
+  };
+}
+
+function withAssignedFixtureResources(input: DsvDispatchImportInput): DsvDispatchImportInput {
+  return {
+    ...input,
+    rows: input.rows.map((row) => ({
+      ...row,
+      driverName: 'Driver One',
+      vehiclePlate: '12A3456',
+    })),
   };
 }
 

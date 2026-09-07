@@ -29,15 +29,18 @@ type DriverRoutePlanRecord = {
   driver: {
     account: {
       id: string;
+      isStoreReviewAccount?: boolean;
       status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
       tokenVersion: number;
     } | null;
     accountId: string | null;
     authSubject: string | null;
     id: string;
+    isStoreReviewData?: boolean;
     status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
   } | null;
   id: string;
+  isStoreReviewData?: boolean;
   name: string;
   planDate: Date;
   routeGroupingChildVersions?: Array<{ id: string }>;
@@ -52,14 +55,16 @@ const routePlanSelect = {
   constraints: true,
   driver: {
     select: {
-      account: { select: { id: true, status: true, tokenVersion: true } },
+      account: { select: { id: true, isStoreReviewAccount: true, status: true, tokenVersion: true } },
       accountId: true,
       authSubject: true,
       id: true,
+      isStoreReviewData: true,
       status: true
     }
   },
   id: true,
+  isStoreReviewData: true,
   name: true,
   planDate: true,
   routeGroupingChildVersions: {
@@ -179,6 +184,7 @@ export class PrismaDriverRouteAccessRepository {
     const drivers = await this.prisma.driver.findMany({
       select: {
         id: true,
+        isStoreReviewData: true,
         shop: { select: { id: true, shopDomain: true } }
       },
       where: {
@@ -196,13 +202,14 @@ export class PrismaDriverRouteAccessRepository {
         ],
         select: { groupingId: true },
         where: {
-          currentOrders: { some: {} },
+          currentOrders: { some: { isStoreReviewData: driver.isStoreReviewData === true } },
           driverId: null,
           grouping: {
             planDate: driverServiceDateAsDbDate(this.now()),
             status: 'READY'
           },
           routePlanId: { not: null },
+          routePlan: { isStoreReviewData: driver.isStoreReviewData === true },
           shopId: driver.shop.id,
           status: 'CURRENT',
           supersededAt: null
@@ -294,6 +301,11 @@ function mapRoutePlan(
     routePlan.driver.accountId !== input.accountId ||
     routePlan.driver.account?.id !== input.accountId
   ) {
+    return { status: 'NOT_FOUND' };
+  }
+
+  if ((routePlan.isStoreReviewData === true) !== (routePlan.driver.isStoreReviewData === true)
+    || (routePlan.driver.isStoreReviewData === true) !== (routePlan.driver.account.isStoreReviewAccount === true)) {
     return { status: 'NOT_FOUND' };
   }
 

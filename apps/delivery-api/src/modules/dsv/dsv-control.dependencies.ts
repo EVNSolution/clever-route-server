@@ -42,6 +42,7 @@ import {
 } from './dsv-address-canonicalization.js';
 import { DsvRouteOptimizationScheduler } from './dsv-route-optimization.scheduler.js';
 import { PrismaDsvDriverInquiryRepository } from './dsv-driver-inquiry.repository.js';
+import { PrismaDsvStoreReviewAccess } from './dsv-store-review-access.js';
 
 export type DsvControlRuntimeEnv = AdminRouteGroupRuntimeEnv
   & DsvManualEmailRuntimeEnv
@@ -92,6 +93,7 @@ export function loadDsvControlDependencies(input: {
   const routeOptimizationScheduler = loadDsvRouteOptimizationScheduler(input);
   const settingsService = new PrismaAdminStoreSettingsService(input.prisma);
   const webPublicOrigin = loadDsvCustomerAccountWebPublicOrigin(input.env.CLEVER_DSV_WEB_PUBLIC_URL);
+  const storeReviewAccess = new PrismaDsvStoreReviewAccess(input.prisma);
 
   return {
     addressCanonicalizer,
@@ -120,10 +122,11 @@ export function loadDsvControlDependencies(input: {
     geocodingService,
     manualEmailService,
     repository: new PrismaDsvControlRepository(input.prisma),
-    resourceService: new PrismaDsvResourceService(input.prisma),
+    resourceService: new PrismaDsvResourceService(input.prisma, storeReviewAccess),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,
     settingsService,
+    storeReviewAccess,
   };
 }
 

@@ -883,6 +883,7 @@ model ShopifyOrderReconciliationJob {
 }
 
 model Order {
+  isStoreReviewData             Boolean                            @default(false)
   id                            String                             @id @default(uuid()) @db.Uuid
   shopId                        String                             @db.Uuid
   shop                          Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -994,6 +995,7 @@ model OrderSelectionSnapshotOrder {
 }
 
 model Customer {
+  isStoreReviewData           Boolean                    @default(false)
   id                         String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                     String                     @db.Uuid
   shop                       Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -1244,6 +1246,7 @@ model DeliveryStop {
 }
 
 model DeliveryCustomerProfile {
+  isStoreReviewData                  Boolean                            @default(false)
   id                                 String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                             String                             @db.Uuid
   shop                               Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -1407,6 +1410,7 @@ model OrderDeliveryFact {
 }
 
 model RoutePlan {
+  isStoreReviewData                Boolean                          @default(false)
   id                              String                           @id @default(uuid()) @db.Uuid
   shopId                          String                           @db.Uuid
   shop                            Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -1577,6 +1581,7 @@ model RoutePlanStop {
 }
 
 model Driver {
+  isStoreReviewData          Boolean                          @default(false)
   id                         String                           @id @default(uuid()) @db.Uuid
   accountId                  String?                          @db.Uuid
   account                    DriverAccount?                   @relation(fields: [accountId], references: [id], onDelete: SetNull)
@@ -1685,6 +1690,7 @@ model RoutesAppReleaseChannel {
 }
 
 model DriverAccount {
+  isStoreReviewAccount           Boolean                       @default(false)
   id                             String                        @id @default(uuid()) @db.Uuid
   phone                          String                        @unique @db.Text
   name                           String?                       @db.VarChar(80)
@@ -2700,6 +2706,7 @@ model DsvTransportCondition {
 }
 
 model DsvDispatchImport {
+  isStoreReviewData   Boolean                 @default(false)
   id                 String                  @id @default(uuid()) @db.Uuid
   shopId             String                  @db.Uuid
   shop               Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)

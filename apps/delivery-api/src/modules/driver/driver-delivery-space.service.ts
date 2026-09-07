@@ -118,10 +118,16 @@ export type DriverDeliverySpaceRepositoryContract = {
     childVersionId: string;
     groupingId: string;
     groupingVersion: number;
+    isStoreReviewData: boolean;
   } | null>;
+  filterAccessibleRoutePlanIds(input: {
+    isStoreReviewData: boolean;
+    routePlanIds: readonly string[];
+    shopId: string;
+  }): Promise<string[]>;
   getHandoff(input: { requestId: string; shopId: string }): Promise<StoredHandoff | null>;
   listActiveHandoffs(input: { driverId: string; groupingId: string; shopId: string }): Promise<StoredHandoff[]>;
-  listBundleOrders(input: { groupingId: string; shopId: string }): Promise<BundleOrder[]>;
+  listBundleOrders(input: { groupingId: string; isStoreReviewData: boolean; shopId: string }): Promise<BundleOrder[]>;
   recordHandoffNotification(input: {
     childVersionId: string;
     driverId: string;
@@ -140,7 +146,7 @@ export type DriverDeliverySpaceRepositoryContract = {
   }): Promise<StoredHandoff>;
 };
 
-type SpacePrisma = Pick<PrismaClient, 'driverBundleHandoffRequest' | 'driverRouteNotificationAttempt' | 'dsvDispatchImportRow' | 'routeGroupingChildVersion'>;
+type SpacePrisma = Pick<PrismaClient, 'driverBundleHandoffRequest' | 'driverRouteNotificationAttempt' | 'dsvDispatchImportRow' | 'routeGroupingChildVersion' | 'routePlan'>;
 type AssignmentCommands = Pick<DsvAssignmentCommandService, 'reassignMany' | 'unassignMany'>;
 
 export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceRepositoryContract {
@@ -159,7 +165,12 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
 
   async findRouteContext(input: Pick<DriverRouteAccessScope, 'driverId' | 'routePlanId' | 'shopId'>) {
     const child = await this.prisma.routeGroupingChildVersion.findFirst({
-      select: { groupingId: true, id: true, version: true },
+      select: {
+        groupingId: true,
+        id: true,
+        routePlan: { select: { isStoreReviewData: true } },
+        version: true
+      },
       where: {
         driverId: input.driverId,
         routePlanId: input.routePlanId,
@@ -167,11 +178,29 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
         status: 'CURRENT'
       }
     });
-    return child === null ? null : {
+    return child === null || child.routePlan === null ? null : {
       childVersionId: child.id,
       groupingId: child.groupingId,
-      groupingVersion: child.version
+      groupingVersion: child.version,
+      isStoreReviewData: child.routePlan.isStoreReviewData
     };
+  }
+
+  async filterAccessibleRoutePlanIds(input: {
+    isStoreReviewData: boolean;
+    routePlanIds: readonly string[];
+    shopId: string;
+  }): Promise<string[]> {
+    if (input.routePlanIds.length === 0) return [];
+    const routePlans = await this.prisma.routePlan.findMany({
+      select: { id: true },
+      where: {
+        id: { in: [...input.routePlanIds] },
+        isStoreReviewData: input.isStoreReviewData,
+        shopId: input.shopId
+      }
+    });
+    return routePlans.map((routePlan) => routePlan.id);
   }
 
   async getHandoff(input: { requestId: string; shopId: string }): Promise<StoredHandoff | null> {
@@ -201,7 +230,7 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
     return handoffs.filter((handoff) => handoff.status === 'PROCESSING' || handoff.expiresAt.getTime() > now.getTime());
   }
 
-  async listBundleOrders(input: { groupingId: string; shopId: string }): Promise<BundleOrder[]> {
+  async listBundleOrders(input: { groupingId: string; isStoreReviewData: boolean; shopId: string }): Promise<BundleOrder[]> {
     const rows = await this.prisma.dsvDispatchImportRow.findMany({
       orderBy: { createdAt: 'desc' },
       select: {
@@ -222,7 +251,11 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
       },
       where: {
         destinationId: { not: null },
-        sellerOrder: { currentRouteVersion: { groupingId: input.groupingId, status: 'CURRENT', supersededAt: null } },
+        importRecord: { isStoreReviewData: input.isStoreReviewData },
+        sellerOrder: {
+          currentRouteVersion: { groupingId: input.groupingId, status: 'CURRENT', supersededAt: null },
+          isStoreReviewData: input.isStoreReviewData
+        },
         shopId: input.shopId,
         status: 'APPLIED'
       }
@@ -328,30 +361,33 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
   ) {}
 
   async getSpace(input: DriverRouteAccessScope): Promise<DriverDeliverySpace> {
-    const { bundles: visibleBundles, grouping } = await this.context(input);
+    const { bundles: visibleBundles, grouping, visibleChildren } = await this.context(input);
     const handoffs = visibleBundles.length === 0 ? [] : await this.repository.listActiveHandoffs({
       driverId: input.driverId,
       groupingId: grouping.id,
       shopId: input.shopId
     });
+    const visibleRoutePlanIds = new Set(visibleChildren.flatMap((child) => child.routePlanId === null ? [] : [child.routePlanId]));
+    const visibleHandoffs = handoffs.filter((handoff) =>
+      visibleRoutePlanIds.has(handoff.sourceRoutePlanId) && visibleRoutePlanIds.has(handoff.targetRoutePlanId));
     return {
       available: visibleBundles.filter(isAvailable).map(expose),
       incomingHandoffs: exposeHandoffs(
-        handoffs,
+        visibleHandoffs,
         visibleBundles,
-        grouping.children,
+        visibleChildren,
         input.driverId,
         'incoming'
       ),
       mine: visibleBundles.filter((bundle) => isMine(bundle, input)).map(expose),
       outgoingHandoffs: exposeHandoffs(
-        handoffs,
+        visibleHandoffs,
         visibleBundles,
-        grouping.children,
+        visibleChildren,
         input.driverId,
         'outgoing'
       ),
-      recipients: deliveryRecipients(grouping.children, input.driverId)
+      recipients: deliveryRecipients(visibleChildren, input.driverId)
         .map(({ driverId, driverName }) => ({ driverId, driverName })),
       version: grouping.updatedAt
     };
@@ -408,13 +444,13 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
   }
 
   async proposeHandoff(input: DriverDeliverySpaceTransferCommand): Promise<DriverBundleHandoffRequest> {
-    const { bundles, grouping } = await this.context(input);
+    const { bundles, grouping, visibleChildren } = await this.context(input);
     assertVersion(grouping.updatedAt, input.expectedVersion);
     const bundle = requireBundle(bundles, input.destinationId);
     if (!isMine(bundle, input)) {
       throw error('DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED', '내 배송지만 전달할 수 있습니다.');
     }
-    const recipient = deliveryRecipients(grouping.children, input.driverId)
+    const recipient = deliveryRecipients(visibleChildren, input.driverId)
       .find((candidate) => candidate.driverId === input.targetDriverId);
     if (recipient === undefined) {
       throw error('DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED', '현재 배차의 다른 배송원에게만 전달할 수 있습니다.');
@@ -456,7 +492,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
         shopId: input.shopId
       });
     }
-    return exposeHandoff(request, bundle, grouping.children, 'outgoing');
+    return exposeHandoff(request, bundle, visibleChildren, 'outgoing');
   }
 
   async acceptHandoff(input: DriverDeliverySpaceHandoffDecision): Promise<DriverDeliverySpaceCommandResult> {
@@ -497,21 +533,21 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
 
   async rejectHandoff(input: DriverDeliverySpaceHandoffDecision): Promise<DriverBundleHandoffRequest> {
     const request = await this.requireHandoffForTarget(input);
-    const { bundles, grouping } = await this.context(input);
+    const { bundles, visibleChildren } = await this.context(input);
     const bundle = requireBundle(bundles, request.destinationId);
     const updated = await this.repository.updateHandoffStatus({ fromStatus: 'PROPOSED', requestId: request.id, shopId: input.shopId, status: 'REJECTED' });
     await this.recordSourceHandoffNotification(input, request, 'rejected');
     return exposeHandoff(
       updated,
       bundle,
-      grouping.children,
+      visibleChildren,
       'incoming'
     );
   }
 
   async cancelHandoff(input: DriverDeliverySpaceHandoffDecision): Promise<DriverBundleHandoffRequest> {
     const request = await this.requireHandoffForSource(input);
-    const { bundles, grouping } = await this.context(input);
+    const { bundles, visibleChildren } = await this.context(input);
     const bundle = requireBundle(bundles, request.destinationId);
     const updated = await this.repository.updateHandoffStatus({ fromStatus: 'PROPOSED', requestId: request.id, shopId: input.shopId, status: 'CANCELLED' });
     const targetContext = await this.repository.findRouteContext({
@@ -534,7 +570,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
     return exposeHandoff(
       updated,
       bundle,
-      grouping.children,
+      visibleChildren,
       'outgoing'
     );
   }
@@ -546,7 +582,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
     idPrefix: string,
     allowAlreadyApplied = false
   ): Promise<DriverDeliverySpaceCommandResult> {
-    const { bundles, grouping } = await this.context(input);
+    const { bundles, grouping, visibleChildren } = await this.context(input);
     const bundle = requireBundle(bundles, input.destinationId);
     if (allowAlreadyApplied && isOwnedBy(bundle, input.targetDriverId, input.routePlanId)) {
       return { bundle: expose(bundle), routePlanId: input.routePlanId, version: grouping.updatedAt };
@@ -555,7 +591,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
     if (!isOwnedBy(bundle, sourceDriverId, sourceRoutePlanId)) {
       throw error('DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED', '내 배송지만 전달할 수 있습니다.');
     }
-    const recipient = deliveryRecipients(grouping.children, sourceDriverId)
+    const recipient = deliveryRecipients(visibleChildren, sourceDriverId)
       .find((candidate) => candidate.driverId === input.targetDriverId);
     if (recipient === undefined) {
       throw error('DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED', '현재 배차의 다른 배송원에게만 전달할 수 있습니다.');
@@ -587,6 +623,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
     ) {
       throw error('HANDOFF_REQUEST_NOT_FOUND', '전달 요청을 찾을 수 없습니다.');
     }
+    await this.assertHandoffAccessible(input, request);
     return request;
   }
 
@@ -600,7 +637,21 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
     ) {
       throw error('HANDOFF_REQUEST_NOT_FOUND', '전달 요청을 찾을 수 없습니다.');
     }
+    await this.assertHandoffAccessible(input, request);
     return request;
+  }
+
+  private async assertHandoffAccessible(input: DriverRouteAccessScope, request: StoredHandoff): Promise<void> {
+    const context = await this.repository.findRouteContext(input);
+    if (context === null) throw error('HANDOFF_REQUEST_NOT_FOUND', '전달 요청을 찾을 수 없습니다.');
+    const accessibleRoutePlanIds = await this.repository.filterAccessibleRoutePlanIds({
+      isStoreReviewData: context.isStoreReviewData,
+      routePlanIds: [request.sourceRoutePlanId, request.targetRoutePlanId],
+      shopId: input.shopId
+    });
+    if (new Set(accessibleRoutePlanIds).size !== 2) {
+      throw error('HANDOFF_REQUEST_NOT_FOUND', '전달 요청을 찾을 수 없습니다.');
+    }
   }
 
   private async recordSourceHandoffNotification(
@@ -645,8 +696,20 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
       shopDomain: input.shopDomain
     });
     if (grouping === null) throw error('DESTINATION_BUNDLE_NOT_FOUND', '현재 배송 그룹을 찾을 수 없습니다.');
-    const orders = await this.repository.listBundleOrders({ groupingId: context.groupingId, shopId: input.shopId });
-    return { bundles: groupOrders(orders), context, grouping };
+    const routePlanIds = grouping.children.flatMap((child) => child.routePlanId === null ? [] : [child.routePlanId]);
+    const accessibleRoutePlanIds = new Set(await this.repository.filterAccessibleRoutePlanIds({
+      isStoreReviewData: context.isStoreReviewData,
+      routePlanIds,
+      shopId: input.shopId
+    }));
+    const visibleChildren = grouping.children.filter((child) =>
+      child.routePlanId !== null && accessibleRoutePlanIds.has(child.routePlanId));
+    const orders = await this.repository.listBundleOrders({
+      groupingId: context.groupingId,
+      isStoreReviewData: context.isStoreReviewData,
+      shopId: input.shopId
+    });
+    return { bundles: groupOrders(orders), context, grouping, visibleChildren };
   }
 
   private async latestVersion(input: DriverRouteAccessScope): Promise<string> {

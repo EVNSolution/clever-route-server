@@ -1,7 +1,11 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 
-import type { DsvAdminPrincipal, DsvCustomerUserPrincipal } from './dsv-principal.js';
+import {
+  canAccessDsvStoreReviewData,
+  type DsvAdminPrincipal,
+  type DsvCustomerUserPrincipal,
+} from './dsv-principal.js';
 import type {
   DsvV1ConditionListItemRow,
   DsvV1ControlSummaryInput,
@@ -389,6 +393,14 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     principal: DsvCustomerUserPrincipal,
     input: DsvV1CustomerDeliveriesInput = {},
   ): Promise<DsvV1CustomerDeliveryReadResult> {
+    return this.listCustomerDeliveriesWithReviewAccess(principal, input, false);
+  }
+
+  private async listCustomerDeliveriesWithReviewAccess(
+    principal: DsvCustomerUserPrincipal,
+    input: DsvV1CustomerDeliveriesInput,
+    includeStoreReviewData: boolean,
+  ): Promise<DsvV1CustomerDeliveryReadResult> {
     if (principal.customerId === '') {
       const dates = await this.resolveTenantDates(principal.shopId);
       return {
@@ -427,6 +439,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       take: limit + 1,
       where: {
         customerId: principal.customerId,
+        ...(includeStoreReviewData ? {} : { isStoreReviewData: false }),
         shopId: principal.shopId,
         ...orderCursorWhere(page.cursor),
         deliveryStops: {
@@ -452,23 +465,32 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     customerId: string,
     input: DsvV1CustomerDeliveriesInput = {},
   ): Promise<DsvV1CustomerDeliveryReadResult> {
-    return this.listCustomerDeliveries({
+    return this.listCustomerDeliveriesWithReviewAccess({
       customerId,
       principalType: 'CUSTOMER_USER',
       scopes: ['dsv:customer-deliveries:read'],
       shopId: principal.shopId,
-    }, input);
+    }, input, canAccessDsvStoreReviewData(principal));
   }
 
   async listCustomerRouteScope(
     principal: DsvCustomerUserPrincipal,
     serviceDate: string,
   ): Promise<DsvV1CustomerRouteScopeRow[]> {
+    return this.listCustomerRouteScopeWithReviewAccess(principal, serviceDate, false);
+  }
+
+  private async listCustomerRouteScopeWithReviewAccess(
+    principal: DsvCustomerUserPrincipal,
+    serviceDate: string,
+    includeStoreReviewData: boolean,
+  ): Promise<DsvV1CustomerRouteScopeRow[]> {
     assertIsoDate(serviceDate);
     const rows = await this.prisma.order.findMany({
       select: customerRouteScopeOrderSelect,
       where: {
         customerId: principal.customerId,
+        ...(includeStoreReviewData ? {} : { isStoreReviewData: false }),
         shopId: principal.shopId,
         deliveryStops: {
           some: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId: principal.shopId },
@@ -483,18 +505,27 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     customerId: string,
     serviceDate: string,
   ): Promise<DsvV1CustomerRouteScopeRow[]> {
-    return this.listCustomerRouteScope({
+    return this.listCustomerRouteScopeWithReviewAccess({
       customerId,
       principalType: 'CUSTOMER_USER',
       scopes: ['dsv:customer-deliveries:read'],
       shopId: principal.shopId,
-    }, serviceDate);
+    }, serviceDate, canAccessDsvStoreReviewData(principal));
   }
 
   async listCustomerGpsTrailHistories(
     principal: DsvCustomerUserPrincipal,
     serviceDate: string,
     scope: readonly DsvV1CustomerRouteScopeRow[],
+  ): Promise<DsvV1VehicleGpsTrailHistoryResult[]> {
+    return this.listCustomerGpsTrailHistoriesWithReviewAccess(principal, serviceDate, scope, false);
+  }
+
+  private async listCustomerGpsTrailHistoriesWithReviewAccess(
+    principal: DsvCustomerUserPrincipal,
+    serviceDate: string,
+    scope: readonly DsvV1CustomerRouteScopeRow[],
+    includeStoreReviewData: boolean,
   ): Promise<DsvV1VehicleGpsTrailHistoryResult[]> {
     assertIsoDate(serviceDate);
     const routePlanIdsByVehicle = new Map<string, Set<string>>();
@@ -504,7 +535,11 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       routePlanIdsByVehicle.set(item.vehicleId, routePlanIds);
     }
     return Promise.all([...routePlanIdsByVehicle].map(async ([vehicleId, routePlanIds]) => {
-      const history = await this.listVehicleGpsTrailHistoryForShop(principal.shopId, { serviceDate, vehicleId });
+      const history = await this.listVehicleGpsTrailHistoryForShop(
+        principal.shopId,
+        { serviceDate, vehicleId },
+        includeStoreReviewData,
+      );
       return {
         ...history,
         sessions: history.sessions.filter((session) => routePlanIds.has(session.routePlanId)),
@@ -517,12 +552,12 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     serviceDate: string,
     scope: readonly DsvV1CustomerRouteScopeRow[],
   ): Promise<DsvV1VehicleGpsTrailHistoryResult[]> {
-    return this.listCustomerGpsTrailHistories({
+    return this.listCustomerGpsTrailHistoriesWithReviewAccess({
       customerId: '',
       principalType: 'CUSTOMER_USER',
       scopes: ['dsv:customer-deliveries:read'],
       shopId: principal.shopId,
-    }, serviceDate, scope);
+    }, serviceDate, scope, canAccessDsvStoreReviewData(principal));
   }
 
   async listDispatches(
@@ -548,6 +583,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       select: customerDeliveryOrderSelect(serviceDate, principal.shopId),
       take: limit + 1,
       where: {
+        ...(canAccessDsvStoreReviewData(principal) ? {} : { isStoreReviewData: false }),
         shopId: principal.shopId,
         ...orderCursorWhere(page.cursor),
         ...(orderNumber === undefined
@@ -591,6 +627,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       orderBy: [{ sellerOrderKey: 'asc' }, { id: 'asc' }],
       select: customerDeliveryOrderSelect(serviceDate, principal.shopId),
       where: {
+        ...(canAccessDsvStoreReviewData(principal) ? {} : { isStoreReviewData: false }),
         shopId: principal.shopId,
         deliveryStops: {
           some: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId: principal.shopId },
@@ -620,7 +657,10 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     const currentPage = parsePageNumber(input.page);
     const where: Prisma.DeliveryStopWhereInput = {
       ...(serviceDate === undefined ? {} : { deliveryDate: serviceDateAsDbDate(serviceDate) }),
-      order: { shopId: principal.shopId },
+      order: {
+        ...(canAccessDsvStoreReviewData(principal) ? {} : { isStoreReviewData: false }),
+        shopId: principal.shopId,
+      },
       shopId: principal.shopId,
     };
     const [totalItems, rows] = await Promise.all([
@@ -662,7 +702,12 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
           status: true,
         },
         take: page.limit + 1,
-        where: { dsvProfile: { isNot: null }, shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'displayName') },
+        where: {
+          dsvProfile: { isNot: null },
+          ...(canAccessDsvStoreReviewData(principal) ? {} : { isStoreReviewData: false }),
+          shopId: principal.shopId,
+          ...labelCursorWhere(page.cursor, 'displayName'),
+        },
       });
       return rows.map((row) => ({
         ...(row.dsvProfile ? {
@@ -703,6 +748,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       const assignmentsByVehicleId = await this.listVehicleDriverAssignments(
         principal.shopId,
         rows.map((row) => row.id),
+        canAccessDsvStoreReviewData(principal),
       );
       const telemetryByVehicleId = await this.listVehicleTelemetry(principal.shopId, rows.map((row) => row.id));
       const telemetryActivity = await this.getTelemetryActivity(principal.shopId);
@@ -749,10 +795,12 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
             FROM orders
             WHERE orders."shopId" = customers."shopId"
               AND orders."customerId" = customers.id
+              ${canAccessDsvStoreReviewData(principal) ? Prisma.empty : Prisma.sql`AND orders."isStoreReviewData" = false`}
           ) AS "orderCount",
           status::text AS status
         FROM customers
         WHERE "shopId" = ${principal.shopId}::uuid
+          ${canAccessDsvStoreReviewData(principal) ? Prisma.empty : Prisma.sql`AND "isStoreReviewData" = false`}
           ${effectiveLabelCursorSql(
             page.cursor,
             Prisma.sql`COALESCE("displayName", "externalCustomerCode")`,
@@ -783,6 +831,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
           "normalizedAddress" AS "normalizedAddress"
         FROM delivery_customer_profiles
         WHERE "shopId" = ${principal.shopId}::uuid
+          ${canAccessDsvStoreReviewData(principal) ? Prisma.empty : Prisma.sql`AND "isStoreReviewData" = false`}
           ${effectiveLabelCursorSql(
             page.cursor,
             Prisma.sql`COALESCE("canonicalName", id::text)`,
@@ -872,12 +921,17 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     principal: DsvAdminPrincipal,
     input: DsvV1VehicleGpsTrailHistoryInput,
   ): Promise<DsvV1VehicleGpsTrailHistoryResult> {
-    return this.listVehicleGpsTrailHistoryForShop(principal.shopId, input);
+    return this.listVehicleGpsTrailHistoryForShop(
+      principal.shopId,
+      input,
+      canAccessDsvStoreReviewData(principal),
+    );
   }
 
   private async listVehicleGpsTrailHistoryForShop(
     shopId: string,
     input: DsvV1VehicleGpsTrailHistoryInput,
+    includeStoreReviewData: boolean,
   ): Promise<DsvV1VehicleGpsTrailHistoryResult> {
     const serviceDate = await this.resolveAdminServiceDate(shopId, input.serviceDate);
     const timezone = await this.resolveTenantTimezone(shopId);
@@ -908,6 +962,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         planDate: true,
       },
       where: {
+        ...(includeStoreReviewData ? {} : { isStoreReviewData: false }),
         planDate: serviceDateAsDbDate(serviceDate),
         shopId,
         status: { not: 'CANCELLED' },
@@ -1073,12 +1128,17 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
   private async listVehicleDriverAssignments(
     shopId: string,
     vehicleIds: readonly string[],
+    includeStoreReviewData: boolean,
   ): Promise<Map<string, Array<{ assignmentId: string; driverId: string }>>> {
     if (vehicleIds.length === 0) return new Map();
     const rows = await this.prisma.dsvVehicleDriverAssignment.findMany({
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { driverId: true, id: true, vehicleId: true },
-      where: { shopId, vehicleId: { in: [...vehicleIds] } },
+      where: {
+        ...(includeStoreReviewData ? {} : { driver: { isStoreReviewData: false } }),
+        shopId,
+        vehicleId: { in: [...vehicleIds] },
+      },
     });
     const byVehicleId = new Map<string, Array<{ assignmentId: string; driverId: string }>>();
     for (const row of rows) {

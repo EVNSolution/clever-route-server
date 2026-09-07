@@ -49,12 +49,12 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
     const [drivers, accounts] = await Promise.all([
       this.prisma.driver.findMany({
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-        select: { createdAt: true, displayName: true, id: true, phone: true },
+        select: { createdAt: true, displayName: true, id: true, isStoreReviewData: true, phone: true },
         where: { accountId: null, dsvProfile: { isNot: null }, shopId: shop.id, status: 'ACTIVE' },
       }),
       this.prisma.driverAccount.findMany({
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-        select: { createdAt: true, id: true, name: true, phone: true },
+        select: { createdAt: true, id: true, isStoreReviewAccount: true, name: true, phone: true },
         where: {
           drivers: { none: { dsvProfile: { isNot: null }, status: 'ACTIVE' } },
           name: { not: null },
@@ -67,6 +67,7 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
       if (account.name === null) continue;
       const accountPhone = normalizeDsvDriverPhone(account.phone);
       for (const driver of drivers) {
+        if (driver.isStoreReviewData !== account.isStoreReviewAccount) continue;
         const driverPhone = normalizeDsvDriverPhone(driver.phone ?? '');
         const nameMatches = driver.displayName.trim() === account.name.trim();
         const phoneMatches = driverPhone !== '' && driverPhone === accountPhone;
@@ -103,7 +104,7 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
     return this.prisma.$transaction(async (tx) => {
       const [account, driver] = await Promise.all([
         tx.driverAccount.findFirst({
-          select: { id: true, name: true, phone: true, status: true },
+          select: { id: true, isStoreReviewAccount: true, name: true, phone: true, status: true },
           where: {
             drivers: { none: { dsvProfile: { isNot: null }, status: 'ACTIVE' } },
             id: input.accountId,
@@ -112,13 +113,14 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
           },
         }),
         tx.driver.findFirst({
-          select: { accountId: true, displayName: true, id: true, phone: true, status: true },
+          select: { accountId: true, displayName: true, id: true, isStoreReviewData: true, phone: true, status: true },
           where: { accountId: null, dsvProfile: { isNot: null }, id: input.driverId, shopId: shop.id, status: 'ACTIVE' },
         }),
       ]);
       if (account === null || account.name === null || driver === null) {
         throw new DsvDriverAccountLinkCandidateError('NOT_FOUND');
       }
+      if (driver.isStoreReviewData !== account.isStoreReviewAccount) throw new DsvDriverAccountLinkCandidateError();
       const nameMatches = account.name.trim() === driver.displayName.trim();
       const canonicalName = account.name.trim();
       const accountPhone = normalizeDsvDriverPhone(account.phone);
@@ -139,7 +141,7 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
           inviteCodeExpiresAt: null,
           phone: accountPhone,
         },
-        where: { accountId: null, id: driver.id, shopId: shop.id, status: 'ACTIVE' },
+        where: { accountId: null, id: driver.id, isStoreReviewData: account.isStoreReviewAccount, shopId: shop.id, status: 'ACTIVE' },
       });
       if (linked.count !== 1) throw new DsvDriverAccountLinkCandidateError();
       await tx.dsvDriverProfile.update({

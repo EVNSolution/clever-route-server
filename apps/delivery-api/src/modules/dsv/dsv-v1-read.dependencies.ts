@@ -20,6 +20,7 @@ import { PrismaDsvTimeConstraintCommandService } from './dsv-time-constraint-com
 import { PrismaDsvDispatchChangeRequestService } from './dsv-dispatch-change-request.service.js';
 import { PrismaDsvOrderMessageService } from './dsv-order-message.service.js';
 import { PrismaDsvOperationalNotificationService } from './dsv-operational-notification.service.js';
+import { PrismaDsvStoreReviewAccess } from './dsv-store-review-access.js';
 import { PrismaDsvDriverAccountLinkService } from './dsv-driver-account-link.service.js';
 import {
   createDsvDriverNotificationRuntime,
@@ -109,6 +110,7 @@ export function loadDsvV1ReadDependencies(input: {
       input.prisma,
       new PrismaDsvDriverAccountLinkService(input.prisma),
     ),
+    storeReviewAccess: new PrismaDsvStoreReviewAccess(input.prisma),
     timeConstraintCommandService: new PrismaDsvTimeConstraintCommandService(
       input.prisma,
       routeOptimizationScheduler,

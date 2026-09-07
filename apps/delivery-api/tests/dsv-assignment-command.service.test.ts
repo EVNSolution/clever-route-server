@@ -699,6 +699,40 @@ describe('DsvAssignmentCommandService', () => {
     expect(source).not.toMatch(/\b(?:DsvEta|dsvEta|dsv_eta|etaShadow|etaProjection)\b/u);
     expect(source).not.toMatch(/\bETA\s+(?:shadow|projection|table)\b/iu);
   });
+
+  test('rejects moving a store-review order onto an operational driver route', async () => {
+    const harness = createHarness({
+      reviewDriverIds: ['driver-a'],
+      reviewOrderIds: ['order-a'],
+      reviewRoutePlanIds: ['route-a'],
+    });
+
+    await expect(harness.service.reassign({
+      ...adminInput({ commandId: 'cmd-review-mix' }),
+      targetDriverId: 'driver-b',
+      targetRoutePlanId: 'route-b',
+    })).rejects.toMatchObject({ code: 'SELLER_ORDER_ROUTE_SCOPE_REJECTED' });
+
+    expect(harness.routeGroupingService.saveDraft).not.toHaveBeenCalled();
+  });
+
+  test('marks a newly created route as store-review data', async () => {
+    const harness = createHarness({
+      reviewDriverIds: ['driver-a', 'driver-c'],
+      reviewOrderIds: ['order-a'],
+      reviewRoutePlanIds: ['route-a'],
+    });
+
+    await harness.service.reassign({
+      ...adminInput({ commandId: 'cmd-review-new-route' }),
+      targetDriverId: 'driver-c',
+    });
+
+    expect(harness.prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: { isStoreReviewData: true },
+      where: { id: 'route-new', shopId: 'shop-1' },
+    });
+  });
 });
 
 function createHarness(input: {
@@ -715,6 +749,9 @@ function createHarness(input: {
   routeOptimizationScheduler?: { schedule(input: { routePlanIds: Array<string | null>; shopDomain: string }): void };
   secondaryGrouping?: RouteGroupingDetailDto;
   rebindOrderIdsOnSave?: string[];
+  reviewDriverIds?: string[];
+  reviewOrderIds?: string[];
+  reviewRoutePlanIds?: string[];
   staleRouteVersionOrderIds?: string[];
   ungroupedOrderIds?: string[];
 } = {}) {
@@ -784,6 +821,11 @@ function createHarness(input: {
         return Promise.resolve(expectedVehicleId === args.where?.vehicleId ? { id: `assignment-${args.where?.driverId}` } : null);
       }),
     },
+    driver: {
+      findMany: vi.fn((args: { where?: { id?: { in?: string[] } } }) => Promise.resolve(
+        (args.where?.id?.in ?? []).map((id) => ({ id, isStoreReviewData: input.reviewDriverIds?.includes(id) === true })),
+      )),
+    },
     order: {
       deleteMany: vi.fn((args: { where?: { id?: { in?: string[] } } }) => Promise.resolve({
         count: args.where?.id?.in?.length ?? 0,
@@ -794,11 +836,18 @@ function createHarness(input: {
           customerId: 'customer-a',
           destinationId: 'destination-x',
           id,
+          isStoreReviewData: input.reviewOrderIds?.includes(id) === true,
         })),
       )),
       findFirst: vi.fn((args: { select?: { currentRouteVersionId?: boolean }; where?: { id?: string } }) => Promise.resolve(
         args.select?.currentRouteVersionId === true
-          ? { currentRouteVersionId: currentRouteVersionIds.get(args.where?.id ?? 'order-a') ?? null }
+          ? {
+            currentRouteVersionId: currentRouteVersionIds.get(args.where?.id ?? 'order-a') ?? null,
+            customerId: 'customer-a',
+            destinationId: 'destination-x',
+            id: args.where?.id ?? 'order-a',
+            isStoreReviewData: input.reviewOrderIds?.includes(args.where?.id ?? 'order-a') === true,
+          }
           : { customerId: 'customer-a', destinationId: 'destination-x' },
       )),
       updateMany: vi.fn((args: {
@@ -845,6 +894,9 @@ function createHarness(input: {
       }),
     },
     routePlan: {
+      findMany: vi.fn((args: { where?: { id?: { in?: string[] } } }) => Promise.resolve(
+        (args.where?.id?.in ?? []).map((id) => ({ id, isStoreReviewData: input.reviewRoutePlanIds?.includes(id) === true })),
+      )),
       findFirst: vi.fn((args: { where?: { id?: string } }) => {
         if (args.where?.id === 'route-a') return Promise.resolve({ vehicleId: 'vehicle-a' });
         if (args.where?.id === 'route-b') return Promise.resolve({ vehicleId: 'vehicle-b' });
@@ -852,6 +904,7 @@ function createHarness(input: {
         if (args.where?.id === 'route-unassigned') return Promise.resolve({ vehicleId: null });
         return Promise.resolve(null);
       }),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
     },
     routePlanStop: {
       count: vi.fn(() => Promise.resolve(input.failedRoutePlanStops ?? 0)),

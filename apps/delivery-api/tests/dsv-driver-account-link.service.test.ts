@@ -6,6 +6,21 @@ import {
 } from '../src/modules/dsv/dsv-driver-account-link.service.js';
 
 describe('PrismaDsvDriverAccountLinkService', () => {
+  test.each([[true, false], [false, true]])('rejects review driver=%s account=%s even for a developer approval', async (driverReview, accountReview) => {
+    const updateMany = vi.fn();
+    const transaction = {
+      driver: { findFirst: vi.fn().mockResolvedValue({ id: 'driver', displayName: 'Review', phone: '01011112222', isStoreReviewData: driverReview }), updateMany },
+      driverAccount: { findFirst: vi.fn().mockResolvedValue({ id: 'account', name: 'Review', phone: '01011112222', isStoreReviewAccount: accountReview }) },
+    };
+    const service = new PrismaDsvDriverAccountLinkService({
+      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop' }) },
+      $transaction: (operation: (client: typeof transaction) => unknown) => operation(transaction),
+    } as never);
+    await expect(service.approve({ accountId: 'account', actorId: 'developer', driverId: 'driver', requestId: 'request', shopDomain: 'dsv.example' }))
+      .rejects.toBeInstanceOf(DsvDriverAccountLinkCandidateError);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
   test('lists only partial identity matches and masks both phone numbers', async () => {
     const prisma = {
       driver: {

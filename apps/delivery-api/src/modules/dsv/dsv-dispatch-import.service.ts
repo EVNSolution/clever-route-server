@@ -300,6 +300,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         shop: { connect: { id: shop.id } },
         sourceHash: diff.sourceHash,
         sourceKind: dsvDispatchImportSourceKind,
+        isStoreReviewData: false,
         status: stageStatus(diff),
         rows: {
           create: diff.rows.map((row) => {
@@ -347,7 +348,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) throw new DsvDispatchImportShopNotFoundError();
     const importRecord = await this.prisma.dsvDispatchImport.findFirst({
-      select: { applyResult: true, id: true, previewHash: true, sourceHash: true, status: true },
+      select: { applyResult: true, id: true, isStoreReviewData: true, previewHash: true, sourceHash: true, status: true },
       where: { id: input.importId, shopId: shop.id },
     });
     if (importRecord === null) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_NOT_READY');
@@ -397,7 +398,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           fileName: lockedImport.fileName,
           planDate: lockedImport.planDate.toISOString().slice(0, 10),
           rows: sourceRows,
-        });
+        }, lockedImport.isStoreReviewData);
         if (
           recomputed.sourceHash !== lockedImport.sourceHash
           || (recomputed.previewHash !== lockedImport.previewHash
@@ -422,10 +423,10 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           const importRow = importRowsByRowNumber.get(row.rowNumber);
           if (source === undefined || importRow === undefined) throw new Error(`Missing locked row ${row.rowNumber}`);
           const link = row.diffKind === 'NO_OP'
-            ? await this.linkNoOpRow(tx, shop.id, row)
+            ? await this.linkNoOpRow(tx, shop.id, row, lockedImport.isStoreReviewData)
             : row.diffKind === 'UPDATE_CANDIDATE'
-              ? await this.updateCanonicalRows(tx, shop.id, source, row)
-              : await this.createNewCanonicalRows(tx, shop.id, source, row);
+              ? await this.updateCanonicalRows(tx, shop.id, source, row, lockedImport.isStoreReviewData)
+              : await this.createNewCanonicalRows(tx, shop.id, source, row, lockedImport.isStoreReviewData);
           if (row.diffKind === 'NEW') {
             canonicalWrites += 1;
             if (this.options.delayAfterCanonicalRowsMs !== undefined) {
@@ -472,6 +473,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           input.actor,
           input.shopDomain,
           groupingRows,
+          lockedImport.isStoreReviewData,
         );
 
         const result: DsvDispatchImportApplyResult = {
@@ -764,6 +766,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     prisma: Pick<Tx, 'customer' | 'deliveryCustomerProfile' | 'deliveryStop' | 'dsvDriverProfile' | 'dsvTransportCondition' | 'order' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routeGroupingOrder' | 'routePlanStop' | 'vehicle'>,
     shopId: string,
     input: Pick<DsvDispatchImportInput, 'fileName' | 'planDate' | 'rows'>,
+    isStoreReviewData = false,
   ): Promise<DsvDispatchPreviewDiff> {
     const normalizedRows = input.rows.map((row) => ({ ...row, sellerOrderKey: row.sellerOrderKey.trim() }));
     const driverNames = unique(normalizedRows.map((row) => row.driverName.trim()));
@@ -782,6 +785,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
                 select: { vehicle: { select: { id: true, status: true } } },
               },
               id: true,
+              isStoreReviewData: true,
               status: true,
             },
           },
@@ -798,11 +802,11 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         where: { shopId },
       }),
       prisma.customer.findMany({
-        select: { externalCustomerCode: true, id: true, status: true },
+        select: { externalCustomerCode: true, id: true, isStoreReviewData: true, status: true },
         where: { externalCustomerCode: { in: customerCodes }, shopId, sourceKind: dsvDispatchImportSourceKind },
       }),
       prisma.deliveryCustomerProfile.findMany({
-        select: { addressFingerprint: true, canonicalName: true, id: true, mergedIntoProfileId: true, normalizedAddress: true },
+        select: { addressFingerprint: true, canonicalName: true, id: true, isStoreReviewData: true, mergedIntoProfileId: true, normalizedAddress: true },
         where: { addressFingerprint: { in: addressFingerprints }, shopId },
       }),
       prisma.order.findMany({
@@ -824,13 +828,13 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       ));
     }));
 
-    return buildDsvDispatchPreviewDiff({
+    const diff = buildDsvDispatchPreviewDiff({
       fileName: input.fileName,
       planDate: input.planDate,
       rows: normalizedRows,
       shopId,
       snapshots: {
-        canonicalOrders: orders.map((order): DsvDispatchCanonicalOrderSnapshot => {
+        canonicalOrders: orders.filter((order) => order.isStoreReviewData === isStoreReviewData).map((order): DsvDispatchCanonicalOrderSnapshot => {
           const normalized = normalizedFromOrder(order.rawPayload);
           const stop = order.deliveryStops[0] ?? null;
           return {
@@ -858,8 +862,8 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           };
         }),
         conditions,
-        customers,
-        destinations: destinations.map((destination) => {
+        customers: customers.filter((customer) => customer.isStoreReviewData === isStoreReviewData),
+        destinations: destinations.filter((destination) => destination.isStoreReviewData === isStoreReviewData).map((destination) => {
           const normalized = normalizedAddress(destination.normalizedAddress);
           return {
             address: normalized.address,
@@ -868,7 +872,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
             status: destination.mergedIntoProfileId === null ? 'ACTIVE' : 'INACTIVE',
           };
         }),
-        drivers: drivers.map((profile) => ({
+        drivers: drivers.filter((profile) => profile.driver.isStoreReviewData === isStoreReviewData).map((profile) => ({
           displayName: profile.lookupName,
           id: profile.driver.id,
           status: profile.driver.status,
@@ -876,6 +880,13 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         })),
         vehicles: vehicles.map((vehicle) => ({ id: vehicle.id, licensePlate: vehicle.licensePlate, status: vehicle.status })),
       },
+    });
+    return addStoreReviewIsolationIssues(diff, normalizedRows, {
+      customers,
+      destinations,
+      drivers,
+      isStoreReviewData,
+      orders,
     });
   }
 
@@ -971,12 +982,14 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     shopId: string,
     source: DsvDispatchImportSourceRow,
     row: DsvDispatchDiffRow,
+    isStoreReviewData: boolean,
   ): Promise<ApplyCanonicalLink> {
     const customer = await tx.customer.upsert({
       create: {
         displayName: row.normalized.customerCode,
         externalCustomerCode: row.normalized.customerCode,
         metadata: toJson({ sourceKind: dsvDispatchImportSourceKind }),
+        isStoreReviewData,
         shopId,
         sourceKind: dsvDispatchImportSourceKind,
         status: 'ACTIVE',
@@ -990,16 +1003,17 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         },
       },
     });
-    if (customer.status !== 'ACTIVE') {
+    if (customer.status !== 'ACTIVE' || customer.isStoreReviewData !== isStoreReviewData) {
       throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_HAS_REVIEW_ROWS');
     }
-    const destination = await findOrCreateDestination(tx, shopId, source, row.normalized);
+    const destination = await findOrCreateDestination(tx, shopId, source, row.normalized, isStoreReviewData);
     const serviceDate = new Date(`${row.normalized.planDate}T00:00:00.000Z`);
     const datedSourceOrderId = `${row.normalized.planDate}:${row.sellerOrderKey}`;
     const order = await tx.order.upsert({
       create: {
         customerId: customer.id,
         destinationId: destination.id,
+        isStoreReviewData,
         name: row.sellerOrderKey,
         rawPayload: toJson({ dsv: { normalized: row.normalized, source } }),
         sellerOrderKey: row.sellerOrderKey,
@@ -1021,6 +1035,9 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         },
       },
     });
+    if (order.isStoreReviewData !== isStoreReviewData) {
+      throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+    }
     const stop = await tx.deliveryStop.upsert({
       create: {
         address1: row.normalized.address,
@@ -1052,6 +1069,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     shopId: string,
     source: DsvDispatchImportSourceRow,
     row: DsvDispatchDiffRow,
+    isStoreReviewData: boolean,
   ): Promise<ApplyCanonicalLink> {
     if (row.sellerOrderId === null || row.deliveryStopId === null) {
       throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
@@ -1061,6 +1079,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         displayName: row.normalized.customerCode,
         externalCustomerCode: row.normalized.customerCode,
         metadata: toJson({ sourceKind: dsvDispatchImportSourceKind }),
+        isStoreReviewData,
         shopId,
         sourceKind: dsvDispatchImportSourceKind,
         status: 'ACTIVE',
@@ -1074,10 +1093,10 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         },
       },
     });
-    if (customer.status !== 'ACTIVE') {
+    if (customer.status !== 'ACTIVE' || customer.isStoreReviewData !== isStoreReviewData) {
       throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_HAS_REVIEW_ROWS');
     }
-    const destination = await this.resolveUpdateDestination(tx, shopId, source, row);
+    const destination = await this.resolveUpdateDestination(tx, shopId, source, row, isStoreReviewData);
     const deliveryDate = new Date(`${row.normalized.planDate}T00:00:00.000Z`);
     const updatedOrder = await tx.order.updateMany({
       data: {
@@ -1089,6 +1108,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         cancelledAt: null,
         deliveryStatus: 'PENDING',
         id: row.sellerOrderId,
+        isStoreReviewData,
         serviceDate: deliveryDate,
         shopId,
       },
@@ -1131,29 +1151,30 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     shopId: string,
     source: DsvDispatchImportSourceRow,
     row: DsvDispatchDiffRow,
+    isStoreReviewData: boolean,
   ) {
     if (row.destinationId !== null && !row.candidateDiff.some((diff) => diff.field === 'destinationId')) {
       const existing = await tx.deliveryCustomerProfile.findFirst({
-        where: { id: row.destinationId, mergedIntoProfileId: null, shopId },
+        where: { id: row.destinationId, isStoreReviewData, mergedIntoProfileId: null, shopId },
       });
       if (existing !== null) return existing;
     }
     if (row.destinationId !== null) {
       const matched = await tx.deliveryCustomerProfile.findFirst({
-        where: { id: row.destinationId, mergedIntoProfileId: null, shopId },
+        where: { id: row.destinationId, isStoreReviewData, mergedIntoProfileId: null, shopId },
       });
       if (matched !== null) return matched;
     }
-    return findOrCreateDestination(tx, shopId, source, row.normalized);
+    return findOrCreateDestination(tx, shopId, source, row.normalized, isStoreReviewData);
   }
 
-  private async linkNoOpRow(tx: Tx, shopId: string, row: DsvDispatchDiffRow): Promise<ApplyCanonicalLink> {
+  private async linkNoOpRow(tx: Tx, shopId: string, row: DsvDispatchDiffRow, isStoreReviewData: boolean): Promise<ApplyCanonicalLink> {
     if (row.sellerOrderId === null || row.deliveryStopId === null) {
       throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
     }
     const order = await tx.order.findFirst({
       include: { deliveryStops: { orderBy: { createdAt: 'asc' }, take: 1 } },
-      where: { id: row.sellerOrderId, shopId },
+      where: { id: row.sellerOrderId, isStoreReviewData, shopId },
     });
     if (order === null || order.deliveryStops[0] === undefined) {
       throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
@@ -1175,6 +1196,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     actor: string,
     shopDomain: string,
     rows: DispatchGroupingRow[],
+    isStoreReviewData: boolean,
   ): Promise<void> {
     const orderIds = rows.map((row) => row.sellerOrderId);
     const ownedOrderIds = new Set((await tx.routeGroupingOrder.findMany({
@@ -1204,7 +1226,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     });
     if (saved === null) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
     const currentChildren = await tx.routeGroupingChildVersion.findMany({
-      select: { driverId: true, id: true, routePlan: { select: { vehicleId: true } } },
+      select: { driverId: true, id: true, routePlan: { select: { id: true, vehicleId: true } } },
       where: {
         groupingId: grouping.id,
         shopId,
@@ -1232,6 +1254,12 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       ]);
       if (orders.count !== route.orderIds.length || assignments.count !== route.orderIds.length) {
         throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+      }
+      if (child.routePlan !== null) {
+        await tx.routePlan.updateMany({
+          data: { isStoreReviewData },
+          where: { id: child.routePlan.id, shopId },
+        });
       }
     }
   }
@@ -1303,6 +1331,82 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       where: appScopedShopWhere({ shopDomain }),
     });
   }
+}
+
+function addStoreReviewIsolationIssues(
+  diff: DsvDispatchPreviewDiff,
+  sourceRows: DsvDispatchImportSourceRow[],
+  snapshots: {
+    customers: Array<{ externalCustomerCode: string; isStoreReviewData: boolean }>;
+    destinations: Array<{ addressFingerprint: string; isStoreReviewData: boolean }>;
+    drivers: Array<{ driver: { isStoreReviewData: boolean }; lookupName: string }>;
+    isStoreReviewData: boolean;
+    orders: Array<{ isStoreReviewData: boolean; sellerOrderKey: string | null }>;
+  },
+): DsvDispatchPreviewDiff {
+  const restrictedRows = new Set(sourceRows.flatMap((row) => {
+    const oppositeMode = (value: boolean) => value !== snapshots.isStoreReviewData;
+    const matchesRestrictedResource = snapshots.drivers.some((profile) =>
+      oppositeMode(profile.driver.isStoreReviewData) && profile.lookupName === row.driverName.trim())
+      || snapshots.customers.some((customer) =>
+        oppositeMode(customer.isStoreReviewData) && customer.externalCustomerCode === row.customerCode.trim())
+      || snapshots.destinations.some((destination) =>
+        oppositeMode(destination.isStoreReviewData) && destination.addressFingerprint === addressFingerprint(row))
+      || snapshots.orders.some((order) =>
+        oppositeMode(order.isStoreReviewData) && order.sellerOrderKey === row.sellerOrderKey.trim());
+    return matchesRestrictedResource ? [row.rowNumber] : [];
+  }));
+  if (restrictedRows.size === 0) return diff;
+  const rows = diff.rows.map((row) => restrictedRows.has(row.rowNumber)
+    ? {
+      ...row,
+      diffKind: 'ERROR' as const,
+      issues: [...row.issues, {
+        code: 'DISPATCH_IMPORT_CANONICAL_CONFLICT',
+        field: 'row' as const,
+        message: '기존 배차 데이터와 충돌합니다.',
+        severity: 'error' as const,
+      }].sort((left, right) => left.code.localeCompare(right.code)),
+    }
+    : row);
+  const errorRows = rows.filter((row) => row.diffKind === 'ERROR').length;
+  const conflictRows = rows.filter((row) => row.diffKind === 'CONFLICT').length;
+  const previewHash = sha256CanonicalJson({
+    canonicalDiffRows: rows.map((row) => ({
+      candidateDiff: row.candidateDiff,
+      canonicalIdentity: row.canonicalIdentity,
+      conditionId: row.conditionId,
+      customerId: row.customerId,
+      deliveryStopId: row.deliveryStopId,
+      destinationId: row.destinationId,
+      diffKind: row.diffKind,
+      driverId: row.driverId,
+      issues: row.issues.map((item) => ({ code: item.code, field: item.field, severity: item.severity })),
+      normalized: row.normalized,
+      rowNumber: row.rowNumber,
+      sellerOrderId: row.sellerOrderId,
+      sellerOrderKey: row.sellerOrderKey,
+      vehicleId: row.vehicleId,
+    })),
+    conditionCandidates: diff.conditionCandidates,
+    sourceHash: diff.sourceHash,
+  });
+  return {
+    ...diff,
+    canApply: false,
+    previewHash,
+    rows,
+    summary: {
+      conflictRows,
+      errorRows,
+      newRows: rows.filter((row) => row.diffKind === 'NEW').length,
+      noOpRows: rows.filter((row) => row.diffKind === 'NO_OP').length,
+      readyRows: rows.length - errorRows - conflictRows,
+      reviewRows: rows.filter((row) => row.issues.some((issue) => issue.severity === 'review')).length,
+      totalRows: rows.length,
+      updateCandidateRows: rows.filter((row) => row.diffKind === 'UPDATE_CANDIDATE').length,
+    },
+  };
 }
 
 export function buildDispatchImportPreview(input: {
@@ -1821,16 +1925,18 @@ async function findOrCreateDestination(
   shopId: string,
   source: DsvDispatchImportSourceRow,
   normalized: DsvDispatchDiffRow['normalized'],
+  isStoreReviewData: boolean,
 ) {
   const fingerprint = addressFingerprint(source);
   const existing = await tx.deliveryCustomerProfile.findFirst({
-    where: { addressFingerprint: fingerprint, mergedIntoProfileId: null, shopId },
+    where: { addressFingerprint: fingerprint, isStoreReviewData, mergedIntoProfileId: null, shopId },
   });
   if (existing !== null) return existing;
   return tx.deliveryCustomerProfile.create({
     data: {
       addressFingerprint: fingerprint,
       canonicalName: source.destinationName.trim(),
+      isStoreReviewData,
       normalizedAddress: toJson({
         address: normalized.address,
         detailAddress: normalized.detailAddress ?? null,

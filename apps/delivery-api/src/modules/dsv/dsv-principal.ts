@@ -172,6 +172,10 @@ export function requireDsvScopes(principal: DsvPrincipal, requiredScopes: readon
   throw new DsvForbiddenError({ principal, requiredScopes });
 }
 
+export function canAccessDsvStoreReviewData(principal: DsvPrincipal): boolean {
+  return principal.principalType === 'DSV_ADMIN' && principal.scopes.includes('dsv:accounts:read');
+}
+
 export function requireCustomerDeliveryPrincipal(input: {
   customerId?: string;
   destinationId?: string;

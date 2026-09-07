@@ -23,14 +23,16 @@ describe('PrismaDriverRouteAccessRepository', () => {
         constraints: true,
         driver: {
           select: {
-            account: { select: { id: true, status: true, tokenVersion: true } },
+            account: { select: { id: true, isStoreReviewAccount: true, status: true, tokenVersion: true } },
             accountId: true,
             authSubject: true,
             id: true,
+            isStoreReviewData: true,
             status: true
           }
         },
         id: true,
+        isStoreReviewData: true,
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
@@ -108,14 +110,16 @@ describe('PrismaDriverRouteAccessRepository', () => {
         constraints: true,
         driver: {
           select: {
-            account: { select: { id: true, status: true, tokenVersion: true } },
+            account: { select: { id: true, isStoreReviewAccount: true, status: true, tokenVersion: true } },
             accountId: true,
             authSubject: true,
             id: true,
+            isStoreReviewData: true,
             status: true
           }
         },
         id: true,
+        isStoreReviewData: true,
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
@@ -230,6 +234,21 @@ describe('PrismaDriverRouteAccessRepository', () => {
       status: 'ROUTES_FOUND',
       routes: []
     });
+  });
+
+  test.each([false, true])('limits standby discovery to the driver review classification %s', async (isStoreReviewData) => {
+    const { prisma } = createPrismaHarness({
+      phoneDrivers: [{ id: 'driver-id', authSubject: 'driver-driver-id', isStoreReviewData,
+        shop: { id: 'shop-id', shopDomain: 'dsv.example' }, status: 'ACTIVE' }],
+      phoneRoutePlans: [], publicRouteContext: null,
+    });
+    const saveDraft = vi.fn();
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never, { saveDraft } as never);
+    await repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null });
+    expect(prisma.routeGroupingChildVersion.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ currentOrders: { some: { isStoreReviewData } }, routePlan: { isStoreReviewData } }) as unknown,
+    }));
+    expect(saveDraft).not.toHaveBeenCalled();
   });
 
   test('materializes a vehicle-less standby route only for today\'s public delivery grouping', async () => {
@@ -458,14 +477,16 @@ describe('PrismaDriverRouteAccessRepository', () => {
         constraints: true,
         driver: {
           select: {
-            account: { select: { id: true, status: true, tokenVersion: true } },
+            account: { select: { id: true, isStoreReviewAccount: true, status: true, tokenVersion: true } },
             accountId: true,
             authSubject: true,
             id: true,
+            isStoreReviewData: true,
             status: true
           }
         },
         id: true,
+        isStoreReviewData: true,
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
@@ -572,6 +593,7 @@ function createPrismaHarness(
     phoneDrivers?: Array<{
       authSubject?: string | null;
       id?: string;
+      isStoreReviewData?: boolean;
       shop?: { id: string; shopDomain: string };
       status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
     }>;

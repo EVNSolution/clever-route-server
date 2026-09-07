@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { DsvDriverAccountLinkService } from './dsv-driver-account-link.service.js';
+import { canAccessDsvStoreReviewData, type DsvPrincipal } from './dsv-principal.js';
 
 export type DsvOperationalNotification = {
   changeRequestId?: string;
@@ -16,7 +17,7 @@ export type DsvOperationalNotification = {
 };
 
 export type DsvOperationalNotificationService = {
-  list(input: { shopDomain: string }): Promise<{ items: DsvOperationalNotification[] }>;
+  list(input: { principal: DsvPrincipal; shopDomain: string }): Promise<{ items: DsvOperationalNotification[] }>;
 };
 
 type OperationalNotificationPrismaClient = Pick<
@@ -30,12 +31,13 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
     private readonly driverAccountLinks?: Pick<DsvDriverAccountLinkService, 'listPending'>,
   ) {}
 
-  async list(input: { shopDomain: string }): Promise<{ items: DsvOperationalNotification[] }> {
+  async list(input: { principal: DsvPrincipal; shopDomain: string }): Promise<{ items: DsvOperationalNotification[] }> {
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
       where: appScopedShopWhere({ shopDomain: input.shopDomain.trim().toLowerCase() }),
     });
     if (shop === null) return { items: [] };
+    const canAccessReviewData = canAccessDsvStoreReviewData(input.principal);
     const [requests, attempts, cancelledOrders, driverAccountLinks] = await Promise.all([
       this.prisma.dsvDispatchChangeRequest.findMany({
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
@@ -49,7 +51,7 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
           updatedAt: true,
         },
         take: 50,
-        where: { shopId: shop.id },
+        where: { shopId: shop.id, ...(canAccessReviewData ? {} : { sellerOrder: { isStoreReviewData: false } }) },
       }),
       this.prisma.driverRouteNotificationAttempt.findMany({
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
@@ -61,15 +63,28 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
           updatedAt: true,
         },
         take: 50,
-        where: { action: 'CHANGED', shopId: shop.id, status: { in: ['FAILED', 'SKIPPED'] } },
+        where: {
+          action: 'CHANGED',
+          shopId: shop.id,
+          status: { in: ['FAILED', 'SKIPPED'] },
+          ...(canAccessReviewData ? {} : {
+            OR: [{ driverId: null }, { driver: { is: { isStoreReviewData: false } } }],
+            routePlan: { isStoreReviewData: false },
+          }),
+        },
       }),
       this.prisma.order.findMany({
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
         select: { id: true, sellerOrderKey: true, updatedAt: true },
         take: 50,
-        where: { currentRouteVersionId: null, deliveryStatus: 'CANCELLED', shopId: shop.id },
+        where: {
+          currentRouteVersionId: null,
+          deliveryStatus: 'CANCELLED',
+          shopId: shop.id,
+          ...(canAccessReviewData ? {} : { isStoreReviewData: false }),
+        },
       }),
-      this.driverAccountLinks?.listPending(input) ?? Promise.resolve([]),
+      canAccessReviewData ? this.driverAccountLinks?.listPending(input) ?? Promise.resolve([]) : Promise.resolve([]),
     ]);
 
     const items: DsvOperationalNotification[] = [];
