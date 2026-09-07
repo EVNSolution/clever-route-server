@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 
 import { PrismaDriverAssignedRouteRepository } from './driver-assigned-route.repository.js';
+import { PrismaDriverRouteOrderService } from './driver-route-order.service.js';
 import { PrismaDriverDestinationNotesRepository } from './driver-destination-notes.repository.js';
 import { PrismaDriverConsentRepository } from './driver-consent.repository.js';
 import { PrismaDriverEventRepository } from './driver-event.repository.js';
@@ -153,6 +154,7 @@ export function loadDriverApiDependencies(
       ? {}
       : { adminNotificationService: input.adminNotificationService }),
     driverAssignedRouteService,
+    driverRouteOrderService: new PrismaDriverRouteOrderService(input.prisma),
     driverDestinationNotesService: new PrismaDriverDestinationNotesRepository(input.prisma),
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma, {

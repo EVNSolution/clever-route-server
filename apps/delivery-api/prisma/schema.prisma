@@ -1259,6 +1259,8 @@ model DeliveryCustomerProfile {
   adminMemo                          String?                            @db.Text
   driverMemo                         String?                            @db.Text
   driverMemoUpdatedAt                DateTime?                          @db.Timestamptz(6)
+  driverOpenTime                     String?                            @db.VarChar(5)
+  driverOpenTimeUpdatedAt            DateTime?                          @db.Timestamptz(6)
   driverLunchTimeRange               String?                            @db.VarChar(11)
   driverLunchTimeRangeUpdatedAt      DateTime?                          @db.Timestamptz(6)
   driverLunchEntryStatus             String?                            @db.VarChar(16)

@@ -1,6 +1,13 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
-import { driverDestinationNotesSelect, toDriverDestinationNotes } from './driver-destination-notes.repository.js';
+import {
+  buildCanonicalDestinationProjection,
+  canonicalDestinationProfileSelect,
+  driverDestinationNotesSelect,
+  toDriverDestinationNotes,
+  type CanonicalDestinationProfileRecord,
+  type CanonicalDestinationProjection
+} from './driver-destination-notes.repository.js';
 
 import type {
   DriverAssignedRouteInput,
@@ -31,7 +38,7 @@ import {
   dsvTimeConstraintAuditEvents,
   normalizeRawNote
 } from '../dsv/dsv-time-constraint.js';
-type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'routePlan' | 'routePlanGeometryCache'>;
+type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'deliveryCustomerProfile' | 'routePlan' | 'routePlanGeometryCache'>;
 
 type AssignedRoutePlanRecord = {
   createdAt: Date;
@@ -94,6 +101,11 @@ type AssignedRoutePlanStopRecord = {
     order: {
       currentRouteVersion: {
         createdAt: Date;
+        driverId: string | null;
+        id: string;
+        routePlanId: string | null;
+        status: string;
+        supersededAt: Date | null;
       } | null;
       currentRouteVersionId: string | null;
       currencyCode: string | null;
@@ -164,7 +176,7 @@ const assignedRouteInclude = {
           order: {
             include: {
               currentRouteVersion: {
-                select: { createdAt: true }
+                select: { createdAt: true, driverId: true, id: true, routePlanId: true, status: true, supersededAt: true }
               },
               destination: {
                 select: driverDestinationNotesSelect
@@ -229,11 +241,29 @@ export class PrismaDriverAssignedRouteRepository {
       return { status: 'NO_ASSIGNED_ROUTE' };
     }
 
-    return toAssignedRouteResult(routePlan, await this.readCachedRouteResult(routePlan));
+    const profiles = await this.prisma.deliveryCustomerProfile.findMany({
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: canonicalDestinationProfileSelect,
+      where: { mergedIntoProfileId: null, shopId: input.shopId }
+    }) as CanonicalDestinationProfileRecord[];
+    return toAssignedRouteResult(
+      routePlan,
+      await this.readCachedRouteResult(routePlan),
+      buildCanonicalDestinationProjection(profiles)
+    );
   }
 
   private readCachedRouteResult(routePlan: AssignedRoutePlanRecord): Promise<RoutePlanRouteResult> {
     return readCachedRouteResult(this.prisma, routePlan);
+  }
+}
+
+export class DriverAssignedRouteVersionError extends Error {
+  readonly code = 'VERSION_CONFLICT';
+
+  constructor() {
+    super('Assigned route version is inconsistent');
+    this.name = 'DriverAssignedRouteVersionError';
   }
 }
 
@@ -315,8 +345,10 @@ function toStaleRouteGeometryCacheRead(record: RoutePlanGeometryCacheMetadataRec
 
 function toAssignedRouteResult(
   routePlan: AssignedRoutePlanRecord,
-  routeResult: RoutePlanRouteResult = emptyRouteResult()
+  routeResult: RoutePlanRouteResult = emptyRouteResult(),
+  destinations: Map<string, CanonicalDestinationProjection> = new Map()
 ): DriverAssignedRouteResult {
+  const routeVersionId = resolveRouteVersionId(routePlan);
   return {
     status: 'ASSIGNED_ROUTE',
     route: {
@@ -334,15 +366,35 @@ function toAssignedRouteResult(
       routeGeometry: routeResult.routeGeometry,
       routeMapPreview: null,
       routeMetrics: routeResult.routeMetrics,
+      routeVersionId,
       routeStopPoints: routeResult.routeStopPoints.map(toAssignedRouteStopPoint),
       scheduledStartAt: readScheduledStartAt(routePlan.constraints),
       shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),
       stops: [...routePlan.routeStops]
         .sort((left, right) => left.sequence - right.sequence)
-        .map((routeStop) => toAssignedRouteStop(routeStop, routePlan)),
+        .map((routeStop) => toAssignedRouteStop(routeStop, routePlan, destinations)),
       timezone: readTimezone(routePlan.constraints, routePlan.shop.commerceConnections)
     }
   };
+}
+
+function resolveRouteVersionId(routePlan: AssignedRoutePlanRecord): string | null {
+  const versions = routePlan.routeStops.map(({ deliveryStop: { order } }) => order.currentRouteVersion);
+  const versionIds = new Set(routePlan.routeStops.map(({ deliveryStop: { order } }) => order.currentRouteVersionId));
+  if (versionIds.size === 1 && versionIds.has(null) && versions.every((version) => version === null)) return null;
+  const version = versions[0] ?? null;
+  if (versionIds.size !== 1
+    || versionIds.has(null)
+    || version === null
+    || versions.some((candidate) => candidate?.id !== version.id)
+    || version.id !== [...versionIds][0]
+    || version.driverId !== routePlan.driverId
+    || version.routePlanId !== routePlan.id
+    || version.status !== 'CURRENT'
+    || version.supersededAt !== null) {
+    throw new DriverAssignedRouteVersionError();
+  }
+  return version.id;
 }
 
 function toRoutePlanDetailForCache(routePlan: AssignedRoutePlanRecord): RoutePlanDetail {
@@ -377,7 +429,11 @@ function toRoutePlanDetailForCache(routePlan: AssignedRoutePlanRecord): RoutePla
   };
 }
 
-function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: AssignedRoutePlanRecord): DriverAssignedRouteStop {
+function toAssignedRouteStop(
+  routeStop: AssignedRoutePlanStopRecord,
+  routePlan: AssignedRoutePlanRecord,
+  destinations: Map<string, CanonicalDestinationProjection>
+): DriverAssignedRouteStop {
   const deliveryStop = routeStop.deliveryStop;
   const rawPayload = objectOrNull(deliveryStop.order.rawPayload);
   const latitude = decimalNumber(deliveryStop.latitude);
@@ -394,6 +450,9 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
   const acknowledgement = deliveryStop.driverEvents.find((event) =>
     event.driverId === routePlan.driverId && event.routePlanId === routePlan.id
   ) ?? null;
+  const canonicalDestination = deliveryStop.order.destinationId === null
+    ? undefined
+    : destinations.get(deliveryStop.order.destinationId);
   return {
     address: {
       address1: deliveryStop.address1,
@@ -412,11 +471,11 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
     deliverySession: readString(rawPayload?.deliverySession)
       ?? readString(rawPayload?.delivery_session),
     deliveryStopId: deliveryStop.id,
-    destinationId: deliveryStop.order.destinationId
+    destinationId: canonicalDestination?.destinationId ?? deliveryStop.order.destinationId
       ?? readString(dsvNormalized?.destinationId)
       ?? readString(rawPayload?.destinationId)
       ?? readString(rawPayload?.destination_id),
-    destinationNotes: toDriverDestinationNotes(deliveryStop.order.destination),
+    destinationNotes: canonicalDestination?.notes ?? toDriverDestinationNotes(deliveryStop.order.destination),
     distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
     driverMessages: deliveryStop.order.orderMessages.map((message) => ({

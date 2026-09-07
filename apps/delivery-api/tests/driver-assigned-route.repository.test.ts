@@ -33,7 +33,12 @@ const routePlanRecord = {
         longitude: '-79.3817000',
         order: {
           currentRouteVersion: {
-            createdAt: new Date('2026-05-12T06:45:00.000Z')
+            createdAt: new Date('2026-05-12T06:45:00.000Z'),
+            driverId: 'driver-id',
+            id: 'route-version-id',
+            routePlanId: 'route-plan-id',
+            status: 'CURRENT',
+            supersededAt: null
           },
           currentRouteVersionId: 'route-version-id',
           currencyCode: 'CAD',
@@ -44,6 +49,8 @@ const routePlanRecord = {
             driverLunchTimeRangeUpdatedAt: new Date('2026-08-17T03:00:00.000Z'),
             driverMemo: '후문으로 입장',
             driverMemoUpdatedAt: new Date('2026-08-17T02:00:00.000Z'),
+            driverOpenTime: '08:30',
+            driverOpenTimeUpdatedAt: new Date('2026-08-17T02:30:00.000Z'),
             driverRequiredArrivalTime: '10:30',
             driverRequiredArrivalTimeUpdatedAt: new Date('2026-08-17T05:00:00.000Z')
           },
@@ -155,7 +162,49 @@ type LooseAssignedRouteStop = Omit<MutableRoutePlanRecord['routeStops'][number],
 };
 
 describe('PrismaDriverAssignedRouteRepository', () => {
-  test('returns the token driver assigned route with ordered stops', async () => {
+  test('projects a legacy duplicate destination as the oldest canonical id with aggregated notes', async () => {
+    const routePlan = structuredClone(routePlanRecord);
+    routePlan.routeStops[0]!.deliveryStop.order.destinationId = 'legacy-destination-id';
+    const common = {
+      ...routePlanRecord.routeStops[0]!.deliveryStop.order.destination,
+      canonicalName: 'Recipient One',
+      isStoreReviewData: false,
+      mergedIntoProfileId: null,
+      normalizedAddress: { address: '100 King St W', detailAddress: null, name: 'Recipient One' }
+    };
+    const { prisma } = createPrismaHarness({
+      destinationProfiles: [
+        { ...common, createdAt: new Date('2026-05-01T00:00:00.000Z'), driverMemo: null, driverMemoUpdatedAt: null, id: 'canonical-destination-id' },
+        { ...common, createdAt: new Date('2026-05-02T00:00:00.000Z'), driverMemo: 'latest duplicate memo', driverMemoUpdatedAt: new Date('2026-05-10T00:00:00.000Z'), id: 'legacy-destination-id' }
+      ],
+      routePlan
+    });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+    const result = await repository.getAssignedRoute({ driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id' });
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') {
+      expect(result.route.stops[0]?.destinationId).toBe('canonical-destination-id');
+      expect(result.route.stops[0]?.destinationNotes?.memo).toBe('latest duplicate memo');
+    }
+    expect(prisma.deliveryCustomerProfile.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps an otherwise valid legacy route readable without a child version', async () => {
+    const routePlan = structuredClone(routePlanRecord);
+    const legacyOrder = routePlan.routeStops[0]!.deliveryStop.order as unknown as {
+      currentRouteVersionId: string | null;
+      currentRouteVersion: null | typeof routePlanRecord.routeStops[0]['deliveryStop']['order']['currentRouteVersion'];
+    };
+    legacyOrder.currentRouteVersionId = null;
+    legacyOrder.currentRouteVersion = null;
+    const { prisma } = createPrismaHarness({ routePlan });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+    const result = await repository.getAssignedRoute({ driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id' });
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') expect(result.route.routeVersionId).toBeNull();
+  });
+
+  test('reloads the token driver route with its persisted stop order and authoritative version', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
 
@@ -191,8 +240,9 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         name: 'Tuesday AM Route',
         routeGeometry: null,
         routeMapPreview: null,
-        routeMetrics: null,
-        routeStopPoints: [],
+      routeMetrics: null,
+      routeStopPoints: [],
+      routeVersionId: 'route-version-id',
         scheduledStartAt: '2026-05-12T10:00:00.000Z',
         shopDomain: 'dev1.tomatonofood.com',
         stops: [
@@ -216,6 +266,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             lunchTimeRangeUpdatedAt: '2026-08-17T03:00:00.000Z',
             memo: '후문으로 입장',
             memoUpdatedAt: '2026-08-17T02:00:00.000Z',
+            openTime: '08:30',
+            openTimeUpdatedAt: '2026-08-17T02:30:00.000Z',
             requiredArrivalTime: '10:30',
             requiredArrivalTimeUpdatedAt: '2026-08-17T05:00:00.000Z'
           },
@@ -592,7 +644,12 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         order: {
           ...structuredClone(routePlan.routeStops[0]!.deliveryStop.order),
           currentRouteVersion: {
-            createdAt: new Date('2026-05-12T06:45:00.000Z')
+            createdAt: new Date('2026-05-12T06:45:00.000Z'),
+            driverId: 'driver-id',
+            id: 'route-version-id',
+            routePlanId: 'route-plan-id',
+            status: 'CURRENT',
+            supersededAt: null
           },
           currentRouteVersionId: 'route-version-id',
           dsvAuditEvents: [],
@@ -907,6 +964,7 @@ function cachedGeometryRecord(record: typeof routePlanRecord): Record<string, un
 }
 
 function createPrismaHarness(input: {
+  destinationProfiles?: unknown[];
   driverShopId?: string;
   routeGeometryCacheFindFirst?: Record<string, unknown> | null;
   routeGeometryCacheFindUnique?: Record<string, unknown> | null;
@@ -914,6 +972,17 @@ function createPrismaHarness(input: {
 } = {}) {
   return {
     prisma: {
+      deliveryCustomerProfile: {
+        findMany: vi.fn(() => Promise.resolve(input.destinationProfiles ?? [{
+          ...routePlanRecord.routeStops[0]!.deliveryStop.order.destination,
+          canonicalName: 'Recipient One',
+          createdAt: new Date('2026-05-01T00:00:00.000Z'),
+          id: 'canonical-destination-id',
+          isStoreReviewData: false,
+          mergedIntoProfileId: null,
+          normalizedAddress: { address: '100 King St W', detailAddress: null, name: 'Recipient One' }
+        }]))
+      },
       driver: {
         findUnique: vi.fn(() => Promise.resolve({ id: 'driver-id', shopId: input.driverShopId ?? 'shop-id' }))
       },

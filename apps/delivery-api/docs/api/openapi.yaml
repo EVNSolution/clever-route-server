@@ -558,6 +558,13 @@ paths:
     get:
       tags: [DSV API v1]
       summary: Read paginated destinations
+      description: >-
+        Returns active, address-bearing destination profiles collapsed by store-review mode and
+        normalized NFKC/case-insensitive destination name plus base/detail address. The oldest
+        createdAt/id supplies the canonical destinationId. For duplicate history, each memo/time
+        field uses the value (including null as a clear tombstone) at its latest field timestamp;
+        timestamp-less legacy rows fall back to the newest deterministic non-null value. postalCode uses the oldest non-empty value.
+        Operator admins cannot see store-review rows; developer admins with dsv:accounts:read can.
       operationId: listDsvV1Destinations
       x-source-file: src/routes/dsv-v1-read.routes.ts
       x-required-scopes: ['dsv:destinations:read']
@@ -4224,6 +4231,68 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /driver/routes/{routePlanId}/order:
+    patch:
+      tags: [Driver Mobile]
+      summary: Persist the bearer driver's complete route stop order
+      operationId: reorderDriverRouteStops
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: routePlanId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriverRouteOrderRequest' }
+      responses:
+        '200':
+          description: Authoritative persisted order or identical idempotent replay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverRouteOrderEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /driver/destinations/{destinationId}/notes:
+    patch:
+      tags: [Driver Mobile]
+      summary: Update notes for a destination on the bearer-token route
+      operationId: updateDriverDestinationNotes
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: destinationId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverDestinationNotesPatch'
+      responses:
+        '200':
+          description: Updated destination notes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverDestinationNotesEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /driver/orders/unassigned:
     get:
       tags: [Driver Mobile]
@@ -6542,6 +6611,38 @@ components:
           type: string
         displayName:
           type: string
+        lunchEntryStatus:
+          enum: [AVAILABLE, UNAVAILABLE]
+          type: string
+        lunchEntryStatusUpdatedAt:
+          format: date-time
+          type: string
+        lunchTimeRange:
+          pattern: '^\d{2}:\d{2}~\d{2}:\d{2}$'
+          type: string
+        lunchTimeRangeUpdatedAt:
+          format: date-time
+          type: string
+        memo:
+          type: string
+        memoUpdatedAt:
+          format: date-time
+          type: string
+        openTime:
+          description: Recurring Asia/Seoul local delivery-available start time; not an optimizer constraint.
+          pattern: '^\d{2}:\d{2}$'
+          type: string
+        openTimeUpdatedAt:
+          format: date-time
+          type: string
+        postalCode:
+          type: string
+        requiredArrivalTime:
+          pattern: '^\d{2}:\d{2}$'
+          type: string
+        requiredArrivalTimeUpdatedAt:
+          format: date-time
+          type: string
       additionalProperties: false
     DsvV1ConditionListItem:
       type: object
@@ -8308,12 +8409,16 @@ components:
         error: { type: 'null' }
     DriverAssignedRoute:
       type: object
-      required: [deliveryDate, depot, etaSnapshot, id, name, scheduledStartAt, shopDomain, stops, timezone]
+      required: [deliveryDate, depot, etaSnapshot, id, name, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]
       properties:
         id:
           type: string
         name:
           type: string
+        routeVersionId:
+          description: Current route-grouping child version accepted as reorder expectedVersion.
+          type: [string, 'null']
+          format: uuid
         deliveryDate:
           format: date
           type: string
@@ -8341,6 +8446,38 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DriverAssignedRouteStop'
+    DriverRouteOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedVersion, orderedStopIds]
+      properties:
+        commandId: { type: string, minLength: 1, maxLength: 120 }
+        expectedVersion: { type: string, format: uuid }
+        orderedStopIds:
+          description: Exact duplicate-free full deliveryStopId set from assigned-route, including completed stops.
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, format: uuid }
+    DriverRouteOrderEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [routePlanId, routeVersionId, stops]
+          properties:
+            routePlanId: { type: string, format: uuid }
+            routeVersionId: { type: string, format: uuid }
+            stops:
+              type: array
+              items:
+                type: object
+                required: [deliveryStopId, sequence]
+                properties:
+                  deliveryStopId: { type: string, format: uuid }
+                  sequence: { type: integer, minimum: 1 }
+        error: { type: 'null' }
     DriverAssignedRouteStop:
       type: object
       required: [address, coordinates, deliveryStopId, distanceFromPreviousMeters, durationFromPreviousSeconds, estimatedArrivalAt, navigationTarget, orderName, phone, recipientName, sequence, specialInstructionNote, status, timeConstraintAcknowledgement, timeWindow, timeWindowEnd, timeWindowStart]
@@ -8430,6 +8567,77 @@ components:
           description: Server navigation decision. ADDRESS rejects missing, unusable, or still-unvalidated Shopify source coordinates without removing them from route optimization data; corrected coordinates and Shopify address-review summaries remain eligible.
           enum: [ADDRESS, COORDINATES]
           type: string
+        destinationNotes:
+          $ref: '#/components/schemas/DriverDestinationNotes'
+    DriverDestinationNotes:
+      type: object
+      required: [lunchEntryStatus, lunchEntryStatusUpdatedAt, lunchTimeRange, lunchTimeRangeUpdatedAt, memo, memoUpdatedAt, openTime, openTimeUpdatedAt, requiredArrivalTime, requiredArrivalTimeUpdatedAt]
+      properties:
+        lunchEntryStatus:
+          type: [string, 'null']
+          enum: [AVAILABLE, UNAVAILABLE, null]
+        lunchEntryStatusUpdatedAt:
+          type: [string, 'null']
+          format: date-time
+        lunchTimeRange:
+          type: [string, 'null']
+          pattern: '^\d{2}:\d{2}~\d{2}:\d{2}$'
+        lunchTimeRangeUpdatedAt:
+          type: [string, 'null']
+          format: date-time
+        memo:
+          type: [string, 'null']
+        memoUpdatedAt:
+          type: [string, 'null']
+          format: date-time
+        openTime:
+          description: Recurring Asia/Seoul local delivery-available start time; not an optimizer constraint.
+          type: [string, 'null']
+          pattern: '^\d{2}:\d{2}$'
+        openTimeUpdatedAt:
+          type: [string, 'null']
+          format: date-time
+        requiredArrivalTime:
+          type: [string, 'null']
+          pattern: '^\d{2}:\d{2}$'
+        requiredArrivalTimeUpdatedAt:
+          type: [string, 'null']
+          format: date-time
+      additionalProperties: false
+    DriverDestinationNotesPatch:
+      type: object
+      minProperties: 1
+      properties:
+        lunchEntryStatus:
+          type: [string, 'null']
+          enum: [AVAILABLE, UNAVAILABLE, null]
+        lunchTimeRange:
+          type: [string, 'null']
+          pattern: '^\d{2}:\d{2}~\d{2}:\d{2}$'
+        memo:
+          type: [string, 'null']
+          maxLength: 1000
+        openTime:
+          type: [string, 'null']
+          pattern: '^\d{2}:\d{2}$'
+        requiredArrivalTime:
+          type: [string, 'null']
+          pattern: '^\d{2}:\d{2}$'
+      additionalProperties: false
+    DriverDestinationNotesEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [destinationId, notes]
+          properties:
+            destinationId:
+              type: string
+            notes:
+              $ref: '#/components/schemas/DriverDestinationNotes'
+        error:
+          type: 'null'
     DriverRoutesHistoryEnvelope:
       type: object
       required: [data, error]

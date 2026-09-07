@@ -423,6 +423,17 @@ export type DsvV1CustomerListItemDto = {
 
 export type DsvV1DestinationListItemRow = {
   address?: string | null;
+  lunchEntryStatus?: string | null;
+  lunchEntryStatusUpdatedAt?: Date | string | null;
+  lunchTimeRange?: string | null;
+  lunchTimeRangeUpdatedAt?: Date | string | null;
+  memo?: string | null;
+  memoUpdatedAt?: Date | string | null;
+  openTime?: string | null;
+  openTimeUpdatedAt?: Date | string | null;
+  postalCode?: string | null;
+  requiredArrivalTime?: string | null;
+  requiredArrivalTimeUpdatedAt?: Date | string | null;
   destinationId: string;
   displayName: string;
 };
@@ -431,6 +442,17 @@ export type DsvV1DestinationListItemDto = {
   address?: string;
   destinationId: string;
   displayName: string;
+  lunchEntryStatus?: string;
+  lunchEntryStatusUpdatedAt?: string;
+  lunchTimeRange?: string;
+  lunchTimeRangeUpdatedAt?: string;
+  memo?: string;
+  memoUpdatedAt?: string;
+  openTime?: string;
+  openTimeUpdatedAt?: string;
+  postalCode?: string;
+  requiredArrivalTime?: string;
+  requiredArrivalTimeUpdatedAt?: string;
 };
 
 export type DsvV1ConditionListItemRow = {
@@ -750,6 +772,19 @@ export function mapDsvV1DestinationListItem(row: DsvV1DestinationListItemRow): D
     ...(row.address === undefined || row.address === null ? {} : { address: row.address }),
     destinationId: row.destinationId,
     displayName: row.displayName,
+    ...(row.lunchEntryStatus === undefined || row.lunchEntryStatus === null ? {} : { lunchEntryStatus: row.lunchEntryStatus }),
+    ...optionalIso('lunchEntryStatusUpdatedAt', row.lunchEntryStatusUpdatedAt),
+    ...(row.lunchTimeRange === undefined || row.lunchTimeRange === null ? {} : { lunchTimeRange: row.lunchTimeRange }),
+    ...optionalIso('lunchTimeRangeUpdatedAt', row.lunchTimeRangeUpdatedAt),
+    ...(row.memo === undefined || row.memo === null ? {} : { memo: row.memo }),
+    ...optionalIso('memoUpdatedAt', row.memoUpdatedAt),
+    ...(row.openTime === undefined || row.openTime === null ? {} : { openTime: row.openTime }),
+    ...optionalIso('openTimeUpdatedAt', row.openTimeUpdatedAt),
+    ...(row.postalCode === undefined || row.postalCode === null ? {} : { postalCode: row.postalCode }),
+    ...(row.requiredArrivalTime === undefined || row.requiredArrivalTime === null
+      ? {}
+      : { requiredArrivalTime: row.requiredArrivalTime }),
+    ...optionalIso('requiredArrivalTimeUpdatedAt', row.requiredArrivalTimeUpdatedAt),
   };
 }
 

@@ -24,6 +24,7 @@ const assignedRoute = {
     routeGeometry: null,
     routeMapPreview: null,
     routeMetrics: null,
+    routeVersionId: 'route-version-id',
     routeStopPoints: [],
     scheduledStartAt: '2026-06-15T12:00:00.000Z',
     shopDomain: 'dev1.tomatonofood.com',

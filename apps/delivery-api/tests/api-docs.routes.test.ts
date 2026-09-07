@@ -438,7 +438,7 @@ describe('API documentation routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('PICKUP_COMPLETED');
       expect(response.body).toContain('DriverRouteEtaSnapshot:');
-      expect(response.body).toContain('required: [deliveryDate, depot, etaSnapshot, id, name, scheduledStartAt, shopDomain, stops, timezone]');
+      expect(response.body).toContain('required: [deliveryDate, depot, etaSnapshot, id, name, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]');
       expect(response.body).toMatch(/DriverAssignedRoute:[\s\S]*scheduledStartAt:[\s\S]*format: date-time/u);
       expect(response.body).toContain('etaSnapshot:');
       expect(response.body).toContain('PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null.');

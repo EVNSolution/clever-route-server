@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   buildDsvDispatchPreviewDiff,
   conditionComparisonKey,
+  dsvDestinationIdentity,
   dsvDispatchImportSourceKind,
   type DsvDispatchCanonicalOrderSnapshot,
   type DsvDispatchPreviewInput,
@@ -11,6 +12,47 @@ import {
 } from '../src/modules/dsv/dsv-dispatch-preview-diff.js';
 
 describe('G003 DSV dispatch preview diff', () => {
+  test('matches destination identity by NFKC collapsed-whitespace name and full address only', () => {
+    expect(dsvDestinationIdentity({
+      address: ' 서울시  강남구 ',
+      detailAddress: ' 1층 ',
+      destinationName: 'ＭＡＩＮ  Dock',
+    })).toEqual({ address: '서울시 강남구 1층', name: 'main dock' });
+
+    const matching = buildDsvDispatchPreviewDiff(input({
+      rows: [sourceRow({
+        address: '서울시 강남구',
+        detailAddress: '1층',
+        destinationName: 'main dock',
+        postalCode: '06236',
+      })],
+      snapshots: {
+        destinations: [{
+          address: ' 서울시   강남구 ',
+          detailAddress: ' 1층 ',
+          id: 'destination-existing',
+          name: 'ＭＡＩＮ Dock',
+        }],
+      },
+    }));
+    const differentAddress = buildDsvDispatchPreviewDiff(input({
+      rows: [sourceRow({ address: '서울시 서초구', destinationName: 'main dock' })],
+      snapshots: {
+        destinations: [{ address: '123 Route Street', id: 'destination-existing', name: 'Main Dock' }],
+      },
+    }));
+    const differentName = buildDsvDispatchPreviewDiff(input({
+      rows: [sourceRow({ address: '123 Route Street', destinationName: 'Side Dock' })],
+      snapshots: {
+        destinations: [{ address: '123 Route Street', id: 'destination-existing', name: 'Main Dock' }],
+      },
+    }));
+
+    expect(matching.rows[0]?.destinationId).toBe('destination-existing');
+    expect(differentAddress.rows[0]?.destinationId).toBeNull();
+    expect(differentName.rows[0]?.destinationId).toBeNull();
+  });
+
   test('normalizes Cold, COLD, and padded cold to the same condition comparison key', () => {
     expect(['Cold', 'COLD', ' cold '].map(conditionComparisonKey)).toEqual(['COLD', 'COLD', 'COLD']);
 

@@ -21,6 +21,7 @@ import {
   type DsvDispatchPreviewDiff,
   type DsvDispatchPreviewRow as DsvDispatchDiffRow,
 } from './dsv-dispatch-preview-diff.js';
+import { dsvDestinationIdentity } from './dsv-destination-identity.js';
 
 export type DsvDispatchImportSourceRow = {
   address: string;
@@ -773,7 +774,6 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     const vehiclePlates = unique(normalizedRows.map((row) => row.vehiclePlate.trim()));
     const customerCodes = unique(normalizedRows.map((row) => row.customerCode.trim()));
     const sellerOrderKeys = unique(normalizedRows.map((row) => row.sellerOrderKey));
-    const addressFingerprints = unique(normalizedRows.map((row) => addressFingerprint(row)));
     const serviceDate = new Date(`${input.planDate}T00:00:00.000Z`);
 
     const [drivers, vehicles, conditions, customers, destinations, orders] = await Promise.all([
@@ -806,8 +806,9 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         where: { externalCustomerCode: { in: customerCodes }, shopId, sourceKind: dsvDispatchImportSourceKind },
       }),
       prisma.deliveryCustomerProfile.findMany({
-        select: { addressFingerprint: true, canonicalName: true, id: true, isStoreReviewData: true, mergedIntoProfileId: true, normalizedAddress: true },
-        where: { addressFingerprint: { in: addressFingerprints }, shopId },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        select: { canonicalName: true, id: true, isStoreReviewData: true, mergedIntoProfileId: true, normalizedAddress: true },
+        where: { mergedIntoProfileId: null, shopId },
       }),
       prisma.order.findMany({
         include: { deliveryStops: { orderBy: { createdAt: 'asc' }, take: 1 } },
@@ -863,15 +864,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         }),
         conditions,
         customers: customers.filter((customer) => customer.isStoreReviewData === isStoreReviewData),
-        destinations: destinations.filter((destination) => destination.isStoreReviewData === isStoreReviewData).map((destination) => {
-          const normalized = normalizedAddress(destination.normalizedAddress);
-          return {
-            address: normalized.address,
-            id: destination.id,
-            name: destination.canonicalName ?? normalized.name,
-            status: destination.mergedIntoProfileId === null ? 'ACTIVE' : 'INACTIVE',
-          };
-        }),
+        destinations: canonicalDestinationSnapshots(destinations, isStoreReviewData),
         drivers: drivers.filter((profile) => profile.driver.isStoreReviewData === isStoreReviewData).map((profile) => ({
           displayName: profile.lookupName,
           id: profile.driver.id,
@@ -1338,7 +1331,7 @@ function addStoreReviewIsolationIssues(
   sourceRows: DsvDispatchImportSourceRow[],
   snapshots: {
     customers: Array<{ externalCustomerCode: string; isStoreReviewData: boolean }>;
-    destinations: Array<{ addressFingerprint: string; isStoreReviewData: boolean }>;
+    destinations: Array<{ canonicalName: string | null; isStoreReviewData: boolean; normalizedAddress: Prisma.JsonValue }>;
     drivers: Array<{ driver: { isStoreReviewData: boolean }; lookupName: string }>;
     isStoreReviewData: boolean;
     orders: Array<{ isStoreReviewData: boolean; sellerOrderKey: string | null }>;
@@ -1350,8 +1343,18 @@ function addStoreReviewIsolationIssues(
       oppositeMode(profile.driver.isStoreReviewData) && profile.lookupName === row.driverName.trim())
       || snapshots.customers.some((customer) =>
         oppositeMode(customer.isStoreReviewData) && customer.externalCustomerCode === row.customerCode.trim())
-      || snapshots.destinations.some((destination) =>
-        oppositeMode(destination.isStoreReviewData) && destination.addressFingerprint === addressFingerprint(row))
+      || snapshots.destinations.some((destination) => {
+        const normalized = normalizedAddress(destination.normalizedAddress);
+        const existingIdentity = dsvDestinationIdentity({
+          address: normalized.address,
+          detailAddress: normalized.detailAddress,
+          destinationName: destination.canonicalName ?? normalized.name,
+        });
+        const incomingIdentity = dsvDestinationIdentity(row);
+        return oppositeMode(destination.isStoreReviewData)
+          && existingIdentity.name === incomingIdentity.name
+          && existingIdentity.address === incomingIdentity.address;
+      })
       || snapshots.orders.some((order) =>
         oppositeMode(order.isStoreReviewData) && order.sellerOrderKey === row.sellerOrderKey.trim());
     return matchesRestrictedResource ? [row.rowNumber] : [];
@@ -1407,6 +1410,38 @@ function addStoreReviewIsolationIssues(
       updateCandidateRows: rows.filter((row) => row.diffKind === 'UPDATE_CANDIDATE').length,
     },
   };
+}
+
+function canonicalDestinationSnapshots(
+  destinations: Array<{
+    canonicalName: string | null;
+    id: string;
+    isStoreReviewData: boolean;
+    mergedIntoProfileId: string | null;
+    normalizedAddress: Prisma.JsonValue;
+  }>,
+  isStoreReviewData: boolean,
+) {
+  const identities = new Set<string>();
+  return destinations.flatMap((destination) => {
+    if (destination.isStoreReviewData !== isStoreReviewData) return [];
+    const normalized = normalizedAddress(destination.normalizedAddress);
+    const identity = dsvDestinationIdentity({
+      address: normalized.address,
+      detailAddress: normalized.detailAddress,
+      destinationName: destination.canonicalName ?? normalized.name,
+    });
+    const key = `${identity.name}\u0000${identity.address}`;
+    if (identities.has(key)) return [];
+    identities.add(key);
+    return [{
+      address: normalized.address,
+      detailAddress: normalized.detailAddress,
+      id: destination.id,
+      name: destination.canonicalName ?? normalized.name,
+      status: destination.mergedIntoProfileId === null ? 'ACTIVE' : 'INACTIVE',
+    }];
+  });
 }
 
 export function buildDispatchImportPreview(input: {
@@ -1928,10 +1963,31 @@ async function findOrCreateDestination(
   isStoreReviewData: boolean,
 ) {
   const fingerprint = addressFingerprint(source);
-  const existing = await tx.deliveryCustomerProfile.findFirst({
-    where: { addressFingerprint: fingerprint, isStoreReviewData, mergedIntoProfileId: null, shopId },
+  const candidates = await tx.deliveryCustomerProfile.findMany({
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    where: { isStoreReviewData, mergedIntoProfileId: null, shopId },
   });
-  if (existing !== null) return existing;
+  const incomingIdentity = dsvDestinationIdentity(source);
+  const existing = candidates.find((candidate) => {
+    const stored = normalizedAddress(candidate.normalizedAddress);
+    const identity = dsvDestinationIdentity({
+      address: stored.address,
+      detailAddress: stored.detailAddress,
+      destinationName: candidate.canonicalName ?? stored.name,
+    });
+    return identity.name === incomingIdentity.name && identity.address === incomingIdentity.address;
+  });
+  if (existing !== undefined) {
+    const stored = normalizedAddress(existing.normalizedAddress);
+    const postalCode = normalized.postalCode?.trim() || null;
+    if (stored.postalCode === null && postalCode !== null) {
+      return tx.deliveryCustomerProfile.update({
+        data: { normalizedAddress: toJson({ ...jsonObject(existing.normalizedAddress), postalCode }) },
+        where: { id_shopId: { id: existing.id, shopId } },
+      });
+    }
+    return existing;
+  }
   return tx.deliveryCustomerProfile.create({
     data: {
       addressFingerprint: fingerprint,
@@ -1954,13 +2010,11 @@ async function findOrCreateDestination(
 }
 
 function addressFingerprint(
-  row: Pick<DsvDispatchImportSourceRow, 'address' | 'destinationName' | 'detailAddress' | 'postalCode'>,
+  row: Pick<DsvDispatchImportSourceRow, 'address' | 'destinationName' | 'detailAddress'>,
 ): string {
-  const structuredSuffix = row.detailAddress === undefined && row.postalCode === undefined
-    ? ''
-    : `|${row.postalCode?.trim() ?? ''}|${row.detailAddress?.trim().toUpperCase() ?? ''}`;
+  const identity = dsvDestinationIdentity(row);
   return createHash('sha256')
-    .update(`${row.destinationName.trim().toUpperCase()}|${row.address.trim().toUpperCase()}${structuredSuffix}`, 'utf8')
+    .update(`${identity.name}|${identity.address}`, 'utf8')
     .digest('hex');
 }
 
@@ -2266,15 +2320,27 @@ function toJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
-function normalizedAddress(value: Prisma.JsonValue): { address: string; name: string } {
+function normalizedAddress(value: Prisma.JsonValue): { address: string; detailAddress: string | null; name: string; postalCode: string | null } {
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const record = value as Record<string, unknown>;
     return {
-      address: typeof record.address === 'string' ? record.address : '',
+      address: typeof record.address === 'string'
+        ? record.address
+        : typeof record.address1 === 'string' ? record.address1 : '',
+      detailAddress: typeof record.detailAddress === 'string'
+        ? record.detailAddress
+        : typeof record.address2 === 'string' ? record.address2 : null,
       name: typeof record.name === 'string' ? record.name : '',
+      postalCode: typeof record.postalCode === 'string' && record.postalCode.trim() !== '' ? record.postalCode : null,
     };
   }
-  return { address: '', name: '' };
+  return { address: '', detailAddress: null, name: '', postalCode: null };
+}
+
+function jsonObject(value: Prisma.JsonValue): Record<string, Prisma.JsonValue> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, Prisma.JsonValue>
+    : {};
 }
 
 function normalizedFromOrder(value: Prisma.JsonValue): DsvDispatchDiffRow['normalized'] | null {

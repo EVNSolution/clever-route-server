@@ -75,6 +75,33 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     }));
   });
 
+  test('does not let a normal import reuse a store-review destination with the same canonical identity', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'review-destination-isolation');
+    const row = fixture.input.rows[0];
+    if (row === undefined) throw new Error('Missing fixture row');
+    await prisma.deliveryCustomerProfile.create({
+      data: {
+        addressFingerprint: `review-destination-${randomUUID()}`,
+        canonicalName: row.destinationName,
+        isStoreReviewData: true,
+        normalizedAddress: { address: row.address, name: row.destinationName },
+        shopId: fixture.shopId,
+      },
+    });
+
+    const preview = await new PrismaDsvDispatchImportService(prisma).preview({
+      ...fixture.input,
+      shopDomain: fixture.shopDomain,
+    });
+
+    expect(preview.canApply).toBe(false);
+    expect(preview.rows[0]?.destinationId).toBeNull();
+    expect(preview.rows[0]?.issues).toContainEqual(expect.objectContaining({
+      code: 'DISPATCH_IMPORT_CANONICAL_CONFLICT',
+      severity: 'error',
+    }));
+  });
+
   test('keeps a review import canonical graph and generated route marked as review-only', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'review-graph-propagation');
     const input = withAssignedFixtureResources(fixture.input);
@@ -1107,6 +1134,86 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       routePlanStops: 0,
       routePlans: 0,
     });
+  });
+
+  test('reuses the oldest legacy-fingerprint destination by normalized name and full address and only enriches missing postal code', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'legacy-destination-fingerprint');
+    const legacy = await prisma.deliveryCustomerProfile.create({
+      data: {
+        addressFingerprint: 'legacy-fingerprint-including-postal-and-detail',
+        adminMemo: '관리자 메모 보존',
+        canonicalName: 'ＩＮＴＥＧＲＡＴＩＯＮ   Destination',
+        driverMemo: '배송원 메모 보존',
+        normalizedAddress: {
+          address: '123  Integration Test Road',
+          detailAddress: 'Suite 1',
+          name: 'ＩＮＴＥＧＲＡＴＩＯＮ Destination',
+          postalCode: null,
+          rawAddress: '원본 주소 보존',
+        },
+        shopId: fixture.shopId,
+      },
+    });
+    const sourceRow = fixture.input.rows[0];
+    if (sourceRow === undefined) throw new Error('Missing fixture row');
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const staged = await service.commit({
+      ...fixture.input,
+      actor: 'g003-test',
+      rows: [{
+        ...sourceRow,
+        address: '123 Integration   Test Road',
+        detailAddress: 'Suite 1',
+        destinationName: 'integration destination',
+        postalCode: '06236',
+      }],
+      shopDomain: fixture.shopDomain,
+    });
+
+    expect(staged.rows[0]?.destinationId).toBe(legacy.id);
+    const applied = await service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-legacy-destination-fingerprint',
+    ));
+    const saved = await prisma.deliveryCustomerProfile.findUniqueOrThrow({ where: { id: legacy.id } });
+
+    expect(applied.rows[0]?.destinationId).toBe(legacy.id);
+    expect(saved).toMatchObject({
+      addressFingerprint: 'legacy-fingerprint-including-postal-and-detail',
+      adminMemo: '관리자 메모 보존',
+      canonicalName: 'ＩＮＴＥＧＲＡＴＩＯＮ   Destination',
+      driverMemo: '배송원 메모 보존',
+    });
+    expect(saved.normalizedAddress).toEqual({
+      address: '123  Integration Test Road',
+      detailAddress: 'Suite 1',
+      name: 'ＩＮＴＥＧＲＡＴＩＯＮ Destination',
+      postalCode: '06236',
+      rawAddress: '원본 주소 보존',
+    });
+    const secondStaged = await service.commit({
+      ...fixture.input,
+      actor: 'g003-test',
+      rows: [{
+        ...sourceRow,
+        customerCode: 'CUST-G003-SECOND',
+        detailAddress: 'Suite 1',
+        postalCode: '99999',
+        sellerOrderKey: `${fixture.sellerOrderKey}-SECOND`,
+      }],
+      shopDomain: fixture.shopDomain,
+    });
+    await service.apply(applyInput(
+      fixture.shopDomain,
+      secondStaged.id,
+      secondStaged.sourceHash ?? '',
+      'cmd-legacy-destination-existing-postal',
+    ));
+    const preserved = await prisma.deliveryCustomerProfile.findUniqueOrThrow({ where: { id: legacy.id } });
+    expect(preserved.normalizedAddress).toMatchObject({ postalCode: '06236' });
+    await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toMatchObject({ destinations: 1 });
   });
 
   test('serializes eight cross-customer applies for one physical destination fingerprint', async () => {

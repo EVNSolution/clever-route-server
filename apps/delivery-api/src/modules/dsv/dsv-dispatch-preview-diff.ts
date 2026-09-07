@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 
 import type { DsvAddressResolutionStatus } from './dsv-address-canonicalization.js';
+import { dsvDestinationIdentity } from './dsv-destination-identity.js';
+export { dsvDestinationIdentity } from './dsv-destination-identity.js';
 
 export const dsvDispatchImportSourceKind = 'DSV_DISPATCH_IMPORT';
 
@@ -66,6 +68,7 @@ export type DsvDispatchCustomerSnapshot = {
 export type DsvDispatchDestinationSnapshot = {
   address: string;
   customerCode?: string | null;
+  detailAddress?: string | null;
   id: string;
   name: string;
   status?: string | null;
@@ -239,12 +242,17 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
       (customer) => customer.externalCustomerCode === normalized.customerCode,
     );
     const customerMatches = exactCustomerMatches.filter((customer) => customer.status === 'ACTIVE');
-    const destinationMatches = input.snapshots.destinations.filter(
-      (destination) =>
-        destination.status !== 'INACTIVE'
-        && normalizeText(destination.name) === normalized.destinationName
-        && normalizeText(destination.address) === normalized.address,
-    );
+    const incomingDestinationIdentity = dsvDestinationIdentity(normalized);
+    const destinationMatches = input.snapshots.destinations.filter((destination) => {
+      const existingIdentity = dsvDestinationIdentity({
+        address: destination.address,
+        detailAddress: destination.detailAddress,
+        destinationName: destination.name,
+      });
+      return destination.status !== 'INACTIVE'
+        && existingIdentity.name === incomingDestinationIdentity.name
+        && existingIdentity.address === incomingDestinationIdentity.address;
+    });
 
     if (hasDriverName) {
       addCardinalityIssues(issues, 'DRIVER', 'driverName', driverMatches.length);

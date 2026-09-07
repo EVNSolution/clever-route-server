@@ -16,15 +16,18 @@ describe('disposable DB integration runner', () => {
     expect(script).toContain('safe-local-g003-temp-cluster');
     expect(script).toContain('safe-local-g010-disposable');
     expect(script).toContain('safe-local-g005-temp-cluster');
+    expect(script).toContain('safe-local-driver-route-order-temp-cluster');
     expect(script).toContain('safe-local-g006-disposable');
     expect(script).toContain('dsv-dispatch-import-g003-integration.test.ts');
     expect(script).toContain('dsv-assignment-command.integration.test.ts');
     expect(script).toContain('dsv-g009-tenant-composite-fks.integration.test.ts');
     expect(script).toContain('dsv-v1-read-query.integration.test.ts');
+    expect(script).toContain('driver-route-order.integration.test.ts');
     expect(script).toContain('shopify-webhook-durability.integration.test.ts');
     expect(script).toContain('customer-email-reconciliation.integration.test.ts');
     expect(script).toContain('driver-account-deletion.integration.test.ts');
     expect(script).toContain('127.0.0.1:55491/clever_email_reconciliation');
+    expect(script).toContain('127.0.0.1:55467/clever_route_order');
     expect(script).toContain('EMAIL_RECONCILIATION_DATABASE_URL="$email_reconciliation_url"');
     expect(script).toContain('DRIVER_ACCOUNT_DELETION_DATABASE_URL="$g006_url"');
     expect(script).toContain('127.0.0.1:55492 / clever_deletion_upgrade');

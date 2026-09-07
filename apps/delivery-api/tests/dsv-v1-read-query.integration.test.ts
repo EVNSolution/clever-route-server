@@ -321,6 +321,95 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(destinationB.page.hasMore).toBe(false);
   });
 
+  test('collapses active duplicate destination identities before pagination and keeps store-review mode isolated', async () => {
+    const shop = await createShop(prisma, `destination-register-${randomUUID()}`);
+    createdShopIds.push(shop.id);
+    const [oldest, distinct] = await Promise.all([
+      prisma.deliveryCustomerProfile.create({
+        data: {
+          addressFingerprint: `legacy-oldest-${randomUUID()}`,
+          canonicalName: 'Alpha Dock',
+          createdAt: new Date('2026-09-01T00:00:00.000Z'),
+          driverMemo: '이전 메모',
+          driverMemoUpdatedAt: new Date('2026-09-01T01:00:00.000Z'),
+          normalizedAddress: { address: '서울시 강남구', detailAddress: '1층', postalCode: null },
+          shopId: shop.id,
+        },
+      }),
+      prisma.deliveryCustomerProfile.create({
+        data: {
+          addressFingerprint: `distinct-${randomUUID()}`,
+          canonicalName: 'Beta Dock',
+          normalizedAddress: { address: '서울시 서초구', postalCode: '06700' },
+          shopId: shop.id,
+        },
+      }),
+    ]);
+    await prisma.deliveryCustomerProfile.createMany({
+      data: [
+        {
+          addressFingerprint: `legacy-newer-${randomUUID()}`,
+          canonicalName: 'ＡＬＰＨＡ   dock',
+          createdAt: new Date('2026-09-02T00:00:00.000Z'),
+          driverMemo: '최신 메모',
+          driverMemoUpdatedAt: new Date('2026-09-02T01:00:00.000Z'),
+          driverOpenTime: '08:30',
+          driverOpenTimeUpdatedAt: new Date('2026-09-02T02:00:00.000Z'),
+          normalizedAddress: { address: ' 서울시  강남구 ', detailAddress: ' 1층 ', postalCode: '06236' },
+          shopId: shop.id,
+        },
+        {
+          addressFingerprint: `addressless-${randomUUID()}`,
+          canonicalName: 'Gamma Addressless',
+          normalizedAddress: { postalCode: '00000' },
+          shopId: shop.id,
+        },
+        {
+          addressFingerprint: `review-${randomUUID()}`,
+          canonicalName: 'Delta Review',
+          isStoreReviewData: true,
+          normalizedAddress: { address: '서울시 송파구' },
+          shopId: shop.id,
+        },
+      ],
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma);
+    const operator = customerlessAdmin(shop.id);
+    const firstPage = await service.listDestinations(operator, { limit: 1 });
+    const secondPage = await service.listDestinations(operator, {
+      cursor: firstPage.page.nextCursor ?? null,
+      limit: 1,
+    });
+    const developer = await service.listDestinations({
+      ...operator,
+      scopes: ['dsv:accounts:read'] as const,
+    });
+
+    expect(firstPage.items).toEqual([{
+      address: '서울시 강남구, 1층',
+      destinationId: oldest.id,
+      displayName: 'Alpha Dock',
+      lunchEntryStatus: null,
+      lunchEntryStatusUpdatedAt: null,
+      lunchTimeRange: null,
+      lunchTimeRangeUpdatedAt: null,
+      memo: '최신 메모',
+      memoUpdatedAt: new Date('2026-09-02T01:00:00.000Z'),
+      openTime: '08:30',
+      openTimeUpdatedAt: new Date('2026-09-02T02:00:00.000Z'),
+      postalCode: '06236',
+      requiredArrivalTime: null,
+      requiredArrivalTimeUpdatedAt: null,
+    }]);
+    expect(secondPage.items.map((destination) => destination.destinationId)).toEqual([distinct.id]);
+    expect(secondPage.page.hasMore).toBe(false);
+    expect(developer.items.map((destination) => destination.displayName)).toEqual([
+      'Alpha Dock',
+      'Beta Dock',
+      'Delta Review',
+    ]);
+  });
+
   test('emits endpoint-specific management cursor sort identities for every management list', async () => {
     const fixture = await createManagementCursorSortFixture(prisma, createdShopIds, 'management-sort');
     const service = new PrismaDsvV1ReadQueryService(prisma, () => new Date('2026-07-22T15:30:00.000Z'));

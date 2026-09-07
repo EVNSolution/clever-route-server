@@ -29,6 +29,7 @@ import {
   dsvTimeConstraintAuditEvents,
 } from './dsv-time-constraint.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
+import { dsvDestinationIdentitySqlAddress, dsvDestinationIdentitySqlText } from './dsv-destination-identity.js';
 import {
   UVIS_VEHICLE_TRAIL_SCHEMA_VERSION,
   type UvisVehicleTrailDocumentV1,
@@ -336,8 +337,19 @@ type CustomerManagementRow = {
 
 type DestinationManagementRow = {
   displayName: string;
+  driverLunchEntryStatus: string | null;
+  driverLunchEntryStatusUpdatedAt: Date | null;
+  driverLunchTimeRange: string | null;
+  driverLunchTimeRangeUpdatedAt: Date | null;
+  driverMemo: string | null;
+  driverMemoUpdatedAt: Date | null;
+  driverOpenTime: string | null;
+  driverOpenTimeUpdatedAt: Date | null;
+  driverRequiredArrivalTime: string | null;
+  driverRequiredArrivalTimeUpdatedAt: Date | null;
   id: string;
   normalizedAddress: Prisma.JsonValue;
+  postalCode: string | null;
 };
 
 const dispatchSort = 'serviceDate:asc,sellerOrderKey:asc,orderId:asc';
@@ -825,25 +837,96 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
   ): Promise<DsvV1PaginatedRead<DsvV1DestinationListItemRow>> {
     return this.listManagement('destinations', principal.shopId, input, async (page) => {
       const rows = await this.prisma.$queryRaw<DestinationManagementRow[]>(Prisma.sql`
+        WITH active_destinations AS (
+          SELECT *,
+            ${dsvDestinationIdentitySqlText(Prisma.sql`COALESCE(
+              NULLIF(BTRIM("canonicalName"), ''),
+              NULLIF(BTRIM("normalizedAddress"->>'name'), ''),
+              id::text
+            )`)} AS name_key,
+            ${dsvDestinationIdentitySqlAddress(
+              Prisma.sql`COALESCE("normalizedAddress"->>'address', "normalizedAddress"->>'address1', '')`,
+              Prisma.sql`COALESCE("normalizedAddress"->>'detailAddress', "normalizedAddress"->>'address2', '')`
+            )} AS address_key
+          FROM delivery_customer_profiles
+          WHERE "shopId" = ${principal.shopId}::uuid
+            AND "mergedIntoProfileId" IS NULL
+            AND NULLIF(BTRIM(COALESCE("normalizedAddress"->>'address', "normalizedAddress"->>'address1', '')), '') IS NOT NULL
+            ${canAccessDsvStoreReviewData(principal) ? Prisma.empty : Prisma.sql`AND "isStoreReviewData" = false`}
+        ), grouped_destinations AS (
+          SELECT
+            (ARRAY_AGG(id ORDER BY "createdAt" ASC, id ASC))[1] AS id,
+            (ARRAY_AGG(COALESCE(
+              NULLIF(BTRIM("canonicalName"), ''),
+              NULLIF(BTRIM("normalizedAddress"->>'name'), ''),
+              id::text
+            ) ORDER BY "createdAt" ASC, id ASC))[1] AS "displayName",
+            (ARRAY_AGG("normalizedAddress" ORDER BY "createdAt" ASC, id ASC))[1] AS "normalizedAddress",
+            (ARRAY_AGG(NULLIF(BTRIM("normalizedAddress"->>'postalCode'), '') ORDER BY "createdAt" ASC, id ASC)
+              FILTER (WHERE NULLIF(BTRIM("normalizedAddress"->>'postalCode'), '') IS NOT NULL))[1] AS "postalCode",
+            CASE WHEN COUNT(*) FILTER (WHERE "driverMemoUpdatedAt" IS NOT NULL) > 0
+              THEN (ARRAY_AGG("driverMemo" ORDER BY "driverMemoUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverMemoUpdatedAt" IS NOT NULL))[1]
+              ELSE (ARRAY_AGG("driverMemo" ORDER BY "createdAt" DESC, id DESC) FILTER (WHERE "driverMemo" IS NOT NULL))[1] END AS "driverMemo",
+            (ARRAY_AGG("driverMemoUpdatedAt" ORDER BY "driverMemoUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverMemoUpdatedAt" IS NOT NULL))[1] AS "driverMemoUpdatedAt",
+            CASE WHEN COUNT(*) FILTER (WHERE "driverOpenTimeUpdatedAt" IS NOT NULL) > 0
+              THEN (ARRAY_AGG("driverOpenTime" ORDER BY "driverOpenTimeUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverOpenTimeUpdatedAt" IS NOT NULL))[1]
+              ELSE (ARRAY_AGG("driverOpenTime" ORDER BY "createdAt" DESC, id DESC) FILTER (WHERE "driverOpenTime" IS NOT NULL))[1] END AS "driverOpenTime",
+            (ARRAY_AGG("driverOpenTimeUpdatedAt" ORDER BY "driverOpenTimeUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverOpenTimeUpdatedAt" IS NOT NULL))[1] AS "driverOpenTimeUpdatedAt",
+            CASE WHEN COUNT(*) FILTER (WHERE "driverLunchTimeRangeUpdatedAt" IS NOT NULL) > 0
+              THEN (ARRAY_AGG("driverLunchTimeRange" ORDER BY "driverLunchTimeRangeUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverLunchTimeRangeUpdatedAt" IS NOT NULL))[1]
+              ELSE (ARRAY_AGG("driverLunchTimeRange" ORDER BY "createdAt" DESC, id DESC) FILTER (WHERE "driverLunchTimeRange" IS NOT NULL))[1] END AS "driverLunchTimeRange",
+            (ARRAY_AGG("driverLunchTimeRangeUpdatedAt" ORDER BY "driverLunchTimeRangeUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverLunchTimeRangeUpdatedAt" IS NOT NULL))[1] AS "driverLunchTimeRangeUpdatedAt",
+            CASE WHEN COUNT(*) FILTER (WHERE "driverLunchEntryStatusUpdatedAt" IS NOT NULL) > 0
+              THEN (ARRAY_AGG("driverLunchEntryStatus" ORDER BY "driverLunchEntryStatusUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverLunchEntryStatusUpdatedAt" IS NOT NULL))[1]
+              ELSE (ARRAY_AGG("driverLunchEntryStatus" ORDER BY "createdAt" DESC, id DESC) FILTER (WHERE "driverLunchEntryStatus" IS NOT NULL))[1] END AS "driverLunchEntryStatus",
+            (ARRAY_AGG("driverLunchEntryStatusUpdatedAt" ORDER BY "driverLunchEntryStatusUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverLunchEntryStatusUpdatedAt" IS NOT NULL))[1] AS "driverLunchEntryStatusUpdatedAt",
+            CASE WHEN COUNT(*) FILTER (WHERE "driverRequiredArrivalTimeUpdatedAt" IS NOT NULL) > 0
+              THEN (ARRAY_AGG("driverRequiredArrivalTime" ORDER BY "driverRequiredArrivalTimeUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverRequiredArrivalTimeUpdatedAt" IS NOT NULL))[1]
+              ELSE (ARRAY_AGG("driverRequiredArrivalTime" ORDER BY "createdAt" DESC, id DESC) FILTER (WHERE "driverRequiredArrivalTime" IS NOT NULL))[1] END AS "driverRequiredArrivalTime",
+            (ARRAY_AGG("driverRequiredArrivalTimeUpdatedAt" ORDER BY "driverRequiredArrivalTimeUpdatedAt" DESC, "createdAt" DESC, id DESC) FILTER (WHERE "driverRequiredArrivalTimeUpdatedAt" IS NOT NULL))[1] AS "driverRequiredArrivalTimeUpdatedAt"
+          FROM active_destinations
+          GROUP BY "isStoreReviewData", name_key, address_key
+        )
         SELECT
           id::text AS id,
-          COALESCE("canonicalName", id::text) AS "displayName",
-          "normalizedAddress" AS "normalizedAddress"
-        FROM delivery_customer_profiles
-        WHERE "shopId" = ${principal.shopId}::uuid
-          ${canAccessDsvStoreReviewData(principal) ? Prisma.empty : Prisma.sql`AND "isStoreReviewData" = false`}
+          "displayName",
+          "driverLunchEntryStatus",
+          "driverLunchEntryStatusUpdatedAt",
+          "driverLunchTimeRange",
+          "driverLunchTimeRangeUpdatedAt",
+          "driverMemo",
+          "driverMemoUpdatedAt",
+          "driverOpenTime",
+          "driverOpenTimeUpdatedAt",
+          "driverRequiredArrivalTime",
+          "driverRequiredArrivalTimeUpdatedAt",
+          "normalizedAddress",
+          "postalCode"
+        FROM grouped_destinations
+        WHERE TRUE
           ${effectiveLabelCursorSql(
             page.cursor,
-            Prisma.sql`COALESCE("canonicalName", id::text)`,
+            Prisma.sql`"displayName"`,
             Prisma.sql`id::text`,
           )}
-        ORDER BY LOWER(COALESCE("canonicalName", id::text)) ASC, id ASC
+        ORDER BY LOWER("displayName") ASC, id ASC
         LIMIT ${page.limit + 1}
       `);
       return rows.map((row) => ({
-        address: normalizedAddressLabel(row.normalizedAddress),
+        address: normalizedDestinationAddressLabel(row.normalizedAddress),
         destinationId: row.id,
         displayName: row.displayName,
+        lunchEntryStatus: row.driverLunchEntryStatus,
+        lunchEntryStatusUpdatedAt: row.driverLunchEntryStatusUpdatedAt,
+        lunchTimeRange: row.driverLunchTimeRange,
+        lunchTimeRangeUpdatedAt: row.driverLunchTimeRangeUpdatedAt,
+        memo: row.driverMemo,
+        memoUpdatedAt: row.driverMemoUpdatedAt,
+        openTime: row.driverOpenTime,
+        openTimeUpdatedAt: row.driverOpenTimeUpdatedAt,
+        postalCode: row.postalCode,
+        requiredArrivalTime: row.driverRequiredArrivalTime,
+        requiredArrivalTimeUpdatedAt: row.driverRequiredArrivalTimeUpdatedAt,
       }));
     });
   }
@@ -2490,6 +2573,19 @@ function normalizedAddressLabel(value: Prisma.JsonValue): string | null {
     const parts = ['address1', 'city', 'province', 'postalCode', 'countryCode']
       .map((key) => value[key])
       .filter((part): part is string => typeof part === 'string' && part.length > 0);
+    return parts.length === 0 ? null : parts.join(', ');
+  }
+  return null;
+}
+
+function normalizedDestinationAddressLabel(value: Prisma.JsonValue): string | null {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const baseAddress = value.address ?? value.address1;
+    const detailAddress = value.detailAddress ?? value.address2;
+    const parts = [baseAddress, detailAddress, value.city, value.province, value.countryCode]
+      .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+      .map((part) => part.trim())
+      .filter((part, index, all) => all.findIndex((candidate) => candidate === part) === index);
     return parts.length === 0 ? null : parts.join(', ');
   }
   return null;

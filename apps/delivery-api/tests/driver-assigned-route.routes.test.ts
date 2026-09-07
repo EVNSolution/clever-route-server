@@ -1,10 +1,13 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { DriverRouteOrderError } from '../src/modules/driver/driver-route-order.service.js';
 import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-12T06:40:00.000Z');
+const routeVersionId = '11111111-1111-4111-8111-111111111111';
+const deliveryStopId = '22222222-2222-4222-8222-222222222222';
 
 const assignedRoute = {
   status: 'ASSIGNED_ROUTE' as const,
@@ -25,6 +28,7 @@ const assignedRoute = {
     routeGeometry: null,
     routeMapPreview: null,
     routeMetrics: null,
+    routeVersionId: 'route-version-id',
     routeStopPoints: [],
     scheduledStartAt: '2026-05-12T10:00:00.000Z',
     shopDomain: 'example.myshopify.com',
@@ -69,6 +73,90 @@ const assignedRoute = {
 };
 
 describe('Driver assigned route route', () => {
+  test('persists a token-scoped route order and returns the authoritative version', async () => {
+    const reorder = vi.fn(() => Promise.resolve({
+      routePlanId: 'route-plan-id',
+      routeVersionId: 'route-version-new',
+      stops: [{ deliveryStopId: 'stop-id', sequence: 1 }]
+    }));
+    const { app } = await createAppHarness({ driverRouteOrderService: { reorder } });
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'PATCH',
+        payload: { commandId: 'command-1', expectedVersion: routeVersionId, orderedStopIds: [deliveryStopId] },
+        url: '/driver/routes/route-plan-id/order'
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json<{ data: { routeVersionId: string } }>();
+      expect(body.data.routeVersionId).toBe('route-version-new');
+      expect(reorder).toHaveBeenCalledWith({
+        commandId: 'command-1', driverId: 'driver-id', expectedVersion: routeVersionId,
+        orderedStopIds: [deliveryStopId], routePlanId: 'route-plan-id', shopId: 'shop-id'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    ['VERSION_CONFLICT', 409],
+    ['IDEMPOTENCY_PAYLOAD_MISMATCH', 409],
+    ['ROUTE_COMPLETED', 409],
+    ['INVALID_STOP_SET', 400]
+  ] as const)('maps %s reorder failures', async (code, statusCode) => {
+    const { app } = await createAppHarness({
+      driverRouteOrderService: { reorder: vi.fn(() => Promise.reject(new DriverRouteOrderError(code))) }
+    });
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` }, method: 'PATCH',
+        payload: { commandId: 'command-1', expectedVersion: routeVersionId, orderedStopIds: [deliveryStopId] },
+        url: '/driver/routes/route-plan-id/order'
+      });
+      expect(response.statusCode).toBe(statusCode);
+      const body = response.json<{ error: { code: string } }>();
+      expect(body.error.code).toBe(code);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects another route before invoking the reorder service', async () => {
+    const reorder = vi.fn();
+    const { app } = await createAppHarness({ driverRouteOrderService: { reorder } });
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` }, method: 'PATCH',
+        payload: { commandId: 'command-1', expectedVersion: routeVersionId, orderedStopIds: [deliveryStopId] },
+        url: '/driver/routes/other-route/order'
+      });
+      expect(response.statusCode).toBe(403);
+      expect(reorder).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    ['expectedVersion', { expectedVersion: 'not-a-uuid', orderedStopIds: [deliveryStopId] }],
+    ['orderedStopIds', { expectedVersion: routeVersionId, orderedStopIds: ['not-a-uuid'] }]
+  ] as const)('rejects malformed %s before invoking the reorder service', async (_field, payload) => {
+    const reorder = vi.fn();
+    const { app } = await createAppHarness({ driverRouteOrderService: { reorder } });
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` }, method: 'PATCH',
+        payload: { commandId: 'command-1', ...payload },
+        url: '/driver/routes/route-plan-id/order'
+      });
+      expect(response.statusCode).toBe(400);
+      expect(reorder).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects assigned route reads without a driver bearer token', async () => {
     const { app, getAssignedRoute } = await createAppHarness();
 
@@ -263,6 +351,7 @@ describe('Driver assigned route route', () => {
 });
 
 async function createAppHarness(input: {
+  driverRouteOrderService?: NonNullable<NonNullable<Parameters<typeof buildApp>[0]>['driverApi']>['driverRouteOrderService'];
   driverRouteMapPreviewBaseUrl?: string;
   driverRouteMapPreviewService?: NonNullable<NonNullable<Parameters<typeof buildApp>[0]>['driverApi']>['driverRouteMapPreviewService'];
   empty?: boolean;
@@ -273,6 +362,7 @@ async function createAppHarness(input: {
   const app = await buildApp({
     driverApi: {
       driverAssignedRouteService: { getAssignedRoute },
+      ...(input.driverRouteOrderService === undefined ? {} : { driverRouteOrderService: input.driverRouteOrderService }),
       ...(input.driverRouteMapPreviewBaseUrl === undefined ? {} : { driverRouteMapPreviewBaseUrl: input.driverRouteMapPreviewBaseUrl }),
       ...(input.driverRouteMapPreviewService === undefined ? {} : { driverRouteMapPreviewService: input.driverRouteMapPreviewService }),
       driverEventService: {
