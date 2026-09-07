@@ -1706,10 +1706,26 @@ model DriverAccount {
   consentRecords                 DriverConsentRecord[]
   sessions                       DriverAccountSession[]
   deletionRequest                DriverAccountDeletionRequest?
+  dsvInquiries                   DsvDriverInquiry[]
   pushTokens                     DriverPushToken[]
 
   @@index([status])
   @@map("driver_accounts")
+}
+
+model DsvDriverInquiry {
+  id              String        @id @default(uuid()) @db.Uuid
+  accountId       String        @db.Uuid
+  account         DriverAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  clientRequestId String        @db.Uuid
+  authorName      String        @db.VarChar(80)
+  title           String        @db.VarChar(120)
+  body            String        @db.VarChar(4000)
+  createdAt       DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@unique([accountId, clientRequestId])
+  @@index([accountId, createdAt, id])
+  @@map("dsv_driver_inquiries")
 }
 
 model DriverAccountSession {

@@ -12,10 +12,13 @@ import {
   normalizeDsvDriverPhone,
 } from '../modules/dsv/dsv-driver-identity.js';
 import { signDriverAccountToken } from '../modules/driver/driver-token-verifier.js';
+import { registerDsvDriverInquiryRoutes } from './dsv-driver-inquiries.routes.js';
+import type { DsvDriverInquiryRepository } from '../modules/dsv/dsv-driver-inquiry.repository.js';
 
 export type DsvDriverAuthDependencies = {
   jwtSecret: string;
   repository: DsvDriverAuthRepository;
+  inquiryRepository?: DsvDriverInquiryRepository;
 };
 
 const DRIVER_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
@@ -27,6 +30,7 @@ export function registerDsvDriverAuthRoutes(
   app: FastifyInstance,
   dependencies: DsvDriverAuthDependencies,
 ): void {
+  if (dependencies.inquiryRepository !== undefined) registerDsvDriverInquiryRoutes(app, dependencies.inquiryRepository, dependencies.jwtSecret);
   app.post<{ Body: unknown }>('/api/dsv/driver/auth/register', {
     config: {
       rateLimit: {

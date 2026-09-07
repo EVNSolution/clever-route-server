@@ -92,6 +92,8 @@ describe('PrismaDriverAccountDeletionService', () => {
     expect(harness.tx.driverAccountSession.updateMany).toHaveBeenCalled();
     expect(harness.tx.driverSession.updateMany).toHaveBeenCalled();
     expect(harness.tx.driverPushToken.deleteMany).toHaveBeenCalledWith({ where: { accountId } });
+    expect(harness.tx.dsvDriverInquiry.deleteMany).toHaveBeenCalledWith({ where: { accountId } });
+    expect(harness.tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(harness.tx.dsvDriverInquiry.deleteMany.mock.invocationCallOrder[0]!);
     expect(harness.tx.driver.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       data: expect.objectContaining({
@@ -196,6 +198,8 @@ function createHarness(input: {
     status: 'PROCESSING',
   };
   const tx = {
+    $queryRaw: vi.fn(() => Promise.resolve([{ id: accountId }])),
+    dsvDriverInquiry: { deleteMany: vi.fn(() => Promise.resolve({ count: 2 })) },
     driver: {
       findMany: vi.fn(() => Promise.resolve([{ id: driverId }])),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 })),

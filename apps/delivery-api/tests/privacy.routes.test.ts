@@ -95,6 +95,9 @@ describe('privacy routes', () => {
       expect(response.headers['content-type']).toContain('text/html');
       expect(response.body).toContain('CLEVER Driver 개인정보 처리방침');
       expect(response.body).toContain('2026-09-07');
+      expect(response.body).toContain('사용자가 선택적으로 제출한 문의 제목과 내용');
+      expect(response.body).toContain('조회 권한이 있는 CLEVER 개발 관리자만');
+      expect(response.body).toContain('계정 삭제 처리가 완료될 때 문의 내용과 작성자 정보도 함께 삭제');
       expect(response.body).toContain('https://clever-route-api.cleversystem.ai/driver-app/privacy');
       expect(response.body).toContain('이브이앤솔루션 주식회사');
       expect(response.body).toContain('서울특별시 동작구 노량진로 10');

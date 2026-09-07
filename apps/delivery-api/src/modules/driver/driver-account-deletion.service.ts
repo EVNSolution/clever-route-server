@@ -31,6 +31,7 @@ export type DriverAccountDeletionResult = {
     driverFeedbackNotesRedacted: number;
     driverSessionsRevoked: number;
     driversAnonymized: number;
+    dsvInquiriesDeleted: number;
     pushTokensDeleted: number;
     signupInvitesRevoked: number;
   };
@@ -238,11 +239,15 @@ export class PrismaDriverAccountDeletionService {
           driverFeedbackNotesRedacted: 0,
           driverSessionsRevoked: 0,
           driversAnonymized: 0,
+          dsvInquiriesDeleted: 0,
           pushTokensDeleted: 0,
           signupInvitesRevoked: 0,
         };
 
         if (request.accountId !== null) {
+          // Inquiry creation takes this same lock before checking ACTIVE status.
+          await tx.$queryRaw`SELECT "id" FROM "driver_accounts" WHERE "id" = ${request.accountId}::uuid FOR UPDATE`;
+          const inquiries = await tx.dsvDriverInquiry.deleteMany({ where: { accountId: request.accountId } });
           const accountSessions = await tx.driverAccountSession.updateMany({
             data: { revokedAt: this.now() },
             where: { accountId: request.accountId, revokedAt: null },
@@ -268,6 +273,7 @@ export class PrismaDriverAccountDeletionService {
             where: { id: request.accountId },
           });
           counts.accountSessionsRevoked = accountSessions.count;
+          counts.dsvInquiriesDeleted = inquiries.count;
           counts.pushTokensDeleted = pushTokens.count;
         }
 

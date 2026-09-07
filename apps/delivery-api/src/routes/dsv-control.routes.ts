@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { canAccessShopDomain } from '../modules/commerce/admin-commerce-auth.js';
+import type { DsvAdminInquiryRepository } from '../modules/dsv/dsv-driver-inquiry.repository.js';
+import { dsvInquiryNoStore, readDsvInquiryPage, sendDsvInquiryUnexpectedError } from './dsv-driver-inquiries.routes.js';
 import type { AdminCommerceActor } from '../modules/commerce/admin-commerce-auth.js';
 import {
   DestinationTipConflictError,
@@ -175,6 +177,7 @@ export type DsvControlDependencies = {
   customerAccountService?: DsvCustomerAccountService;
   dispatchImportService: DsvDispatchImportService;
   driverAccountLinkService?: DsvDriverAccountLinkService;
+  driverInquiryRepository?: DsvAdminInquiryRepository;
   geocodingService?: Pick<GeocodingService, 'geocode'>;
   manualEmailService: DsvManualEmailService;
   operatorInvitationService?: DsvAdminOperatorInvitationService;
@@ -272,6 +275,30 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
       const accounts = await dependencies.adminAccountManagement.list();
       return sendData(reply, { accounts: accounts.map(adminAccountData) });
+    }, ['dsv:accounts:read']));
+
+  app.get(`${apiRoot}/driver-inquiries`, { onSend: dsvInquiryNoStore }, (request, reply) =>
+    withDsvSession(request, reply, dependencies, async ({ principal }) => {
+      if (dependencies.driverInquiryRepository === undefined) return sendError(reply, 503, 'INQUIRIES_UNAVAILABLE', '문의 조회를 사용할 수 없습니다.');
+      const page = readDsvInquiryPage(request.query);
+      if (page === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid inquiry page');
+      try {
+        return sendData(reply, await dependencies.driverInquiryRepository.listForShop(principal.shopId, page.before, page.limit));
+      } catch (error) {
+        return sendDsvInquiryUnexpectedError(request, reply, error);
+      }
+    }, ['dsv:accounts:read']));
+
+  app.get<{ Params: { id: string } }>(`${apiRoot}/driver-inquiries/:id`, { onSend: dsvInquiryNoStore }, (request, reply) =>
+    withDsvSession(request, reply, dependencies, async ({ principal }) => {
+      if (dependencies.driverInquiryRepository === undefined) return sendError(reply, 503, 'INQUIRIES_UNAVAILABLE', '문의 조회를 사용할 수 없습니다.');
+      if (!uuidPattern.test(request.params.id) || Object.keys(objectBody(request.query) ?? {}).length !== 0) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid inquiry id');
+      try {
+        const inquiry = await dependencies.driverInquiryRepository.detailForShop(principal.shopId, request.params.id);
+        return inquiry === null ? sendError(reply, 404, 'NOT_FOUND', '문의 내역을 찾을 수 없습니다.') : sendData(reply, { inquiry });
+      } catch (error) {
+        return sendDsvInquiryUnexpectedError(request, reply, error);
+      }
     }, ['dsv:accounts:read']));
 
   app.post(`${apiRoot}/admin-accounts/invitations`, (request, reply) =>
