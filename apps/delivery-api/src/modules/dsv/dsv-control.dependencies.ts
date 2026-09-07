@@ -41,6 +41,7 @@ import {
   loadDsvAddressCanonicalizer,
 } from './dsv-address-canonicalization.js';
 import { DsvRouteOptimizationScheduler } from './dsv-route-optimization.scheduler.js';
+import { PrismaDsvDriverInquiryRepository } from './dsv-driver-inquiry.repository.js';
 
 export type DsvControlRuntimeEnv = AdminRouteGroupRuntimeEnv
   & DsvManualEmailRuntimeEnv
@@ -115,6 +116,7 @@ export function loadDsvControlDependencies(input: {
     }),
     dispatchImportService: new PrismaDsvDispatchImportService(input.prisma, { addressCanonicalizer }),
     driverAccountLinkService: new PrismaDsvDriverAccountLinkService(input.prisma),
+    driverInquiryRepository: new PrismaDsvDriverInquiryRepository(input.prisma),
     geocodingService,
     manualEmailService,
     repository: new PrismaDsvControlRepository(input.prisma),

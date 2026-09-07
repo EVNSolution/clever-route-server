@@ -47,6 +47,77 @@ const adminSessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const customerSessionId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 describe('DSV control routes', () => {
+  test('restricts inquiry reads to development-admin scopes and the authenticated shop', async () => {
+    const inquiry = { id: stopId, title: '지원 문의', body: '합성 문의', authorName: 'Synthetic', createdAt: new Date('2026-09-07T00:00:00Z') };
+    const driverInquiryRepository = {
+      listForShop: vi.fn().mockResolvedValue({ items: [inquiry], nextCursor: null }),
+      detailForShop: vi.fn().mockResolvedValue(inquiry),
+    };
+    const { app, adminAccounts } = await createHarness({ driverInquiryRepository });
+    try {
+      const root = '/api/dsv/driver-inquiries';
+      expect((await app.inject({ method: 'GET', url: root })).statusCode).toBe(401);
+      expect((await app.inject({ method: 'GET', url: `${root}/${stopId}`, headers: { authorization: 'Bearer driver-token' } })).statusCode).toBe(401);
+      const login = await loginToDsv(app);
+      const headers = { cookie: login.cookie };
+      const list = await app.inject({ method: 'GET', url: `${root}?limit=2`, headers });
+      expect(list.statusCode).toBe(200);
+      expect(list.headers['cache-control']).toBe('private, no-store');
+      expect(driverInquiryRepository.listForShop).toHaveBeenCalledWith(shopId, null, 2);
+      const detail = await app.inject({ method: 'GET', url: `${root}/${stopId}`, headers });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.headers['cache-control']).toBe('private, no-store');
+      expect(driverInquiryRepository.detailForShop).toHaveBeenCalledWith(shopId, stopId);
+      driverInquiryRepository.detailForShop.mockResolvedValueOnce(null);
+      expect((await app.inject({ method: 'GET', url: `${root}/${destinationId}`, headers })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'GET', url: `${root}?shopId=foreign`, headers })).statusCode).toBe(400);
+      expect((await app.inject({ method: 'GET', url: `${root}/${stopId}?shopId=foreign`, headers })).statusCode).toBe(400);
+      for (const createdAt of ['0000-01-01T00:00:00.000Z', '+275760-09-13T00:00:00.000Z', '-271821-04-20T00:00:00.000Z']) {
+        const cursor = Buffer.from(JSON.stringify({ id: stopId, createdAt })).toString('base64url');
+        expect((await app.inject({ method: 'GET', url: `${root}?cursor=${cursor}`, headers })).statusCode).toBe(400);
+      }
+      vi.spyOn(adminAccounts, 'resolveSession').mockResolvedValue({ accountId: adminAccountId, activeSessionId: adminSessionId, mustChangePassword: false, scopes: dsvOperatorScopes });
+      for (const url of [root, `${root}/${stopId}`]) {
+        const denied = await app.inject({ method: 'GET', url, headers });
+        expect(denied.statusCode).toBe(403);
+        expect(denied.json()).toMatchObject({ error: { code: 'DSV_FORBIDDEN' } });
+      }
+      expect(driverInquiryRepository.listForShop).toHaveBeenCalledTimes(1);
+      expect(driverInquiryRepository.detailForShop).toHaveBeenCalledTimes(2);
+    } finally { await app.close(); }
+  });
+
+  test('does not return or log private inquiry repository errors for administrator reads', async () => {
+    const privateText = 'Private admin inquiry sentinel';
+    const logs: string[] = [];
+    const driverInquiryRepository = {
+      listForShop: vi.fn().mockRejectedValue(Object.assign(new Error(privateText), { code: 'P1001', name: 'PrivateAdminListError', privateMetadata: 'admin-list-secret' })),
+      detailForShop: vi.fn().mockRejectedValue(Object.assign(new Error(privateText), { code: 'P2021', name: 'PrivateAdminDetailError', privateMetadata: 'admin-detail-secret' })),
+    };
+    const { app } = await createHarness({ driverInquiryRepository, logLines: logs });
+    try {
+      const login = await loginToDsv(app);
+      const headers = { cookie: login.cookie };
+      const responses = await Promise.all([
+        app.inject({ method: 'GET', url: '/api/dsv/driver-inquiries', headers }),
+        app.inject({ method: 'GET', url: `/api/dsv/driver-inquiries/${stopId}`, headers }),
+      ]);
+      for (const response of responses) {
+        expect(response.statusCode).toBe(500);
+        expect(response.headers['cache-control']).toBe('private, no-store');
+        expect(response.json()).toMatchObject({ data: null, error: { code: 'INTERNAL_SERVER_ERROR' } });
+      }
+      const serialized = `${responses.map(response => response.body).join('\n')}\n${logs.join('\n')}`;
+      expect(serialized).not.toContain(privateText);
+      expect(serialized).not.toMatch(/PrivateAdmin(?:List|Detail)Error|admin-(?:list|detail)-secret/u);
+      expect(serialized).toContain('P1001');
+      expect(serialized).toContain('P2021');
+      expect(serialized).toContain('PrismaKnownRequestError');
+      expect(logs.join('\n')).not.toContain('unexpected_request_error');
+      expect(logs.filter(line => line.includes('dsv_inquiry_request_failed'))).toHaveLength(2);
+    } finally { await app.close(); }
+  });
+
   test('invalidates the active server session before clearing the admin cookie', async () => {
     const { app, invalidateSession } = await createHarness();
     try {
@@ -2160,11 +2231,13 @@ describe('DSV control routes', () => {
 });
 
 async function createHarness(overrides: {
+  driverInquiryRepository?: DsvControlDependencies['driverInquiryRepository'];
   adminAccountManagement?: DsvAdminAccountManager;
   addressCanonicalizer?: DsvAddressCanonicalizer;
   customerAccountService?: DsvCustomerAccountService;
   driverAccountLinkService?: DsvDriverAccountLinkService;
   manualEmailService?: DsvManualEmailService;
+  logLines?: string[];
   operatorInvitationService?: DsvAdminOperatorInvitationService;
 } = {}): Promise<{
   adminAccounts: DsvControlDependencies['adminAccounts'];
@@ -2210,6 +2283,7 @@ async function createHarness(overrides: {
         : null)),
   } satisfies DsvControlDependencies['adminAccounts'];
   const dependencies: DsvControlDependencies = {
+    ...(overrides.driverInquiryRepository === undefined ? {} : { driverInquiryRepository: overrides.driverInquiryRepository }),
     ...(overrides.adminAccountManagement === undefined ? {} : { adminAccountManagement: overrides.adminAccountManagement }),
     ...(overrides.addressCanonicalizer === undefined ? {} : { addressCanonicalizer: overrides.addressCanonicalizer }),
     adminAccounts,
@@ -2228,7 +2302,21 @@ async function createHarness(overrides: {
     sessionSecret: '12345678901234567890123456789012',
     settingsService,
   };
-  return { adminAccounts, app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, driverAccountLinkService: driverAccountLinkService as MockDriverAccountLinkService, geocodingService, invalidateSession, repository, resourceService, settingsService };
+  return {
+    adminAccounts,
+    app: await buildApp({
+      dsvControl: dependencies,
+      ...(overrides.logLines === undefined ? {} : { logger: { level: 'error', stream: { write: (line: string) => overrides.logLines?.push(line) } } }),
+    }),
+    assignmentCommandService,
+    dispatchImportService,
+    driverAccountLinkService: driverAccountLinkService as MockDriverAccountLinkService,
+    geocodingService,
+    invalidateSession,
+    repository,
+    resourceService,
+    settingsService,
+  };
 }
 
 type MockDriverAccountLinkService = {
