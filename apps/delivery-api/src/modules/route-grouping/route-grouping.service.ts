@@ -3610,7 +3610,12 @@ async function rewriteRoutePlanStops(tx: Tx, shopId: string, routePlanId: string
 
 const TEMPORARY_ROUTE_PLAN_STOP_SEQUENCE_BASE = -1_000_000_000;
 
-export async function syncRoutePlanStopsPreservingRows(tx: Tx, shopId: string, routePlanId: string, assignments: LoadedAssignment[]): Promise<void> {
+export async function syncRoutePlanStopsPreservingRows(
+  tx: Tx,
+  shopId: string,
+  routePlanId: string,
+  assignments: Array<{ deliveryStopId: string }>
+): Promise<void> {
   const deliveryStopIds = assignments.map((assignment) => assignment.deliveryStopId);
   await tx.routePlanStop.deleteMany({
     where: {

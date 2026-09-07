@@ -35,6 +35,7 @@ const route: DriverAssignedRoute = {
   },
   routeMapPreview: null,
   routeMetrics: { distanceMeters: 3250, durationSeconds: 840 },
+  routeVersionId: 'route-version-id',
   routeStopPoints: [
     {
       deliveryStopId: 'stop-id-1',

@@ -5,6 +5,7 @@ import ts from 'typescript';
 
 const sourceRoot = join(process.cwd(), 'src');
 const authorizedMembershipWriters = [
+  'modules/driver/driver-route-order.service.ts',
   'modules/driver/rolling-eta-backfill.ts',
   'modules/dsv/dsv-assignment-command.service.ts',
   'modules/dsv/dsv-dispatch-import.service.ts',
@@ -14,6 +15,7 @@ const authorizedMembershipWriters = [
 
 const reviewedMutationInventory = [
   'modules/driver/driver-event.repository.ts:routePlanStop.update:2',
+  'modules/driver/driver-route-order.service.ts:routePlanStop.updateMany:1',
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:1',

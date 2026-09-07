@@ -19,6 +19,8 @@ Authorization: Bearer <server-issued driver JWT>
 
 `routeContext` is optional for the contract, but the driver app should pass the route context returned by `POST /driver/route-access/lookup` whenever it has one. When present, it must equal the route plan id already bound to the bearer token; a client-supplied value can only narrow or reject the request, never select another route.
 
+`routeVersionId` is the stable current route-grouping child version. Legacy assigned routes that predate child-version binding remain readable with `routeVersionId: null`; those routes cannot use the reorder command until they are projected into a current child version.
+
 Success with an assigned route:
 
 ```json
@@ -27,6 +29,7 @@ Success with an assigned route:
     "status": "ASSIGNED_ROUTE",
     "route": {
       "id": "11111111-1111-4111-8111-111111111111",
+      "routeVersionId": "44444444-4444-4444-8444-444444444444",
       "name": "Tuesday AM Route",
       "deliveryDate": "2026-05-12",
       "depot": {
@@ -52,6 +55,18 @@ Success with an assigned route:
           "recipientName": "Recipient One",
           "phone": "+14165550123",
           "customerNote": "Leave the box beside the loading entrance.",
+          "destinationNotes": {
+            "lunchEntryStatus": "AVAILABLE",
+            "lunchEntryStatusUpdatedAt": "2026-05-01T01:00:00.000Z",
+            "lunchTimeRange": "12:00~13:00",
+            "lunchTimeRangeUpdatedAt": "2026-05-01T01:00:00.000Z",
+            "memo": "후문으로 입장",
+            "memoUpdatedAt": "2026-05-01T01:00:00.000Z",
+            "openTime": "08:30",
+            "openTimeUpdatedAt": "2026-05-01T01:00:00.000Z",
+            "requiredArrivalTime": "10:30",
+            "requiredArrivalTimeUpdatedAt": "2026-05-01T01:00:00.000Z"
+          },
           "items": [
             {
               "name": "Tomato Box",
@@ -106,6 +121,24 @@ An optional `routeContext` that differs from the token route returns `403 ROUTE_
 
 Invalid query values return `400` before repository lookup.
 
+## PATCH `/driver/routes/:routePlanId/order`
+
+The driver may persist a manual order without running the optimizer. Send the `routeVersionId` from the latest assigned-route read as `expectedVersion`:
+
+```json
+{
+  "commandId": "route-order-20260512-1",
+  "expectedVersion": "44444444-4444-4444-8444-444444444444",
+  "orderedStopIds": ["stop-b", "stop-a"]
+}
+```
+
+`orderedStopIds` must be a duplicate-free permutation of every `deliveryStopId` currently returned in `route.stops`, including stops already marked complete. The assigned-route contract retains the full persisted route stop list after partial completion; clients must reorder that full list rather than only their locally visible remaining-stop subset.
+
+A successful response returns the persisted sequence and replacement `routeVersionId`. Retrying the same `commandId` with the same payload returns that same response. Reusing it with another payload returns `409 IDEMPOTENCY_PAYLOAD_MISMATCH`; a stale version returns `409 VERSION_CONFLICT`; invalid stop sets return `400 INVALID_STOP_SET`; another driver/route returns `403 ROUTE_SCOPE_REJECTED`; completed routes return `409 ROUTE_COMPLETED`.
+
+The mutation preserves existing `RoutePlanStop` rows, replaces the current route-grouping child snapshot atomically, rebinds all orders to the new child version, clears geometry and ETA derivations, and does not invoke optimization.
+
 ## Data boundary
 
 The query is scoped by all of the following:
@@ -121,6 +154,10 @@ The query is scoped by all of the following:
   `ROUTE_COMPLETED` event are excluded from operational assigned-route reads
 
 The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. The route's persisted `depot` coordinate is returned for the driver's map start marker. Stop address, recipient, phone, customer note, order items, coordinates, delivery time window, and persisted DSV order fields (`sellerOrderKey`, `destinationId`, normalized `conditionCode`, `shippedBoxes`) are intentionally returned only after the driver boundary is verified. `timeWindowStart` and `timeWindowEnd` are server timestamps and remain `null` when the order has no required arrival window. The DSV fields are nullable for legacy or non-DSV source orders.
+
+`destinationNotes.openTime` is the recurring Asia/Seoul local delivery-available start in canonical `HH:mm` form. It is destination guidance only and is not enforced as an optimizer time window. Drivers may update it, or clear it with `null`, through `PATCH /driver/destinations/:destinationId/notes`; each changed field advances only its own `UpdatedAt` value.
+
+When historical duplicate destination profiles share the normalized destination name and base/detail address, assigned-route returns the oldest active profile id as `destinationId`. Notes are aggregated by each field's latest timestamp, including a timestamped `null` as a clear tombstone; timestamp-less legacy values use a deterministic non-null fallback. The notes PATCH accepts either that canonical id or an active duplicate id present on the authenticated route, but writes only the canonical profile so later imports and deliveries reuse the saved value.
 
 `navigationTarget` is the server decision for external navigation only. `COORDINATES` is returned for usable coordinates on legacy orders, Shopify `NO_ISSUES`/`WARNING`/`ERROR` results, and coordinates corrected after Shopify sync. `ADDRESS` is returned when current coordinates are missing or unusable, or when `coordinatesValidated` is `false` and the current coordinates still match Shopify's rejected source coordinates. Coordinates remain in the response when `navigationTarget` is `ADDRESS` because route optimization and navigation trust are separate concerns. The address object and coordinate object are always present; individual coordinate values remain `null` when unavailable.
 

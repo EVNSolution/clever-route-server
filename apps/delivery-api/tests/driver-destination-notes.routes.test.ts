@@ -13,6 +13,8 @@ const savedNotes = {
   lunchTimeRangeUpdatedAt: '2026-08-18T03:20:00.000Z',
   memo: '후문으로 입장',
   memoUpdatedAt: '2026-08-18T03:20:00.000Z',
+  openTime: '08:30',
+  openTimeUpdatedAt: '2026-08-18T03:20:00.000Z',
   requiredArrivalTime: '10:30',
   requiredArrivalTimeUpdatedAt: '2026-08-18T03:20:00.000Z'
 };
@@ -29,6 +31,7 @@ describe('Driver destination notes route', () => {
           lunchEntryStatus: 'UNAVAILABLE',
           lunchTimeRange: '12:00~13:00',
           memo: ' 후문으로 입장 ',
+          openTime: '08:30',
           requiredArrivalTime: '10:30'
         },
         url: '/driver/destinations/destination-id/notes'
@@ -44,6 +47,7 @@ describe('Driver destination notes route', () => {
           lunchEntryStatus: 'UNAVAILABLE',
           lunchTimeRange: '12:00~13:00',
           memo: '후문으로 입장',
+          openTime: '08:30',
           requiredArrivalTime: '10:30'
         },
         routePlanId: 'route-plan-id',
@@ -59,6 +63,7 @@ describe('Driver destination notes route', () => {
     { description: 'unsupported lunch entry status', payload: { lunchEntryStatus: 'UNKNOWN' } },
     { description: 'invalid lunch time range', payload: { lunchTimeRange: '12:70~13:00' } },
     { description: 'noncanonical arrival time', payload: { requiredArrivalTime: '9:30' } },
+    { description: 'noncanonical open time', payload: { openTime: '8:30' } },
     { description: 'empty string instead of null', payload: { memo: '' } },
     { description: 'unknown field', payload: { unexpected: true } }
   ])('rejects $description', async ({ payload }) => {

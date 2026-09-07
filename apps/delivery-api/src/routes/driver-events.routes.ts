@@ -16,6 +16,11 @@ import type {
   DriverAssignedRouteServiceContract,
   DriverRouteMapPreview
 } from '../modules/driver/driver-assigned-route.types.js';
+import { DriverAssignedRouteVersionError } from '../modules/driver/driver-assigned-route.repository.js';
+import {
+  DriverRouteOrderError,
+  type DriverRouteOrderServiceContract
+} from '../modules/driver/driver-route-order.service.js';
 import {
   DriverDestinationNotesScopeError,
   type DriverDestinationNotesPatch,
@@ -113,6 +118,7 @@ export type DriverApiDependencies = {
   driverConsentService?: DriverConsentServiceContract;
   driverDeliverySpaceService?: DriverDeliverySpaceServiceContract;
   driverDestinationNotesService?: DriverDestinationNotesServiceContract;
+  driverRouteOrderService?: DriverRouteOrderServiceContract;
   driverEventService: {
     admitDriverEventAttempt(input: DriverEventAttemptAdmissionInput): Promise<{ attemptId: string; attemptNumber: number }>;
     completeDeliveryDestination?(input: {
@@ -175,6 +181,9 @@ type DriverAssignedRouteQuery = {
   routeContext?: unknown;
 };
 
+type DriverRouteOrderParams = { routePlanId?: unknown };
+type DriverRouteOrderBody = { commandId?: unknown; expectedVersion?: unknown; orderedStopIds?: unknown };
+
 type DriverSellerOrderParams = {
   orderId?: unknown;
 };
@@ -196,6 +205,7 @@ type DriverDestinationNotesBody = {
   lunchEntryStatus?: unknown;
   lunchTimeRange?: unknown;
   memo?: unknown;
+  openTime?: unknown;
   requiredArrivalTime?: unknown;
 };
 
@@ -469,12 +479,20 @@ export function registerDriverEventRoutes(
           .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
       }
 
-      const result = await driverAssignedRouteService.getAssignedRoute({
-        driverId: driverContext.driverId,
-        routeContext: driverContext.routePlanId,
-        shopDomain: driverContext.shopDomain,
-        shopId: driverContext.shopId
-      });
+      let result;
+      try {
+        result = await driverAssignedRouteService.getAssignedRoute({
+          driverId: driverContext.driverId,
+          routeContext: driverContext.routePlanId,
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
+        });
+      } catch (error) {
+        if (error instanceof DriverAssignedRouteVersionError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
 
       if (result.status === 'ASSIGNED_ROUTE') {
         return reply.code(200).send({
@@ -499,6 +517,48 @@ export function registerDriverEventRoutes(
         error: null
       });
     });
+  }
+
+  const driverRouteOrderService = dependencies.driverRouteOrderService;
+  if (driverRouteOrderService !== undefined) {
+    app.patch<{ Body: DriverRouteOrderBody; Params: DriverRouteOrderParams }>(
+      '/driver/routes/:routePlanId/order',
+      async (request, reply) => {
+        const authentication = await authenticateDriverRequest(request, dependencies);
+        if (authentication.status !== 'authenticated') {
+          return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
+        }
+        reply.header('Cache-Control', 'private, no-store');
+        let routePlanId: string;
+        let input: { commandId: string; expectedVersion: string; orderedStopIds: string[] };
+        try {
+          routePlanId = readRequiredString(request.params.routePlanId);
+          input = readDriverRouteOrderBody(request.body);
+        } catch {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver route order payload'));
+        }
+        if (authentication.context.routePlanId !== routePlanId) {
+          return reply.code(403).send(errorResponse('ROUTE_SCOPE_REJECTED', 'Driver route assignment rejected'));
+        }
+        try {
+          const result = await driverRouteOrderService.reorder({
+            ...input,
+            driverId: authentication.context.driverId,
+            routePlanId,
+            shopId: authentication.context.shopId
+          });
+          return reply.code(200).send({ data: result, error: null });
+        } catch (error) {
+          if (error instanceof DriverRouteOrderError) {
+            const status = error.code === 'INVALID_STOP_SET' ? 400
+              : error.code === 'ROUTE_SCOPE_REJECTED' ? 403
+                : 409;
+            return reply.code(status).send(errorResponse(error.code, error.message));
+          }
+          throw error;
+        }
+      }
+    );
   }
 
   const driverDestinationNotesService = dependencies.driverDestinationNotesService;
@@ -1779,7 +1839,7 @@ function readDriverProfileUpdateBody(body: DriverProfileUpdateBody): { displayNa
 }
 
 function readDriverDestinationNotesBody(body: DriverDestinationNotesBody): DriverDestinationNotesPatch {
-  assertOnlyKeys(body, new Set(['lunchEntryStatus', 'lunchTimeRange', 'memo', 'requiredArrivalTime']));
+  assertOnlyKeys(body, new Set(['lunchEntryStatus', 'lunchTimeRange', 'memo', 'openTime', 'requiredArrivalTime']));
   const keys = Object.keys(body);
   if (keys.length === 0) throw new Error('Destination notes patch is empty');
 
@@ -1793,10 +1853,31 @@ function readDriverDestinationNotesBody(body: DriverDestinationNotesBody): Drive
   if (Object.prototype.hasOwnProperty.call(body, 'lunchEntryStatus')) {
     patch.lunchEntryStatus = readNullableLunchEntryStatus(body.lunchEntryStatus);
   }
+  if (Object.prototype.hasOwnProperty.call(body, 'openTime')) {
+    patch.openTime = readNullableTime(body.openTime);
+  }
   if (Object.prototype.hasOwnProperty.call(body, 'requiredArrivalTime')) {
     patch.requiredArrivalTime = readNullableTime(body.requiredArrivalTime);
   }
   return patch;
+}
+
+function readDriverRouteOrderBody(body: DriverRouteOrderBody): {
+  commandId: string;
+  expectedVersion: string;
+  orderedStopIds: string[];
+} {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error('Invalid route order payload');
+  const record = body as Record<string, unknown>;
+  if (Object.keys(record).some((key) => !['commandId', 'expectedVersion', 'orderedStopIds'].includes(key))) {
+    throw new Error('Invalid route order payload');
+  }
+  if (!Array.isArray(body.orderedStopIds) || body.orderedStopIds.length === 0) throw new Error('Invalid route order payload');
+  return {
+    commandId: readRequiredOpaqueIdentifier(body.commandId),
+    expectedVersion: readRequiredUuid(body.expectedVersion),
+    orderedStopIds: body.orderedStopIds.map(readRequiredUuid)
+  };
 }
 
 function readNullableBoundedText(value: unknown, maxLength: number): string | null {
@@ -2008,6 +2089,11 @@ function readOptionalAssignmentGeneration(value: unknown): string | null {
 function readOptionalUuid(value: unknown): string | null {
   const parsed = readOptionalString(value);
   if (parsed === null) return null;
+  return readRequiredUuid(parsed);
+}
+
+function readRequiredUuid(value: unknown): string {
+  const parsed = readRequiredString(value);
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(parsed)) {
     throw new Error('Invalid UUID');
   }

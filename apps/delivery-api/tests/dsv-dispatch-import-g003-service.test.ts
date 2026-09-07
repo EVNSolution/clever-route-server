@@ -148,16 +148,20 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(method).toContain("assignmentStatus: route.driverId === null ? 'UNASSIGNED' : 'ASSIGNED'");
   });
 
-  test('uses a physical destination fingerprint that is independent of customer identity', async () => {
+  test('uses canonical name and full address identity without postal code, memo, or customer identity', async () => {
     const source = await serviceSource();
     const fingerprintStart = source.indexOf('function addressFingerprint');
     const fingerprintEnd = source.indexOf('function sourceRowFromRecord', fingerprintStart);
     const fingerprint = source.slice(fingerprintStart, fingerprintEnd);
 
-    expect(fingerprint).toContain("'address' | 'destinationName'");
-    expect(fingerprint).toContain('row.destinationName');
-    expect(fingerprint).toContain('row.address');
+    expect(fingerprint).toContain("'address' | 'destinationName' | 'detailAddress'");
+    expect(fingerprint).toContain('dsvDestinationIdentity(row)');
     expect(fingerprint).not.toContain('customerCode');
+    expect(fingerprint).not.toContain('postalCode');
+    expect(fingerprint).not.toContain('notes');
+    expect(source).toContain("orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]");
+    expect(source).toContain('where: { isStoreReviewData, mergedIntoProfileId: null, shopId }');
+    expect(source).toContain('data: { normalizedAddress: toJson({ ...jsonObject(existing.normalizedAddress), postalCode }) }');
   });
 
   test('does not reactivate inactive customers during canonical apply', async () => {

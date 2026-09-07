@@ -298,11 +298,60 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const secondQueryText = sqlText((prisma.$queryRaw as ReturnType<typeof vi.fn>).mock.calls[1]?.[0]);
 
     expect(second.items.map((item) => item.displayName)).toEqual(['Zulu Destination']);
-    expect(secondQueryText).toContain('COALESCE("canonicalName", id::text) AS "displayName"');
-    expect(secondQueryText).toContain('LOWER(COALESCE("canonicalName", id::text)) > LOWER(');
-    expect(secondQueryText).toContain('LOWER(COALESCE("canonicalName", id::text)) = LOWER(');
+    expect(secondQueryText).toContain('NULLIF(BTRIM("normalizedAddress"->>\'name\'), \'\')');
+    expect(secondQueryText).toContain('LOWER("displayName") > LOWER(');
+    expect(secondQueryText).toContain('LOWER("displayName") = LOWER(');
     expect(secondQueryText).toContain('id::text >');
-    expect(secondQueryText).toContain('ORDER BY LOWER(COALESCE("canonicalName", id::text)) ASC, id ASC');
+    expect(secondQueryText).toContain('ORDER BY LOWER("displayName") ASC, id ASC');
+  });
+
+  test('returns canonical destination details while grouping duplicate active identities before pagination', async () => {
+    const changedAt = new Date('2026-09-07T01:00:00.000Z');
+    const prisma = prismaMock({
+      $queryRaw: vi.fn(() => Promise.resolve([{
+        displayName: 'Main Dock',
+        driverLunchEntryStatus: 'AVAILABLE',
+        driverLunchEntryStatusUpdatedAt: changedAt,
+        driverLunchTimeRange: '12:00~13:00',
+        driverLunchTimeRangeUpdatedAt: changedAt,
+        driverMemo: '후문 이용',
+        driverMemoUpdatedAt: changedAt,
+        driverOpenTime: '08:30',
+        driverOpenTimeUpdatedAt: changedAt,
+        driverRequiredArrivalTime: '10:30',
+        driverRequiredArrivalTimeUpdatedAt: changedAt,
+        id: 'destination-oldest',
+        normalizedAddress: { address: '서울시 강남구', detailAddress: '1층', postalCode: '06236' },
+        postalCode: '06236',
+      }])),
+    });
+
+    const result = await new PrismaDsvV1ReadQueryService(prisma as never).listDestinations(adminPrincipal());
+    const queryText = sqlText((prisma.$queryRaw as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+
+    expect(result.items).toEqual([{
+      address: '서울시 강남구, 1층',
+      destinationId: 'destination-oldest',
+      displayName: 'Main Dock',
+      lunchEntryStatus: 'AVAILABLE',
+      lunchEntryStatusUpdatedAt: changedAt,
+      lunchTimeRange: '12:00~13:00',
+      lunchTimeRangeUpdatedAt: changedAt,
+      memo: '후문 이용',
+      memoUpdatedAt: changedAt,
+      openTime: '08:30',
+      openTimeUpdatedAt: changedAt,
+      postalCode: '06236',
+      requiredArrivalTime: '10:30',
+      requiredArrivalTimeUpdatedAt: changedAt,
+    }]);
+    expect(queryText).toContain('WITH active_destinations AS');
+    expect(queryText).toContain('NORMALIZE(BTRIM(COALESCE(');
+    expect(queryText).toContain('COUNT(*) FILTER (WHERE "driverMemoUpdatedAt" IS NOT NULL) > 0');
+    expect(queryText).toContain('GROUP BY "isStoreReviewData", name_key, address_key');
+    expect(queryText).toContain('AND "mergedIntoProfileId" IS NULL');
+    expect(queryText).toContain('FILTER (WHERE "driverMemo" IS NOT NULL)');
+    expect(queryText).toContain('FROM grouped_destinations');
   });
 
   test('scopes one record per delivery stop through the related order shop', async () => {
@@ -1483,6 +1532,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(customerSql).toContain('AND orders."isStoreReviewData" = false');
     const destinationSql = sqlText((destinationListPrisma.$queryRaw as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
     expect(destinationSql).toContain('AND "isStoreReviewData" = false');
+    expect(destinationSql).toContain('GROUP BY "isStoreReviewData", name_key, address_key');
   });
 
   test('developer admin retains store-review rows in admin reads and customer-scope adapters', async () => {
