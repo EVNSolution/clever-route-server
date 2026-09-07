@@ -104,7 +104,7 @@ describe('G003 DSV Prisma import staging and apply schema', () => {
     const receipt = modelBody(schema, 'DsvCommandReceipt');
 
     expect(order).toContain('serviceDate                   DateTime?');
-    expect(order).toContain('@@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate])');
+    expect(order).toContain('@@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate], map: "orders_shopId_sellerOrderSourceKind_sellerOrderKey_serviceDate_")');
     expect(deliveryStop).toContain('@@unique([shopId, orderId])');
     expect(deliveryStop).toContain('@@unique([id, shopId])');
     expect(condition).toContain('@@unique([id, shopId])');

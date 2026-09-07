@@ -457,6 +457,7 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
       pageSize: input.request.pageSize,
       status: input.request.status ?? null
     };
+    let alreadyRunning = false;
     const run = await this.prisma.commerceSyncRun.create({
       data: {
         acceptedAt: input.acceptedAt,
@@ -483,8 +484,18 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
         warnings: []
       },
       select: syncRunSelect()
+    }).catch(async (error: unknown) => {
+      if (isPrismaUniqueConstraintError(error)) {
+        await this.failStaleRunningSyncRuns({ context: input.context, now: input.acceptedAt });
+        const activeAfterConflict = await this.findActiveSyncRun(input.context);
+        if (activeAfterConflict !== null) {
+          alreadyRunning = true;
+          return activeAfterConflict;
+        }
+      }
+      throw error;
     });
-    return { alreadyRunning: false, run: await this.toSyncRunDtoWithRaw(run), startBackgroundProcessing: false };
+    return { alreadyRunning, run: await this.toSyncRunDtoWithRaw(run), startBackgroundProcessing: alreadyRunning && run.status === 'QUEUED' };
   }
 
   async acceptRawChunk(input: {

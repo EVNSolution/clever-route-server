@@ -59,7 +59,7 @@ describe('G002 DSV Prisma foundation', () => {
     expect(order).toContain('destinationId                 String?');
     expect(order).toContain('currentRouteVersionId         String?');
     expect(order).toContain('@@unique([id, shopId])');
-    expect(order).toContain('@@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate])');
+    expect(order).toContain('@@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate], map: "orders_shopId_sellerOrderSourceKind_sellerOrderKey_serviceDate_")');
     expect(order).toContain('@@index([shopId, customerId, deliveryStatus])');
     expect(order).toContain('@@index([shopId, destinationId])');
     expect(order).toContain('@@index([shopId, currentRouteVersionId])');

@@ -83,6 +83,7 @@ G007_FAKE_COMMANDS=1 \
 grep -ERq 'postgres-backup\.sh' "$tmp_dir/stale.out"
 grep -ERq 'dsv-g007-restore\.sh' "$tmp_dir/stale.out"
 grep -ERq 'psql .*20260520000000_initial_route_ops_baseline/migration\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
+grep -ERq 'psql .*--single-transaction.*20260520000000_initial_route_ops_baseline/migration\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
 grep -ERq 'psql .*20260722150000_add_dsv_dispatch_and_resources/migration\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
 grep -ERq 'psql .*db-push-source-before-20260722233000\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
 grep -ERq 'prisma migrate resolve --applied 20260520000000_initial_route_ops_baseline' "$tmp_dir/stale-evidence/resolve-applied.log"
@@ -115,6 +116,32 @@ grep -ERq 'dsv-g007-restore\.sh' "$tmp_dir/restore.out"
 grep -ERq 'migrate resolve --applied' "$tmp_dir/restore-evidence/resolve-applied.log"
 grep -ERq 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/restore.out"
 test -f "$tmp_dir/restore-evidence/rehearsal.json"
+
+# Exercise the actual embedded history validator, including recovered failures.
+node --input-type=module - "$script" "$tmp_dir" <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+const source = readFileSync(process.argv[2], 'utf8');
+const validator = source.match(/node -e '\n(const fs = require\("fs"\);[\s\S]*?)\n' "\$evidence_dir\/expected-migration-checksums.tsv"/)[1];
+const expected = join(process.argv[3], 'history-expected.tsv');
+const actual = join(process.argv[3], 'history-actual.tsv');
+writeFileSync(expected, 'known\tcurrent\n');
+for (const [rows, ok] of [
+  ['known\tcurrent\tt\tt\tt\n', true],
+  ['known\told\tf\tf\tf\nknown\tcurrent\tt\tt\tt\n', true],
+  ['known\told\tf\tf\tf\n', false],
+  ['known\twrong\tt\tt\tt\n', false],
+  ['known\tcurrent\tf\tt\tf\n', false],
+  ['unknown\told\tf\tf\tf\nknown\tcurrent\tt\tt\tt\n', false],
+  ['known\told\tf\tf\tf\nknown\twrong\tt\tt\tt\n', false],
+]) {
+  writeFileSync(actual, rows);
+  const result = spawnSync(process.execPath, ['-e', validator, expected, actual]);
+  assert.equal(result.status === 0, ok, `history acceptance mismatch: ${rows}`);
+}
+JS
 
 if G007_DATABASE_TARGET_CLASS=restore \
   G007_REHEARSAL_DATABASE_URL='postgresql://clever:clever@localhost:55456/clever_g007_restore_diff_fail' \
