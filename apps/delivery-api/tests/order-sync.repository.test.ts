@@ -187,6 +187,44 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     );
   });
 
+  test('exposes the pickup completion deadline without changing a failed route stop', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+    const order = canonicalOrderRecord(0);
+    prisma.order.findMany.mockResolvedValueOnce([{
+      ...order,
+      deliveryFacts: [{
+        ...canonicalDeliveryFactWithUtcTorontoWindow(),
+        deliveryDate: new Date('2026-09-04T00:00:00.000Z'),
+        deliverySession: 'PICKUP',
+        serviceType: 'PICKUP',
+        timeWindowEnd: null,
+        timeWindowStart: null
+      }],
+      deliveryStops: [{
+        ...(order.deliveryStops as Array<Record<string, unknown>>)[0],
+        deliveryDate: new Date('2026-09-04T00:00:00.000Z'),
+        status: 'FAILED',
+        timeWindowEnd: null,
+        timeWindowStart: null
+      }],
+      rawPayload: {
+        ...(order.rawPayload as Record<string, unknown>),
+        deliveryDate: '2026-09-04',
+        pickup: true,
+        serviceType: 'PICKUP'
+      }
+    }]);
+
+    const rows = await repository.listCanonicalOrders({ filters: {}, shopDomain: 'example.myshopify.com' });
+
+    expect(rows[0]).toEqual(expect.objectContaining({
+      deliveryStopStatus: 'FAILED',
+      pickupCompleteAfter: '2026-09-05T04:00:00.000Z',
+      serviceType: 'PICKUP'
+    }));
+  });
+
   test('preserves order-week delivery date source when reading canonical rows', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
     const repository = createOrderSyncRepository(prisma);

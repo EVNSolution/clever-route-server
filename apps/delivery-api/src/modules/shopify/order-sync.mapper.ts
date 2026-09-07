@@ -178,6 +178,7 @@ export type CanonicalOrderRow = {
   paymentReviewReason?: string | null;
   phone: string | null;
   pickup: boolean;
+  pickupCompleteAfter?: string | null;
   planningGroupKey: string | null;
   planningStatus: PlanningStatus;
   processedAt: string | null;

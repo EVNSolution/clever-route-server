@@ -32,6 +32,7 @@ import {
   lockShopifyOrderPrivacyIdentity,
   ORDER_PRIVACY_REDACTED
 } from "./order-privacy-redaction.js";
+import { isPickupComplete, pickupCompleteAfter, torontoDateOnly } from './pickup-order-completion.js';
 
 const SHOPIFY_UNFULFILLED_STATUSES = ["UNFULFILLED", "OPEN", "RESTOCKED"];
 
@@ -414,6 +415,7 @@ export class PrismaOrderSyncRepository {
       createMissingShop?: boolean;
       notificationLogger?: OrderSyncNotificationLogger;
       notificationService?: AdminNotificationServiceApi;
+      now?: () => Date;
     } = {},
   ) {
     this.notificationLogger = options.notificationLogger ?? console;
@@ -616,15 +618,16 @@ export class PrismaOrderSyncRepository {
       return [];
     }
 
+    const now = this.options.now?.() ?? new Date();
     const orders = (await this.prisma.order.findMany({
       include: canonicalOrderInclude(),
       orderBy: { updatedAtShopify: "desc" },
-      where: toCanonicalOrderWhere(shop.id, input.filters ?? {}),
+      where: toCanonicalOrderWhere(shop.id, input.filters ?? {}, now),
     })) as CanonicalOrderRecord[];
 
     return orders
       .map((order) => toCanonicalOrderRow(order))
-      .filter((row) => matchesDerivedFilters(row, input.filters ?? {}));
+      .filter((row) => matchesDerivedFilters(row, input.filters ?? {}, now));
   }
 
   async listCanonicalOrdersBySourceIdentity(
@@ -1550,6 +1553,7 @@ export function canonicalOrderInclude(): Prisma.OrderInclude {
 export function toCanonicalOrderWhere(
   shopId: string,
   filters: ListCanonicalOrdersFilters,
+  now: Date = new Date(),
 ): Prisma.OrderWhereInput {
   const AND: Prisma.OrderWhereInput[] = [{ sourcePlatform: { not: 'CUSTOM' } }];
   if (filters.search !== undefined && filters.search.trim() !== "") {
@@ -1636,14 +1640,15 @@ export function toCanonicalOrderWhere(
   }
   if (filters.deliveryState === 'fulfilled') AND.push({ fulfillmentStatus: { equals: 'FULFILLED', mode: 'insensitive' } });
   if (filters.deliveryState === 'unfulfilled') AND.push({ fulfillmentStatus: { in: SHOPIFY_UNFULFILLED_STATUSES, mode: 'insensitive' } });
-  if (filters.deliveryState === 'delivered') AND.push({ deliveryStops: { some: { status: 'DELIVERED' } } });
-  if (filters.deliveryState === 'assigned_undelivered') AND.push({ deliveryStops: { some: { status: { in: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } } });
-  if (filters.deliveryState === 'planned') AND.push({ deliveryStops: { some: { routePlanStops: { some: {} }, status: { not: 'DELIVERED' } } } });
-  if (filters.deliveryState === 'unplanned') AND.push({ deliveryStops: { some: { routePlanStops: { none: {} }, status: { notIn: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'DELIVERED'] } } } });
+  const completedPickup = pickupCompletionWhere(now);
+  if (filters.deliveryState === 'delivered') AND.push({ OR: [{ deliveryStops: { some: { status: 'DELIVERED' } } }, completedPickup] });
+  if (filters.deliveryState === 'assigned_undelivered') AND.push({ AND: [{ deliveryStops: { some: { status: { in: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } } }, { NOT: completedPickup }] });
+  if (filters.deliveryState === 'planned') AND.push({ AND: [{ deliveryStops: { some: { routePlanStops: { some: {} }, status: { not: 'DELIVERED' } } } }, { NOT: completedPickup }] });
+  if (filters.deliveryState === 'unplanned') AND.push({ AND: [{ deliveryStops: { some: { routePlanStops: { none: {} }, status: { notIn: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'DELIVERED'] } } } }, { NOT: completedPickup }] });
   if (filters.deliveryState === 'past_due') {
-    const today = new Date();
+    const today = new Date(now);
     today.setUTCHours(0, 0, 0, 0);
-    AND.push({ deliveryFacts: { some: { deliveryDate: { lt: today } } }, deliveryStops: { some: { status: { not: 'DELIVERED' } } } });
+    AND.push({ AND: [{ deliveryFacts: { some: { deliveryDate: { lt: today } } }, deliveryStops: { some: { status: { not: 'DELIVERED' } } } }, { NOT: completedPickup }] });
   }
   if (filters.orderHealth === 'normal') {
     AND.push({ cancelledAt: null, deliveryFacts: { some: { readiness: 'READY_TO_PLAN' } } });
@@ -1652,11 +1657,11 @@ export function toCanonicalOrderWhere(
   }
   if (filters.operateDeliveryStatus !== undefined) {
     const active = { deliveryStops: { some: { status: { in: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } } } satisfies Prisma.OrderWhereInput;
-    const completed = { deliveryStops: { some: { status: 'DELIVERED' } } } satisfies Prisma.OrderWhereInput;
+    const completed = { OR: [{ deliveryStops: { some: { status: 'DELIVERED' } } }, completedPickup] } satisfies Prisma.OrderWhereInput;
     if (filters.operateDeliveryStatus === 'completed') AND.push(completed);
-    if (filters.operateDeliveryStatus === 'in_progress') AND.push(active);
+    if (filters.operateDeliveryStatus === 'in_progress') AND.push({ AND: [active, { NOT: completedPickup }] });
     if (filters.operateDeliveryStatus === 'ready') {
-      AND.push({ cancelledAt: null, deliveryFacts: { some: { readiness: 'READY_TO_PLAN' } }, deliveryStops: { some: { routePlanStops: { none: {} } } } });
+      AND.push({ AND: [{ cancelledAt: null, deliveryFacts: { some: { readiness: 'READY_TO_PLAN' } }, deliveryStops: { some: { routePlanStops: { none: {} } } } }, { NOT: completedPickup }] });
     }
     if (filters.operateDeliveryStatus === 'preparing') AND.push({ NOT: [active, completed] });
   }
@@ -1667,19 +1672,48 @@ export function toCanonicalOrderWhere(
     const today = parseDateOnly(filters.routeOpsToday ?? '');
     if (today === null) throw new Error('unreachable invalid routeOpsToday');
     AND.push({
-      cancelledAt: null,
-      deliveryStops: { none: { status: 'DELIVERED' } },
-      OR: [
-        { deliveryFacts: { none: {} } },
-        { deliveryFacts: { some: { deliveryDate: null } } },
-        { deliveryFacts: { some: { deliveryDate: { gte: today } } } }
-      ]
+      AND: [{
+        cancelledAt: null,
+        deliveryStops: { none: { status: 'DELIVERED' } },
+        OR: [
+          { deliveryFacts: { none: {} } },
+          { deliveryFacts: { some: { deliveryDate: null } } },
+          { deliveryFacts: { some: { deliveryDate: { gte: today } } } }
+        ]
+      }, { NOT: completedPickup }]
     });
     if (routeOpsTab === 'planned') AND.push({ deliveryStops: { some: { routePlanStops: { some: {} } } } });
     if (routeOpsTab === 'unplanned') AND.push({ cancelledAt: null, deliveryFacts: { some: { readiness: 'READY_TO_PLAN' } }, deliveryStops: { some: { routePlanStops: { none: {} } } } });
     if (routeOpsTab === 'needs_review') AND.push({ deliveryFacts: { some: { readiness: { not: 'READY_TO_PLAN' } } } });
   }
   return { shopId, ...(AND.length === 0 ? {} : { AND }) };
+}
+
+function pickupCompletionWhere(now: Date): Prisma.OrderWhereInput {
+  const today = parseDateOnly(torontoDateOnly(now));
+  return {
+    cancelledAt: null,
+    deliveryFacts: { some: { serviceType: 'PICKUP' } },
+    OR: [
+      { deliveryFacts: { some: { serviceType: 'PICKUP', timeWindowEnd: { lte: now } } } },
+      {
+        deliveryFacts: { some: { serviceType: 'PICKUP', timeWindowEnd: null } },
+        OR: [
+          { deliveryStops: { some: { timeWindowEnd: { lte: now } } } },
+          {
+            deliveryStops: { none: { timeWindowEnd: { not: null } } },
+            deliveryFacts: {
+              some: {
+                serviceType: 'PICKUP',
+                timeWindowEnd: null,
+                ...(today === null ? { deliveryDate: { lt: now } } : { deliveryDate: { lt: today } })
+              }
+            }
+          }
+        ]
+      }
+    ]
+  };
 }
 
 function planningStatusSearchPredicates(search: string): Prisma.OrderWhereInput[] {
@@ -1733,8 +1767,9 @@ function clearedDeliveryStopWrite(): {
 function matchesDerivedFilters(
   row: CanonicalOrderRow,
   filters: ListCanonicalOrdersFilters,
+  now: Date = new Date(),
 ): boolean {
-  if (!matchesRouteOpsScopeAndTab(row, filters)) return false;
+  if (!matchesRouteOpsScopeAndTab(row, filters, now)) return false;
   if (filters.readiness !== undefined && row.readiness !== filters.readiness)
     return false;
   if (
@@ -1801,7 +1836,7 @@ function matchesDerivedFilters(
     return false;
   if (
     filters.operateDeliveryStatus !== undefined &&
-    deriveOperateDeliveryStatus(row) !== filters.operateDeliveryStatus
+    deriveOperateDeliveryStatus(row, now) !== filters.operateDeliveryStatus
   ) {
     return false;
   }
@@ -1816,63 +1851,73 @@ function matchesDerivedFilters(
 function matchesRouteOpsScopeAndTab(
   row: CanonicalOrderRow,
   filters: ListCanonicalOrdersFilters,
+  now: Date,
 ): boolean {
   if (filters.routeOpsScope === undefined) return true;
   if (filters.routeOpsScope === "planning") {
     const today = filters.routeOpsToday;
-    if (today === undefined || !matchesRouteOpsPlanningScope(row, today)) {
+    if (today === undefined || !matchesRouteOpsPlanningScope(row, today, now)) {
       return false;
     }
   }
-  return matchesRouteOpsTabOrAll(row, filters.routeOpsTab ?? "all");
+  return matchesRouteOpsTabOrAll(row, filters.routeOpsTab ?? "all", now);
 }
 
 function matchesRouteOpsTabOrAll(
   row: CanonicalOrderRow,
   tab: NonNullable<ListCanonicalOrdersFilters["routeOpsTab"]>,
+  now: Date,
 ): boolean {
   switch (tab) {
     case "all":
       return (
-        matchesRouteOpsTab(row, "unplanned") ||
-        matchesRouteOpsTab(row, "planned") ||
-        matchesRouteOpsTab(row, "needs_review")
+        matchesRouteOpsTab(row, "unplanned", now) ||
+        matchesRouteOpsTab(row, "planned", now) ||
+        matchesRouteOpsTab(row, "needs_review", now)
       );
     case "needs_review":
-      return matchesRouteOpsTab(row, "needs_review");
+      return matchesRouteOpsTab(row, "needs_review", now);
     case "planned":
-      return matchesRouteOpsTab(row, "planned");
+      return matchesRouteOpsTab(row, "planned", now);
     case "unplanned":
-      return matchesRouteOpsTab(row, "unplanned");
+      return matchesRouteOpsTab(row, "unplanned", now);
   }
 }
 
 function matchesRouteOpsPlanningScope(
   row: CanonicalOrderRow,
   today: string,
+  now: Date,
 ): boolean {
-  if (isRouteOpsTerminal(row)) return false;
+  if (isRouteOpsTerminal(row, now)) return false;
   if (row.deliveryDate !== null) return row.deliveryDate >= today;
-  return matchesRouteOpsTab(row, "needs_review");
+  return matchesRouteOpsTab(row, "needs_review", now);
 }
 
 function matchesRouteOpsTab(
   row: CanonicalOrderRow,
   tab: Exclude<NonNullable<ListCanonicalOrdersFilters["routeOpsTab"]>, "all">,
+  now: Date,
 ): boolean {
   if (tab === "planned") return isRouteOpsPlanned(row);
-  if (tab === "needs_review") return isRouteOpsReview(row);
+  if (tab === "needs_review") return isRouteOpsReview(row, now);
   return (
-    !isRouteOpsTerminal(row) &&
+    !isRouteOpsTerminal(row, now) &&
     !isRouteOpsPlanned(row) &&
     row.routeEligible === true
   );
 }
 
-function isRouteOpsTerminal(row: CanonicalOrderRow): boolean {
+function isRouteOpsTerminal(row: CanonicalOrderRow, now: Date): boolean {
   return (
     row.cancelledAt !== null ||
-    row.deliveryStopStatus === "DELIVERED"
+    row.deliveryStopStatus === "DELIVERED" ||
+    isPickupComplete({
+      cancelledAt: row.cancelledAt,
+      deliveryDate: row.deliveryDate,
+      serviceType: row.serviceType,
+      timeWindowEnd: row.pickupCompleteAfter ?? null
+    }, now)
   );
 }
 
@@ -1880,9 +1925,9 @@ function isRouteOpsPlanned(row: CanonicalOrderRow): boolean {
   return row.planningStatus === "PLANNED" || row.routePlanId !== null;
 }
 
-function isRouteOpsReview(row: CanonicalOrderRow): boolean {
+function isRouteOpsReview(row: CanonicalOrderRow, now: Date): boolean {
   return (
-    isRouteOpsTerminal(row) ||
+    isRouteOpsTerminal(row, now) ||
     deriveOrderHealth(row) === "needs_review" ||
     row.reviewReasons.length > 0 ||
     row.readiness !== "READY_TO_PLAN" ||
@@ -3127,6 +3172,12 @@ export function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrder
   );
   const routeScopeKey = fact?.routeScopeKey ?? readString(raw?.routeScopeKey);
   const serviceType = readServiceType(fact?.serviceType ?? raw?.serviceType);
+  const pickupCompletionDeadline = pickupCompleteAfter({
+    cancelledAt: order.cancelledAt,
+    deliveryDate,
+    serviceType,
+    timeWindowEnd: fact?.timeWindowEnd ?? stop?.timeWindowEnd ?? null
+  });
   const metadataResolved = hasMetadataResolved({
     deliveryDate,
     reviewReasons,
@@ -3218,6 +3269,7 @@ export function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrder
     paymentReviewReason: readString(raw?.paymentReviewReason),
     phone: order.phone,
     pickup: readBoolean(raw?.pickup) ?? false,
+    pickupCompleteAfter: pickupCompletionDeadline?.toISOString() ?? null,
     planningGroupKey:
       fact?.planningGroupKey ?? readString(raw?.planningGroupKey),
     planningStatus,
