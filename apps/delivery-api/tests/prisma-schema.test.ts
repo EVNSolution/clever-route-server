@@ -129,7 +129,7 @@ describe('Prisma schema', () => {
     expect(currentModel).toContain('lastSampleId');
     expect(currentModel).toContain('fields: [lastSampleId, shopId, deviceId, sourceKind]');
     expect(currentModel).toContain('references: [id, shopId, deviceId, sourceKind]');
-    expect(sampleModel).toContain('@@unique([id, shopId, deviceId, sourceKind])');
+    expect(sampleModel).toContain('@@unique([id, shopId, deviceId, sourceKind], map: "uvis_vehicle_telemetry_samples_id_shopId_deviceId_sourceKind_ke")');
     expect(migration).toContain('CREATE UNIQUE INDEX "uvis_vehicle_telemetry_samples_id_shopId_deviceId_sourceKind_key"');
     expect(migration).toContain('FOREIGN KEY ("lastSampleId", "shopId", "deviceId", "sourceKind")');
     expect(migration).toContain('REFERENCES "uvis_vehicle_telemetry_samples"("id", "shopId", "deviceId", "sourceKind")');
@@ -145,7 +145,7 @@ describe('Prisma schema', () => {
     expect(model).toContain('sourceWatermark   String');
     expect(model).toContain('sourceSampleCount Int');
     expect(model).toContain('document          Json');
-    expect(model).toContain('@@unique([shopId, vehicleId, serviceDate, schemaVersion])');
+    expect(model).toContain('@@unique([shopId, vehicleId, serviceDate, schemaVersion], map: "uvis_vehicle_trail_materializations_shop_vehicle_day_schema_key")');
     expect(migration).toContain('CREATE TABLE "uvis_vehicle_trail_materializations"');
     expect(migration).toContain('"document" JSONB NOT NULL');
     expect(migration).toContain('FOREIGN KEY ("vehicleId", "shopId") REFERENCES "vehicles"("id", "shopId")');

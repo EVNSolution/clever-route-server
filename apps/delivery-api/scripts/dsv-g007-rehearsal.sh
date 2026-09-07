@@ -353,8 +353,15 @@ const expected = new Map(fs.readFileSync(process.argv[1], "utf8").trim().split(/
 const rows = fs.existsSync(process.argv[2])
   ? fs.readFileSync(process.argv[2], "utf8").trim().split(/\n/).filter(Boolean).map((line) => line.split("\t"))
   : [];
+const successful = new Set(rows.filter(([name, checksum, finished, notRolledBack, noFailureLogs]) =>
+  expected.get(name) === checksum && finished === "t" && notRolledBack === "t" && noFailureLogs === "t"
+).map(([name]) => name));
 for (const [name, checksum, finished, notRolledBack, noFailureLogs] of rows) {
   if (!expected.has(name)) throw new Error(`target has unknown migration row through cutoff: ${name}`);
+  if (notRolledBack === "f") {
+    if (!successful.has(name)) throw new Error(`rolled-back migration has no successful current-checksum row: ${name}`);
+    continue;
+  }
   if (checksum !== expected.get(name)) throw new Error(`checksum mismatch for ${name}`);
   if (finished !== "t" || notRolledBack !== "t" || noFailureLogs !== "t") throw new Error(`failed or incomplete migration row for ${name}`);
 }
@@ -379,7 +386,8 @@ build_expected_schema_on_fingerprint_db() {
   : > "$evidence_dir/fingerprint-bootstrap.log"
   while IFS= read -r migration_name; do
     migration_sql="$migrations_dir/$migration_name/migration.sql"
-    run_or_echo psql "$fingerprint_url" -v ON_ERROR_STOP=1 -f "$migration_sql" >> "$evidence_dir/fingerprint-bootstrap.log"
+    # Preserve migration-local ON COMMIT DROP tables, as Prisma's SQL execution does.
+    run_or_echo psql "$fingerprint_url" -v ON_ERROR_STOP=1 --single-transaction -f "$migration_sql" >> "$evidence_dir/fingerprint-bootstrap.log"
   done < <(migrations_through_expected)
   if [ "$target_class" = "stale-clone" ] || [ "$target_class" = "prod-like-clone" ]; then
     run_or_echo psql "$fingerprint_url" -v ON_ERROR_STOP=1 -f "$db_push_source_fingerprint_sql" >> "$evidence_dir/fingerprint-bootstrap.log"

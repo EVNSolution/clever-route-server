@@ -502,11 +502,11 @@ model DriverBundleHandoffRequest {
   expiresAt         DateTime                         @db.Timestamptz(6)
   respondedAt       DateTime?                        @db.Timestamptz(6)
   createdAt         DateTime                         @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime                         @updatedAt @db.Timestamptz(6)
+  updatedAt         DateTime                         @default(now()) @updatedAt @db.Timestamptz(6)
 
-  @@index([shopId, sourceDriverId, status, createdAt])
-  @@index([shopId, targetDriverId, status, createdAt])
-  @@index([shopId, groupingId, destinationId, status])
+  @@index([shopId, sourceDriverId, status, createdAt], map: "driver_bundle_handoff_requests_shopId_sourceDriverId_status_cre")
+  @@index([shopId, targetDriverId, status, createdAt], map: "driver_bundle_handoff_requests_shopId_targetDriverId_status_cre")
+  @@index([shopId, groupingId, destinationId, status], map: "driver_bundle_handoff_requests_shopId_groupingId_destinationId_")
   /// A partial unique index in the migration allows only one PROPOSED/PROCESSING request per destination.
   @@map("driver_bundle_handoff_requests")
 }
@@ -793,7 +793,7 @@ model ShopifyWebhookEvent {
 }
 
 model ShopifyOrderRedactionTombstone {
-  id                      String   @id @default(uuid()) @db.Uuid
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   appId                   String   @db.Text
   shopId                  String   @db.Uuid
   shop                    Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -809,7 +809,7 @@ model ShopifyOrderRedactionTombstone {
 }
 
 model ShopifyShopRedactionTombstone {
-  id                   String   @id @default(uuid()) @db.Uuid
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   appId                String   @db.Text
   shopDomain           String   @db.Text
   complianceWebhookId  String   @db.Text
@@ -824,7 +824,7 @@ model ShopifyShopRedactionTombstone {
 }
 
 model ShopifyRedactedWebhookReceipt {
-  id          String   @id @default(uuid()) @db.Uuid
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   appId       String   @db.Text
   shopDomain  String   @db.Text
   webhookId   String   @db.Text
@@ -833,7 +833,7 @@ model ShopifyRedactedWebhookReceipt {
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
 
   @@unique([appId, shopDomain, webhookId], map: "shopify_redacted_webhook_receipt_key")
-  @@index([appId, shopDomain, redactedAt])
+  @@index([appId, shopDomain, redactedAt], map: "shopify_redacted_webhook_receipts_appId_shopDomain_redactedAt_i")
   @@map("shopify_redacted_webhook_receipts")
 }
 
@@ -873,7 +873,7 @@ model ShopifyOrderReconciliationJob {
   finishedAt               DateTime?                           @db.Timestamptz(6)
   deadLetteredAt           DateTime?                           @db.Timestamptz(6)
   createdAt                DateTime                            @default(now()) @db.Timestamptz(6)
-  updatedAt                DateTime                            @updatedAt @db.Timestamptz(6)
+  updatedAt                DateTime                            @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@index([shopId, status, createdAt])
   @@index([status, nextRunAt])
@@ -940,7 +940,7 @@ model Order {
   @@unique([id, shopId])
   @@unique([shopId, shopifyOrderGid])
   @@unique([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
-  @@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate])
+  @@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate], map: "orders_shopId_sellerOrderSourceKind_sellerOrderKey_serviceDate_")
   @@index([shopId, name])
   @@index([shopId, displayOrderSequence(sort: Desc), id(sort: Desc)])
   @@index([shopId, sourcePlatform, sourceSiteUrl, sourceOrderNumber])
@@ -950,11 +950,17 @@ model Order {
   @@index([shopId, destinationId])
   @@index([shopId, currentRouteVersionId])
   @@index([shopId, ownedRouteGroupingId])
+  @@index([email(ops: raw("gin_trgm_ops"))], map: "orders_email_trgm_idx", type: Gin)
+  @@index([name(ops: raw("gin_trgm_ops"))], map: "orders_name_trgm_idx", type: Gin)
+  @@index([phone(ops: raw("gin_trgm_ops"))], map: "orders_phone_trgm_idx", type: Gin)
+  @@index([shopifyOrderGid(ops: raw("gin_trgm_ops"))], map: "orders_shopifyOrderGid_trgm_idx", type: Gin)
+  @@index([sourceOrderId(ops: raw("gin_trgm_ops"))], map: "orders_sourceOrderId_trgm_idx", type: Gin)
+  @@index([sourceOrderNumber(ops: raw("gin_trgm_ops"))], map: "orders_sourceOrderNumber_trgm_idx", type: Gin)
   @@map("orders")
 }
 
 model OrderSelectionSnapshot {
-  id                String                        @id @default(uuid()) @db.Uuid
+  id                String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId            String                        @db.Uuid
   shop              Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   appId             String                        @db.Text
@@ -969,7 +975,7 @@ model OrderSelectionSnapshot {
   createdAt         DateTime                      @default(now()) @db.Timestamptz(6)
   orders            OrderSelectionSnapshotOrder[]
 
-  @@index([shopId, appId, actorSubjectHash, expiresAt])
+  @@index([shopId, appId, actorSubjectHash, expiresAt], map: "order_selection_snapshots_shopId_appId_actorSubjectHash_expires")
   @@index([expiresAt, consumedAt])
   @@map("order_selection_snapshots")
 }
@@ -1058,7 +1064,7 @@ model DsvCustomerAccountInvite {
   createdAt  DateTime                        @default(now()) @db.Timestamptz(6)
 
   @@index([accountId, purpose, expiresAt])
-  @@index([shopId, customerId, purpose, expiresAt])
+  @@index([shopId, customerId, purpose, expiresAt], map: "dsv_customer_account_invites_shopId_customerId_purpose_expiresA")
   @@map("dsv_customer_account_invites")
 }
 
@@ -1226,6 +1232,14 @@ model DeliveryStop {
   @@unique([shopId, orderId])
   @@unique([id, shopId])
   @@index([shopId, deliveryDate, status])
+  @@index([address1(ops: raw("gin_trgm_ops"))], map: "delivery_stops_address1_trgm_idx", type: Gin)
+  @@index([address2(ops: raw("gin_trgm_ops"))], map: "delivery_stops_address2_trgm_idx", type: Gin)
+  @@index([city(ops: raw("gin_trgm_ops"))], map: "delivery_stops_city_trgm_idx", type: Gin)
+  @@index([countryCode(ops: raw("gin_trgm_ops"))], map: "delivery_stops_countryCode_trgm_idx", type: Gin)
+  @@index([phone(ops: raw("gin_trgm_ops"))], map: "delivery_stops_phone_trgm_idx", type: Gin)
+  @@index([postalCode(ops: raw("gin_trgm_ops"))], map: "delivery_stops_postalCode_trgm_idx", type: Gin)
+  @@index([province(ops: raw("gin_trgm_ops"))], map: "delivery_stops_province_trgm_idx", type: Gin)
+  @@index([recipientName(ops: raw("gin_trgm_ops"))], map: "delivery_stops_recipientName_trgm_idx", type: Gin)
   @@map("delivery_stops")
 }
 
@@ -1377,6 +1391,18 @@ model OrderDeliveryFact {
   @@index([shopId, planningGroupKey])
   @@index([commerceConnectionId, sourceUpdatedAt])
   @@index([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
+  @@index([deliveryDateWeekday(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_dateWeekday_trgm_idx", type: Gin)
+  @@index([deliveryArea(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_deliveryArea_trgm_idx", type: Gin)
+  @@index([planningGroupKey(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_planningGroupKey_trgm_idx", type: Gin)
+  @@index([rawDeliveryArea(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_rawDeliveryArea_trgm_idx", type: Gin)
+  @@index([rawDeliveryDate(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_rawDeliveryDate_trgm_idx", type: Gin)
+  @@index([rawDeliveryDay(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_rawDeliveryDay_trgm_idx", type: Gin)
+  @@index([rawPickupDay(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_rawPickupDay_trgm_idx", type: Gin)
+  @@index([rawDeliveryTimeWindow(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_rawTimeWindow_trgm_idx", type: Gin)
+  @@index([routeScopeKey(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_routeScopeKey_trgm_idx", type: Gin)
+  @@index([serviceType(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_serviceType_trgm_idx", type: Gin)
+  @@index([deliverySession(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_session_trgm_idx", type: Gin)
+  @@index([deliveryWeekday(ops: raw("gin_trgm_ops"))], map: "order_delivery_facts_weekday_trgm_idx", type: Gin)
   @@map("order_delivery_facts")
 }
 
@@ -1641,7 +1667,7 @@ model RoutesAppReleaseArtifact {
   currentChannels             RoutesAppReleaseChannel[]
 
   @@unique([platform, packageId, versionCode])
-  @@index([platform, distributionChannel, versionCode])
+  @@index([platform, distributionChannel, versionCode], map: "routes_app_release_artifacts_platform_distributionChannel_versi")
   @@map("routes_app_release_artifacts")
 }
 
@@ -2117,10 +2143,10 @@ model OrderMessage {
   authorId       String?              @db.Text
   readByDriverAt DateTime?            @db.Timestamptz(6)
   createdAt      DateTime             @default(now()) @db.Timestamptz(6)
-  updatedAt      DateTime             @updatedAt @db.Timestamptz(6)
+  updatedAt      DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([shopId, commandId])
-  @@index([shopId, orderId, audience, createdAt])
+  @@index([shopId, orderId, audience, createdAt], map: "order_messages_shop_order_audience_createdAt_idx")
   @@map("order_messages")
 }
 
@@ -2142,7 +2168,7 @@ model CustomerEmailManualDispatch {
   recipients  CustomerEmailManualDispatchRecipient[]
 
   @@unique([shopId, commandId])
-  @@index([shopId, routePlanId, createdAt])
+  @@index([shopId, routePlanId, createdAt], map: "customer_email_manual_dispatches_shopId_routePlanId_createdAt_i")
   @@index([shopId, signal, createdAt])
   @@map("customer_email_manual_dispatches")
 }
@@ -2171,7 +2197,7 @@ model CustomerEmailManualDispatchRecipient {
   updatedAt         DateTime                              @default(now()) @updatedAt @db.Timestamptz(6)
   attempts          CustomerDeliveryNotificationAttempt[]
 
-  @@index([shopId, routePlanId, deliveryStopId])
+  @@index([shopId, routePlanId, deliveryStopId], map: "customer_email_manual_dispatch_recipients_shopId_routePlanId_de")
   @@index([dispatchId, status])
   @@index([providerMessageId])
   @@map("customer_email_manual_dispatch_recipients")
@@ -2180,11 +2206,11 @@ model CustomerEmailManualDispatchRecipient {
 model DriverSyncSession {
   id                    String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                String                    @db.Uuid
-  shop                  Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop                  Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_sync_sessions_shop_fkey")
   routePlanId           String                    @db.Uuid
-  routePlan             RoutePlan                 @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  routePlan             RoutePlan                 @relation(fields: [routePlanId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_sync_sessions_route_fkey")
   driverId              String                    @db.Uuid
-  driver                Driver                    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driver                Driver                    @relation(fields: [driverId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_sync_sessions_driver_fkey")
   deviceInstanceHash    String                    @db.Text
   sessionGeneration     String                    @db.Text
   driverContractVersion Int
@@ -2194,20 +2220,20 @@ model DriverSyncSession {
   lastObservedAt        DateTime                  @db.Timestamptz(6)
   expiresAt             DateTime                  @db.Timestamptz(6)
   createdAt             DateTime                  @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime                  @updatedAt @db.Timestamptz(6)
+  updatedAt             DateTime                  @default(now()) @updatedAt @db.Timestamptz(6)
   heartbeats            DriverSyncHeartbeat[]
   leases                DriverRouteSessionLease[]
 
   @@unique([routePlanId, driverId, deviceInstanceHash, sessionGeneration])
-  @@index([routePlanId, driverId, expiresAt])
-  @@index([lastObservedAt])
+  @@index([routePlanId, driverId, expiresAt], map: "driver_sync_sessions_route_driver_expires_idx")
+  @@index([lastObservedAt], map: "driver_sync_sessions_last_observed_idx")
   @@map("driver_sync_sessions")
 }
 
 model DriverSyncHeartbeat {
   id                  String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   syncSessionId       String            @db.Uuid
-  syncSession         DriverSyncSession @relation(fields: [syncSessionId], references: [id], onDelete: Cascade)
+  syncSession         DriverSyncSession @relation(fields: [syncSessionId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_sync_heartbeats_session_fkey")
   heartbeatSequence   Int
   state               String            @db.Text
   clientOccurredAt    DateTime          @db.Timestamptz(6)
@@ -2231,21 +2257,21 @@ model DriverSyncHeartbeat {
   createdAt           DateTime          @default(now()) @db.Timestamptz(6)
 
   @@unique([syncSessionId, heartbeatSequence])
-  @@index([syncSessionId, serverReceivedAt])
-  @@index([retainedUntil])
+  @@index([syncSessionId, serverReceivedAt], map: "driver_sync_heartbeats_session_received_idx")
+  @@index([retainedUntil], map: "driver_sync_heartbeats_retention_idx")
   @@map("driver_sync_heartbeats")
 }
 
 model DriverRouteSessionLease {
   id                 String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId             String            @db.Uuid
-  shop               Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop               Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_route_session_leases_shop_fkey")
   routePlanId        String            @db.Uuid
-  routePlan          RoutePlan         @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  routePlan          RoutePlan         @relation(fields: [routePlanId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_route_session_leases_route_fkey")
   driverId           String            @db.Uuid
-  driver             Driver            @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driver             Driver            @relation(fields: [driverId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_route_session_leases_driver_fkey")
   syncSessionId      String            @db.Uuid
-  syncSession        DriverSyncSession @relation(fields: [syncSessionId], references: [id], onDelete: Cascade)
+  syncSession        DriverSyncSession @relation(fields: [syncSessionId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_route_session_leases_session_fkey")
   deviceInstanceHash String            @db.Text
   sessionGeneration  String            @db.Text
   issuedAt           DateTime          @db.Timestamptz(6)
@@ -2254,35 +2280,34 @@ model DriverRouteSessionLease {
   takeoverFromHash   String?           @db.Text
   takeoverActorId    String?           @db.Uuid
   createdAt          DateTime          @default(now()) @db.Timestamptz(6)
-  updatedAt          DateTime          @updatedAt @db.Timestamptz(6)
+  updatedAt          DateTime          @default(now()) @updatedAt @db.Timestamptz(6)
 
-  @@index([routePlanId, driverId, expiresAt])
-  @@index([syncSessionId])
+  @@index([syncSessionId], map: "driver_route_session_leases_session_idx")
   @@map("driver_route_session_leases")
 }
 
 model AlertCondition {
   id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId      String       @db.Uuid
-  shop        Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop        Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "alert_conditions_shop_fkey")
   dedupeKey   String       @db.Text
   type        String       @db.Text
   routePlanId String?      @db.Uuid
   createdAt   DateTime     @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
+  updatedAt   DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
   cycles      AlertCycle[]
 
   @@unique([shopId, dedupeKey])
-  @@index([shopId, type, updatedAt])
+  @@index([shopId, type, updatedAt], map: "alert_conditions_shop_type_idx")
   @@map("alert_conditions")
 }
 
 model AlertCycle {
   id                    String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   conditionId           String             @db.Uuid
-  condition             AlertCondition     @relation(fields: [conditionId], references: [id], onDelete: Cascade)
+  condition             AlertCondition     @relation(fields: [conditionId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "alert_cycles_condition_fkey")
   legacyNotificationId  String?            @db.Uuid
-  legacyNotification    AdminNotification? @relation(fields: [legacyNotificationId], references: [id], onDelete: SetNull)
+  legacyNotification    AdminNotification? @relation(fields: [legacyNotificationId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "alert_cycles_legacy_fkey")
   severity              String             @db.Text
   payload               Json?
   openedAt              DateTime           @db.Timestamptz(6)
@@ -2295,22 +2320,22 @@ model AlertCycle {
   compatibilityMetadata Json?
   retainedUntil         DateTime           @db.Timestamptz(6)
   createdAt             DateTime           @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime           @updatedAt @db.Timestamptz(6)
+  updatedAt             DateTime           @default(now()) @updatedAt @db.Timestamptz(6)
 
-  @@index([legacyNotificationId])
-  @@index([conditionId, openedAt])
-  @@index([resolvedAt, retainedUntil])
+  @@index([legacyNotificationId], map: "alert_cycles_legacy_idx")
+  @@index([conditionId, openedAt], map: "alert_cycles_condition_opened_idx")
+  @@index([resolvedAt, retainedUntil], map: "alert_cycles_retention_idx")
   @@map("alert_cycles")
 }
 
 model CustomerDeliveryNotificationAttempt {
   id                        String                                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                    String                                @db.Uuid
-  shop                      Shop                                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop                      Shop                                  @relation(fields: [shopId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "customer_delivery_notification_attempts_shop_fkey")
   factId                    String?                               @db.Uuid
-  fact                      CustomerRouteNotificationFact?        @relation(fields: [factId], references: [id], onDelete: Cascade)
+  fact                      CustomerRouteNotificationFact?        @relation(fields: [factId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "customer_delivery_notification_attempts_fact_fkey")
   manualDispatchRecipientId String?                               @db.Uuid
-  manualDispatchRecipient   CustomerEmailManualDispatchRecipient? @relation(fields: [manualDispatchRecipientId], references: [id], onDelete: Cascade)
+  manualDispatchRecipient   CustomerEmailManualDispatchRecipient? @relation(fields: [manualDispatchRecipientId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "customer_delivery_notification_attempts_manual_fkey")
   attemptNumber             Int
   startedAt                 DateTime                              @db.Timestamptz(6)
   completedAt               DateTime?                             @db.Timestamptz(6)
@@ -2322,15 +2347,15 @@ model CustomerDeliveryNotificationAttempt {
   retainedUntil             DateTime                              @db.Timestamptz(6)
   createdAt                 DateTime                              @default(now()) @db.Timestamptz(6)
 
-  @@index([shopId, createdAt])
-  @@index([retainedUntil])
+  @@index([shopId, createdAt], map: "customer_delivery_notification_attempts_shop_created_idx")
+  @@index([retainedUntil], map: "customer_delivery_notification_attempts_retention_idx")
   @@map("customer_delivery_notification_attempts")
 }
 
 model CustomerEmailOperatorReconciliation {
   id                     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                 String   @db.Uuid
-  shop                   Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop                   Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "customer_email_operator_reconciliations_shop_fkey")
   targetKind             String   @db.Text
   targetId               String   @db.Uuid
   disposition            String   @db.Text
@@ -2342,30 +2367,30 @@ model CustomerEmailOperatorReconciliation {
   changeControlRef       String   @db.Text
   reasonCode             String   @db.Text
   manifestSha256         String   @db.Text
-  correlationId          String   @unique @db.Text
+  correlationId          String   @unique(map: "customer_email_operator_reconciliations_correlation_idx") @db.Text
   retainedUntil          DateTime @db.Timestamptz(6)
   createdAt              DateTime @default(now()) @db.Timestamptz(6)
 
-  @@index([shopId, createdAt])
-  @@index([retainedUntil])
+  @@index([shopId, createdAt], map: "customer_email_operator_reconciliations_shop_created_idx")
+  @@index([retainedUntil], map: "customer_email_operator_reconciliations_retention_idx")
   @@map("customer_email_operator_reconciliations")
 }
 
 model CustomerEmailReconciliationTombstone {
   id               String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId           String                        @db.Uuid
-  shop             Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop             Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "customer_email_reconciliation_tombstones_shop_fkey")
   targetId         String                        @db.Uuid
-  fact             CustomerRouteNotificationFact @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  fact             CustomerRouteNotificationFact @relation(fields: [targetId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "customer_email_reconciliation_tombstones_target_fkey")
   disposition      String                        @db.Text
   changeControlRef String                        @db.Text
   reasonCode       String                        @db.Text
   manifestSha256   String                        @db.Text
-  correlationId    String                        @unique @db.Text
+  correlationId    String                        @unique(map: "customer_email_reconciliation_tombstones_correlation_idx") @db.Text
   createdAt        DateTime                      @default(now()) @db.Timestamptz(6)
 
-  @@unique([shopId, targetId])
-  @@index([shopId, createdAt])
+  @@unique([shopId, targetId], map: "customer_email_reconciliation_tombstones_shop_target_idx")
+  @@index([shopId, createdAt], map: "customer_email_reconciliation_tombstones_shop_created_idx")
   @@map("customer_email_reconciliation_tombstones")
 }
 
@@ -2389,7 +2414,7 @@ model AdminRouteStopActionAudit {
   createdAt          DateTime           @default(now()) @db.Timestamptz(6)
 
   @@unique([idempotencyKey])
-  @@index([shopId, routePlanId, deliveryStopId, occurredAt])
+  @@index([shopId, routePlanId, deliveryStopId, occurredAt], map: "admin_route_stop_action_audits_shopId_routePlanId_deliveryStopI")
   @@map("admin_route_stop_action_audits")
 }
 
@@ -2495,7 +2520,7 @@ model DsvVehicleDriverAssignment {
 }
 
 model DsvVehicleTelematicsDevice {
-  id           String                        @id @default(uuid()) @db.Uuid
+  id           String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId       String                        @db.Uuid
   shop         Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   vehicleId    String                        @db.Uuid
@@ -2516,7 +2541,7 @@ model DsvVehicleTelematicsDevice {
 }
 
 model UvisVehicleTelemetryCurrent {
-  id                     String                     @id @default(uuid()) @db.Uuid
+  id                     String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                 String                     @db.Uuid
   shop                   Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   vehicleId              String                     @db.Uuid
@@ -2538,7 +2563,7 @@ model UvisVehicleTelemetryCurrent {
   sourcePlate            String?                    @db.Text
   plateMatched           Boolean?
   lastSampleId           String                     @db.Uuid
-  lastSample             UvisVehicleTelemetrySample @relation("UvisCurrentLastSample", fields: [lastSampleId, shopId, deviceId, sourceKind], references: [id, shopId, deviceId, sourceKind], onDelete: Restrict)
+  lastSample             UvisVehicleTelemetrySample @relation("UvisCurrentLastSample", fields: [lastSampleId, shopId, deviceId, sourceKind], references: [id, shopId, deviceId, sourceKind], onDelete: Restrict, map: "uvis_vehicle_telemetry_current_lastSampleId_shopId_deviceId_sou")
   createdAt              DateTime                   @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime                   @updatedAt @db.Timestamptz(6)
 
@@ -2551,7 +2576,7 @@ model UvisVehicleTelemetryCurrent {
 }
 
 model UvisVehicleTelemetrySample {
-  id                     String                        @id @default(uuid()) @db.Uuid
+  id                     String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                 String                        @db.Uuid
   shop                   Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   vehicleId              String                        @db.Uuid
@@ -2575,8 +2600,8 @@ model UvisVehicleTelemetrySample {
   createdAt              DateTime                      @default(now()) @db.Timestamptz(6)
   currentRefs            UvisVehicleTelemetryCurrent[] @relation("UvisCurrentLastSample")
 
-  @@unique([id, shopId, deviceId, sourceKind])
-  @@unique([deviceId, sourceKind, observedAt])
+  @@unique([id, shopId, deviceId, sourceKind], map: "uvis_vehicle_telemetry_samples_id_shopId_deviceId_sourceKind_ke")
+  @@unique([deviceId, sourceKind, observedAt], map: "uvis_vehicle_telemetry_samples_deviceId_sourceKind_observedAt_k")
   @@index([shopId, vehicleId, observedAt])
   @@index([shopId, deviceId, observedAt])
   @@index([shopId, staleAfter])
@@ -2584,7 +2609,7 @@ model UvisVehicleTelemetrySample {
 }
 
 model UvisVehicleTrailMaterialization {
-  id                String    @id @default(uuid()) @db.Uuid
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId            String    @db.Uuid
   shop              Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
   vehicleId         String    @db.Uuid
@@ -2599,9 +2624,9 @@ model UvisVehicleTrailMaterialization {
   createdAt         DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
 
-  @@unique([shopId, vehicleId, serviceDate, schemaVersion])
+  @@unique([shopId, vehicleId, serviceDate, schemaVersion], map: "uvis_vehicle_trail_materializations_shop_vehicle_day_schema_key")
   @@index([shopId, serviceDate])
-  @@index([shopId, vehicleId, serviceDate])
+  @@index([shopId, vehicleId, serviceDate], map: "uvis_vehicle_trail_materializations_shopId_vehicleId_serviceDat")
   @@index([finalizedAt])
   @@map("uvis_vehicle_trail_materializations")
 }
@@ -2869,12 +2894,12 @@ model DsvDispatchChangeRequest {
   appliedDriverEvent   DriverEvent?                   @relation("DsvDispatchChangeRequestAppliedDriverEvent", fields: [appliedDriverEventId], references: [id], onDelete: NoAction)
   appliedAt            DateTime?                      @db.Timestamptz(6)
   createdAt            DateTime                       @default(now()) @db.Timestamptz(6)
-  updatedAt            DateTime                       @updatedAt @db.Timestamptz(6)
+  updatedAt            DateTime                       @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([shopId, commandReceiptId])
   @@unique([shopId, appliedDriverEventId])
-  @@index([shopId, status, routePlanId, deliveryStopId, createdAt])
-  @@index([shopId, sellerOrderId, status])
+  @@index([shopId, status, routePlanId, deliveryStopId, createdAt], map: "dsv_change_requests_shop_status_route_stop_createdAt_idx")
+  @@index([shopId, sellerOrderId, status], map: "dsv_change_requests_shop_order_status_idx")
   @@map("dsv_dispatch_change_requests")
 }
 
@@ -2911,7 +2936,7 @@ model DriverEvent {
 }
 
 model DriverEventAttempt {
-  id                     String     @id @default(uuid()) @db.Uuid
+  id                     String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   requestId              String     @unique @db.Text
   transportRequestId     String?    @db.Text
   shopId                 String     @db.Uuid
@@ -2939,7 +2964,7 @@ model DriverEventAttempt {
   reconciliationCode     String?    @db.Text
   retainedUntil          DateTime   @db.Timestamptz(6)
   createdAt              DateTime   @default(now()) @db.Timestamptz(6)
-  updatedAt              DateTime   @updatedAt @db.Timestamptz(6)
+  updatedAt              DateTime                     @default(now()) @updatedAt @db.Timestamptz(6)
   routeCompletionReview  DriverRouteCompletionReview?
 
   @@unique([driverId, clientEventId, attemptNumber])
@@ -2951,15 +2976,15 @@ model DriverEventAttempt {
 }
 
 model DriverRouteCompletionReview {
-  id                    String    @id @default(uuid()) @db.Uuid
+  id                    String                               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                String    @db.Uuid
-  shop                  Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop                  Shop                                 @relation(fields: [shopId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_route_completion_reviews_shop_fkey")
   routePlanId           String    @db.Uuid
   routeVersionId        String?   @db.Uuid
   attemptId             String?   @unique @db.Uuid
-  attempt               DriverEventAttempt? @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+  attempt               DriverEventAttempt?                  @relation(fields: [attemptId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "driver_route_completion_reviews_attempt_fkey")
   driverEventId         String?   @unique @db.Uuid
-  driverEvent           DriverEvent? @relation(fields: [driverEventId], references: [id], onDelete: SetNull)
+  driverEvent           DriverEvent?                         @relation(fields: [driverEventId], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "driver_route_completion_reviews_event_fkey")
   mode                  String    @db.Text
   decision              String    @db.Text
   receiptAware          Boolean
@@ -2984,9 +3009,9 @@ model DriverRouteCompletionReview {
 }
 
 model DriverRouteCompletionReviewHistory {
-  id           String                      @id @default(uuid()) @db.Uuid
+  id            String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   reviewId     String                      @db.Uuid
-  review       DriverRouteCompletionReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  review        DriverRouteCompletionReview @relation(fields: [reviewId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "driver_route_completion_review_history_review_fkey")
   priorOutcome String?                     @db.Text
   outcome      String                      @db.Text
   actor        String                      @db.Text
@@ -3004,7 +3029,7 @@ model DriverRouteCompletionReviewHistory {
 /// PII-free rollout-gate ledger intentionally has no tenant or route foreign key so
 /// tenant erasure cannot hide a historical false-positive inside its retention window.
 model DriverRouteCompletionGateHistory {
-  id            String   @id @default(uuid()) @db.Uuid
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   outcome       String   @db.Text
   source        String   @db.Text
   retainedUntil DateTime @db.Timestamptz(6)

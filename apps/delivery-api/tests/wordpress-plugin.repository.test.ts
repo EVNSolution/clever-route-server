@@ -291,6 +291,35 @@ describe('PrismaWordPressPluginRepository sync-run lifecycle', () => {
     });
   });
 
+  test('returns the winning raw sync run after an active-run uniqueness race', async () => {
+    const commerceRawOrderIngest = { findMany: vi.fn().mockResolvedValue([]) };
+    const commerceSyncRun = {
+      create: vi.fn().mockRejectedValue({ code: 'P2002' }),
+      findFirst: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(syncRunRecord({
+        requestPayload: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING'
+      })),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 })
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngest, commerceSyncRun } as never);
+    const result = await repository.createRawSyncRunUnlessActive({ acceptedAt, context: pluginContext(), request: { modifiedAfter: null, pageSize: 100, status: null } });
+    expect(result.alreadyRunning).toBe(true);
+    expect(result.startBackgroundProcessing).toBe(false);
+    expect(result.run.status).toBe('RUNNING');
+    expect(result.run.request.mode).toBe('raw_push');
+    expect(commerceSyncRun.create).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['P2002', 'UNEXPECTED'])('does not swallow %s when no competing raw run exists', async (code) => {
+    const error = { code };
+    const commerceSyncRun = {
+      create: vi.fn().mockRejectedValue(error),
+      findFirst: vi.fn().mockResolvedValue(null),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 })
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceSyncRun } as never);
+    await expect(repository.createRawSyncRunUnlessActive({ acceptedAt, context: pluginContext(), request: { modifiedAfter: null, pageSize: 100, status: null } })).rejects.toBe(error);
+  });
+
   test('records canonical processing counts on the raw sync run as each row completes', async () => {
     const commerceRawOrderIngest = {
       updateMany: vi.fn((input: unknown) => {

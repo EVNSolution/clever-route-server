@@ -327,3 +327,8 @@ DATABASE_URL="$g006_url" \
 DRIVER_ACCOUNT_DELETION_DATABASE_URL="$g006_url" \
 SHOPIFY_WEBHOOK_DURABILITY_DATABASE_URL="$g006_url" \
 npm test -- shopify-webhook-durability.integration.test.ts shop-privacy-db-invariant.integration.test.ts driver-account-deletion.integration.test.ts
+
+G006_DATABASE_TARGET_CLASS='safe-local-g006-disposable' \
+DATABASE_URL="$g006_url" \
+ACTIVE_JOB_UNIQUENESS_DATABASE_URL="$g006_url" \
+npm test -- active-job-uniqueness-migration.integration.test.ts
