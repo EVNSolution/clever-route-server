@@ -288,6 +288,7 @@ describe('API documentation routes', () => {
         { method: 'patch', path: '/api/dsv/v1/customers/:customerId/notification-settings' },
         { method: 'get', path: '/api/dsv/v1/customers/deliveries' },
         { method: 'get', path: '/api/dsv/v1/destinations' },
+        { method: 'post', path: '/api/dsv/v1/diagnostics/dispatch-load' },
         { method: 'post', path: '/api/dsv/v1/dispatch-change-requests/:changeRequestId/cancel' },
         { method: 'get', path: '/api/dsv/v1/dispatches' },
         { method: 'get', path: '/api/dsv/v1/drivers' },
@@ -508,6 +509,44 @@ describe('API documentation routes', () => {
       expect(pathBlock(response.body, '/api/dsv/v1/map/profile')).toContain(
         'x-required-scopes: []'
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml documents the strict DSV dispatch-load diagnostic boundary', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const diagnosticPath = pathBlock(response.body, '/api/dsv/v1/diagnostics/dispatch-load');
+      const diagnosticInput = schemaBlock(response.body, 'DsvV1DispatchLoadDiagnosticInput');
+      const diagnosticEnvelope = schemaBlock(response.body, 'DsvV1DispatchLoadDiagnosticAcceptedEnvelope');
+
+      expect(response.statusCode).toBe(200);
+      expect(diagnosticPath).toContain("x-required-scopes: ['dsv:dispatches:read']");
+      expect(diagnosticPath).toContain('AdminUiCsrfTokenHeader');
+      expect(diagnosticPath).toContain('limited to 4096 bytes');
+      expect(diagnosticPath).toContain("'413':");
+      expect(diagnosticInput).toContain('required: [loadId, attemptId, attemptKind, outcome, serviceDate, durationMs, source]');
+      expect(diagnosticInput).toContain('enum: [success, failure, aborted]');
+      expect(diagnosticInput).toContain('required: [failedResource, failureStage, errorCode]');
+      expect(diagnosticInput).toContain('additionalProperties: false');
+      expect(diagnosticEnvelope).toContain('accepted:');
+      expect(diagnosticEnvelope).toContain('const: true');
+
+      for (const path of [
+        '/api/dsv/v1/dispatches',
+        '/api/dsv/v1/drivers',
+        '/api/dsv/v1/vehicles',
+        '/api/dsv/v1/customers',
+        '/api/dsv/v1/destinations',
+      ]) {
+        const block = pathBlock(response.body, path);
+        expect(block).toContain('DsvDispatchCallerSurfaceHeader');
+        expect(block).toContain('DsvDispatchLoadIdHeader');
+        expect(block).toContain('DsvDispatchAttemptIdHeader');
+      }
     } finally {
       await app.close();
     }

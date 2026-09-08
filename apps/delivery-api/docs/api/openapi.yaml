@@ -321,6 +321,38 @@ paths:
         '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
         '403': { $ref: '#/components/responses/DsvV1Forbidden' }
         '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/diagnostics/dispatch-load:
+    post:
+      tags: [DSV API v1]
+      summary: Record one DSV dispatch workspace load attempt
+      description: >-
+        Records allowlisted browser diagnostic metadata without reading or writing delivery data.
+        No query parameters are supported. The JSON request body is limited to 4096 bytes. Raw
+        response bodies, error messages, customer data, addresses, search terms, cookies, and tokens
+        are not accepted or logged.
+      operationId: recordDsvV1DispatchLoadDiagnostic
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:dispatches:read']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvV1DispatchLoadDiagnosticInput' }
+      responses:
+        '200':
+          description: The structured diagnostic attempt was accepted for logging.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1DispatchLoadDiagnosticAcceptedEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '413':
+          description: The diagnostic request body exceeds 4096 bytes.
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
   /api/dsv/v1/dispatches:
     get:
       tags: [DSV API v1]
@@ -330,6 +362,9 @@ paths:
       x-required-scopes: ['dsv:dispatches:read']
       security: [{ DsvSessionCookie: [] }]
       parameters:
+        - $ref: '#/components/parameters/DsvDispatchCallerSurfaceHeader'
+        - $ref: '#/components/parameters/DsvDispatchLoadIdHeader'
+        - $ref: '#/components/parameters/DsvDispatchAttemptIdHeader'
         - $ref: '#/components/parameters/DsvV1ServiceDateQuery'
         - $ref: '#/components/parameters/DsvV1OrderNumberQuery'
         - $ref: '#/components/parameters/DsvV1DestinationNameQuery'
@@ -436,6 +471,9 @@ paths:
       x-required-scopes: ['dsv:resources:read']
       security: [{ DsvSessionCookie: [] }]
       parameters:
+        - $ref: '#/components/parameters/DsvDispatchCallerSurfaceHeader'
+        - $ref: '#/components/parameters/DsvDispatchLoadIdHeader'
+        - $ref: '#/components/parameters/DsvDispatchAttemptIdHeader'
         - $ref: '#/components/parameters/DsvV1CursorQuery'
         - $ref: '#/components/parameters/DsvV1LimitQuery'
       responses:
@@ -457,6 +495,9 @@ paths:
       x-required-scopes: ['dsv:resources:read']
       security: [{ DsvSessionCookie: [] }]
       parameters:
+        - $ref: '#/components/parameters/DsvDispatchCallerSurfaceHeader'
+        - $ref: '#/components/parameters/DsvDispatchLoadIdHeader'
+        - $ref: '#/components/parameters/DsvDispatchAttemptIdHeader'
         - $ref: '#/components/parameters/DsvV1CursorQuery'
         - $ref: '#/components/parameters/DsvV1LimitQuery'
       responses:
@@ -542,6 +583,9 @@ paths:
       x-required-scopes: ['dsv:customers:read']
       security: [{ DsvSessionCookie: [] }]
       parameters:
+        - $ref: '#/components/parameters/DsvDispatchCallerSurfaceHeader'
+        - $ref: '#/components/parameters/DsvDispatchLoadIdHeader'
+        - $ref: '#/components/parameters/DsvDispatchAttemptIdHeader'
         - $ref: '#/components/parameters/DsvV1CursorQuery'
         - $ref: '#/components/parameters/DsvV1LimitQuery'
       responses:
@@ -570,6 +614,9 @@ paths:
       x-required-scopes: ['dsv:destinations:read']
       security: [{ DsvSessionCookie: [] }]
       parameters:
+        - $ref: '#/components/parameters/DsvDispatchCallerSurfaceHeader'
+        - $ref: '#/components/parameters/DsvDispatchLoadIdHeader'
+        - $ref: '#/components/parameters/DsvDispatchAttemptIdHeader'
         - $ref: '#/components/parameters/DsvV1CursorQuery'
         - $ref: '#/components/parameters/DsvV1LimitQuery'
       responses:
@@ -5182,6 +5229,32 @@ components:
         type: string
         minLength: 1
       description: Same-origin admin UI CSRF token issued in the authenticated browser session.
+    DsvDispatchCallerSurfaceHeader:
+      name: X-Caller-Surface
+      in: header
+      required: false
+      schema:
+        type: string
+        const: dsv-dispatch
+      description: Identifies an opted-in DSV dispatch workspace list read for structured request logging.
+    DsvDispatchLoadIdHeader:
+      name: X-DSV-Load-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$'
+      description: Browser-generated UUID v4 shared by one date/search dispatch load and its explicit retries.
+    DsvDispatchAttemptIdHeader:
+      name: X-DSV-Attempt-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$'
+      description: Browser-generated UUID v4 unique to one initial or explicit retry attempt.
     RouteOpsShopDomainQuery:
       name: shopDomain
       in: query
@@ -5695,6 +5768,90 @@ components:
               required: [ok]
               properties:
                 ok:
+                  type: boolean
+                  const: true
+              additionalProperties: false
+    DsvV1DispatchLoadDiagnosticInput:
+      type: object
+      required: [loadId, attemptId, attemptKind, outcome, serviceDate, durationMs, source]
+      properties:
+        loadId:
+          type: string
+          format: uuid
+          pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$'
+        attemptId:
+          type: string
+          format: uuid
+          pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$'
+        attemptKind:
+          type: string
+          enum: [initial, retry]
+        outcome:
+          type: string
+          enum: [success, failure, aborted]
+        serviceDate:
+          type: string
+          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+        durationMs:
+          type: integer
+          minimum: 0
+          maximum: 300000
+        source:
+          type: string
+          enum: [browser, controlled-test]
+        failedResource:
+          type: string
+          enum: [dispatches, drivers, vehicles, customers, destinations]
+        failureStage:
+          type: string
+          enum: [transport, http, content_type, json, envelope, parser, unexpected]
+        errorCode:
+          type: string
+          enum: [NETWORK_ERROR, HTTP_ERROR, CONTENT_TYPE_ERROR, JSON_PARSE_ERROR, V1_ENVELOPE_INVALID, LIST_PARSER_INVALID, UNEXPECTED_ERROR]
+        httpStatus:
+          type: integer
+          minimum: 100
+          maximum: 599
+        contentType:
+          type: string
+          enum: [application/json, text/html, other, missing]
+        apiVersion:
+          type: string
+          enum: [dsv.v1, invalid, missing]
+        responseRequestId:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '^[A-Za-z0-9._:-]+$'
+      allOf:
+        - if:
+            properties:
+              outcome: { const: failure }
+          then:
+            required: [failedResource, failureStage, errorCode]
+          else:
+            not:
+              anyOf:
+                - required: [failedResource]
+                - required: [failureStage]
+                - required: [errorCode]
+                - required: [httpStatus]
+                - required: [contentType]
+                - required: [apiVersion]
+                - required: [responseRequestId]
+      additionalProperties: false
+    DsvV1DispatchLoadDiagnosticAcceptedEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/DsvV1SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [accepted]
+              properties:
+                accepted:
                   type: boolean
                   const: true
               additionalProperties: false

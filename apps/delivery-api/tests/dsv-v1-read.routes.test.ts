@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { buildApp } from '../src/app.js';
+import { buildApp, type BuildAppOptions } from '../src/app.js';
 import { createAdminWebSession } from '../src/routes/admin-ui-session.js';
 import type {
   DsvV1ReadDependencies,
@@ -39,6 +39,10 @@ const cookieName = 'clever_dsv_admin';
 const shopId = '99999999-9999-4999-8999-999999999999';
 const customerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const accountId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const diagnosticLoadId = '11111111-1111-4111-8111-111111111111';
+const diagnosticAttemptId = '22222222-2222-4222-8222-222222222222';
+const diagnosticRetryAttemptId = '33333333-3333-4333-8333-333333333333';
+const diagnosticAbortedAttemptId = '44444444-4444-4444-8444-444444444444';
 
 describe('DSV v1 read routes', () => {
   test('returns exact v1 session envelope for admin and customer browser sessions', async () => {
@@ -117,6 +121,284 @@ describe('DSV v1 read routes', () => {
       });
       expect(inactiveResponse.statusCode).toBe(403);
       expectDsvV1Error(inactiveResponse, { code: 'FORBIDDEN', message: 'DSV customer account is inactive' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('records allowlisted dispatch-load success, failure, and aborted diagnostics', async () => {
+    const logLines: string[] = [];
+    const { app } = await createHarness({
+      logger: {
+        level: 'info',
+        stream: { write: (line: string) => logLines.push(line) },
+      },
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    const headers = { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken };
+    try {
+      const success = await app.inject({
+        headers,
+        method: 'POST',
+        payload: dispatchLoadDiagnosticPayload(),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(success.statusCode).toBe(200);
+      expectDsvV1Envelope(success, { accepted: true });
+
+      const failure = await app.inject({
+        headers,
+        method: 'POST',
+        payload: dispatchLoadDiagnosticPayload({
+          apiVersion: 'invalid',
+          attemptId: diagnosticRetryAttemptId,
+          attemptKind: 'retry',
+          contentType: 'application/json',
+          errorCode: 'LIST_PARSER_INVALID',
+          failedResource: 'destinations',
+          failureStage: 'parser',
+          httpStatus: 200,
+          outcome: 'failure',
+          responseRequestId: 'server-request.safe:123',
+        }),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(failure.statusCode).toBe(200);
+      expectDsvV1Envelope(failure, { accepted: true });
+
+      const minimalFailure = await app.inject({
+        headers,
+        method: 'POST',
+        payload: dispatchLoadDiagnosticPayload({
+          attemptId: '123e4567-e89b-42d3-a456-426614174003',
+          attemptKind: 'retry',
+          errorCode: 'NETWORK_ERROR',
+          failedResource: 'dispatches',
+          failureStage: 'transport',
+          outcome: 'failure',
+        }),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(minimalFailure.statusCode).toBe(200);
+      expectDsvV1Envelope(minimalFailure, { accepted: true });
+
+      const aborted = await app.inject({
+        headers,
+        method: 'POST',
+        payload: dispatchLoadDiagnosticPayload({
+          attemptId: diagnosticAbortedAttemptId,
+          durationMs: 7,
+          outcome: 'aborted',
+        }),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(aborted.statusCode).toBe(200);
+      expectDsvV1Envelope(aborted, { accepted: true });
+
+      const attempts = dispatchLoadAttemptLogs(logLines);
+      expect(attempts).toHaveLength(4);
+      expect(attempts[0]).toMatchObject({
+        attemptId: diagnosticAttemptId,
+        attemptKind: 'initial',
+        durationMs: 42,
+        event: 'dsv_dispatch_load_attempt',
+        loadId: diagnosticLoadId,
+        outcome: 'success',
+        serviceDate: '2026-09-08',
+        source: 'browser',
+      });
+      expect(typeof attempts[0]?.requestId).toBe('string');
+      expect(attempts[1]).toMatchObject({
+        apiVersion: 'invalid',
+        attemptId: diagnosticRetryAttemptId,
+        attemptKind: 'retry',
+        contentType: 'application/json',
+        errorCode: 'LIST_PARSER_INVALID',
+        failedResource: 'destinations',
+        failureStage: 'parser',
+        httpStatus: 200,
+        loadId: diagnosticLoadId,
+        outcome: 'failure',
+        responseRequestId: 'server-request.safe:123',
+      });
+      expect(attempts[2]).toMatchObject({
+        attemptId: '123e4567-e89b-42d3-a456-426614174003',
+        errorCode: 'NETWORK_ERROR',
+        failedResource: 'dispatches',
+        failureStage: 'transport',
+        outcome: 'failure',
+      });
+      expect(attempts[2]).not.toHaveProperty('apiVersion');
+      expect(attempts[2]).not.toHaveProperty('contentType');
+      expect(attempts[2]).not.toHaveProperty('httpStatus');
+      expect(attempts[2]).not.toHaveProperty('responseRequestId');
+      expect(attempts[3]).toMatchObject({
+        attemptId: diagnosticAbortedAttemptId,
+        outcome: 'aborted',
+      });
+      for (const attempt of attempts) {
+        expect(attempt).not.toHaveProperty('actorId');
+        expect(attempt).not.toHaveProperty('body');
+        expect(attempt).not.toHaveProperty('cookie');
+        expect(attempt).not.toHaveProperty('errorMessage');
+        expect(attempt).not.toHaveProperty('headers');
+        expect(attempt).not.toHaveProperty('shopId');
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('requires an authenticated admin dispatch reader and valid CSRF for dispatch-load diagnostics', async () => {
+    const { app } = await createHarness();
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
+    try {
+      const missingSession = await app.inject({
+        method: 'POST',
+        payload: dispatchLoadDiagnosticPayload(),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(missingSession.statusCode).toBe(401);
+
+      const customerSession = await app.inject({
+        headers: { cookie: customer.cookie, 'x-csrf-token': customer.csrfToken },
+        method: 'POST',
+        payload: dispatchLoadDiagnosticPayload(),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(customerSession.statusCode).toBe(403);
+
+      for (const csrfToken of [undefined, 'wrong-csrf-token']) {
+        const csrfResponse = await app.inject({
+          headers: {
+            cookie: admin.cookie,
+            ...(csrfToken === undefined ? {} : { 'x-csrf-token': csrfToken }),
+          },
+          method: 'POST',
+          payload: dispatchLoadDiagnosticPayload(),
+          url: '/api/dsv/v1/diagnostics/dispatch-load',
+        });
+        expect(csrfResponse.statusCode).toBe(403);
+      }
+    } finally {
+      await app.close();
+    }
+
+    const restricted = await createHarness({ adminScopes: ['dsv:session:read'] });
+    const restrictedAdmin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const missingScope = await restricted.app.inject({
+        headers: { cookie: restrictedAdmin.cookie, 'x-csrf-token': restrictedAdmin.csrfToken },
+        method: 'POST',
+        payload: dispatchLoadDiagnosticPayload(),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(missingScope.statusCode).toBe(403);
+    } finally {
+      await restricted.app.close();
+    }
+  });
+
+  test('rejects invalid dispatch-load diagnostic payloads without logging raw input or search queries', async () => {
+    const logLines: string[] = [];
+    const { app } = await createHarness({
+      logger: {
+        level: 'info',
+        stream: { write: (line: string) => logLines.push(line) },
+      },
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    const headers = { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken };
+    const base = dispatchLoadDiagnosticPayload();
+    const failure = dispatchLoadDiagnosticPayload({
+      errorCode: 'NETWORK_ERROR',
+      failedResource: 'dispatches',
+      failureStage: 'transport',
+      outcome: 'failure',
+    });
+    const invalidPayloads: Array<[string, Record<string, unknown>]> = [
+      ['non-v4 load UUID', { ...base, loadId: '11111111-1111-1111-8111-111111111111' }],
+      ['invalid attempt UUID', { ...base, attemptId: 'not-a-uuid' }],
+      ['wrong UUID type', { ...base, loadId: 1 }],
+      ['invalid attempt kind', { ...base, attemptKind: 'automatic' }],
+      ['invalid outcome', { ...base, outcome: 'error' }],
+      ['impossible service date', { ...base, serviceDate: '2026-02-29' }],
+      ['invalid service date type', { ...base, serviceDate: 20260908 }],
+      ['negative duration', { ...base, durationMs: -1 }],
+      ['fractional duration', { ...base, durationMs: 1.5 }],
+      ['excess duration', { ...base, durationMs: 300_001 }],
+      ['invalid source', { ...base, source: 'server' }],
+      ['success with failure resource', { ...base, failedResource: 'dispatches' }],
+      ['aborted with HTTP metadata', { ...base, httpStatus: 499, outcome: 'aborted' }],
+      ['failure missing resource', { ...failure, failedResource: undefined }],
+      ['failure missing stage', { ...failure, failureStage: undefined }],
+      ['failure missing code', { ...failure, errorCode: undefined }],
+      ['invalid failed resource', { ...failure, failedResource: 'routes' }],
+      ['invalid failure stage', { ...failure, failureStage: 'timeout' }],
+      ['invalid error code', { ...failure, errorCode: 'RAW_ERROR' }],
+      ['invalid HTTP status', { ...failure, httpStatus: 99 }],
+      ['invalid content type', { ...failure, contentType: 'application/xml' }],
+      ['invalid API version', { ...failure, apiVersion: 'dsv.v2' }],
+      ['unsafe response request ID', { ...failure, responseRequestId: 'unsafe request id' }],
+      ['long response request ID', { ...failure, responseRequestId: 'x'.repeat(121) }],
+      ['unknown raw error field', { ...failure, errorMessage: 'Private Customer 010-1234-5678 at 742 Secret Street' }],
+    ];
+
+    try {
+      for (const [label, payload] of invalidPayloads) {
+        const response = await app.inject({
+          headers,
+          method: 'POST',
+          payload,
+          url: '/api/dsv/v1/diagnostics/dispatch-load',
+        });
+        expect(response.statusCode, label).toBe(400);
+      }
+
+      const unsupportedQuery = await app.inject({
+        headers,
+        method: 'POST',
+        payload: base,
+        url: '/api/dsv/v1/diagnostics/dispatch-load?destinationName=Private%20Customer',
+      });
+      expect(unsupportedQuery.statusCode).toBe(400);
+
+      const wrongContentType = await app.inject({
+        headers: { ...headers, 'content-type': 'text/plain' },
+        method: 'POST',
+        payload: JSON.stringify(base),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(wrongContentType.statusCode).toBeGreaterThanOrEqual(400);
+
+      const malformedJson = await app.inject({
+        headers: { ...headers, 'content-type': 'application/json' },
+        method: 'POST',
+        payload: '{"loadId":',
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(malformedJson.statusCode).toBe(400);
+
+      const oversized = await app.inject({
+        headers: { ...headers, 'content-type': 'application/json' },
+        method: 'POST',
+        payload: JSON.stringify({ ...base, padding: 'private-oversized-payload'.repeat(220) }),
+        url: '/api/dsv/v1/diagnostics/dispatch-load',
+      });
+      expect(oversized.statusCode).toBe(413);
+
+      expect(dispatchLoadAttemptLogs(logLines)).toHaveLength(0);
+      const serializedLogs = logLines.join('\n');
+      for (const secret of [
+        'Private Customer',
+        'Private%20Customer',
+        '010-1234-5678',
+        '742 Secret Street',
+        'private-oversized-payload',
+      ]) {
+        expect(serializedLogs).not.toContain(secret);
+      }
     } finally {
       await app.close();
     }
@@ -1516,6 +1798,7 @@ function timeConstraintCommandResult(status: 'CLEARED' | 'CONFIRMED') {
 async function createHarness(options: {
   adminScopes?: readonly DsvScope[];
   dispatchChangeRequestService?: DsvDispatchChangeRequestService;
+  logger?: BuildAppOptions['logger'];
   mapProfile?: false;
   orderMessageService?: DsvOrderMessageService;
   storeReviewAccess?: DsvV1ReadDependencies['storeReviewAccess'];
@@ -1545,7 +1828,16 @@ async function createHarness(options: {
     storeReviewAccess: options.storeReviewAccess ?? createStoreReviewAccess(() => Promise.resolve()),
     ...(options.timeConstraintCommandService === undefined ? {} : { timeConstraintCommandService: options.timeConstraintCommandService }),
   };
-  return { app: await buildApp({ dsvV1Read: dependencies }), queryService, routeGeometryProvider, routePlanService, sessionResolver };
+  return {
+    app: await buildApp({
+      dsvV1Read: dependencies,
+      ...(options.logger === undefined ? {} : { logger: options.logger }),
+    }),
+    queryService,
+    routeGeometryProvider,
+    routePlanService,
+    sessionResolver,
+  };
 }
 
 type MockRouteGeometryProvider = {
@@ -1794,6 +2086,25 @@ function signedCookie(subject: string, ttlMs = 60_000): { cookie: string; csrfTo
     cookie: cookieHeader.split(';')[0] ?? '',
     csrfToken: session.csrfToken,
   };
+}
+
+function dispatchLoadDiagnosticPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    attemptId: diagnosticAttemptId,
+    attemptKind: 'initial',
+    durationMs: 42,
+    loadId: diagnosticLoadId,
+    outcome: 'success',
+    serviceDate: '2026-09-08',
+    source: 'browser',
+    ...overrides,
+  };
+}
+
+function dispatchLoadAttemptLogs(logLines: readonly string[]): Array<Record<string, unknown>> {
+  return logLines
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((log) => log.event === 'dsv_dispatch_load_attempt');
 }
 
 type JsonResponse = {
