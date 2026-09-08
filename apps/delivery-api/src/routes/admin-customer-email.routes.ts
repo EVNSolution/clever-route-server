@@ -162,6 +162,10 @@ export function registerAdminCustomerEmailRoutes(
       request.log.warn({ correlationId }, 'customer email test rejected before authentication');
       return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
     }
+    if (!isConfirmedCustomerEmailTest(request.body)) {
+      request.log.warn({ appId: authenticated.appId, correlationId, shopDomain: authenticated.shopDomain }, 'customer email test rejected because confirmation is required');
+      return reply.code(400).send(errorResponse('CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED', 'Test customer email send must be confirmed.'));
+    }
     const payload = readCustomerEmailTestPayload(request.body);
     if (payload === null) {
       request.log.warn({ appId: authenticated.appId, correlationId, shopDomain: authenticated.shopDomain }, 'customer email test rejected because payload is invalid');
@@ -356,6 +360,10 @@ function sendCustomerEmailError(reply: { code: (statusCode: number) => { send: (
     return reply.code(502).send(errorResponse('CUSTOMER_EMAIL_SEND_FAILED', 'Customer email provider rejected the request.'));
   }
   throw error;
+}
+
+function isConfirmedCustomerEmailTest(value: unknown): value is Record<string, unknown> & { confirmed: true } {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && 'confirmed' in value && value.confirmed === true;
 }
 
 function readBearerToken(value: string | undefined): string | null {
