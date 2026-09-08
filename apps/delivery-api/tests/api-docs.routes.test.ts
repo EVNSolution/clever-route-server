@@ -551,6 +551,25 @@ describe('API documentation routes', () => {
       await app.close();
     }
   });
+
+  test('GET /docs/openapi.yaml documents one-time customer signup links and explicit expiry', async () => {
+    const app = await buildApp();
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const create = pathBlock(response.body, '/api/dsv/customers/{customerId}/accounts/invitations');
+      const complete = pathBlock(response.body, '/api/dsv/customer/auth/complete');
+      const validate = pathBlock(response.body, '/api/dsv/customer/auth/invitations/validate');
+
+      expect(create).toContain('48-hour customer signup link');
+      expect(create).toContain('additionalProperties: false');
+      expect(complete).toContain('displayName:');
+      expect(complete).toContain('loginId:');
+      expect(complete).toContain("'410':");
+      expect(validate).toContain('허용 시간이 초과된 링크입니다. 담당자에게 새 초대 링크를 요청해 주세요.');
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 type RouteMethod = 'delete' | 'get' | 'patch' | 'post' | 'put';

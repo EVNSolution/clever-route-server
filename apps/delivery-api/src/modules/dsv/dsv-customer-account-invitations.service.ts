@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { AdminStoreSettings } from '../commerce/admin-store-settings.service.js';
@@ -29,6 +29,14 @@ export type DsvCustomerInviteMetadata = {
   purpose: DsvCustomerAccountInvitePurpose;
 };
 
+export type DsvCustomerInvitationIssue = {
+  account: DsvCustomerAccountSummary;
+  invitation: {
+    expiresAt: Date;
+    setupUrl: string;
+  };
+};
+
 export type DsvCustomerSessionIdentity = {
   accountId: string;
   activeSessionId: string;
@@ -38,11 +46,11 @@ export type DsvCustomerSessionIdentity = {
 };
 
 export type DsvCustomerAccountService = {
-  complete(input: { password: string; requestId: string; shopDomain: string; token: string }): Promise<DsvCustomerSessionIdentity>;
-  createSignupInvitation(input: { actorId: string | null; customerId: string; displayName?: string; email: string; generateLoginId?: true; loginId?: string; requestId: string; shopDomain: string }): Promise<{ account: DsvCustomerAccountSummary }>;
+  complete(input: { displayName?: string; loginId?: string; password: string; requestId: string; shopDomain: string; token: string }): Promise<DsvCustomerSessionIdentity>;
+  createSignupInvitation(input: { actorId: string | null; customerId: string; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
   listAccounts(input: { customerId: string; shopDomain: string }): Promise<DsvCustomerAccountSummary[]>;
   login(input: { id: string; password: string; requestId: string; shopDomain: string }): Promise<DsvCustomerSessionIdentity | null>;
-  reinvite(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ account: DsvCustomerAccountSummary }>;
+  reinvite(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
   requestPasswordReset(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ account: DsvCustomerAccountSummary }>;
   setStatus(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string; status: 'ACTIVE' | 'DISABLED' }): Promise<{ account: DsvCustomerAccountSummary }>;
   validateInvitation(input: { shopDomain: string; token: string }): Promise<DsvCustomerInviteMetadata | null>;
@@ -84,45 +92,22 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     return accounts.map((account) => accountSummary(account, new Date()));
   }
 
-  async createSignupInvitation(input: { actorId: string | null; customerId: string; displayName?: string; email: string; generateLoginId?: true; loginId?: string; requestId: string; shopDomain: string }): Promise<{ account: DsvCustomerAccountSummary }> {
-    const email = normalizeEmail(input.email);
-    if (email === null) throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Customer account email is required');
-    if ((input.loginId === undefined) === (input.generateLoginId !== true)) {
-      throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Specify loginId or generateLoginId=true');
-    }
-    const displayName = normalizeDisplayName(input.displayName);
-    const requestedLoginId = input.loginId === undefined ? undefined : normalizeLoginId(input.loginId);
-    if (input.loginId !== undefined && requestedLoginId === null) {
-      throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'loginId is invalid');
-    }
-    const explicitLoginId = requestedLoginId ?? undefined;
+  async createSignupInvitation(input: { actorId: string | null; customerId: string; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue> {
+    this.requireWebPublicOrigin();
     const invitation = await this.createInvite({
       actorId: input.actorId,
       customerId: input.customerId,
-      displayName,
-      email,
-      ...(explicitLoginId === undefined ? {} : { loginId: explicitLoginId }),
       purpose: 'SIGNUP',
       requestId: input.requestId,
       shopDomain: input.shopDomain,
     });
-    await this.sendInviteEmail({
-      customerName: invitation.customerName,
-      displayName,
-      email,
-      purpose: 'SIGNUP',
-      requestId: input.requestId,
-      shopDomain: input.shopDomain,
-      token: invitation.token,
-      loginId: invitation.account.loginId,
-    });
-    return { account: invitation.account };
+    return this.invitationIssue(invitation);
   }
 
-  async reinvite(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ account: DsvCustomerAccountSummary }> {
+  async reinvite(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue> {
+    this.requireWebPublicOrigin();
     const account = await this.findAccountForShop(input.accountId, input.shopDomain);
     if (account === null) throw new DsvCustomerAccountServiceError('NOT_FOUND', 'Customer account not found');
-    if (account.email === null) throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Customer account email is required');
     if (account.passwordHash !== null) {
       throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Activated customer accounts must use password reset');
     }
@@ -130,23 +115,11 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
       accountId: account.id,
       actorId: input.actorId,
       customerId: account.customerId,
-      displayName: account.displayName,
-      email: account.email,
       purpose: 'SIGNUP',
       requestId: input.requestId,
       shopDomain: input.shopDomain,
     });
-    await this.sendInviteEmail({
-      customerName: invitation.customerName,
-      displayName: account.displayName,
-      email: account.email,
-      purpose: 'SIGNUP',
-      requestId: input.requestId,
-      shopDomain: input.shopDomain,
-      token: invitation.token,
-      loginId: invitation.account.loginId,
-    });
-    return { account: invitation.account };
+    return this.invitationIssue(invitation);
   }
 
   async requestPasswordReset(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ account: DsvCustomerAccountSummary }> {
@@ -159,17 +132,14 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
       accountId: account.id,
       actorId: input.actorId,
       customerId: account.customerId,
-      displayName: account.displayName,
-      email: account.email,
       purpose: 'PASSWORD_RESET',
       requestId: input.requestId,
       shopDomain: input.shopDomain,
     });
-    await this.sendInviteEmail({
+    await this.sendPasswordResetEmail({
       customerName: invitation.customerName,
       displayName: account.displayName,
       email: account.email,
-      purpose: 'PASSWORD_RESET',
       requestId: input.requestId,
       shopDomain: input.shopDomain,
       token: invitation.token,
@@ -215,7 +185,7 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     };
   }
 
-  async complete(input: { password: string; requestId: string; shopDomain: string; token: string }): Promise<DsvCustomerSessionIdentity> {
+  async complete(input: { displayName?: string; loginId?: string; password: string; requestId: string; shopDomain: string; token: string }): Promise<DsvCustomerSessionIdentity> {
     const invite = await this.findValidInvite({ shopDomain: input.shopDomain, token: input.token });
     await constantTimePasswordCheck(input.password);
     if (invite === null) throw new DsvCustomerAccountServiceError('INVALID_TOKEN', 'Invitation token is invalid');
@@ -230,49 +200,67 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     ) {
       throw new DsvCustomerAccountServiceError('PASSWORD_REUSED', '현재 비밀번호와 직전 비밀번호는 다시 사용할 수 없습니다');
     }
-    const loginId = invite.account.loginId;
+    const displayName = invite.purpose === 'SIGNUP' ? normalizeDisplayName(input.displayName) : invite.account.displayName;
+    const loginId = invite.purpose === 'SIGNUP' ? normalizeLoginId(input.loginId) : invite.account.loginId;
+    if (invite.purpose === 'SIGNUP' && displayName === null) {
+      throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'displayName is required for signup');
+    }
     if (loginId === null) throw new DsvCustomerAccountServiceError('LOGIN_ID_REQUIRED', 'loginId is required for signup');
     const passwordSalt = randomBytes(16).toString('base64url');
     const passwordHash = await hashPassword(input.password, passwordSalt);
-    const now = new Date();
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const consumed = await tx.dsvCustomerAccountInvite.updateMany({
-        data: { consumedAt: now },
-        where: {
-          consumedAt: null,
-          expiresAt: { gt: now },
-          id: invite.id,
-          revokedAt: null,
-        },
+    let updated;
+    try {
+      updated = await this.prisma.$transaction(async (tx) => {
+        await lockCustomerAccount(tx, invite.accountId);
+        const completedAt = new Date();
+        if (invite.purpose === 'SIGNUP') await assertLoginIdAvailable(tx, loginId, invite.accountId);
+        const consumed = await tx.dsvCustomerAccountInvite.updateMany({
+          data: { consumedAt: completedAt },
+          where: {
+            consumedAt: null,
+            expiresAt: { gt: completedAt },
+            id: invite.id,
+            revokedAt: null,
+          },
+        });
+        if (consumed.count !== 1) {
+          if (invite.expiresAt.getTime() <= completedAt.getTime()) throw invitationExpiredError();
+          throw new DsvCustomerAccountServiceError('INVALID_TOKEN', 'Invitation token is invalid');
+        }
+        const account = await tx.customerAccount.update({
+          data: {
+            activeSessionId: randomUUID(),
+            ...(invite.purpose === 'SIGNUP' ? { displayName } : {}),
+            lastAuthenticatedAt: completedAt,
+            loginId,
+            passwordHash,
+            passwordSalt,
+            ...(invite.account.passwordHash === null || invite.account.passwordSalt === null ? {} : {
+              previousPasswordHash: invite.account.passwordHash,
+              previousPasswordSalt: invite.account.passwordSalt,
+            }),
+            status: 'ACTIVE',
+          },
+          where: { id: invite.accountId },
+        });
+        await createAudit(tx, {
+          accountId: account.id,
+          actorId: account.id,
+          customerId: account.customerId,
+          eventType: invite.purpose === 'SIGNUP' ? 'CUSTOMER_ACCOUNT_ACTIVATED' : 'CUSTOMER_ACCOUNT_PASSWORD_RESET_COMPLETED',
+          principalType: 'CUSTOMER_USER',
+          redactedDiff: { purpose: invite.purpose },
+          requestId: input.requestId,
+          shopId: account.shopId,
+        });
+        return account;
       });
-      if (consumed.count !== 1) throw new DsvCustomerAccountServiceError('INVALID_TOKEN', 'Invitation token is invalid');
-      const account = await tx.customerAccount.update({
-        data: {
-          activeSessionId: randomUUID(),
-          lastAuthenticatedAt: now,
-          loginId,
-          passwordHash,
-          passwordSalt,
-          ...(invite.account.passwordHash === null || invite.account.passwordSalt === null ? {} : {
-            previousPasswordHash: invite.account.passwordHash,
-            previousPasswordSalt: invite.account.passwordSalt,
-          }),
-          status: 'ACTIVE',
-        },
-        where: { id: invite.accountId },
-      });
-      await createAudit(tx, {
-        accountId: account.id,
-        actorId: account.id,
-        customerId: account.customerId,
-        eventType: invite.purpose === 'SIGNUP' ? 'CUSTOMER_ACCOUNT_ACTIVATED' : 'CUSTOMER_ACCOUNT_PASSWORD_RESET_COMPLETED',
-        principalType: 'CUSTOMER_USER',
-        redactedDiff: { purpose: invite.purpose },
-        requestId: input.requestId,
-        shopId: account.shopId,
-      });
-      return account;
-    });
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw new DsvCustomerAccountServiceError('LOGIN_ID_EXISTS', 'loginId is already in use');
+      }
+      throw error;
+    }
     return {
       accountId: updated.id,
       activeSessionId: requireActiveSessionId(updated.activeSessionId),
@@ -283,7 +271,7 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
   }
 
   async login(input: { id: string; password: string; requestId: string; shopDomain: string }): Promise<DsvCustomerSessionIdentity | null> {
-    const loginId = normalizeLoginId(input.id);
+    const loginId = normalizeLoginIdentifier(input.id);
     const account = loginId === null
       ? null
       : await this.prisma.customerAccount.findUnique({
@@ -331,13 +319,10 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     accountId?: string;
     actorId: string | null;
     customerId: string;
-    displayName: string | null;
-    email: string;
-    loginId?: string;
     purpose: DsvCustomerAccountInvitePurpose;
     requestId: string;
     shopDomain: string;
-  }): Promise<{ account: DsvCustomerAccountSummary; customerName: string | null; token: string }> {
+  }): Promise<{ account: DsvCustomerAccountSummary; customerName: string | null; expiresAt: Date; token: string }> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) throw new DsvCustomerAccountServiceError('NOT_FOUND', 'Customer workspace not found');
     const customer = await this.prisma.shop.findUnique({
@@ -358,15 +343,30 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     const expiresAt = new Date(now.getTime() + inviteTtlMs);
     const account = await this.prisma.$transaction(async (tx) => {
       const localAccount = input.accountId === undefined
-        ? await findOrCreateAccount(tx, {
+        ? await createUnclaimedAccount(tx, {
             customerId: input.customerId,
-            displayName: input.displayName,
-            email: input.email,
-            ...(input.loginId === undefined ? {} : { loginId: input.loginId }),
             shopId: shop.id,
           })
         : { created: false, id: input.accountId };
       const accountId = localAccount.id;
+      await lockCustomerAccount(tx, accountId);
+      if (input.accountId !== undefined) {
+        const currentAccount = await tx.customerAccount.findUnique({
+          select: { customerId: true, issuer: true, passwordHash: true, shopId: true },
+          where: { id: accountId },
+        });
+        if (
+          currentAccount === null
+          || currentAccount.customerId !== input.customerId
+          || currentAccount.issuer !== issuer
+          || currentAccount.shopId !== shop.id
+        ) {
+          throw new DsvCustomerAccountServiceError('NOT_FOUND', 'Customer account not found');
+        }
+        if (input.purpose === 'SIGNUP' && currentAccount.passwordHash !== null) {
+          throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Activated customer accounts must use password reset');
+        }
+      }
       await tx.dsvCustomerAccountInvite.updateMany({
         data: { revokedAt: now },
         where: {
@@ -394,7 +394,7 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
           ? (localAccount.created ? 'CUSTOMER_ACCOUNT_INVITED' : 'CUSTOMER_ACCOUNT_REINVITED')
           : 'CUSTOMER_ACCOUNT_PASSWORD_RESET_REQUESTED',
         principalType: 'DSV_ADMIN',
-        redactedDiff: { email: input.email, purpose: input.purpose },
+        redactedDiff: { purpose: input.purpose },
         requestId: input.requestId,
         shopId: shop.id,
       });
@@ -403,18 +403,17 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
         where: { id: accountId },
       });
     });
-    return { account: accountSummary(account, now), customerName: customerRow.displayName, token };
+    return { account: accountSummary(account, now), customerName: customerRow.displayName, expiresAt, token };
   }
 
-  private async sendInviteEmail(input: {
+  private async sendPasswordResetEmail(input: {
     customerName: string | null;
     displayName: string | null;
     email: string;
-    purpose: DsvCustomerAccountInvitePurpose;
     requestId: string;
     shopDomain: string;
     token: string;
-    loginId: string | null;
+    loginId: string;
   }): Promise<void> {
     if (this.dependencies.webPublicOrigin === undefined) {
       throw new DsvCustomerAccountServiceError('INVITATION_LINK_NOT_CONFIGURED', 'CLEVER_DSV_WEB_PUBLIC_URL is required for customer account invitation links');
@@ -428,11 +427,9 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     const setupUrl = new URL('/customer/account/setup', this.dependencies.webPublicOrigin);
     setupUrl.hash = `token=${encodeURIComponent(input.token)}`;
     const loginUrl = new URL('/customer/login', this.dependencies.webPublicOrigin);
-    const subject = `${subjectPrefix(operationSettings.manualEmailSubject)}${input.purpose === 'SIGNUP' ? '고객사 계정 초대' : '고객사 계정 비밀번호 재설정'}`;
+    const subject = `${subjectPrefix(operationSettings.manualEmailSubject)}고객사 계정 비밀번호 재설정`;
     const greeting = input.displayName ?? input.customerName ?? '고객';
-    const body = input.purpose === 'SIGNUP'
-      ? `안녕하세요 ${greeting}님.\n\nCLEVER DSV 고객사 배송조회 계정 초대 링크입니다.\n예약된 로그인 ID: ${input.loginId ?? ''}\n48시간 안에 아래 일회용 링크로 접속해 비밀번호를 설정해 주세요.\n\n${setupUrl.toString()}\n\n설정 후에는 아래 주소에서 계속 로그인할 수 있습니다.\n${loginUrl.toString()}`
-      : `안녕하세요 ${greeting}님.\n\nCLEVER DSV 고객사 계정 비밀번호 재설정 링크입니다.\n로그인 ID: ${input.loginId ?? ''}\n48시간 안에 아래 일회용 링크로 접속해 새 비밀번호를 설정해 주세요.\n\n${setupUrl.toString()}\n\n이후 로그인 주소:\n${loginUrl.toString()}`;
+    const body = `안녕하세요 ${greeting}님.\n\nCLEVER DSV 고객사 계정 비밀번호 재설정 링크입니다.\n로그인 ID: ${input.loginId}\n48시간 안에 아래 일회용 링크로 접속해 새 비밀번호를 설정해 주세요.\n\n${setupUrl.toString()}\n\n이후 로그인 주소:\n${loginUrl.toString()}`;
     await this.dependencies.manualEmailService.send({
       commandId: input.requestId,
       recipients: [input.email],
@@ -448,7 +445,7 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     const invite = await this.prisma.dsvCustomerAccountInvite.findUnique({
       include: {
         account: true,
-        customer: { select: { displayName: true, id: true } },
+        customer: { select: { displayName: true, id: true, shopId: true } },
         shop: { select: { id: true, shopDomain: true } },
       },
       where: { tokenHash: hashToken(token) },
@@ -457,13 +454,33 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     if (
       invite === null
       || invite.shop.shopDomain !== input.shopDomain
+      || invite.account.customerId !== invite.customerId
+      || invite.account.issuer !== issuer
+      || invite.account.shopId !== invite.shopId
+      || invite.customer.id !== invite.customerId
+      || invite.customer.shopId !== invite.shopId
       || invite.consumedAt !== null
       || invite.revokedAt !== null
-      || invite.expiresAt.getTime() <= now.getTime()
     ) {
       return null;
     }
+    if (invite.expiresAt.getTime() <= now.getTime()) {
+      throw invitationExpiredError();
+    }
     return invite;
+  }
+
+  private invitationIssue(input: { account: DsvCustomerAccountSummary; expiresAt: Date; token: string }): DsvCustomerInvitationIssue {
+    const setupUrl = new URL('/customer/account/setup', this.requireWebPublicOrigin());
+    setupUrl.hash = `token=${encodeURIComponent(input.token)}`;
+    return { account: input.account, invitation: { expiresAt: input.expiresAt, setupUrl: setupUrl.toString() } };
+  }
+
+  private requireWebPublicOrigin(): string {
+    if (this.dependencies.webPublicOrigin === undefined) {
+      throw new DsvCustomerAccountServiceError('INVITATION_LINK_NOT_CONFIGURED', 'CLEVER_DSV_WEB_PUBLIC_URL is required for customer account invitation links');
+    }
+    return this.dependencies.webPublicOrigin;
   }
 
   private async findShop(shopDomain: string): Promise<{ id: string; shopDomain: string } | null> {
@@ -495,6 +512,7 @@ export class DsvCustomerAccountServiceError extends Error {
       | 'BAD_REQUEST'
       | 'ACCOUNT_EXISTS'
       | 'EMAIL_NOT_CONFIGURED'
+      | 'INVITATION_EXPIRED'
       | 'INVALID_TOKEN'
       | 'INVITATION_LINK_NOT_CONFIGURED'
       | 'LOGIN_ID_EXISTS'
@@ -574,42 +592,16 @@ function accountStatus(
   return account.passwordHash === null ? 'EXPIRED' : 'ACTIVE';
 }
 
-async function findOrCreateAccount(
+async function createUnclaimedAccount(
   tx: Prisma.TransactionClient,
-  input: { customerId: string; displayName: string | null; email: string; loginId?: string; shopId: string },
-): Promise<{ created: boolean; id: string }> {
-  const existing = await tx.customerAccount.findFirst({
-    select: { id: true, loginId: true, passwordHash: true },
-    where: { customerId: input.customerId, email: input.email, issuer, shopId: input.shopId },
-  });
-  if (existing !== null) {
-    if (existing.passwordHash !== null) {
-      throw new DsvCustomerAccountServiceError('ACCOUNT_EXISTS', 'An activated customer account already uses this email');
-    }
-    if (input.loginId !== undefined && existing.loginId !== input.loginId) {
-      throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Customer account already has a reserved loginId');
-    }
-    if (existing.loginId === null) {
-      const loginId = input.loginId ?? await generateReadableLoginId(tx, input.email);
-      await assertLoginIdAvailable(tx, loginId);
-      await tx.customerAccount.update({
-        data: { loginId },
-        where: { id: existing.id },
-      });
-    }
-    return { created: false, id: existing.id };
-  }
-  const loginId = input.loginId ?? await generateReadableLoginId(tx, input.email);
-  await assertLoginIdAvailable(tx, loginId);
+  input: { customerId: string; shopId: string },
+): Promise<{ created: true; id: string }> {
   const id = randomUUID();
   await tx.customerAccount.create({
     data: {
       customerId: input.customerId,
-      displayName: input.displayName,
-      email: input.email,
       id,
       issuer,
-      loginId,
       shopId: input.shopId,
       status: 'INACTIVE',
       subject: id,
@@ -618,38 +610,25 @@ async function findOrCreateAccount(
   return { created: true, id };
 }
 
-async function assertLoginIdAvailable(tx: Prisma.TransactionClient, loginId: string): Promise<void> {
+async function assertLoginIdAvailable(tx: Prisma.TransactionClient, loginId: string, accountId: string): Promise<void> {
   const existing = await tx.customerAccount.findUnique({
     select: { id: true },
     where: { loginId },
   });
-  if (existing !== null) throw new DsvCustomerAccountServiceError('LOGIN_ID_EXISTS', 'loginId is already in use');
-}
-
-async function generateReadableLoginId(tx: Prisma.TransactionClient, email: string): Promise<string> {
-  const base = loginIdBaseFromEmail(email);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const suffix = attempt === 0 ? '' : `-${randomBytes(2).toString('hex')}`;
-    const candidate = `${base}${suffix}`.slice(0, 64);
-    const existing = await tx.customerAccount.findUnique({
-      select: { id: true },
-      where: { loginId: candidate },
-    });
-    if (existing === null) return candidate;
+  if (existing !== null && existing.id !== accountId) {
+    throw new DsvCustomerAccountServiceError('LOGIN_ID_EXISTS', 'loginId is already in use');
   }
-  throw new DsvCustomerAccountServiceError('LOGIN_ID_EXISTS', 'A unique loginId could not be generated');
 }
 
-function loginIdBaseFromEmail(email: string): string {
-  const localPart = email.split('@')[0] ?? 'customer';
-  const sanitized = localPart
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/gu, '-')
-    .replace(/^[^a-z0-9]+/u, '')
-    .replace(/[^a-z0-9]+$/u, '')
-    .replace(/[._-]{2,}/gu, '-');
-  if (sanitized.length >= 3 && /^[a-z0-9]/u.test(sanitized)) return sanitized.slice(0, 48);
-  return `customer-${randomBytes(2).toString('hex')}`;
+async function lockCustomerAccount(tx: Prisma.TransactionClient, accountId: string): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`dsv-customer-account:${accountId}`}, 0))::text AS "lock"`);
+}
+
+function invitationExpiredError(): DsvCustomerAccountServiceError {
+  return new DsvCustomerAccountServiceError(
+    'INVITATION_EXPIRED',
+    '허용 시간이 초과된 링크입니다. 담당자에게 새 초대 링크를 요청해 주세요.',
+  );
 }
 
 type AuditInput = {
@@ -681,11 +660,6 @@ async function createAudit(tx: Pick<Prisma.TransactionClient, 'dsvAuditEvent'>, 
   });
 }
 
-function normalizeEmail(value: string): string | null {
-  const normalized = value.trim().toLowerCase();
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(normalized) ? normalized : null;
-}
-
 function normalizeDisplayName(value: string | null | undefined): string | null {
   const normalized = value?.trim();
   return normalized === undefined || normalized === '' ? null : normalized;
@@ -695,6 +669,17 @@ function normalizeLoginId(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase();
   if (normalized === undefined || normalized === '') return null;
   return /^[a-z0-9][a-z0-9._-]{2,63}$/u.test(normalized) ? normalized : null;
+}
+
+function normalizeLoginIdentifier(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === undefined || normalized === '' || normalized.length > 128) return null;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(normalized)) return normalized;
+  return normalizeLoginId(normalized);
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
 }
 
 function normalizeToken(value: string): string | null {
