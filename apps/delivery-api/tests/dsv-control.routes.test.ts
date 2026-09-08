@@ -23,7 +23,7 @@ import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-co
 import type { AdminStoreSettings, SaveAdminStoreSettingsInput } from '../src/modules/commerce/admin-store-settings.service.js';
 import { defaultDsvOperationalSettings } from '../src/modules/dsv/dsv-operational-settings.js';
 import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-canonicalization.js';
-import type { DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
+import { DsvCustomerAccountServiceError, type DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
 import type { DsvAdminOperatorInvitationService } from '../src/modules/dsv/dsv-admin-account-invitations.service.js';
 import type { DsvDriverAccountLinkService } from '../src/modules/dsv/dsv-driver-account-link.service.js';
 import type { DsvStoreReviewAccess } from '../src/modules/dsv/dsv-store-review-access.js';
@@ -525,7 +525,6 @@ describe('DSV control routes', () => {
         },
         error: null,
       });
-      expect(JSON.stringify(create.json())).not.toContain('secret-token');
       expect(operatorInvitationService.createInvitation).toHaveBeenCalledWith(expect.objectContaining({
         actorId: adminAccountId,
         displayName: 'DSV 운영자',
@@ -656,7 +655,7 @@ describe('DSV control routes', () => {
       const missingCsrf = await app.inject({
         headers: { cookie: login.cookie },
         method: 'POST',
-        payload: { email: 'customer@example.com', generateLoginId: true },
+        payload: {},
         url: `/api/dsv/customers/${customerId}/accounts/invitations`,
       });
       expect(missingCsrf.statusCode).toBe(403);
@@ -665,21 +664,17 @@ describe('DSV control routes', () => {
       const create = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'POST',
-        payload: { displayName: '고객 운영자', email: 'Customer@Example.com', loginId: 'customer-login' },
+        payload: {},
         url: `/api/dsv/customers/${customerId}/accounts/invitations`,
       });
       expect(create.statusCode).toBe(201);
       expect(create.json()).toMatchObject({
-        data: { account: { email: 'customer@example.com', id: customerAccountId, status: 'INVITED' } },
+        data: { account: { id: customerAccountId, status: 'INVITED' }, invitation: { setupUrl: 'https://dsv.example.com/customer/account/setup#token=secret-token' } },
         error: null,
       });
-      expect(JSON.stringify(create.json())).not.toContain('secret-token');
       expect(customerAccountService.createSignupInvitation).toHaveBeenCalledWith(expect.objectContaining({
         actorId: adminAccountId,
         customerId,
-        displayName: '고객 운영자',
-        email: 'Customer@Example.com',
-        loginId: 'customer-login',
         shopDomain: 'tomatonofood.com',
       }));
 
@@ -734,9 +729,28 @@ describe('DSV control routes', () => {
       });
       expect(JSON.stringify(validate.json())).not.toContain('secret-token');
 
+      customerAccountService.validateInvitation.mockRejectedValueOnce(new DsvCustomerAccountServiceError(
+        'INVITATION_EXPIRED',
+        '허용 시간이 초과된 링크입니다. 담당자에게 새 초대 링크를 요청해 주세요.',
+      ));
+      const expired = await app.inject({
+        method: 'POST',
+        payload: { shopDomain: 'tomatonofood.com', token: 'expired-token' },
+        url: '/api/dsv/customer/auth/invitations/validate',
+      });
+      expect(expired.statusCode).toBe(410);
+      expect(expired.json()).toMatchObject({
+        error: {
+          code: 'INVITATION_EXPIRED',
+          message: '허용 시간이 초과된 링크입니다. 담당자에게 새 초대 링크를 요청해 주세요.',
+        },
+      });
+
       const complete = await app.inject({
         method: 'POST',
         payload: {
+          displayName: '고객 운영자',
+          loginId: 'customer-login',
           password: 'StrongPassw0rd!',
           shopDomain: 'tomatonofood.com',
           token: 'secret-token',
@@ -757,6 +771,8 @@ describe('DSV control routes', () => {
         error: null,
       });
       expect(customerAccountService.complete).toHaveBeenCalledWith(expect.objectContaining({
+        displayName: '고객 운영자',
+        loginId: 'customer-login',
         password: 'StrongPassw0rd!',
         shopDomain: 'tomatonofood.com',
         token: 'secret-token',
@@ -769,16 +785,17 @@ describe('DSV control routes', () => {
   test('logs a customer in with loginId, password, and shopDomain', async () => {
     const customerAccountService = createCustomerAccountService();
     const { app } = await createHarness({ customerAccountService });
+    const legacyEmailLoginId = `${'a'.repeat(90)}@example.com`;
     try {
       const login = await app.inject({
         method: 'POST',
-        payload: { id: 'customer-login', password: 'StrongPassw0rd!', shopDomain: 'tomatonofood.com' },
+        payload: { id: legacyEmailLoginId, password: 'StrongPassw0rd!', shopDomain: 'tomatonofood.com' },
         url: '/api/dsv/customer/auth/login',
       });
       expect(login.statusCode).toBe(200);
       expect(login.headers['set-cookie']).toContain('SameSite=Lax');
       expect(customerAccountService.login).toHaveBeenCalledWith(expect.objectContaining({
-        id: 'customer-login',
+        id: legacyEmailLoginId,
         password: 'StrongPassw0rd!',
         shopDomain: 'tomatonofood.com',
       }));
@@ -2415,6 +2432,7 @@ function createCustomerAccountService(): DsvCustomerAccountService & {
   listAccounts: ReturnType<typeof vi.fn<DsvCustomerAccountService['listAccounts']>>;
   login: ReturnType<typeof vi.fn<DsvCustomerAccountService['login']>>;
   setStatus: ReturnType<typeof vi.fn<DsvCustomerAccountService['setStatus']>>;
+  validateInvitation: ReturnType<typeof vi.fn<DsvCustomerAccountService['validateInvitation']>>;
 } {
   const account = {
     displayName: '고객 운영자',
@@ -2433,12 +2451,16 @@ function createCustomerAccountService(): DsvCustomerAccountService & {
     shopDomain: 'tomatonofood.com',
     shopId,
   };
+  const invitation = {
+    expiresAt: new Date('2026-08-11T01:00:00.000Z'),
+    setupUrl: 'https://dsv.example.com/customer/account/setup#token=secret-token',
+  };
   return {
     complete: vi.fn<DsvCustomerAccountService['complete']>(() => Promise.resolve(identity)),
-    createSignupInvitation: vi.fn<DsvCustomerAccountService['createSignupInvitation']>(() => Promise.resolve({ account })),
+    createSignupInvitation: vi.fn<DsvCustomerAccountService['createSignupInvitation']>(() => Promise.resolve({ account, invitation })),
     listAccounts: vi.fn<DsvCustomerAccountService['listAccounts']>(() => Promise.resolve([account])),
     login: vi.fn<DsvCustomerAccountService['login']>(() => Promise.resolve(identity)),
-    reinvite: vi.fn<DsvCustomerAccountService['reinvite']>(() => Promise.resolve({ account })),
+    reinvite: vi.fn<DsvCustomerAccountService['reinvite']>(() => Promise.resolve({ account, invitation })),
     requestPasswordReset: vi.fn<DsvCustomerAccountService['requestPasswordReset']>(() => Promise.resolve({ account })),
     setStatus: vi.fn<DsvCustomerAccountService['setStatus']>(() => Promise.resolve({
       account: { ...account, status: 'DISABLED' },

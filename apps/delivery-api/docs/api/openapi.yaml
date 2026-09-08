@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-09-01
+  x-contract-revision: 2026-09-08
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -1208,6 +1208,142 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+  /api/dsv/customers/{customerId}/accounts/invitations:
+    post:
+      tags: [DSV Control]
+      summary: Create a 48-hour customer signup link
+      description: Creates an unclaimed customer account and returns a one-time setup URL. Reissuing a link revokes the prior unconsumed signup link.
+      operationId: createDsvCustomerSignupInvitation
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - name: customerId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '201':
+          description: One-time fragment URL and expiry returned to the authorized administrator.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/dsv/customer-accounts/{accountId}/reinvite:
+    post:
+      tags: [DSV Control]
+      summary: Replace an unclaimed customer's signup link
+      operationId: reissueDsvCustomerSignupInvitation
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: New one-time fragment URL returned; the previous link is revoked.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/dsv/customer/auth/invitations/validate:
+    post:
+      tags: [DSV Control]
+      summary: Validate a customer signup or password-reset link
+      operationId: validateDsvCustomerInvitation
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shopDomain, token]
+              properties:
+                shopDomain: { type: string }
+                token: { type: string, writeOnly: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Bound customer and invitation metadata; the token is never echoed.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '410':
+          description: 허용 시간이 초과된 링크입니다. 담당자에게 새 초대 링크를 요청해 주세요.
+  /api/dsv/customer/auth/complete:
+    post:
+      tags: [DSV Control]
+      summary: Complete customer signup or password reset
+      description: Signup requires displayName and loginId. Password reset retains the existing profile and login ID. Each link is consumed atomically once.
+      operationId: completeDsvCustomerInvitation
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, shopDomain, token]
+              properties:
+                displayName: { type: string, minLength: 1, maxLength: 120 }
+                loginId: { type: string, minLength: 3, maxLength: 64, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$' }
+                password: { type: string, format: password, minLength: 12 }
+                shopDomain: { type: string }
+                token: { type: string, writeOnly: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Customer session cookie issued after atomic link consumption.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The requested login ID is already in use.
+        '410':
+          description: 허용 시간이 초과된 링크입니다. 담당자에게 새 초대 링크를 요청해 주세요.
+  /api/dsv/customer/auth/login:
+    post:
+      tags: [DSV Control]
+      summary: Start a customer session with a login ID or existing email-shaped ID
+      operationId: loginDsvCustomer
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, password, shopDomain]
+              properties:
+                id: { type: string, maxLength: 128 }
+                password: { type: string, format: password }
+                shopDomain: { type: string }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Customer session cookie issued.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/dsv/auth/login:
     post:
       tags: [DSV Control]
@@ -1222,7 +1358,7 @@ paths:
               type: object
               required: [id, password, shopDomain]
               properties:
-                id: { type: string }
+                id: { type: string, maxLength: 128 }
                 password: { type: string, format: password }
                 shopDomain: { type: string }
       responses:

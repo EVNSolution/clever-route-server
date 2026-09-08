@@ -433,10 +433,6 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         return sendData(reply, await service.createSignupInvitation({
           actorId: actor,
           customerId: request.params.customerId,
-          email: input.email,
-          ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-          ...(input.loginId === undefined ? {} : { loginId: input.loginId }),
-          ...(input.generateLoginId === true ? { generateLoginId: true } : {}),
           requestId: request.id,
           shopDomain,
         }), 201);
@@ -1345,17 +1341,21 @@ function registerDsvCustomerAccountRoutes(app: FastifyInstance, dependencies: Ds
     const service = requireCustomerAccountService(dependencies);
     const input = readCustomerInviteTokenBody(request.body);
     if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid invitation validation payload');
-    const metadata = await service.validateInvitation(input);
-    return metadata === null
-      ? sendError(reply, 401, 'INVALID_TOKEN', 'Invitation token is invalid')
-      : sendData(reply, {
-          customerName: metadata.customerName,
-          displayName: metadata.displayName,
-          email: metadata.email,
-          expiresAt: metadata.expiresAt.toISOString(),
-          loginId: metadata.loginId,
-          purpose: metadata.purpose,
-        });
+    try {
+      const metadata = await service.validateInvitation(input);
+      return metadata === null
+        ? sendError(reply, 401, 'INVALID_TOKEN', 'Invitation token is invalid')
+        : sendData(reply, {
+            customerName: metadata.customerName,
+            displayName: metadata.displayName,
+            email: metadata.email,
+            expiresAt: metadata.expiresAt.toISOString(),
+            loginId: metadata.loginId,
+            purpose: metadata.purpose,
+          });
+    } catch (error) {
+      return sendCustomerAccountServiceError(reply, error);
+    }
   });
 
   app.post(`${apiRoot}/customer/auth/complete`, {
@@ -1628,6 +1628,7 @@ function sendCustomerAccountServiceError(reply: FastifyReply, error: unknown): u
   if (!(error instanceof DsvCustomerAccountServiceError)) throw error;
   if (error.code === 'NOT_FOUND') return sendError(reply, 404, error.code, error.message);
   if (error.code === 'ACCOUNT_EXISTS' || error.code === 'LOGIN_ID_EXISTS') return sendError(reply, 409, error.code, error.message);
+  if (error.code === 'INVITATION_EXPIRED') return sendError(reply, 410, error.code, error.message);
   if (error.code === 'INVALID_TOKEN') return sendError(reply, 401, error.code, error.message);
   if (error.code === 'EMAIL_NOT_CONFIGURED' || error.code === 'INVITATION_LINK_NOT_CONFIGURED') {
     return sendError(reply, 503, error.code, error.message);
@@ -1733,27 +1734,10 @@ function readAdminAccountStatus(value: unknown): DsvAdminAccountStatus | null {
   return body.status === 'ACTIVE' || body.status === 'DISABLED' ? body.status : null;
 }
 
-function readCustomerAccountInvitationBody(value: unknown): { displayName?: string; email: string; generateLoginId?: true; loginId?: string } | null {
+function readCustomerAccountInvitationBody(value: unknown): Record<string, never> | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'email', 'generateLoginId', 'loginId'])) return null;
-  const email = readBoundedText(body.email, 320);
-  const displayName = Object.hasOwn(body, 'displayName') ? readOptionalBoundedText(body.displayName, 120) : undefined;
-  const loginId = Object.hasOwn(body, 'loginId') ? readOptionalBoundedText(body.loginId, 80) : undefined;
-  const generateLoginId = body.generateLoginId === true ? true : undefined;
-  if (
-    email === null
-    || displayName === null
-    || loginId === null
-    || ((loginId === undefined) === (generateLoginId !== true))
-  ) {
-    return null;
-  }
-  return {
-    email,
-    ...(displayName === undefined ? {} : { displayName }),
-    ...(generateLoginId === true ? { generateLoginId } : {}),
-    ...(loginId === undefined ? {} : { loginId }),
-  };
+  if (body === null || !hasOnlyKeys(body, [])) return null;
+  return {};
 }
 
 function readCustomerAccountStatus(value: unknown): 'ACTIVE' | 'DISABLED' | null {
@@ -1785,20 +1769,28 @@ function readOperatorCompleteBody(value: unknown): { loginId: string; password: 
   return { loginId, password, shopDomain, token };
 }
 
-function readCustomerCompleteBody(value: unknown): { password: string; shopDomain: string; token: string } | null {
+function readCustomerCompleteBody(value: unknown): { displayName?: string; loginId?: string; password: string; shopDomain: string; token: string } | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyAllowedKeys(body, ['password', 'shopDomain', 'token'])) return null;
+  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'loginId', 'password', 'shopDomain', 'token'])) return null;
   const shopDomain = normalizeShopDomain(readTrimmed(body.shopDomain));
   const token = readBoundedText(body.token, 200);
   const password = readCustomerPassword(body.password);
-  if (shopDomain === null || token === null || password === null) return null;
-  return { password, shopDomain, token };
+  const displayName = Object.hasOwn(body, 'displayName') ? readOptionalBoundedText(body.displayName, 120) : undefined;
+  const loginId = Object.hasOwn(body, 'loginId') ? readOptionalBoundedText(body.loginId, 80) : undefined;
+  if (shopDomain === null || token === null || password === null || displayName === null || loginId === null) return null;
+  return {
+    ...(displayName === undefined ? {} : { displayName }),
+    ...(loginId === undefined ? {} : { loginId }),
+    password,
+    shopDomain,
+    token,
+  };
 }
 
 function readCustomerLoginBody(value: unknown): { id: string; password: string; shopDomain: string } | null {
   const body = objectBody(value);
   if (body === null || !hasOnlyKeys(body, ['id', 'password', 'shopDomain'])) return null;
-  const id = readBoundedText(body.id, 80);
+  const id = readBoundedText(body.id, 128);
   const password = readCustomerPassword(body.password);
   const shopDomain = normalizeShopDomain(readTrimmed(body.shopDomain));
   return id === null || password === null || shopDomain === null ? null : { id, password, shopDomain };
