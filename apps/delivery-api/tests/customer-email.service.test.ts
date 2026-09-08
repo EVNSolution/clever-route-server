@@ -399,7 +399,50 @@ describe('CustomerEmailService', () => {
     });
   });
 
-  test('adds manual send history summaries with one content-free recipient query', async () => {
+  test('keeps a template example visible while explaining completed-route status exclusions', async () => {
+    const { prisma, service } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      status: 'COMPLETED',
+      stops: [
+        stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'DELIVERED' }),
+        stopRow({ email: null, id: 'stop-2', sequence: 2, status: 'DELIVERED' }),
+      ],
+    }));
+
+    const preview = await service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    });
+
+    expect(preview).toMatchObject({
+      counts: {
+        eligible: 0,
+        missingEmail: 0,
+        selected: 2,
+        sendable: 0,
+        statusExcluded: 2,
+        totalStops: 2,
+      },
+      example: {
+        rendered: {
+          subject: expect.any(String) as unknown,
+          body: expect.any(String) as unknown,
+        },
+      },
+      exclusions: [{
+        code: 'ROUTE_ALREADY_COMPLETED',
+        count: 2,
+        message: expect.stringContaining('DELIVERY_SCHEDULED') as unknown,
+        status: 'DELIVERED',
+      }],
+      recipients: [],
+      routeStatus: 'COMPLETED',
+    });
+    expect(preview?.previewToken).toMatch(/^v1:[a-f0-9]{64}$/u);
+  });
+
+  test('adds manual send history across route versions with one content-free recipient query', async () => {
     const { prisma, service } = createHarness();
     prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
       stops: [stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
@@ -412,6 +455,7 @@ describe('CustomerEmailService', () => {
         providerStatus: 'HARD_BOUNCE',
         sentAt: null,
         status: 'FAILED',
+        routePlanId: 'older-route-id',
       },
       {
         createdAt: new Date('2026-08-05T11:00:00.000Z'),
@@ -443,6 +487,12 @@ describe('CustomerEmailService', () => {
     expect(prisma.customerEmailManualDispatchRecipient.findMany).toHaveBeenCalledWith({
       orderBy: { createdAt: 'desc' },
       select: {
+        attempts: {
+          orderBy: { completedAt: 'desc' },
+          select: { completedAt: true, outcome: true, providerMessageId: true },
+          take: 1,
+          where: { outcome: 'SENT' },
+        },
         createdAt: true,
         deliveryStopId: true,
         providerEventAt: true,
@@ -453,7 +503,6 @@ describe('CustomerEmailService', () => {
       where: {
         deliveryStopId: { in: ['stop-1'] },
         dispatch: { signal: 'DELIVERY_SCHEDULED' },
-        routePlanId: 'route-id',
         shopId: 'shop-id',
       },
     });
@@ -614,6 +663,236 @@ describe('CustomerEmailService', () => {
     expect(transport.send).toHaveBeenCalledOnce();
   });
 
+  test('blocks a new command when the same stop has an uncertain outcome from an older route version', async () => {
+    const { prisma, service, transport } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      stops: [stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    prisma.customerEmailManualDispatchRecipient.findMany.mockResolvedValue([{
+      attempts: [],
+      createdAt: new Date('2026-09-08T01:00:00.000Z'),
+      deliveryStopId: 'stop-1',
+      providerEventAt: null,
+      providerStatus: null,
+      sentAt: null,
+      status: 'UNKNOWN',
+      routePlanId: 'older-route-id',
+    }]);
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'new-command',
+      confirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_OUTCOME_UNCERTAIN' });
+    expect(prisma.customerEmailManualDispatch.create).not.toHaveBeenCalled();
+    expect(transport.send).not.toHaveBeenCalled();
+    expect(prisma.customerEmailManualDispatchRecipient.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        deliveryStopId: { in: ['stop-1'] },
+        dispatch: { signal: 'DELIVERY_SCHEDULED' },
+        shopId: 'shop-id',
+      },
+    }));
+  });
+
+  test('allows a failed-only retry and claims it before calling the provider', async () => {
+    const { prisma, service, transport } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      stops: [stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    prisma.customerEmailManualDispatchRecipient.findMany.mockResolvedValue([{
+      attempts: [],
+      createdAt: new Date('2026-09-08T01:00:00.000Z'),
+      deliveryStopId: 'stop-1',
+      providerEventAt: null,
+      providerStatus: null,
+      sentAt: null,
+      status: 'FAILED',
+    }]);
+    prisma.customerEmailManualDispatch.create.mockResolvedValue({ id: 'dispatch-id' });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'failed-retry',
+      confirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ results: [{ status: 'SENT' }] });
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.customerEmailManualDispatch.create).toHaveBeenCalledOnce();
+    expect(transport.send).toHaveBeenCalledOnce();
+  });
+
+  test('serializes different command ids so only one concurrent request reaches the provider', async () => {
+    const { prisma, service, transport } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      stops: [stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    const history: Array<Record<string, unknown>> = [];
+    prisma.customerEmailManualDispatchRecipient.findMany.mockImplementation(() => Promise.resolve([...history]));
+    prisma.customerEmailManualDispatch.create.mockImplementation(({ data }: { data: { commandId: string } }) => {
+      history.unshift({
+        attempts: [],
+        createdAt: new Date(),
+        deliveryStopId: 'stop-1',
+        providerEventAt: null,
+        providerStatus: null,
+        sentAt: null,
+        status: 'PENDING',
+      });
+      return Promise.resolve({ id: `dispatch-${data.commandId}` });
+    });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+
+    let transactionArrivals = 0;
+    let releaseArrivalBarrier: () => void = () => undefined;
+    const arrivalBarrier = new Promise<void>((resolve) => { releaseArrivalBarrier = resolve; });
+    let advisoryLockTail = Promise.resolve();
+    const advisoryLockCalls = vi.fn();
+    prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => Promise<unknown>) => {
+      transactionArrivals += 1;
+      if (transactionArrivals === 2) releaseArrivalBarrier();
+      await arrivalBarrier;
+      let lockHeld = false;
+      let releaseAdvisoryLock: () => void = () => undefined;
+      const tx = {
+        ...prisma,
+        $queryRaw: vi.fn(async () => {
+          advisoryLockCalls();
+          const previous = advisoryLockTail;
+          advisoryLockTail = new Promise<void>((resolve) => { releaseAdvisoryLock = resolve; });
+          await previous;
+          lockHeld = true;
+          return [{ pg_advisory_xact_lock: null }];
+        }),
+        customerEmailManualDispatchRecipient: {
+          ...prisma.customerEmailManualDispatchRecipient,
+          findMany: vi.fn(() => {
+            if (!lockHeld) throw new Error('manual history must be read only after the advisory lock is held');
+            return Promise.resolve([...history]);
+          }),
+        },
+      };
+      try {
+        return await callback(tx);
+      } finally {
+        releaseAdvisoryLock();
+      }
+    });
+
+    const base = {
+      actor: 'admin-user',
+      confirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED' as const,
+    };
+    const outcomes = await Promise.allSettled([
+      service.send({ ...base, commandId: 'concurrent-a' }),
+      service.send({ ...base, commandId: 'concurrent-b' }),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
+    expect(outcomes.find((outcome) => outcome.status === 'rejected')).toMatchObject({
+      reason: { code: 'CUSTOMER_EMAIL_OUTCOME_UNCERTAIN' },
+    });
+    expect(prisma.customerEmailManualDispatch.create).toHaveBeenCalledOnce();
+    expect(advisoryLockCalls).toHaveBeenCalledTimes(2);
+    expect(transport.send).toHaveBeenCalledOnce();
+  });
+
+  test('rejects a tokenless send when recipients change between lock selection and dispatch creation', async () => {
+    const { prisma, service, transport } = createHarness();
+    const original = routePlanRow({
+      stops: [stopRow({ email: 'one@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    });
+    const changed = routePlanRow({
+      stops: [
+        stopRow({ email: 'one@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' }),
+        stopRow({ email: 'two@example.com', id: 'stop-2', sequence: 2, status: 'PENDING' }),
+      ],
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce(changed);
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'route-mutated-during-claim',
+      confirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_PREVIEW_CONFLICT' });
+
+    expect(prisma.customerEmailManualDispatch.create).not.toHaveBeenCalled();
+    expect(transport.send).not.toHaveBeenCalled();
+  });
+
+  test('accepts a full-route preview token for a verified recipient subset', async () => {
+    const { prisma, service, transport } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      stops: [
+        stopRow({ email: 'one@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' }),
+        stopRow({ email: 'two@example.com', id: 'stop-2', sequence: 2, status: 'PENDING' }),
+      ],
+    }));
+    const preview = await service.preview({
+      routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'DELIVERY_SCHEDULED',
+    });
+    prisma.customerEmailManualDispatch.create.mockResolvedValue({ id: 'dispatch-id' });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'subset-command',
+      confirmed: true,
+      deliveryStopIds: ['stop-2'],
+      previewToken: preview?.previewToken,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ results: [{ deliveryStopId: 'stop-2', status: 'SENT' }] });
+    expect(transport.send).toHaveBeenCalledOnce();
+  });
+
+  test('rejects stale preview data and same-command payload mutation', async () => {
+    const { prisma, service, transport } = createHarness();
+    const original = routePlanRow({
+      stops: [stopRow({ email: 'original@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    });
+    prisma.routePlan.findFirst.mockResolvedValue(original);
+    const preview = await service.preview({
+      routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'DELIVERY_SCHEDULED',
+    });
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      stops: [stopRow({ email: 'changed@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    await expect(service.send({
+      actor: 'admin-user', commandId: 'stale-command', confirmed: true, previewToken: preview?.previewToken,
+      routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_PREVIEW_CONFLICT' });
+
+    prisma.customerEmailManualDispatch.findUnique.mockResolvedValue({
+      id: 'dispatch-id',
+      request: { deliveryStopIds: ['stop-1'], previewToken: preview?.previewToken },
+      routePlanId: 'route-id',
+      signal: 'DELIVERY_SCHEDULED',
+    });
+    await expect(service.send({
+      actor: 'admin-user', commandId: 'stale-command', confirmed: true, deliveryStopIds: ['stop-2'],
+      routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_COMMAND_CONFLICT' });
+    expect(transport.send).not.toHaveBeenCalled();
+  });
+
   test('does not treat another signal history as resend and combines resend with missing-value confirmation', async () => {
     const { prisma, service, transport } = createHarness();
     const settings = defaultCustomerEmailSettings();
@@ -640,6 +919,7 @@ describe('CustomerEmailService', () => {
       })],
     }));
     prisma.customerEmailManualDispatchRecipient.findMany
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValue([{
         createdAt: new Date('2026-08-05T12:00:00.000Z'),
@@ -791,9 +1071,13 @@ describe('CustomerEmailService', () => {
       branding: expect.objectContaining({ showPoweredByClever: true }) as unknown,
     }));
     expect(prisma.customerEmailManualDispatch.create).toHaveBeenCalledOnce();
-    expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+    expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      data: expect.objectContaining({ providerMessageId: 'message-id', providerStatus: 'ACCEPTED', status: 'SENT' }),
+      data: expect.objectContaining({ providerMessageId: 'message-id', status: 'SENT' }),
+    }));
+    expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      data: expect.objectContaining({ providerMessageId: 'message-id', providerStatus: 'ACCEPTED' }),
     }));
     expect('customerRouteNotificationFact' in prisma).toBe(false);
   });
@@ -822,7 +1106,7 @@ describe('CustomerEmailService', () => {
       counts: { duplicate: 0, failed: 0, sent: 1, skipped: 0 },
       results: [{ providerMessageId: 'message-id', status: 'SENT' }],
     });
-    expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledOnce();
+    expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledTimes(2);
     expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: 'SENT' }) as unknown,
     }));
@@ -830,7 +1114,7 @@ describe('CustomerEmailService', () => {
     expect(transport.send).toHaveBeenCalledOnce();
 
     prisma.customerEmailManualDispatch.create.mockRejectedValueOnce({ code: 'P2002' });
-    prisma.customerEmailManualDispatch.findUnique.mockResolvedValueOnce({ id: 'dispatch-id' });
+    prisma.customerEmailManualDispatch.findUnique.mockResolvedValueOnce({ id: 'dispatch-id', ...dispatchIdentity() });
     prisma.customerEmailManualDispatch.findUniqueOrThrow.mockResolvedValueOnce({
       commandId: 'command-settle-gap',
       id: 'dispatch-id',
@@ -852,7 +1136,7 @@ describe('CustomerEmailService', () => {
       stops: [stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
     }));
     prisma.customerEmailManualDispatch.create.mockRejectedValue({ code: 'P2002' });
-    prisma.customerEmailManualDispatch.findUnique.mockResolvedValueOnce({ id: 'dispatch-id' });
+    prisma.customerEmailManualDispatch.findUnique.mockResolvedValueOnce({ id: 'dispatch-id', ...dispatchIdentity() });
     prisma.customerEmailManualDispatch.findUniqueOrThrow.mockResolvedValue({
       commandId: 'command-1',
       id: 'dispatch-id',
@@ -949,7 +1233,7 @@ describe('CustomerEmailService', () => {
   test('replays original outcomes before changed settings or resend guards, without creating a command', async () => {
     const { prisma, service, transport } = createHarness();
     prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({ customerEmailSettings: defaultCustomerEmailSettings(), stops: [] }));
-    prisma.customerEmailManualDispatch.findUnique.mockResolvedValue({ id: 'dispatch-id' });
+    prisma.customerEmailManualDispatch.findUnique.mockResolvedValue({ id: 'dispatch-id', ...dispatchIdentity() });
     const statuses = ['SENT', 'FAILED', 'SKIPPED', 'PENDING', 'UNKNOWN'];
     const eventAt = new Date('2026-09-08T01:00:00Z');
     prisma.customerEmailManualDispatch.findUniqueOrThrow.mockResolvedValue({
@@ -968,7 +1252,8 @@ describe('CustomerEmailService', () => {
     expect(result?.results[0]).toMatchObject({ email: 'original@example.test', providerMessageId: 'message-0',
       providerStatus: 'DELIVERED', providerEventAt: eventAt.toISOString(), sentAt: eventAt.toISOString() });
     expect(prisma.customerEmailManualDispatch.findUnique).toHaveBeenCalledWith({
-      select: { id: true }, where: { shopId_commandId: { shopId: 'shop-id', commandId: 'old-command' } },
+      select: { id: true, request: true, routePlanId: true, signal: true },
+      where: { shopId_commandId: { shopId: 'shop-id', commandId: 'old-command' } },
     });
     expect(prisma.customerEmailManualDispatchRecipient.findMany).not.toHaveBeenCalled();
     expect(prisma.customerEmailManualDispatch.create).not.toHaveBeenCalled();
@@ -978,9 +1263,9 @@ describe('CustomerEmailService', () => {
   test('a concurrent duplicate found by the unique constraint also preserves the original pending state', async () => {
     const { prisma, service, transport } = createHarness();
     prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({ stops: [] }));
-    prisma.customerEmailManualDispatch.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'dispatch-id' });
+    prisma.customerEmailManualDispatch.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'dispatch-id', ...dispatchIdentity() });
     prisma.customerEmailManualDispatch.create.mockRejectedValueOnce({ code: 'P2002' });
-    prisma.customerEmailManualDispatch.findUniqueOrThrow.mockResolvedValue({ commandId: 'racing-command', id: 'dispatch-id', recipients: [{
+    prisma.customerEmailManualDispatch.findUniqueOrThrow.mockResolvedValue({ commandId: 'racing-command', id: 'dispatch-id', ...dispatchIdentity(), recipients: [{
       deliveryStopId: 'stop-1', orderId: 'order-1', recipientEmail: 'original@example.test', status: 'PENDING',
       errorCode: null, errorMessage: null, provider: null, providerMessageId: null, providerStatus: null,
     }] });
@@ -1008,7 +1293,7 @@ describe('CustomerEmailService', () => {
     expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status }) as unknown }));
     if (status === 'FAILED') expect(attempts.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'TERMINAL_FAILURE' }));
     else expect(attempts.settle).not.toHaveBeenCalled();
-    prisma.customerEmailManualDispatch.findUnique.mockResolvedValue({ id: 'dispatch-id' });
+    prisma.customerEmailManualDispatch.findUnique.mockResolvedValue({ id: 'dispatch-id', ...dispatchIdentity() });
     prisma.customerEmailManualDispatch.findUniqueOrThrow.mockResolvedValue({ commandId: input.commandId, id: 'dispatch-id', recipients: [{
       deliveryStopId: 'stop-1', orderId: 'order-1', recipientEmail: 'test@example.test', status,
       errorCode: null, errorMessage: null, provider: null, providerMessageId: null, providerStatus: null,
@@ -1030,14 +1315,15 @@ describe('CustomerEmailService', () => {
     const input = { actor: 'admin', commandId: 'unsaved-command', confirmed: true, routePlanId: 'route-id',
       shopDomain: 'example.myshopify.com', signal: 'DELIVERY_SCHEDULED' as const };
     await expect(service.send(input)).rejects.toThrow();
-    expect(attempts.settle).not.toHaveBeenCalled();
+    expect(attempts.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'SENT', providerMessageId: 'message-id' }));
     expect(transport.send).toHaveBeenCalledOnce();
-    prisma.customerEmailManualDispatch.findUnique.mockResolvedValue({ id: 'dispatch-id' });
+    prisma.customerEmailManualDispatch.findUnique.mockResolvedValue({ id: 'dispatch-id', ...dispatchIdentity() });
     prisma.customerEmailManualDispatch.findUniqueOrThrow.mockResolvedValue({ commandId: input.commandId, id: 'dispatch-id', recipients: [{
+      attempts: [{ completedAt: new Date('2026-09-08T01:00:00.000Z'), outcome: 'SENT', providerMessageId: 'message-id' }],
       deliveryStopId: 'stop-1', orderId: 'order-1', recipientEmail: 'test@example.test', status: 'PENDING',
       errorCode: null, errorMessage: null, provider: null, providerMessageId: null, providerStatus: null,
     }] });
-    await expect(service.send(input)).resolves.toMatchObject({ duplicate: true, results: [{ originalStatus: 'PENDING' }] });
+    await expect(service.send(input)).resolves.toMatchObject({ duplicate: true, results: [{ originalStatus: 'SENT' }] });
     expect(transport.send).toHaveBeenCalledOnce();
   });
 
@@ -1189,6 +1475,8 @@ function createHarness(attempts?: {
   startManual(input: unknown): Promise<{ attemptId: string; correlationId: string }>;
 }) {
   const prisma = {
+    $queryRaw: vi.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]),
+    $transaction: vi.fn(),
     customerEmailManualDispatch: {
       create: vi.fn(),
       findUnique: vi.fn().mockResolvedValue(null),
@@ -1209,6 +1497,7 @@ function createHarness(attempts?: {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
   };
+  prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => Promise<unknown>) => callback(prisma));
   const transport = {
     configured: true,
     providerName: 'brevo',
@@ -1221,11 +1510,12 @@ function createHarness(attempts?: {
   };
 }
 
-function routePlanRow(input: { customerEmailSettings?: unknown; routeOpsUiSettings?: unknown; stops: ReturnType<typeof stopRow>[] }) {
+function routePlanRow(input: { customerEmailSettings?: unknown; routeOpsUiSettings?: unknown; status?: string; stops: ReturnType<typeof stopRow>[] }) {
   return {
     id: 'route-id',
     name: 'Route A',
     planDate: new Date('2026-08-03T00:00:00.000Z'),
+    status: input.status ?? 'IN_PROGRESS',
     routeStops: input.stops,
     shop: {
       customerEmailSettings: input.customerEmailSettings ?? {
@@ -1272,5 +1562,13 @@ function stopRow(input: {
     },
     estimatedArrivalAt: input.estimatedArrivalAt === undefined ? new Date('2026-08-04T10:00:00.000Z') : input.estimatedArrivalAt,
     sequence: input.sequence,
+  };
+}
+
+function dispatchIdentity() {
+  return {
+    request: { deliveryStopIds: null, routePlanId: 'route-id', signal: 'DELIVERY_SCHEDULED' },
+    routePlanId: 'route-id',
+    signal: 'DELIVERY_SCHEDULED',
   };
 }

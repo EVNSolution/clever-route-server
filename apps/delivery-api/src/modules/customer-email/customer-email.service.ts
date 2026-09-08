@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { createHash } from 'node:crypto';
+import { Prisma, type PrismaClient } from '@prisma/client';
 
 import {
   customerEmailSignals,
@@ -33,18 +34,43 @@ export type CustomerEmailSendInput = CustomerEmailPreviewInput & {
   commandId: string;
   confirmed: boolean;
   missingValuesConfirmed?: boolean | undefined;
+  previewToken?: string | undefined;
   resendConfirmed?: boolean | undefined;
 };
 
 export type CustomerEmailPreview = {
   counts: {
     eligible: number;
+    missingEmail: number;
     rendered: number;
+    selected: number;
+    sendable: number;
     skipped: number;
+    statusExcluded: number;
     totalStops: number;
   };
+  example: {
+    diagnostics: {
+      body: CustomerEmailRenderDiagnostic[];
+      subject: CustomerEmailRenderDiagnostic[];
+    };
+    rendered: {
+      body: string;
+      subject: string;
+    };
+  };
+  exclusions: CustomerEmailStatusExclusion[];
+  previewToken: string;
   recipients: CustomerEmailRenderedRecipient[];
+  routeStatus: string;
   skipped: CustomerEmailSkippedRecipient[];
+};
+
+export type CustomerEmailStatusExclusion = {
+  code: 'ROUTE_ALREADY_COMPLETED' | 'STOP_STATUS_INELIGIBLE';
+  count: number;
+  message: string;
+  status: string;
 };
 
 export type CustomerEmailDispatch = {
@@ -92,6 +118,7 @@ export type CustomerEmailManualHistorySummary = {
   lastSentAt: string | null;
   lastStatus: string | null;
   sendCount: number;
+  uncertainCount: number;
 };
 
 export type CustomerEmailSkippedRecipient = {
@@ -127,6 +154,7 @@ type CustomerEmailRoutePlanRow = {
   id: string;
   name: string;
   planDate: Date;
+  status: string;
   routeStops: Array<{
     deliveryStop: {
       address1: string | null;
@@ -375,7 +403,7 @@ export class CustomerEmailService {
     const settings = normalizeCustomerEmailSettings(routePlan.shop.customerEmailSettings);
     const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
       .map((stop) => stop.deliveryStop.id);
-    const history = await this.readManualHistory(routePlan.shop.id, input.routePlanId, input.signal, eligibleStopIds);
+    const history = await this.readManualHistory(routePlan.shop.id, input.signal, eligibleStopIds);
     return buildPreview(routePlan, settings, input, history);
   }
 
@@ -436,16 +464,25 @@ export class CustomerEmailService {
     const routePlan = await this.findRoutePlan(input);
     if (routePlan === null) return null;
     const existing = await this.prisma.customerEmailManualDispatch.findUnique({
-      select: { id: true },
+      select: { id: true, request: true, routePlanId: true, signal: true },
       where: { shopId_commandId: { commandId: input.commandId, shopId: routePlan.shop.id } },
     });
-    if (existing !== null) return this.readExistingDispatch(routePlan.shop.id, input.commandId, true);
+    if (existing !== null) {
+      assertCommandMatchesDispatch(existing, input);
+      return this.readExistingDispatch(routePlan.shop.id, input.commandId, true);
+    }
     const settings = normalizeCustomerEmailSettings(routePlan.shop.customerEmailSettings);
     assertConfigured(settings);
     const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
       .map((stop) => stop.deliveryStop.id);
-    const history = await this.readManualHistory(routePlan.shop.id, input.routePlanId, input.signal, eligibleStopIds);
+    const history = await this.readManualHistory(routePlan.shop.id, input.signal, eligibleStopIds);
     const preview = buildPreview(routePlan, settings, input, history);
+    if (input.previewToken !== undefined && input.previewToken !== preview.previewToken) {
+      throw new CustomerEmailValidationError(
+        'Customer email preview is stale or does not match this send request.',
+        'CUSTOMER_EMAIL_PREVIEW_CONFLICT',
+      );
+    }
     const template = settings.templates[input.signal];
     if (!template.enabled) throw new CustomerEmailValidationError('Selected customer email template is disabled.');
     if (previewHasMissingTemplateValues(preview) && input.missingValuesConfirmed !== true) {
@@ -460,6 +497,12 @@ export class CustomerEmailService {
         'RESEND_CONFIRMATION_REQUIRED',
       );
     }
+    if (previewHasUncertainOutcome(preview)) {
+      throw new CustomerEmailValidationError(
+        'A prior customer email outcome is still pending or unknown. Reconcile it before sending again.',
+        'CUSTOMER_EMAIL_OUTCOME_UNCERTAIN',
+      );
+    }
 
     const created = await this.createDispatch({
       actor: input.actor,
@@ -468,12 +511,21 @@ export class CustomerEmailService {
       preview,
       routePlan,
       settings,
-      template,
     });
-    if (created.duplicate) return this.readExistingDispatch(routePlan.shop.id, input.commandId, true);
+    if (created.duplicate) {
+      const competing = await this.prisma.customerEmailManualDispatch.findUniqueOrThrow({
+        select: { request: true, routePlanId: true, signal: true },
+        where: { shopId_commandId: { commandId: input.commandId, shopId: routePlan.shop.id } },
+      });
+      assertCommandMatchesDispatch(competing, input);
+      return this.readExistingDispatch(routePlan.shop.id, input.commandId, true);
+    }
+    const sendPreview = created.preview;
+    const sendRoutePlan = created.routePlan;
+    const sendSettings = created.settings;
 
     const results: CustomerEmailDispatchResult[] = [];
-    for (const skipped of preview.skipped) {
+    for (const skipped of sendPreview.skipped) {
       results.push({
         deliveryStopId: skipped.deliveryStopId,
         email: null,
@@ -486,7 +538,7 @@ export class CustomerEmailService {
       });
     }
 
-    for (const recipient of preview.recipients) {
+    for (const recipient of sendPreview.recipients) {
       const rowCommandId = `${input.commandId}:${recipient.deliveryStopId}`;
       const startedAt = new Date();
       const attempt = this.attempts === undefined
@@ -497,22 +549,26 @@ export class CustomerEmailService {
           }).then(({ id }) => this.attempts!.startManual({
             manualDispatchRecipientId: id,
             provider: this.transport.providerName,
-            shopId: routePlan.shop.id,
+            shopId: sendRoutePlan.shop.id,
             startedAt
           }));
       let sendResult: Awaited<ReturnType<CustomerEmailTransport['send']>>;
       try {
         sendResult = await this.transport.send({
-          branding: settings.branding,
+          branding: sendSettings.branding,
           body: recipient.rendered.body,
           commandId: rowCommandId,
           recipientEmail: recipient.email,
-          replyTo: settings.replyTo,
-          senderEmail: settings.senderEmail,
-          senderName: settings.senderName,
+          replyTo: sendSettings.replyTo,
+          senderEmail: sendSettings.senderEmail,
+          senderName: sendSettings.senderName,
           signal: input.signal,
           subject: recipient.rendered.subject,
-          tags: ['customer-delivery-email', input.signal.toLowerCase()],
+          tags: [
+            'customer-delivery-email',
+            input.signal.toLowerCase(),
+            ...(attempt === undefined ? [] : [`customer-email-correlation:${attempt.correlationId}`]),
+          ],
         });
       } catch (error) {
         const status = error instanceof CustomerEmailTransportConfigurationError || error instanceof CustomerEmailTransportSendError
@@ -554,14 +610,7 @@ export class CustomerEmailService {
       }
 
       const sentAt = new Date();
-      await this.updateRecipient(created.dispatchId, recipient.deliveryStopId, {
-        provider: sendResult.provider,
-        providerEventAt: sentAt,
-        providerMessageId: sendResult.providerMessageId,
-        providerStatus: 'ACCEPTED',
-        sentAt,
-        status: 'SENT',
-      });
+      let attemptSettlementError: unknown;
       if (attempt !== undefined) {
         try {
           await this.attempts?.settle({
@@ -570,10 +619,32 @@ export class CustomerEmailService {
             outcome: 'SENT',
             providerMessageId: sendResult.providerMessageId
           });
-        } catch {
-          // The durable STARTED attempt is deliberately retained for reconciliation.
-          // Provider success and the authoritative recipient SENT state must never regress.
+        } catch (error) {
+          attemptSettlementError = error;
         }
+      }
+      try {
+        await this.updateRecipient(created.dispatchId, recipient.deliveryStopId, {
+          provider: sendResult.provider,
+          providerMessageId: sendResult.providerMessageId,
+          sentAt,
+          status: 'SENT',
+        });
+        await this.recordAcceptedProviderEvidence(
+          created.dispatchId,
+          recipient.deliveryStopId,
+          sentAt,
+          sendResult.providerMessageId,
+        );
+      } catch (error) {
+        if (attemptSettlementError !== undefined) {
+          throw new AggregateError(
+            [attemptSettlementError, error],
+            'Customer email provider success evidence was not saved.',
+            { cause: error },
+          );
+        }
+        throw error;
       }
       results.push({
         deliveryStopId: recipient.deliveryStopId,
@@ -602,12 +673,16 @@ export class CustomerEmailService {
     };
   }
 
-  private async findRoutePlan(input: CustomerEmailPreviewInput): Promise<CustomerEmailRoutePlanRow | null> {
-    const routePlan = await this.prisma.routePlan.findFirst({
+  private async findRoutePlan(
+    input: CustomerEmailPreviewInput,
+    client: Pick<Prisma.TransactionClient, 'routePlan'> = this.prisma,
+  ): Promise<CustomerEmailRoutePlanRow | null> {
+    const routePlan = await client.routePlan.findFirst({
       select: {
         id: true,
         name: true,
         planDate: true,
+        status: true,
         routeStops: {
           orderBy: { sequence: 'asc' },
           select: {
@@ -668,66 +743,160 @@ export class CustomerEmailService {
     preview: CustomerEmailPreview;
     routePlan: CustomerEmailRoutePlanRow;
     settings: CustomerEmailSettings;
-    template: { body: string; enabled: boolean; subject: string };
-  }): Promise<{ dispatchId: string; duplicate: boolean }> {
+  }): Promise<{
+    dispatchId: string;
+    duplicate: boolean;
+    preview: CustomerEmailPreview;
+    routePlan: CustomerEmailRoutePlanRow;
+    settings: CustomerEmailSettings;
+  }> {
     try {
-      const dispatch = await this.prisma.customerEmailManualDispatch.create({
-        data: {
-          actor: input.actor,
-          commandId: input.commandId,
-          counts: countDispatchResults([]),
-          request: {
-            deliveryStopIds: input.input.deliveryStopIds ?? null,
+      return await this.prisma.$transaction(async (tx) => {
+        const lockRoutePlan = await this.findRoutePlan(input.input, tx);
+        if (lockRoutePlan === null) throw new CustomerEmailNotFoundError();
+        const lockedStopIds = selectedStopIds(lockRoutePlan, input.input.deliveryStopIds);
+        const lockKeys = lockedStopIds.map(
+          (deliveryStopId) => `customer-email:${lockRoutePlan.shop.id}:${input.input.signal}:${deliveryStopId}`,
+        );
+        for (const key of lockKeys) {
+          await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+        }
+        const existing = await tx.customerEmailManualDispatch.findUnique({
+          select: { id: true },
+          where: {
+            shopId_commandId: {
+              commandId: input.commandId,
+              shopId: input.routePlan.shop.id,
+            },
+          },
+        });
+        if (existing !== null) {
+          return {
+            dispatchId: existing.id,
+            duplicate: true,
+            preview: input.preview,
+            routePlan: input.routePlan,
+            settings: input.settings,
+          };
+        }
+
+        const routePlan = await this.findRoutePlan(input.input, tx);
+        if (routePlan === null) throw new CustomerEmailNotFoundError();
+        if (JSON.stringify(selectedStopIds(routePlan, input.input.deliveryStopIds)) !== JSON.stringify(lockedStopIds)) {
+          throw new CustomerEmailValidationError(
+            'Customer email recipients changed while the send request was being prepared.',
+            'CUSTOMER_EMAIL_PREVIEW_CONFLICT',
+          );
+        }
+        const settings = normalizeCustomerEmailSettings(routePlan.shop.customerEmailSettings);
+        assertConfigured(settings);
+        const eligibleStopIds = selectEligibleStops(
+          routePlan,
+          input.input.signal,
+          input.input.deliveryStopIds,
+          routeOpsNearbyStopsThreshold(routePlan),
+        ).map((stop) => stop.deliveryStop.id);
+        const history = await this.readManualHistory(
+          routePlan.shop.id,
+          input.input.signal,
+          eligibleStopIds,
+          tx,
+        );
+        const preview = buildPreview(routePlan, settings, input.input, history);
+        const template = settings.templates[input.input.signal];
+        if (input.input.previewToken !== undefined && input.input.previewToken !== preview.previewToken) {
+          throw new CustomerEmailValidationError(
+            'Customer email preview is stale or does not match this send request.',
+            'CUSTOMER_EMAIL_PREVIEW_CONFLICT',
+          );
+        }
+        if (!template.enabled) throw new CustomerEmailValidationError('Selected customer email template is disabled.');
+        if (previewHasMissingTemplateValues(preview) && input.input.missingValuesConfirmed !== true) {
+          throw new CustomerEmailValidationError(
+            'Missing customer email template values must be confirmed before sending.',
+            'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED',
+          );
+        }
+        if (previewHasPriorSent(preview) && input.input.resendConfirmed !== true) {
+          throw new CustomerEmailValidationError(
+            'Prior customer email send must be confirmed before resending.',
+            'RESEND_CONFIRMATION_REQUIRED',
+          );
+        }
+        if (previewHasUncertainOutcome(preview)) {
+          throw new CustomerEmailValidationError(
+            'A prior customer email outcome is still pending or unknown. Reconcile it before sending again.',
+            'CUSTOMER_EMAIL_OUTCOME_UNCERTAIN',
+          );
+        }
+
+        const dispatch = await tx.customerEmailManualDispatch.create({
+          data: {
+            actor: input.actor,
+            commandId: input.commandId,
+            counts: countDispatchResults([]),
+            request: {
+              deliveryStopIds: input.input.deliveryStopIds ?? null,
+              previewToken: input.input.previewToken ?? null,
+              routePlanId: input.input.routePlanId,
+              signal: input.input.signal,
+            },
             routePlanId: input.input.routePlanId,
+            shopId: routePlan.shop.id,
             signal: input.input.signal,
+            template: {
+              body: template.body,
+              replyTo: settings.replyTo,
+              senderEmail: settings.senderEmail,
+              senderName: settings.senderName,
+              subject: template.subject,
+            },
+            recipients: {
+              create: [
+                ...preview.skipped.map((skipped) => ({
+                  deliveryStopId: skipped.deliveryStopId,
+                  errorCode: skipped.code,
+                  errorMessage: skipped.message,
+                  orderId: skipped.orderId,
+                  recipientEmail: null,
+                  renderedBody: null,
+                  renderedSubject: null,
+                  routePlanId: input.input.routePlanId,
+                  shopId: routePlan.shop.id,
+                  status: 'SKIPPED',
+                })),
+                ...preview.recipients.map((recipient) => ({
+                  deliveryStopId: recipient.deliveryStopId,
+                  orderId: recipient.orderId,
+                  recipientEmail: recipient.email,
+                  renderedBody: recipient.rendered.body,
+                  renderedSubject: recipient.rendered.subject,
+                  routePlanId: input.input.routePlanId,
+                  shopId: routePlan.shop.id,
+                  status: 'PENDING',
+                })),
+              ],
+            },
           },
-          routePlanId: input.input.routePlanId,
-          shopId: input.routePlan.shop.id,
-          signal: input.input.signal,
-          template: {
-            body: input.template.body,
-            replyTo: input.settings.replyTo,
-            senderEmail: input.settings.senderEmail,
-            senderName: input.settings.senderName,
-            subject: input.template.subject,
-          },
-          recipients: {
-            create: [
-              ...input.preview.skipped.map((skipped) => ({
-                deliveryStopId: skipped.deliveryStopId,
-                errorCode: skipped.code,
-                errorMessage: skipped.message,
-                orderId: skipped.orderId,
-                recipientEmail: null,
-                renderedBody: null,
-                renderedSubject: null,
-                routePlanId: input.input.routePlanId,
-                shopId: input.routePlan.shop.id,
-                status: 'SKIPPED',
-              })),
-              ...input.preview.recipients.map((recipient) => ({
-                deliveryStopId: recipient.deliveryStopId,
-                orderId: recipient.orderId,
-                recipientEmail: recipient.email,
-                renderedBody: recipient.rendered.body,
-                renderedSubject: recipient.rendered.subject,
-                routePlanId: input.input.routePlanId,
-                shopId: input.routePlan.shop.id,
-                status: 'PENDING',
-              })),
-            ],
-          },
-        },
-        select: { id: true },
+          select: { id: true },
+        });
+        return { dispatchId: dispatch.id, duplicate: false, preview, routePlan, settings };
       });
-      return { dispatchId: dispatch.id, duplicate: false };
     } catch (error) {
       if (isUniqueConstraintError(error)) {
         const existing = await this.prisma.customerEmailManualDispatch.findUnique({
           select: { id: true },
           where: { shopId_commandId: { commandId: input.commandId, shopId: input.routePlan.shop.id } },
         });
-        if (existing !== null) return { dispatchId: existing.id, duplicate: true };
+        if (existing !== null) {
+          return {
+            dispatchId: existing.id,
+            duplicate: true,
+            preview: input.preview,
+            routePlan: input.routePlan,
+            settings: input.settings,
+          };
+        }
       }
       throw error;
     }
@@ -752,12 +921,23 @@ export class CustomerEmailService {
             recipientEmail: true,
             sentAt: true,
             status: true,
+            attempts: {
+              orderBy: { completedAt: 'desc' },
+              select: { completedAt: true, outcome: true, providerMessageId: true },
+              take: 1,
+              where: { outcome: 'SENT' },
+            },
           },
         },
       },
       where: { shopId_commandId: { commandId, shopId } },
     });
-    const results = dispatch.recipients.map((recipient) => ({
+    const results = dispatch.recipients.map((recipient) => {
+      const successfulAttempt = recipient.attempts?.[0];
+      const originalStatus = successfulAttempt === undefined
+        ? toDispatchStatus(recipient.status)
+        : 'SENT' as const;
+      return ({
       deliveryStopId: recipient.deliveryStopId,
       email: recipient.recipientEmail,
       errorCode: recipient.errorCode,
@@ -765,12 +945,13 @@ export class CustomerEmailService {
       orderId: recipient.orderId,
       provider: recipient.provider,
       providerEventAt: recipient.providerEventAt?.toISOString() ?? null,
-      providerMessageId: recipient.providerMessageId,
+      providerMessageId: recipient.providerMessageId ?? successfulAttempt?.providerMessageId ?? null,
       providerStatus: recipient.providerStatus,
-      sentAt: recipient.sentAt?.toISOString() ?? null,
-      originalStatus: toDispatchStatus(recipient.status),
-      status: duplicate ? 'DUPLICATE' as const : toDispatchStatus(recipient.status),
-    }));
+      sentAt: recipient.sentAt?.toISOString() ?? successfulAttempt?.completedAt?.toISOString() ?? null,
+      originalStatus,
+      status: duplicate ? 'DUPLICATE' as const : originalStatus,
+    });
+    });
     return {
       commandId: dispatch.commandId,
       counts: duplicate
@@ -803,16 +984,46 @@ export class CustomerEmailService {
     if (updated.count !== 1) throw new Error('Customer email recipient outcome was not saved.');
   }
 
+  private async recordAcceptedProviderEvidence(
+    dispatchId: string,
+    deliveryStopId: string,
+    occurredAt: Date,
+    providerMessageId: string | null,
+  ): Promise<void> {
+    await this.prisma.customerEmailManualDispatchRecipient.updateMany({
+      data: {
+        providerEventAt: occurredAt,
+        providerMessageId,
+        providerStatus: 'ACCEPTED',
+      },
+      where: {
+        deliveryStopId,
+        dispatchId,
+        OR: [
+          { providerEventAt: null },
+          { providerStatus: null },
+          { providerStatus: 'UNKNOWN' },
+        ],
+      },
+    });
+  }
+
   private async readManualHistory(
     shopId: string,
-    routePlanId: string,
     signal: CustomerEmailSignal,
     deliveryStopIds: string[],
+    client: Pick<Prisma.TransactionClient, 'customerEmailManualDispatchRecipient'> = this.prisma,
   ): Promise<Map<string, CustomerEmailManualHistorySummary>> {
     if (deliveryStopIds.length === 0) return new Map();
-    const rows = await this.prisma.customerEmailManualDispatchRecipient.findMany({
+    const rows = await client.customerEmailManualDispatchRecipient.findMany({
       orderBy: { createdAt: 'desc' },
       select: {
+        attempts: {
+          orderBy: { completedAt: 'desc' },
+          select: { completedAt: true, outcome: true, providerMessageId: true },
+          take: 1,
+          where: { outcome: 'SENT' },
+        },
         createdAt: true,
         deliveryStopId: true,
         providerEventAt: true,
@@ -823,25 +1034,34 @@ export class CustomerEmailService {
       where: {
         deliveryStopId: { in: deliveryStopIds },
         dispatch: { signal },
-        routePlanId,
         shopId,
       },
     });
     const summaries = new Map<string, CustomerEmailManualHistorySummary>();
     for (const row of rows) {
       if (row.deliveryStopId === null) continue;
+      const successfulAttempt = row.attempts?.[0];
+      const effectiveStatus = successfulAttempt === undefined ? row.status : 'SENT';
       const current = summaries.get(row.deliveryStopId);
       if (current === undefined) {
         summaries.set(row.deliveryStopId, {
           lastProviderEventAt: row.providerEventAt?.toISOString() ?? null,
           lastProviderStatus: row.providerStatus,
-          lastSentAt: row.status === 'SENT' ? row.sentAt?.toISOString() ?? null : null,
-          lastStatus: row.status,
-          sendCount: row.status === 'SENT' ? 1 : 0,
+          lastSentAt: effectiveStatus === 'SENT'
+            ? row.sentAt?.toISOString() ?? successfulAttempt?.completedAt?.toISOString() ?? null
+            : null,
+          lastStatus: effectiveStatus,
+          sendCount: effectiveStatus === 'SENT' ? 1 : 0,
+          uncertainCount: effectiveStatus === 'PENDING' || effectiveStatus === 'UNKNOWN' ? 1 : 0,
         });
-      } else if (row.status === 'SENT') {
-        current.sendCount += 1;
-        if (current.lastSentAt === null) current.lastSentAt = row.sentAt?.toISOString() ?? null;
+      } else {
+        if (effectiveStatus === 'SENT') {
+          current.sendCount += 1;
+          if (current.lastSentAt === null) {
+            current.lastSentAt = row.sentAt?.toISOString() ?? successfulAttempt?.completedAt?.toISOString() ?? null;
+          }
+        }
+        if (effectiveStatus === 'PENDING' || effectiveStatus === 'UNKNOWN') current.uncertainCount += 1;
       }
     }
     return summaries;
@@ -849,7 +1069,7 @@ export class CustomerEmailService {
 }
 
 export class CustomerEmailValidationError extends Error {
-  readonly code: 'CUSTOMER_EMAIL_SENDER_MANAGED' | 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED' | 'CUSTOMER_EMAIL_BAD_REQUEST' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED';
+  readonly code: 'CUSTOMER_EMAIL_SENDER_MANAGED' | 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED' | 'CUSTOMER_EMAIL_BAD_REQUEST' | 'CUSTOMER_EMAIL_COMMAND_CONFLICT' | 'CUSTOMER_EMAIL_OUTCOME_UNCERTAIN' | 'CUSTOMER_EMAIL_PREVIEW_CONFLICT' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED';
 
   constructor(
     message: string,
@@ -884,7 +1104,9 @@ function buildPreview(
   history: Map<string, CustomerEmailManualHistorySummary> = new Map(),
 ): CustomerEmailPreview {
   const template = settings.templates[input.signal];
+  const selectedStops = selectStops(routePlan, input.deliveryStopIds);
   const eligibleStops = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan));
+  const eligibleStopIds = new Set(eligibleStops.map((stop) => stop.deliveryStop.id));
   const recipients: CustomerEmailRenderedRecipient[] = [];
   const skipped: CustomerEmailSkippedRecipient[] = [];
   for (const stop of eligibleStops) {
@@ -920,16 +1142,48 @@ function buildPreview(
       sequence: stop.sequence,
     });
   }
-  return {
+  const statusExclusions = selectedStops.filter((stop) => !eligibleStopIds.has(stop.deliveryStop.id));
+  const exclusions = buildStatusExclusions(routePlan.status, input.signal, statusExclusions);
+  const exampleBody = renderTemplate(template.body, testTemplateContext(settings));
+  const exampleSubject = renderTemplate(template.subject, testTemplateContext(settings));
+  const previewWithoutToken = {
     counts: {
       eligible: eligibleStops.length,
+      missingEmail: skipped.length,
       rendered: recipients.length,
+      selected: selectedStops.length,
+      sendable: recipients.length,
       skipped: skipped.length,
+      statusExcluded: statusExclusions.length,
       totalStops: routePlan.routeStops.length,
     },
+    example: {
+      diagnostics: { body: exampleBody.diagnostics, subject: exampleSubject.diagnostics },
+      rendered: { body: exampleBody.value, subject: exampleSubject.value },
+    },
+    exclusions,
     recipients,
+    routeStatus: routePlan.status,
     skipped,
   };
+  return {
+    ...previewWithoutToken,
+    previewToken: customerEmailPreviewToken(routePlan, settings, input.signal, input.appId),
+  };
+}
+
+function selectStops(
+  routePlan: CustomerEmailRoutePlanRow,
+  deliveryStopIds: string[] | undefined,
+): CustomerEmailRoutePlanRow['routeStops'] {
+  const selected = new Set((deliveryStopIds ?? []).filter(Boolean));
+  return selected.size === 0
+    ? routePlan.routeStops
+    : routePlan.routeStops.filter((stop) => selected.has(stop.deliveryStop.id));
+}
+
+function selectedStopIds(routePlan: CustomerEmailRoutePlanRow, deliveryStopIds: string[] | undefined): string[] {
+  return selectStops(routePlan, deliveryStopIds).map((stop) => stop.deliveryStop.id).sort();
 }
 
 function selectEligibleStops(
@@ -938,10 +1192,7 @@ function selectEligibleStops(
   deliveryStopIds: string[] | undefined,
   nearbyStopsThreshold: number,
 ): CustomerEmailRoutePlanRow['routeStops'] {
-  const selected = new Set((deliveryStopIds ?? []).filter(Boolean));
-  const stops = selected.size === 0
-    ? routePlan.routeStops
-    : routePlan.routeStops.filter((stop) => selected.has(stop.deliveryStop.id));
+  const stops = selectStops(routePlan, deliveryStopIds);
   switch (signal) {
     case 'DELIVERY_SCHEDULED':
       return stops.filter((stop) => ['ASSIGNED', 'PENDING'].includes(stop.deliveryStop.status));
@@ -959,6 +1210,58 @@ function selectEligibleStops(
         && ['ARRIVED', 'ASSIGNED', 'EN_ROUTE', 'PENDING'].includes(stop.deliveryStop.status));
     }
   }
+}
+
+function buildStatusExclusions(
+  routeStatus: string,
+  signal: CustomerEmailSignal,
+  stops: CustomerEmailRoutePlanRow['routeStops'],
+): CustomerEmailStatusExclusion[] {
+  const counts = new Map<string, number>();
+  for (const stop of stops) {
+    counts.set(stop.deliveryStop.status, (counts.get(stop.deliveryStop.status) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([status, count]) => ({
+    code: routeStatus === 'COMPLETED' ? 'ROUTE_ALREADY_COMPLETED' as const : 'STOP_STATUS_INELIGIBLE' as const,
+    count,
+    message: routeStatus === 'COMPLETED'
+      ? `The route is completed and the selected stops are ${status}, so ${signal} does not apply to them.`
+      : `Stops with status ${status} are not eligible for this notification.`,
+    status,
+  }));
+}
+
+function customerEmailPreviewToken(
+  routePlan: CustomerEmailRoutePlanRow,
+  settings: CustomerEmailSettings,
+  signal: CustomerEmailSignal,
+  appId: string | undefined,
+): string {
+  const template = settings.templates[signal];
+  const snapshot = {
+    appId: appId ?? DEFAULT_SHOPIFY_APP_ID,
+    branding: settings.branding,
+    nearbyStopsThreshold: routeOpsNearbyStopsThreshold(routePlan),
+    replyTo: settings.replyTo,
+    route: {
+      id: routePlan.id,
+      name: routePlan.name,
+      planDate: routePlan.planDate.toISOString(),
+      status: routePlan.status,
+      stops: routePlan.routeStops.map((stop) => ({
+        deliveryStop: stop.deliveryStop,
+        estimatedArrivalAt: stop.estimatedArrivalAt?.toISOString() ?? null,
+        sequence: stop.sequence,
+      })),
+    },
+    senderEmail: settings.senderEmail,
+    senderName: settings.senderName,
+    shop: { id: routePlan.shop.id, shopDomain: routePlan.shop.shopDomain },
+    signal,
+    template,
+  };
+  const digest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+  return `v1:${digest}`;
 }
 
 function routeOpsNearbyStopsThreshold(routePlan: CustomerEmailRoutePlanRow): number {
@@ -1070,8 +1373,40 @@ function previewHasPriorSent(preview: CustomerEmailPreview): boolean {
   return preview.recipients.some((recipient) => recipient.history.lastStatus === 'SENT' || recipient.history.sendCount > 0);
 }
 
+function previewHasUncertainOutcome(preview: CustomerEmailPreview): boolean {
+  return preview.recipients.some((recipient) => recipient.history.uncertainCount > 0);
+}
+
 function emptyManualHistorySummary(): CustomerEmailManualHistorySummary {
-  return { lastProviderEventAt: null, lastProviderStatus: null, lastSentAt: null, lastStatus: null, sendCount: 0 };
+  return { lastProviderEventAt: null, lastProviderStatus: null, lastSentAt: null, lastStatus: null, sendCount: 0, uncertainCount: 0 };
+}
+
+function assertCommandMatchesDispatch(
+  dispatch: { request: unknown; routePlanId: string; signal: string },
+  input: CustomerEmailSendInput,
+): void {
+  const request = isRecord(dispatch.request) ? dispatch.request : {};
+  const storedIds = normalizeStopIds(Array.isArray(request.deliveryStopIds) ? request.deliveryStopIds : undefined);
+  const incomingIds = normalizeStopIds(input.deliveryStopIds);
+  if (
+    dispatch.routePlanId !== input.routePlanId
+    || dispatch.signal !== input.signal
+    || JSON.stringify(storedIds) !== JSON.stringify(incomingIds)
+    || (
+      typeof input.previewToken === 'string'
+      && typeof request.previewToken === 'string'
+      && request.previewToken !== input.previewToken
+    )
+  ) {
+    throw new CustomerEmailValidationError(
+      'commandId is already bound to a different customer email request.',
+      'CUSTOMER_EMAIL_COMMAND_CONFLICT',
+    );
+  }
+}
+
+function normalizeStopIds(value: unknown[] | undefined): string[] {
+  return [...new Set((value ?? []).filter((item): item is string => typeof item === 'string' && item.trim() !== ''))].sort();
 }
 
 function countDispatchResults(results: CustomerEmailDispatchResult[]): CustomerEmailDispatch['counts'] {
@@ -1211,6 +1546,7 @@ export function readCustomerEmailCommandPayload(value: unknown): {
   confirmed?: boolean | undefined;
   deliveryStopIds?: string[] | undefined;
   missingValuesConfirmed?: boolean | undefined;
+  previewToken?: string | undefined;
   resendConfirmed?: boolean | undefined;
   signal: CustomerEmailSignal;
 } | null {
@@ -1221,11 +1557,15 @@ export function readCustomerEmailCommandPayload(value: unknown): {
   if (deliveryStopIds !== undefined && (!Array.isArray(deliveryStopIds) || !deliveryStopIds.every((id) => typeof id === 'string'))) {
     return null;
   }
+  if (value.previewToken !== undefined && (typeof value.previewToken !== 'string' || !/^v1:[a-f0-9]{64}$/u.test(value.previewToken))) {
+    return null;
+  }
   return {
     ...(typeof value.commandId === 'string' ? { commandId: value.commandId } : {}),
     ...(typeof value.confirmed === 'boolean' ? { confirmed: value.confirmed } : {}),
     ...(Array.isArray(deliveryStopIds) ? { deliveryStopIds } : {}),
     ...(typeof value.missingValuesConfirmed === 'boolean' ? { missingValuesConfirmed: value.missingValuesConfirmed } : {}),
+    ...(typeof value.previewToken === 'string' ? { previewToken: value.previewToken } : {}),
     ...(typeof value.resendConfirmed === 'boolean' ? { resendConfirmed: value.resendConfirmed } : {}),
     signal,
   };

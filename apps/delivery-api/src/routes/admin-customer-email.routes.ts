@@ -310,6 +310,7 @@ export function registerAdminCustomerEmailRoutes(
           confirmed: payload.confirmed ?? false,
           deliveryStopIds: payload.deliveryStopIds,
           ...(payload.missingValuesConfirmed === undefined ? {} : { missingValuesConfirmed: payload.missingValuesConfirmed }),
+          ...(payload.previewToken === undefined ? {} : { previewToken: payload.previewToken }),
           ...(payload.resendConfirmed === undefined ? {} : { resendConfirmed: payload.resendConfirmed }),
           routePlanId: request.params.routePlanId,
           signal: payload.signal,
@@ -403,16 +404,16 @@ function matchesBearerToken(authorization: string | undefined, expected: string)
   return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
 
-function readBrevoProviderEvents(value: unknown): Array<{ occurredAt: Date; providerMessageId: string; status: string }> | null {
+function readBrevoProviderEvents(value: unknown): Array<{ correlationId?: string; occurredAt: Date; providerMessageId: string; status: string }> | null {
   const items = Array.isArray(value) ? value : [value];
   if (items.length === 0 || items.length > 100) return null;
   const events = items.map(readBrevoProviderEvent);
   return events.some((event) => event === null)
     ? null
-    : events as Array<{ occurredAt: Date; providerMessageId: string; status: string }>;
+    : events as Array<{ correlationId?: string; occurredAt: Date; providerMessageId: string; status: string }>;
 }
 
-function readBrevoProviderEvent(value: unknown): { occurredAt: Date; providerMessageId: string; status: string } | null {
+function readBrevoProviderEvent(value: unknown): { correlationId?: string; occurredAt: Date; providerMessageId: string; status: string } | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const payload = value as Record<string, unknown>;
   const messageId = [payload['message-id'], payload.messageId, payload.message_id]
@@ -421,7 +422,23 @@ function readBrevoProviderEvent(value: unknown): { occurredAt: Date; providerMes
   if (typeof messageId !== 'string' || messageId.length > 500 || event === '') return null;
   const occurredAt = readProviderEventDate(payload.ts_event ?? payload.ts ?? payload.date);
   if (occurredAt === null) return null;
-  return { occurredAt, providerMessageId: messageId.trim(), status: normalizeProviderStatus(event) };
+  const correlationId = readProviderCorrelationId(payload.tags);
+  return {
+    ...(correlationId === null ? {} : { correlationId }),
+    occurredAt,
+    providerMessageId: messageId.trim(),
+    status: normalizeProviderStatus(event),
+  };
+}
+
+function readProviderCorrelationId(value: unknown): string | null {
+  const tags = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+  for (const tag of tags) {
+    if (typeof tag !== 'string') continue;
+    const match = /^customer-email-correlation:([A-Za-z0-9-]{1,128})$/u.exec(tag.trim());
+    if (match?.[1] !== undefined) return match[1];
+  }
+  return null;
 }
 
 function readProviderEventDate(value: unknown): Date | null {
@@ -440,7 +457,7 @@ function normalizeProviderStatus(value: string): string {
   const normalized = value.replace(/[^a-zA-Z]/gu, '').toLowerCase();
   const known: Record<string, string> = {
     accepted: 'ACCEPTED', blocked: 'BLOCKED', clicked: 'CLICKED', deferred: 'DEFERRED', delivered: 'DELIVERED',
-    hardbounce: 'HARD_BOUNCE', invalid: 'INVALID', opened: 'OPENED', softbounce: 'SOFT_BOUNCE',
+    error: 'ERROR', hardbounce: 'HARD_BOUNCE', invalid: 'INVALID', opened: 'OPENED', softbounce: 'SOFT_BOUNCE',
     request: 'ACCEPTED', sent: 'ACCEPTED', spam: 'SPAM', uniqueopened: 'OPENED', unsubscribed: 'UNSUBSCRIBED'
   };
   return known[normalized] ?? 'UNKNOWN';

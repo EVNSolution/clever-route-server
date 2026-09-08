@@ -22,7 +22,7 @@ This document records how `clever-route-server` should treat location informatio
 | Route plan stop sequence/location context | `RoutePlanStop`, related `DeliveryStop` | Route execution and audit | High when joined with customer address | Log accesses when returned through admin/driver APIs. |
 | Shopify snapshot coordinates | `Order.rawPayload.shippingAddress.latitude/longitude` if app sends full snapshot | Original source snapshot | High and duplicated | Remove from raw payload in a hardening pass; keep coordinates only in `DeliveryStop`. |
 | Shipping address | `Order.shippingAddress`, `DeliveryStop.address*` | Delivery destination | Personal data, can infer location | Apply same access logging and minimization mindset even without explicit GPS coordinates. |
-| Email | `Order.email`, route plan payloads, tests | Legacy/customer contact | Protected customer data risk | Do not query from Shopify Admin API; stop searching/storing unless app explicitly and lawfully provides it. |
+| Email | `Order.email`, route plan payloads, tests | Explicitly configured customer delivery notifications | Protected customer data risk | Query `Order.email` only with the tenant's approved access, normalize it into `Order.email`, omit it from `rawPayload` and logs, and never fetch it as a send-time fallback. |
 
 ## Record classes and role separation
 
@@ -145,7 +145,7 @@ The codebase can support technical controls, but the service plan also needs man
 - No 5-year access-right grant/change/revoke audit table yet.
 - Raw payloads can still duplicate coordinates from Shopify/app snapshots.
 - Existing `Order.rawPayload` rows require a backfill sanitizer pass.
-- Admin order search still includes `Order.email` at repository level even though Shopify query no longer requests email.
+- Admin order search and customer notification eligibility use normalized `Order.email`; Shopify synchronization requests that field under approved tenant access while raw payload and logs remain minimized.
 - API-level read logging coverage is not yet mapped endpoint-by-endpoint in code.
 - Route plan scope validation is implemented, but top-level route-scope fields on order inputs should be accepted to reduce app coupling to `rawPayload`.
 - Route-plan time-window conversion should reuse the same Toronto timezone helper as order sync.

@@ -55,13 +55,26 @@ describe('admin customer email routes', () => {
       });
       const accepted = await app.inject({
         headers: { authorization: 'Bearer webhook-secret' }, method: 'POST',
-        payload: { email: 'ignored@example.test', event: 'delivered', 'message-id': 'provider-id', ts_event: 1788014100 },
+        payload: [
+          {
+            email: 'ignored@example.test',
+            event: 'delivered',
+            'message-id': 'provider-id',
+            tags: ['customer-email-correlation:attempt-correlation'],
+            ts_event: 1788014100,
+          },
+          { event: 'error', 'message-id': 'provider-error-id', ts_event: 1788014101 },
+        ],
         url: '/webhooks/customer-email/brevo'
       });
       expect(unauthorized.statusCode).toBe(401);
       expect(accepted.statusCode).toBe(204);
-      expect(providerRecord).toHaveBeenCalledWith({
+      expect(providerRecord).toHaveBeenNthCalledWith(1, {
+        correlationId: 'attempt-correlation',
         occurredAt: new Date(1788014100 * 1_000), providerMessageId: 'provider-id', status: 'DELIVERED'
+      });
+      expect(providerRecord).toHaveBeenNthCalledWith(2, {
+        occurredAt: new Date(1788014101 * 1_000), providerMessageId: 'provider-error-id', status: 'ERROR'
       });
       expect(JSON.stringify(providerRecord.mock.calls)).not.toContain('ignored@example.test');
     } finally {
@@ -422,6 +435,7 @@ describe('admin customer email routes', () => {
           confirmed: true,
           deliveryStopIds: ['stop-1'],
           missingValuesConfirmed: true,
+          previewToken: `v1:${'a'.repeat(64)}`,
           resendConfirmed: true,
           signal: 'DELIVERY_SCHEDULED',
         },
@@ -448,6 +462,7 @@ describe('admin customer email routes', () => {
         confirmed: true,
         deliveryStopIds: ['stop-1'],
         missingValuesConfirmed: true,
+        previewToken: `v1:${'a'.repeat(64)}`,
         resendConfirmed: true,
         routePlanId: 'route-id',
         shopDomain: 'example.myshopify.com',
