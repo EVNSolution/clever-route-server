@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import { mapShopifyOrderNodeToDeliveryInputs } from '../src/modules/shopify/order-sync.mapper.js';
-import { buildOrdersUpdatedSinceQuery } from '../src/modules/shopify/order-sync.query.js';
+import { buildOrderByIdQuery, buildOrdersUpdatedSinceQuery } from '../src/modules/shopify/order-sync.query.js';
 
 describe('buildOrdersUpdatedSinceQuery', () => {
   test('builds an updated_at paginated orders query payload', () => {
@@ -18,11 +18,31 @@ describe('buildOrdersUpdatedSinceQuery', () => {
     });
     expect(payload.query).toContain('orders(first: $first, after: $after, query: $query');
     expect(payload.query).toContain('shippingAddress');
+    expect(payload.query).toContain('email');
     expect(payload.query).toContain('coordinatesValidated');
     expect(payload.query).toContain('validationResultSummary');
     expect(payload.query).toContain('currentShippingPriceSet');
     expect(payload.query).toContain('paymentGatewayNames');
     expect(payload.query).toContain('tags');
+  });
+
+  test('keeps bulk and webhook refetch queries aligned with every mapped Shopify field', () => {
+    const queries = [
+      buildOrdersUpdatedSinceQuery({ first: 1, updatedSince: new Date('2026-09-08T00:00:00.000Z') }).query,
+      buildOrderByIdQuery({ id: 'gid://shopify/Order/1' }).query,
+    ];
+    const mappedFields = [
+      'id', 'legacyResourceId', 'name', 'email', 'phone', 'displayFinancialStatus',
+      'paymentGatewayNames', 'displayFulfillmentStatus', 'createdAt', 'processedAt',
+      'updatedAt', 'cancelledAt', 'note', 'tags', 'customAttributes', 'lineItems',
+      'currentTotalPriceSet', 'currentShippingPriceSet', 'shippingAddress', 'address1',
+      'address2', 'city', 'province', 'provinceCode', 'zip', 'countryCodeV2', 'latitude',
+      'longitude', 'coordinatesValidated', 'validationResultSummary',
+    ];
+
+    for (const query of queries) {
+      for (const field of mappedFields) expect(query).toMatch(new RegExp(`\\b${field}\\b`, 'u'));
+    }
   });
 });
 
@@ -68,6 +88,7 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
     });
 
     expect(mapped.order.rawPayload.id).toBe('gid://shopify/Order/123');
+    expect(mapped.order.rawPayload).not.toHaveProperty('email');
     expect(mapped.order.rawPayload.currentShippingPriceSet).toEqual({
       shopMoney: {
         amount: '12.34',

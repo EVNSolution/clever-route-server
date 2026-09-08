@@ -30,6 +30,7 @@ const ORDER_FIELDS = `#graphql
         id
         legacyResourceId
         name
+        email
         phone
         displayFinancialStatus
         paymentGatewayNames

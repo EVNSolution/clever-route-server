@@ -4078,7 +4078,12 @@ paths:
     post:
       tags: [Shopify Embedded Admin]
       summary: Preview manual customer delivery email recipients for a route
-      description: Does not send email or enqueue automatic notification facts. Response is `data.preview`.
+      description: >-
+        Does not send email or enqueue automatic notification facts. Response
+        is `data.preview` and always includes a generic rendered `example`,
+        route/status exclusions, sendable/missing/status-excluded counts, and a
+        `previewToken`. The example remains available when the selected signal
+        does not apply to a completed route.
       operationId: previewAdminRoutePlanCustomerEmail
       x-clever-audience: shopify-embedded-admin
       x-side-effect: read
@@ -4118,8 +4123,12 @@ paths:
         counts while returning the original recipient/provider evidence in
         `originalStatus`, `providerStatus`, `providerEventAt`, and `sentAt`.
         Original `PENDING` or `UNKNOWN` outcomes are never treated as failed or
-        retried automatically. Failure to settle auxiliary attempt accounting
-        does not replace an already durable recipient outcome.
+        retried automatically. A supplied `previewToken` binds the route,
+        template, sender settings, and stop data while allowing a verified
+        subset of the previewed stops. Different command IDs for the same
+        route stop and signal are serialized before provider delivery. Durable
+        provider attempt evidence can recover a recipient result when the
+        recipient-row write fails.
       operationId: sendAdminRoutePlanCustomerEmail
       x-clever-audience: shopify-embedded-admin
       x-side-effect: external-email-send
@@ -5716,6 +5725,13 @@ components:
           type: boolean
         commandId:
           type: string
+        missingValuesConfirmed:
+          type: boolean
+        previewToken:
+          type: string
+          pattern: '^v1:[a-f0-9]{64}$'
+        resendConfirmed:
+          type: boolean
       additionalProperties: false
     RoutesAppInstallUnavailableResponse:
       type: object

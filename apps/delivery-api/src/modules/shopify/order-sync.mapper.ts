@@ -328,6 +328,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
   node: ShopifyOrderNode,
   options: { deliveryCycle?: DeliveryCycleConfig } = {},
 ): SyncedOrderWithDeliveryStopInput {
+  const { email: canonicalEmail, ...sourceSnapshot } = node;
   const attributes = normalizeAttributes(node.customAttributes ?? []);
   const rawDeliveryArea = readAttribute(attributes, "Delivery Area");
   const deliveryDateRaw = readDeliveryDateAttribute(attributes);
@@ -461,7 +462,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       deliveryDayRaw: canonicalDayRaw,
       deliverySession: scope.deliverySession,
       deliveryWeekday: scope.deliveryWeekday,
-      email: node.email,
+      email: canonicalEmail,
       financialStatus: node.displayFinancialStatus,
       fulfillmentStatus: node.displayFulfillmentStatus,
       name: node.name,
@@ -472,7 +473,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       planningGroupKey: scope.planningGroupKey,
       processedAt: parseOptionalDate(node.processedAt),
       rawPayload: {
-        ...node,
+        ...sourceSnapshot,
         attributes,
         deliveryArea,
         deliveryBatchEndDate: scope.deliveryBatchEndDate,
