@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { buildApp } from '../src/app.js';
 import {
+  CustomerEmailService,
   CustomerEmailValidationError,
   CustomerEmailVersionConflictError,
 } from '../src/modules/customer-email/customer-email.service.js';
@@ -212,6 +213,94 @@ describe('admin customer email routes', () => {
     }
   });
 
+  test('preserves the company sender through global and legacy HTTP writes with app-scoped CAS', async () => {
+    const current = {
+      ...defaultCustomerEmailSettings(),
+      senderEmail: 'company@clever.example',
+    };
+    const updatedAt = new Date('2026-09-08T00:00:00.000Z');
+    const shop = {
+      findUnique: vi.fn().mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    };
+    const customerEmailService = new CustomerEmailService({ shop } as never, { send: vi.fn() } as never);
+    const { dependencies } = createHarness();
+    const app = await buildApp({
+      adminCustomerEmail: { ...dependencies, customerEmailService },
+    });
+    const globalPayload = {
+      branding: current.branding,
+      expectedVersion: current.globalVersion,
+      replyTo: null,
+      senderName: 'CLEVER',
+    };
+    const legacyPayload = {
+      nearbyStopsThreshold: current.compatibility.nearbyStopsThreshold,
+      replyTo: null,
+      senderName: 'CLEVER',
+      templates: current.templates,
+      version: 1,
+    };
+    const request = (url: string, payload: Record<string, unknown>) => app.inject({
+      headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'custom-app' },
+      method: 'PATCH',
+      payload,
+      url,
+    });
+
+    try {
+      for (const [url, payload] of [
+        ['/admin/customer-email/settings/global', globalPayload],
+        ['/admin/customer-email/settings/global', { ...globalPayload, senderEmail: ' COMPANY@CLEVER.EXAMPLE ' }],
+        ['/admin/customer-email/settings', legacyPayload],
+        ['/admin/customer-email/settings', { ...legacyPayload, senderEmail: ' COMPANY@CLEVER.EXAMPLE ' }],
+      ] as const) {
+        const response = await request(url, payload);
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+          data: { customerEmailSettings: { senderEmail: 'company@clever.example' } },
+          error: null,
+        });
+      }
+
+      for (const [url, payload] of [
+        ['/admin/customer-email/settings/global', { ...globalPayload, senderEmail: 'merchant@example.com' }],
+        ['/admin/customer-email/settings', { ...legacyPayload, senderEmail: 'merchant@example.com' }],
+      ] as const) {
+        const response = await request(url, payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({
+          data: null,
+          error: {
+            code: 'CUSTOMER_EMAIL_SENDER_MANAGED',
+            message: 'The sender email address is managed by CLEVER.',
+          },
+        });
+      }
+
+      shop.updateMany.mockResolvedValueOnce({ count: 0 });
+      const conflict = await request('/admin/customer-email/settings/global', globalPayload);
+      expect(conflict.statusCode).toBe(409);
+      expect(conflict.json()).toEqual({
+        data: null,
+        error: {
+          code: 'SETTINGS_VERSION_CONFLICT',
+          message: 'Customer email global settings version conflict.',
+        },
+      });
+      expect(shop.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+        where: {
+          appId_shopDomain: {
+            appId: 'custom-app',
+            shopDomain: 'example.myshopify.com',
+          },
+        },
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
   test('saves one template and rejects invalid template signals', async () => {
     const { dependencies, service } = createHarness();
     const app = await buildApp({ adminCustomerEmail: dependencies });
@@ -389,6 +478,7 @@ describe('admin customer email routes', () => {
         },
         method: 'POST',
         payload: {
+          confirmed: true,
           recipientEmail: 'customer@example.com',
           signal: 'DELIVERY_SCHEDULED',
         },
@@ -408,14 +498,45 @@ describe('admin customer email routes', () => {
     }
   });
 
+  test.each([
+    ['omitted', {}],
+    ['false', { confirmed: false }],
+    ['string', { confirmed: 'true' }],
+    ['numeric', { confirmed: 1 }],
+  ])('rejects %s test confirmation before calling the service', async (_label, confirmation) => {
+    const { dependencies, service } = createHarness();
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { ...confirmation, recipientEmail: 'customer@example.com' },
+        url: '/admin/customer-email/test',
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED',
+          message: 'Test customer email send must be confirmed.',
+        },
+      });
+      expect(service.sendTest).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects oversized test subject and body overrides before sending', async () => {
     const { dependencies, service } = createHarness();
     const app = await buildApp({ adminCustomerEmail: dependencies });
 
     try {
       for (const payload of [
-        { recipientEmail: 'customer@example.com', subject: 's'.repeat(201) },
-        { body: 'b'.repeat(10_001), recipientEmail: 'customer@example.com' },
+        { confirmed: true, recipientEmail: 'customer@example.com', subject: 's'.repeat(201) },
+        { body: 'b'.repeat(10_001), confirmed: true, recipientEmail: 'customer@example.com' },
       ]) {
         const response = await app.inject({
           headers: { authorization: 'Bearer session-token' },

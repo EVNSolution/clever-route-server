@@ -3553,8 +3553,11 @@ paths:
       tags: [Shopify Embedded Admin]
       summary: Save versioned manual customer delivery email settings
       description: >-
-        Payload must include `version: 1`, `nearbyStopsThreshold`, sender
-        fields, and all five templates with `enabled`, `subject`, and `body`.
+        Legacy v1/v2 payloads must include `nearbyStopsThreshold`,
+        sender name, and all five templates with `enabled`, `subject`, and
+        `body`. The company-managed sender email may be omitted or repeated
+        with case/whitespace normalization; attempts to change it fail with
+        `CUSTOMER_EMAIL_SENDER_MANAGED`.
       operationId: saveAdminCustomerEmailSettings
       x-clever-audience: shopify-embedded-admin
       x-side-effect: write-clever-db
@@ -3567,7 +3570,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [version, senderName, senderEmail, nearbyStopsThreshold, templates]
+              required: [version, senderName, nearbyStopsThreshold, templates]
               additionalProperties: false
       responses:
         '200':
@@ -3582,10 +3585,17 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /admin/customer-email/settings/global:
     patch:
       tags: [Shopify Embedded Admin]
       summary: Patch global manual customer delivery email settings
+      description: >-
+        Uses `expectedVersion` compare-and-swap semantics. The company-managed
+        sender email may be omitted or repeated with case/whitespace
+        normalization; attempts to change it fail with
+        `CUSTOMER_EMAIL_SENDER_MANAGED`.
       operationId: patchAdminCustomerEmailGlobalSettings
       x-clever-audience: shopify-embedded-admin
       x-side-effect: write-clever-db
@@ -3596,7 +3606,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, additionalProperties: true }
+            schema:
+              type: object
+              properties:
+                senderEmail:
+                  type: string
+                  description: The current company-managed sender address, or the canonical empty value while unconfigured.
+              additionalProperties: true
       responses:
         '200':
           description: Saved settings envelope with `data.customerEmailSettings`.
@@ -3610,6 +3626,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /admin/customer-email/settings/templates/{signal}:
     parameters:
       - name: signal
@@ -3699,7 +3717,10 @@ paths:
     post:
       tags: [Shopify Embedded Admin]
       summary: Send an administrator-triggered test customer email
-      description: Sends only to the arbitrary test recipient in the request. The Brevo API key remains server-side.
+      description: >-
+        Requires the literal boolean `confirmed: true` before any provider
+        request. Sends only to the arbitrary test recipient in the request.
+        The Brevo API key remains server-side.
       operationId: sendAdminCustomerEmailTest
       x-clever-audience: shopify-embedded-admin
       x-side-effect: external-email-send
@@ -3712,8 +3733,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [recipientEmail]
+              required: [confirmed, recipientEmail]
               properties:
+                confirmed: { type: boolean, const: true }
                 recipientEmail: { type: string, format: email }
                 signal:
                   type: string
@@ -4091,7 +4113,13 @@ paths:
       description: >-
         Requires `confirmed: true` and `commandId`. Uses a separate manual
         dispatch audit model; it never claims existing queued
-        `CustomerRouteNotificationFact` rows.
+        `CustomerRouteNotificationFact` rows. Replaying a command performs no
+        new provider send and preserves the legacy `DUPLICATE` status and
+        counts while returning the original recipient/provider evidence in
+        `originalStatus`, `providerStatus`, `providerEventAt`, and `sentAt`.
+        Original `PENDING` or `UNKNOWN` outcomes are never treated as failed or
+        retried automatically. Failure to settle auxiliary attempt accounting
+        does not replace an already durable recipient outcome.
       operationId: sendAdminRoutePlanCustomerEmail
       x-clever-audience: shopify-embedded-admin
       x-side-effect: external-email-send

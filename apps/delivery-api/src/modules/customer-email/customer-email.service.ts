@@ -111,7 +111,11 @@ export type CustomerEmailDispatchResult = {
   orderId: string | null;
   provider: string | null;
   providerMessageId: string | null;
-  status: 'DUPLICATE' | 'FAILED' | 'SENT' | 'SKIPPED';
+  originalStatus?: 'FAILED' | 'PENDING' | 'SENT' | 'SKIPPED' | 'UNKNOWN';
+  providerStatus?: string | null;
+  providerEventAt?: string | null;
+  sentAt?: string | null;
+  status: 'DUPLICATE' | 'FAILED' | 'SENT' | 'SKIPPED' | 'UNKNOWN' | 'PENDING';
 };
 
 type CustomerEmailPrismaClient = Pick<
@@ -188,16 +192,21 @@ export class CustomerEmailService {
     if (isRecord(input.payload) && input.payload.version === 3) {
       throw new CustomerEmailValidationError('Customer email V3 full settings writes are not allowed. Use scoped global or template settings endpoints.');
     }
-    const settings = normalizeCustomerEmailSettings(input.payload);
     const shop = await this.prisma.shop.findUnique({
-      select: { id: true },
+      select: { customerEmailSettings: true, id: true, updatedAt: true },
       where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }),
     });
     if (shop === null) return null;
-    await this.prisma.shop.update({
+    const current = normalizeCustomerEmailSettings(shop.customerEmailSettings);
+    assertCompanySender(input.payload, current.senderEmail);
+    const settings = normalizeCustomerEmailSettings({ ...input.payload, senderEmail: current.senderEmail });
+    const updateResult = await this.prisma.shop.updateMany({
       data: { customerEmailSettings: settings },
-      where: { id: shop.id },
+      where: { id: shop.id, updatedAt: shop.updatedAt },
     });
+    if (updateResult.count === 0) {
+      throw new CustomerEmailVersionConflictError('SETTINGS_VERSION_CONFLICT', 'Customer email settings version conflict.');
+    }
     return settings;
   }
 
@@ -217,6 +226,7 @@ export class CustomerEmailService {
     if (payload.expectedVersion !== current.globalVersion) {
       throw new CustomerEmailVersionConflictError('SETTINGS_VERSION_CONFLICT', 'Customer email global settings version conflict.');
     }
+    assertCompanySender(payload, current.senderEmail);
     const next = validateCustomerEmailSettingsPayload({
       ...current,
       branding: {
@@ -225,7 +235,7 @@ export class CustomerEmailService {
       },
       globalVersion: current.globalVersion + 1,
       replyTo: payload.replyTo,
-      senderEmail: payload.senderEmail,
+      senderEmail: current.senderEmail,
       senderName: payload.senderName,
     }, { allowAutomaticEnabled: true });
     const updateResult = await this.prisma.shop.updateMany({
@@ -323,11 +333,15 @@ export class CustomerEmailService {
   async sendTest(input: {
     appId?: string | undefined;
     body?: string | undefined;
+    confirmed: boolean;
     recipientEmail: string;
     shopDomain: string;
     signal?: CustomerEmailSignal | undefined;
     subject?: string | undefined;
   }): Promise<{ messageId: string | null; provider: string; recipientEmail: string; sentAt: string }> {
+    if (input.confirmed !== true) {
+      throw new CustomerEmailValidationError('Test customer email send must be confirmed.', 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED');
+    }
     const settings = await this.getSettings(input);
     if (settings === null) throw new CustomerEmailNotFoundError();
     assertConfigured(settings);
@@ -421,6 +435,11 @@ export class CustomerEmailService {
 
     const routePlan = await this.findRoutePlan(input);
     if (routePlan === null) return null;
+    const existing = await this.prisma.customerEmailManualDispatch.findUnique({
+      select: { id: true },
+      where: { shopId_commandId: { commandId: input.commandId, shopId: routePlan.shop.id } },
+    });
+    if (existing !== null) return this.readExistingDispatch(routePlan.shop.id, input.commandId, true);
     const settings = normalizeCustomerEmailSettings(routePlan.shop.customerEmailSettings);
     assertConfigured(settings);
     const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
@@ -496,23 +515,31 @@ export class CustomerEmailService {
           tags: ['customer-delivery-email', input.signal.toLowerCase()],
         });
       } catch (error) {
+        const status = error instanceof CustomerEmailTransportConfigurationError || error instanceof CustomerEmailTransportSendError
+          ? 'FAILED' : 'UNKNOWN';
         const errorCode = error instanceof CustomerEmailTransportConfigurationError
           ? 'CUSTOMER_EMAIL_NOT_CONFIGURED'
           : error instanceof CustomerEmailTransportSendError
             ? 'CUSTOMER_EMAIL_SEND_FAILED'
-            : 'CUSTOMER_EMAIL_SEND_ERROR';
+            : 'CUSTOMER_EMAIL_OUTCOME_UNKNOWN';
         const errorMessage = error instanceof Error ? error.message : 'Customer email send failed.';
         await this.updateRecipient(created.dispatchId, recipient.deliveryStopId, {
           errorCode,
           errorMessage,
-          status: 'FAILED',
+          status,
         });
-        if (attempt !== undefined) await this.attempts?.settle({
-          attemptId: attempt.attemptId,
-          completedAt: new Date(),
-          errorCode,
-          outcome: 'TERMINAL_FAILURE'
-        });
+        if (attempt !== undefined && status === 'FAILED') {
+          try {
+            await this.attempts?.settle({
+              attemptId: attempt.attemptId,
+              completedAt: new Date(),
+              errorCode,
+              outcome: 'TERMINAL_FAILURE'
+            });
+          } catch {
+            // Keep the authoritative recipient result; reconcile the STARTED attempt later.
+          }
+        }
         results.push({
           deliveryStopId: recipient.deliveryStopId,
           email: recipient.email,
@@ -521,7 +548,7 @@ export class CustomerEmailService {
           orderId: recipient.orderId,
           provider: null,
           providerMessageId: null,
-          status: 'FAILED',
+          status,
         });
         continue;
       }
@@ -719,8 +746,11 @@ export class CustomerEmailService {
             errorMessage: true,
             orderId: true,
             provider: true,
+            providerEventAt: true,
             providerMessageId: true,
+            providerStatus: true,
             recipientEmail: true,
+            sentAt: true,
             status: true,
           },
         },
@@ -734,7 +764,11 @@ export class CustomerEmailService {
       errorMessage: recipient.errorMessage,
       orderId: recipient.orderId,
       provider: recipient.provider,
+      providerEventAt: recipient.providerEventAt?.toISOString() ?? null,
       providerMessageId: recipient.providerMessageId,
+      providerStatus: recipient.providerStatus,
+      sentAt: recipient.sentAt?.toISOString() ?? null,
+      originalStatus: toDispatchStatus(recipient.status),
       status: duplicate ? 'DUPLICATE' as const : toDispatchStatus(recipient.status),
     }));
     return {
@@ -759,13 +793,14 @@ export class CustomerEmailService {
       providerMessageId?: string | null | undefined;
       providerStatus?: string | null | undefined;
       sentAt?: Date | null | undefined;
-      status: 'FAILED' | 'SENT';
+      status: 'FAILED' | 'SENT' | 'UNKNOWN';
     },
   ): Promise<void> {
-    await this.prisma.customerEmailManualDispatchRecipient.updateMany({
+    const updated = await this.prisma.customerEmailManualDispatchRecipient.updateMany({
       data: compactUpdateData(data),
       where: { deliveryStopId, dispatchId },
     });
+    if (updated.count !== 1) throw new Error('Customer email recipient outcome was not saved.');
   }
 
   private async readManualHistory(
@@ -814,11 +849,11 @@ export class CustomerEmailService {
 }
 
 export class CustomerEmailValidationError extends Error {
-  readonly code: 'CUSTOMER_EMAIL_BAD_REQUEST' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED';
+  readonly code: 'CUSTOMER_EMAIL_SENDER_MANAGED' | 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED' | 'CUSTOMER_EMAIL_BAD_REQUEST' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED';
 
   constructor(
     message: string,
-    code: 'CUSTOMER_EMAIL_BAD_REQUEST' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED' = 'CUSTOMER_EMAIL_BAD_REQUEST',
+    code: CustomerEmailValidationError['code'] = 'CUSTOMER_EMAIL_BAD_REQUEST',
   ) {
     super(message);
     this.code = code;
@@ -1048,9 +1083,9 @@ function countDispatchResults(results: CustomerEmailDispatchResult[]): CustomerE
   };
 }
 
-function toDispatchStatus(value: string): CustomerEmailDispatchResult['status'] {
-  if (value === 'SENT' || value === 'FAILED' || value === 'SKIPPED') return value;
-  return 'FAILED';
+function toDispatchStatus(value: string): NonNullable<CustomerEmailDispatchResult['originalStatus']> {
+  if (value === 'SENT' || value === 'FAILED' || value === 'SKIPPED' || value === 'PENDING') return value;
+  return 'UNKNOWN';
 }
 
 function normalizeShopDomain(value: string): string {
@@ -1072,7 +1107,7 @@ function compactUpdateData(input: {
   providerMessageId?: string | null | undefined;
   providerStatus?: string | null | undefined;
   sentAt?: Date | null | undefined;
-  status: 'FAILED' | 'SENT';
+  status: 'FAILED' | 'SENT' | 'UNKNOWN';
 }): Prisma.CustomerEmailManualDispatchRecipientUpdateManyMutationInput {
   return {
     ...(input.errorCode === undefined ? {} : { errorCode: input.errorCode }),
@@ -1111,10 +1146,10 @@ export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
   branding: Partial<CustomerEmailBranding>;
   expectedVersion: number;
   replyTo: string | null;
-  senderEmail: string;
+  senderEmail?: string;
   senderName: string;
 } | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['branding', 'expectedVersion', 'replyTo', 'senderEmail', 'senderName'])) return null;
+  if (!isRecord(value) || !hasOnlyKeys({ senderEmail: '', ...value }, ['branding', 'expectedVersion', 'replyTo', 'senderEmail', 'senderName'])) return null;
   if (typeof value.expectedVersion !== 'number' || !Number.isInteger(value.expectedVersion)) return null;
   if (!isRecord(value.branding)) return null;
   try {
@@ -1122,14 +1157,14 @@ export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
     const settings = validateCustomerEmailSettingsPayload({
       ...current,
       replyTo: value.replyTo,
-      senderEmail: value.senderEmail,
+      senderEmail: 'senderEmail' in value ? value.senderEmail : '',
       senderName: value.senderName,
     });
     return {
       branding: value.branding,
       expectedVersion: value.expectedVersion,
       replyTo: settings.replyTo,
-      senderEmail: settings.senderEmail,
+      ...('senderEmail' in value ? { senderEmail: settings.senderEmail } : {}),
       senderName: settings.senderName,
     };
   } catch {
@@ -1198,17 +1233,19 @@ export function readCustomerEmailCommandPayload(value: unknown): {
 
 export function readCustomerEmailTestPayload(value: unknown): {
   body?: string | undefined;
+  confirmed: true;
   recipientEmail: string;
   signal?: CustomerEmailSignal | undefined;
   subject?: string | undefined;
 } | null {
-  if (!isRecord(value) || typeof value.recipientEmail !== 'string') return null;
+  if (!isRecord(value) || value.confirmed !== true || typeof value.recipientEmail !== 'string') return null;
   if (typeof value.subject === 'string' && value.subject.length > 200) return null;
   if (typeof value.body === 'string' && value.body.length > 10_000) return null;
   const signal = value.signal === undefined ? undefined : readCustomerEmailSignal(value.signal);
   if (value.signal !== undefined && signal === null) return null;
   return {
     ...(typeof value.body === 'string' ? { body: value.body } : {}),
+    confirmed: true,
     recipientEmail: value.recipientEmail,
     ...(signal === undefined || signal === null ? {} : { signal }),
     ...(typeof value.subject === 'string' ? { subject: value.subject } : {}),
@@ -1217,6 +1254,12 @@ export function readCustomerEmailTestPayload(value: unknown): {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function assertCompanySender(payload: object, senderEmail: string): void {
+  if ('senderEmail' in payload && (typeof payload.senderEmail !== 'string' || payload.senderEmail.trim().toLowerCase() !== senderEmail)) {
+    throw new CustomerEmailValidationError('The sender email address is managed by CLEVER.', 'CUSTOMER_EMAIL_SENDER_MANAGED');
+  }
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: string[]): boolean {

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
+import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 
 const enabled = process.env.ROUTE_COPY_DATABASE_TARGET_CLASS === 'safe-local-route-copy-disposable';
 const databaseUrl = process.env.ROUTE_COPY_DATABASE_URL;
@@ -259,5 +260,160 @@ describeDatabase('route group copy database invariants', () => {
       .rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
     await expect(service.copyGrouping({ actor: 'integration', expectedUpdatedAt: second!.updatedAt, groupingId: second!.id, mode: 'REFERENCE', shopDomain }))
       .rejects.toMatchObject({ code: 'CUSTOM_ORDER_REFERENCE_COPY_NOT_ALLOWED' });
+  });
+
+  test('keeps mixed-date grouping membership and child route date boundaries explicit', async () => {
+    await prisma.shop.update({
+      data: {
+        defaultDepotAddress: '1 Integration Depot',
+        defaultDepotLatitude: 43.6532,
+        defaultDepotLongitude: -79.3832
+      },
+      where: { id: shopId }
+    });
+    const suffix = Date.now();
+    const orders = await Promise.all([
+      { date: '2026-08-22', index: 2 },
+      { date: '2026-08-20', index: 1 }
+    ].map(({ date, index }) => prisma.order.create({
+      data: {
+        email: `mixed-date-${index}@route-copy.invalid`,
+        name: `#mixed-date-${index}`,
+        rawPayload: { source: 'mixed-date-integration-fixture' },
+        shopId,
+        shopifyOrderGid: `gid://shopify/Order/mixed-date-${suffix}-${index}`,
+        sourceOrderId: `mixed-date-${suffix}-${index}`,
+        sourcePlatform: 'SHOPIFY',
+        deliveryFacts: {
+          create: {
+            batchEligible: true,
+            deliveryDate: new Date(`${date}T00:00:00.000Z`),
+            geocodeStatus: 'RESOLVED',
+            matchedMappingPaths: {},
+            readiness: 'READY_TO_PLAN',
+            reviewReasons: [],
+            shopId,
+            sourcePlatform: 'SHOPIFY'
+          }
+        },
+        deliveryStops: {
+          create: {
+            address1: `${index} Mixed Date Road`,
+            countryCode: 'CA',
+            deliveryDate: new Date(`${date}T00:00:00.000Z`),
+            geocodeStatus: 'RESOLVED',
+            latitude: 43.65 + index / 100,
+            longitude: -79.38 - index / 100,
+            recipientName: `Mixed Date ${index}`
+          }
+        }
+      },
+      include: { deliveryStops: true }
+    })));
+    const service = new PrismaRouteGroupingService(prisma, new FakeDriverPushProvider());
+    const grouping = await service.createGrouping({
+      createdBy: 'integration',
+      dateRangeEnd: '2026-08-22',
+      dateRangeStart: '2026-08-20',
+      name: 'Mixed date grouping',
+      orderIds: orders.map(({ id }) => id),
+      shopDomain
+    });
+
+    expect(grouping).toMatchObject({
+      dateRangeEnd: '2026-08-22',
+      dateRangeStart: '2026-08-20',
+      planDate: '2026-08-20',
+      totalOrders: 2
+    });
+    const memberships = await prisma.routeGroupingOrder.findMany({
+      orderBy: { sourceSequence: 'asc' },
+      select: { deliveryStop: { select: { deliveryDate: true } }, orderId: true },
+      where: { groupingId: grouping.id }
+    });
+    const membershipDates = memberships.map(({ deliveryStop }) => deliveryStop.deliveryDate?.toISOString().slice(0, 10));
+    const sortedMembershipDates = membershipDates
+      .filter((date): date is string => date !== undefined)
+      .sort((left, right) => left.localeCompare(right));
+    expect(memberships.map(({ orderId }) => orderId)).toEqual(orders.map(({ id }) => id));
+    expect(membershipDates).toEqual(['2026-08-22', '2026-08-20']);
+    expect([sortedMembershipDates.at(0), sortedMembershipDates.at(-1)]).toEqual([
+      grouping.dateRangeStart,
+      grouping.dateRangeEnd
+    ]);
+
+    const drivers = await Promise.all([1, 2].map((index) => prisma.driver.create({
+      data: { displayName: `Mixed Date Driver ${index}`, shopId }
+    })));
+    await prisma.$transaction((tx) => service.saveDraftInTransaction(tx, {
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: orders.map((order, index) => ({
+        branchId: null,
+        driverId: drivers[index]!.id,
+        label: `Mixed date route ${index + 1}`,
+        orderIds: [order.id],
+        routeKey: `new:mixed-date-${index + 1}`,
+        routePlanId: null
+      })),
+      shopDomain
+    }));
+    const children = await prisma.routeGroupingChildVersion.findMany({
+      orderBy: { createdAt: 'asc' },
+      select: {
+        routePlan: {
+          select: {
+            constraints: true,
+            planDate: true,
+            routeStops: {
+              select: { deliveryStop: { select: { deliveryDate: true } } }
+            }
+          }
+        }
+      },
+      where: { groupingId: grouping.id, status: 'CURRENT', supersededAt: null }
+    });
+    expect(children).toHaveLength(2);
+    // Child routes use the grouping start date; save does not split the group by stop date.
+    expect(children.map(({ routePlan }) => routePlan?.planDate.toISOString().slice(0, 10)))
+      .toEqual(['2026-08-20', '2026-08-20']);
+    expect(children.map(({ routePlan }) => (
+      routePlan?.constraints as { routeScope?: { deliveryDate?: unknown } } | undefined
+    )?.routeScope?.deliveryDate)).toEqual(['2026-08-20', '2026-08-20']);
+    expect(children.map(({ routePlan }) => routePlan?.routeStops[0]?.deliveryStop.deliveryDate?.toISOString().slice(0, 10)))
+      .toEqual(['2026-08-22', '2026-08-20']);
+
+    const standalone = await prisma.routePlan.create({
+      data: {
+        constraints: { routeScope: { deliveryDate: '2026-08-20' } },
+        metrics: {},
+        name: 'Single-date route contract',
+        optimizerVersion: 'integration',
+        planDate: new Date('2026-08-20T00:00:00.000Z'),
+        routeStops: {
+          create: {
+            deliveryStopId: orders[1]!.deliveryStops[0]!.id,
+            sequence: 1
+          }
+        },
+        shopId
+      }
+    });
+    const routePlanRepository = new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true });
+    await expect(routePlanRepository.updateRoutePlanStops({
+      payload: {
+        stops: [{
+          deliveryStopId: orders[0]!.deliveryStops[0]!.id,
+          sequence: 1,
+          shopifyOrderGid: orders[0]!.shopifyOrderGid
+        }]
+      },
+      routePlanId: standalone.id,
+      shopDomain
+    })).rejects.toThrow('Route stops must share the same delivery date as the route');
+    await expect(prisma.routePlanStop.findMany({
+      select: { deliveryStopId: true },
+      where: { routePlanId: standalone.id }
+    })).resolves.toEqual([{ deliveryStopId: orders[1]!.deliveryStops[0]!.id }]);
   });
 });
