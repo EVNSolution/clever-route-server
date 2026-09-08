@@ -85,6 +85,15 @@ type FastifyErrorSerializer = NonNullable<NonNullable<AppLoggerConfiguration['se
 type DsvApiSurfaceCategory = 'v1_read' | 'canonical_assignment_command_alias' | 'legacy_read' | 'legacy_write';
 type ShopifyAdminApiSurface = 'customer_email' | 'drivers' | 'inventories' | 'orders' | 'route_groups' | 'route_plans';
 
+const dsvDispatchLoadListPaths = new Set([
+  '/api/dsv/v1/customers',
+  '/api/dsv/v1/destinations',
+  '/api/dsv/v1/dispatches',
+  '/api/dsv/v1/drivers',
+  '/api/dsv/v1/vehicles',
+]);
+const dsvDispatchDiagnosticPath = '/api/dsv/v1/diagnostics/dispatch-load';
+
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: withSafeRequestLogging(options.logger ?? false) });
   app.addHook('onResponse', (request, reply, done) => {
@@ -328,6 +337,8 @@ function serializeRequestForLog(request: FastifyRequest): {
 }
 
 export function redactSensitiveUrl(value: string): string {
+  const path = pathname(value);
+  if (dsvDispatchLoadListPaths.has(path) || path === dsvDispatchDiagnosticPath) return path;
   if (value.startsWith('/driver/route-map-preview/')) {
     try {
       const url = new URL(value, 'https://clever-route.local');
@@ -363,8 +374,10 @@ function logDsvApiSurfaceRequest(
 ): void {
   const classification = classifyDsvApiSurfaceRequest(request.method, request.url, request.routeOptions.url);
   if (classification === null) return;
+  const correlation = readDsvDispatchCorrelation(request);
 
   request.log.info({
+    ...correlation,
     callerSurface: readCallerSurface(request),
     durationMs: Math.round(reply.elapsedTime),
     event: 'dsv_api_surface_request',
@@ -453,6 +466,25 @@ function assignmentCommandAliasRoute(method: string, path: string): string | nul
 
 function readCallerSurface(request: FastifyRequest): string {
   return readSafeTelemetryHeader(request, 'x-caller-surface');
+}
+
+function readDsvDispatchCorrelation(request: FastifyRequest): { attemptId?: string; loadId?: string } {
+  if (request.method.toUpperCase() !== 'GET' || !dsvDispatchLoadListPaths.has(pathname(request.url))) return {};
+  const attemptId = readUuidV4TelemetryHeader(request, 'x-dsv-attempt-id');
+  const loadId = readUuidV4TelemetryHeader(request, 'x-dsv-load-id');
+  return {
+    ...(attemptId === null ? {} : { attemptId }),
+    ...(loadId === null ? {} : { loadId }),
+  };
+}
+
+function readUuidV4TelemetryHeader(request: FastifyRequest, header: string): string | null {
+  const value = request.headers[header];
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(trimmed)
+    ? trimmed
+    : null;
 }
 
 function readSafeTelemetryHeader(request: FastifyRequest, header: string): string {

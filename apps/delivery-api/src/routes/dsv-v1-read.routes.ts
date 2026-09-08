@@ -118,6 +118,49 @@ type RouteSpec<Query> = {
   requiredScopes: readonly DsvScope[];
 };
 
+const dispatchLoadAttemptKinds = ['initial', 'retry'] as const;
+const dispatchLoadOutcomes = ['success', 'failure', 'aborted'] as const;
+const dispatchLoadSources = ['browser', 'controlled-test'] as const;
+const dispatchLoadFailedResources = ['dispatches', 'drivers', 'vehicles', 'customers', 'destinations'] as const;
+const dispatchLoadFailureStages = ['transport', 'http', 'content_type', 'json', 'envelope', 'parser', 'unexpected'] as const;
+const dispatchLoadErrorCodes = [
+  'NETWORK_ERROR',
+  'HTTP_ERROR',
+  'CONTENT_TYPE_ERROR',
+  'JSON_PARSE_ERROR',
+  'V1_ENVELOPE_INVALID',
+  'LIST_PARSER_INVALID',
+  'UNEXPECTED_ERROR',
+] as const;
+const dispatchLoadContentTypes = ['application/json', 'text/html', 'other', 'missing'] as const;
+const dispatchLoadApiVersions = ['dsv.v1', 'invalid', 'missing'] as const;
+const dispatchLoadFailureOnlyKeys = [
+  'apiVersion',
+  'contentType',
+  'errorCode',
+  'failedResource',
+  'failureStage',
+  'httpStatus',
+  'responseRequestId',
+] as const;
+
+type DsvDispatchLoadDiagnostic = {
+  apiVersion?: typeof dispatchLoadApiVersions[number];
+  attemptId: string;
+  attemptKind: typeof dispatchLoadAttemptKinds[number];
+  contentType?: typeof dispatchLoadContentTypes[number];
+  durationMs: number;
+  errorCode?: typeof dispatchLoadErrorCodes[number];
+  failedResource?: typeof dispatchLoadFailedResources[number];
+  failureStage?: typeof dispatchLoadFailureStages[number];
+  httpStatus?: number;
+  loadId: string;
+  outcome: typeof dispatchLoadOutcomes[number];
+  responseRequestId?: string;
+  serviceDate: string;
+  source: typeof dispatchLoadSources[number];
+};
+
 export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV1ReadDependencies): void {
   app.get(`${apiRoot}/session`, (request, reply) =>
     withDsvV1Session(request, reply, dependencies, (session) =>
@@ -141,6 +184,31 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
       }));
       await dependencies.sessionResolver.invalidate(session.session.subject);
       return sendV1Data(clearedReply, request, { ok: true });
+    }));
+
+  app.post(`${apiRoot}/diagnostics/dispatch-load`, { bodyLimit: 4_096 }, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:dispatches:read']);
+      if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
+        return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
+      }
+      if (hasUnsupportedQuery(request, [])) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Unsupported query parameter');
+      }
+      if (!hasJsonContentType(request)) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Diagnostic body must be JSON');
+      }
+      const diagnostic = readDispatchLoadDiagnostic(request);
+      if (diagnostic === null) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid dispatch load diagnostic payload');
+      }
+      request.log.info({
+        ...diagnostic,
+        event: 'dsv_dispatch_load_attempt',
+        requestId: request.id,
+      }, 'DSV dispatch load attempt recorded');
+      return sendV1Data(reply, request, { accepted: true });
     }));
 
   registerReadRoute(app, dependencies, 'dispatches', {
@@ -1262,6 +1330,72 @@ function readExpectedVersion(body: Record<string, unknown>): string | null | und
   return readBoundedText(body.expectedVersion, 160) ?? invalidExpectedVersion;
 }
 
+function readDispatchLoadDiagnostic(request: FastifyRequest): DsvDispatchLoadDiagnostic | null {
+  const body = objectBody(request.body);
+  const allowedKeys = [
+    'apiVersion',
+    'attemptId',
+    'attemptKind',
+    'contentType',
+    'durationMs',
+    'errorCode',
+    'failedResource',
+    'failureStage',
+    'httpStatus',
+    'loadId',
+    'outcome',
+    'responseRequestId',
+    'serviceDate',
+    'source',
+  ] as const;
+  if (body === null || !hasOnlyAllowedBodyKeys(body, allowedKeys)) return null;
+
+  const attemptId = readUuidV4Value(body.attemptId);
+  const attemptKind = readEnumValue(body.attemptKind, dispatchLoadAttemptKinds);
+  const durationMs = readIntegerInRange(body.durationMs, 0, 300_000);
+  const loadId = readUuidV4Value(body.loadId);
+  const outcome = readEnumValue(body.outcome, dispatchLoadOutcomes);
+  const serviceDate = readActualServiceDate(body.serviceDate);
+  const source = readEnumValue(body.source, dispatchLoadSources);
+  if (
+    attemptId === null
+    || attemptKind === null
+    || durationMs === null
+    || loadId === null
+    || outcome === null
+    || serviceDate === null
+    || source === null
+  ) return null;
+
+  const base = { attemptId, attemptKind, durationMs, loadId, outcome, serviceDate, source };
+  const hasFailureMetadata = dispatchLoadFailureOnlyKeys.some((key) => Object.hasOwn(body, key));
+  if (outcome !== 'failure') return hasFailureMetadata ? null : base;
+
+  const errorCode = readEnumValue(body.errorCode, dispatchLoadErrorCodes);
+  const failedResource = readEnumValue(body.failedResource, dispatchLoadFailedResources);
+  const failureStage = readEnumValue(body.failureStage, dispatchLoadFailureStages);
+  if (errorCode === null || failedResource === null || failureStage === null) return null;
+
+  const apiVersion = readOptionalEnumValue(body, 'apiVersion', dispatchLoadApiVersions);
+  const contentType = readOptionalEnumValue(body, 'contentType', dispatchLoadContentTypes);
+  const httpStatus = Object.hasOwn(body, 'httpStatus') ? readIntegerInRange(body.httpStatus, 100, 599) : undefined;
+  const responseRequestId = Object.hasOwn(body, 'responseRequestId')
+    ? readSafeIdentifier(body.responseRequestId, 120)
+    : undefined;
+  if (apiVersion === null || contentType === null || httpStatus === null || responseRequestId === null) return null;
+
+  return {
+    ...base,
+    errorCode,
+    failedResource,
+    failureStage,
+    ...(apiVersion === undefined ? {} : { apiVersion }),
+    ...(contentType === undefined ? {} : { contentType }),
+    ...(httpStatus === undefined ? {} : { httpStatus }),
+    ...(responseRequestId === undefined ? {} : { responseRequestId }),
+  };
+}
+
 function objectBody(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -1281,6 +1415,54 @@ function readUuidValue(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)) return null;
   return value;
+}
+
+function readUuidV4Value(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value) ? value : null;
+}
+
+function readEnumValue<Value extends string>(value: unknown, allowed: readonly Value[]): Value | null {
+  return typeof value === 'string' && allowed.includes(value as Value) ? value as Value : null;
+}
+
+function readOptionalEnumValue<Value extends string>(
+  body: Record<string, unknown>,
+  key: string,
+  allowed: readonly Value[],
+): Value | undefined | null {
+  return Object.hasOwn(body, key) ? readEnumValue(body[key], allowed) : undefined;
+}
+
+function readIntegerInRange(value: unknown, minimum: number, maximum: number): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= minimum && value <= maximum ? value : null;
+}
+
+function readActualServiceDate(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  if (match === null) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1 || month < 1 || month > 12 || day < 1) return null;
+  const daysByMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= (daysByMonth[month - 1] ?? 0) ? value : null;
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function readSafeIdentifier(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length <= maxLength && /^[A-Za-z0-9._:-]+$/u.test(trimmed) ? trimmed : null;
+}
+
+function hasJsonContentType(request: FastifyRequest): boolean {
+  const value = request.headers['content-type'];
+  return typeof value === 'string' && value.split(';', 1)[0]?.trim().toLowerCase() === 'application/json';
 }
 
 function readBoundedText(value: unknown, maxLength: number): string | null {
