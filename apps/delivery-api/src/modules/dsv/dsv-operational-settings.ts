@@ -12,15 +12,20 @@ export type DsvOperationalSettings = {
   temperatureLimit: number;
 };
 
+const legacyManualEmailBody = '안녕하세요.\n\nCLEVER DSV 고객사 배송조회 페이지와 임시 계정 정보를 안내드립니다.\n\n배송조회 페이지:\n임시 아이디:\n임시 비밀번호:\n\n최초 로그인 후 아이디와 비밀번호를 변경해 주세요.';
+const defaultManualEmailBody = '안녕하세요.\n\nCLEVER DSV 고객사 배송조회 계정 설정을 위한 초대 링크를 안내드립니다.\n\n계정 설정 링크:\n링크 만료 시간:\n\n위 링크에서 이름, 아이디, 비밀번호를 직접 등록해 주세요.\n링크가 만료된 경우 담당자에게 새 초대 링크를 요청해 주세요.';
+const legacyManualEmailSubject = '[CLEVER DSV] 고객사 배송조회 계정 안내';
+const defaultManualEmailSubject = '[CLEVER DSV] 고객사 배송조회 계정 설정 안내';
+
 export function defaultDsvOperationalSettings(): DsvOperationalSettings {
   return {
     dwellMinutes: 5,
     etaDelayMinutes: 10,
     forwardDelayAlerts: true,
     gpsSilenceSeconds: 180,
-    manualEmailBody: '안녕하세요.\n\nCLEVER DSV 고객사 배송조회 페이지와 임시 계정 정보를 안내드립니다.\n\n배송조회 페이지:\n임시 아이디:\n임시 비밀번호:\n\n최초 로그인 후 아이디와 비밀번호를 변경해 주세요.',
+    manualEmailBody: defaultManualEmailBody,
     manualEmailSenderEmail: null,
-    manualEmailSubject: '[CLEVER DSV] 고객사 배송조회 계정 안내',
+    manualEmailSubject: defaultManualEmailSubject,
     recordMissingProof: true,
     showTemperatureAlerts: true,
     temperatureLimit: 8,
@@ -34,14 +39,16 @@ export function normalizeDsvOperationalSettings(value: unknown): DsvOperationalS
 
 export function validateDsvOperationalSettings(value: unknown): DsvOperationalSettings {
   if (!isRecord(value)) throw new Error('DSV operational settings must be an object.');
+  const manualEmailBody = optionalTemplate(value.manualEmailBody, 10_000, 'manualEmailBody', defaultManualEmailBody);
+  const manualEmailSubject = optionalTemplate(value.manualEmailSubject, 200, 'manualEmailSubject', defaultManualEmailSubject);
   return {
     dwellMinutes: integerInRange(value.dwellMinutes, 0, 240, 'dwellMinutes'),
     etaDelayMinutes: integerInRange(value.etaDelayMinutes, 1, 240, 'etaDelayMinutes'),
     forwardDelayAlerts: booleanValue(value.forwardDelayAlerts, 'forwardDelayAlerts'),
     gpsSilenceSeconds: integerInRange(value.gpsSilenceSeconds, 5, 3_600, 'gpsSilenceSeconds'),
-    manualEmailBody: optionalTemplate(value.manualEmailBody, 10_000, 'manualEmailBody', defaultDsvOperationalSettings().manualEmailBody),
+    manualEmailBody: manualEmailBody === legacyManualEmailBody ? defaultManualEmailBody : manualEmailBody,
     manualEmailSenderEmail: optionalEmail(value.manualEmailSenderEmail, 'manualEmailSenderEmail'),
-    manualEmailSubject: optionalTemplate(value.manualEmailSubject, 200, 'manualEmailSubject', defaultDsvOperationalSettings().manualEmailSubject),
+    manualEmailSubject: manualEmailSubject === legacyManualEmailSubject ? defaultManualEmailSubject : manualEmailSubject,
     recordMissingProof: booleanValue(value.recordMissingProof, 'recordMissingProof'),
     showTemperatureAlerts: booleanValue(value.showTemperatureAlerts, 'showTemperatureAlerts'),
     temperatureLimit: numberInRange(value.temperatureLimit, -50, 50, 'temperatureLimit'),
