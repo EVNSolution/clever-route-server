@@ -1017,6 +1017,34 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('upgrades the persisted legacy temporary-credential email template', async () => {
+    const { app, settingsService } = await createHarness();
+    settingsService.getSettings.mockResolvedValue({
+      ...createCurrentSettings(),
+      dsvOperationalSettings: {
+        ...defaultDsvOperationalSettings(),
+        manualEmailBody: '안녕하세요.\n\nCLEVER DSV 고객사 배송조회 페이지와 임시 계정 정보를 안내드립니다.\n\n배송조회 페이지:\n임시 아이디:\n임시 비밀번호:\n\n최초 로그인 후 아이디와 비밀번호를 변경해 주세요.',
+        manualEmailSubject: '[CLEVER DSV] 고객사 배송조회 계정 안내',
+      },
+    });
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'GET',
+        url: '/api/dsv/settings/operations',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('계정 설정 링크:');
+      expect(response.body).toContain('[CLEVER DSV] 고객사 배송조회 계정 설정 안내');
+      expect(response.body).not.toContain('임시 아이디');
+      expect(response.body).not.toContain('임시 비밀번호');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('geocodes a departure address as a draft without saving settings', async () => {
     const { app, geocodingService, settingsService } = await createHarness();
     try {
