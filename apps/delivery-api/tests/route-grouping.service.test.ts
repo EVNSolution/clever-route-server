@@ -1197,11 +1197,11 @@ describe('route grouping contracts', () => {
     expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
   });
 
-  test('publishes an ordinary route once per stable publication version', async () => {
+  test('publishes an ordinary route once, ignores Start-only lifecycle changes, then sends one changed refresh', async () => {
     const provider = new FakeDriverPushProvider();
     const routePlan = {
       assignmentGeneration: 3n,
-      constraints: {},
+      constraints: {} as Record<string, unknown>,
       depotLatitude: '43.65',
       depotLongitude: '-79.38',
       driver: { accountId: 'account-1' },
@@ -1209,6 +1209,7 @@ describe('route grouping contracts', () => {
       name: 'Route 1',
       routeStops: [],
       shop: { id: 'shop-1', shopDomain: 'tenant.example' },
+      status: 'READY',
     };
     let attempt: null | { action: 'ASSIGNED' | 'CHANGED'; createdAt: Date; id: string; idempotencyKey: string; status: string } = null;
     const prisma = {
@@ -1244,6 +1245,18 @@ describe('route grouping contracts', () => {
     });
     expect(provider.sentMessages[0]?.publicationVersion).toMatch(/^[0-9a-f]{64}$/u);
     expect(prisma.driverRouteNotificationAttempt.upsert).toHaveBeenCalledOnce();
+
+    routePlan.status = 'IN_PROGRESS';
+    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    expect(provider.sentMessages).toHaveLength(1);
+
+    routePlan.constraints = { scheduledStartAt: '2026-09-09T13:00:00.000Z' };
+    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    expect(provider.sentMessages).toHaveLength(2);
+    expect(provider.sentMessages[1]).toMatchObject({ action: 'changed', routePlanId: 'route-1' });
+    expect(prisma.driverRouteNotificationAttempt.upsert).toHaveBeenCalledTimes(2);
+    expect('driverEvent' in prisma).toBe(false);
   });
 
   test('uses a changed notification for a new ordinary-route publication version', async () => {
