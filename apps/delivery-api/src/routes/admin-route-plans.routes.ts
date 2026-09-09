@@ -10,6 +10,7 @@ import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js'
 import {
   RoutePlanDriverAssignInvalidError,
   RoutePlanGeometryRefreshFailedError,
+  RoutePlanBatchInvalidError,
   RoutePlanConflictError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
@@ -24,6 +25,7 @@ import type {
   AdminRouteStopTransitionResult,
   AdminRouteStopTransitionPayload,
   CreateRoutePlanPayload,
+  CreateRoutePlanFromOrderIdsPayload,
   RoutePlanOrderAttributeInput,
   RoutePlanOrderInput,
   RoutePlanRouteScopeInput,
@@ -69,9 +71,9 @@ export function registerAdminRoutePlanRoutes(
       return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
     }
 
-    let payload: CreateRoutePlanPayload;
+    let creationRequest: CreateAdminRoutePlanRequest;
     try {
-      payload = readCreateRoutePlanPayload(request.body);
+      creationRequest = readCreateAdminRoutePlanRequest(request.body);
     } catch (error) {
       if (error instanceof RouteScopeMismatchError) {
         return reply
@@ -83,13 +85,28 @@ export function registerAdminRoutePlanRoutes(
 
     let routePlan;
     try {
-      routePlan = await dependencies.routePlanService.createRoutePlan({
-        appId: authenticated.appId,
-        createdBy: authenticated.subject,
-        payload,
-        shopDomain: authenticated.shopDomain
-      });
+      if (creationRequest.kind === 'orderIds') {
+        if (dependencies.routePlanService.createRoutePlanFromOrderIds === undefined) {
+          return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route creation from selected order ids is unavailable'));
+        }
+        routePlan = await dependencies.routePlanService.createRoutePlanFromOrderIds({
+          appId: authenticated.appId,
+          createdBy: authenticated.subject,
+          payload: creationRequest.payload,
+          shopDomain: authenticated.shopDomain
+        });
+      } else {
+        routePlan = await dependencies.routePlanService.createRoutePlan({
+          appId: authenticated.appId,
+          createdBy: authenticated.subject,
+          payload: creationRequest.payload,
+          shopDomain: authenticated.shopDomain
+        });
+      }
     } catch (error) {
+      if (error instanceof RoutePlanBatchInvalidError) {
+        return reply.code(400).send(errorResponse(error.code, error.message));
+      }
       if (error instanceof RoutePlanOrderAlreadyPlannedError) {
         return reply
           .code(409)
@@ -868,6 +885,35 @@ function extractBearerToken(authorization: string | undefined): string | null {
   }
 
   return match[1].trim();
+}
+
+type CreateAdminRoutePlanRequest =
+  | { kind: 'orderIds'; payload: CreateRoutePlanFromOrderIdsPayload }
+  | { kind: 'orders'; payload: CreateRoutePlanPayload };
+
+function readCreateAdminRoutePlanRequest(value: unknown): CreateAdminRoutePlanRequest {
+  const object = requireObject(value);
+  const hasOrders = Object.hasOwn(object, 'orders');
+  const hasOrderIds = Object.hasOwn(object, 'orderIds');
+  if (hasOrders === hasOrderIds) {
+    throw new Error('exactly one of orders or orderIds is required');
+  }
+  return hasOrderIds
+    ? { kind: 'orderIds', payload: readCreateRoutePlanFromOrderIdsPayload(object) }
+    : { kind: 'orders', payload: readCreateRoutePlanPayload(object) };
+}
+
+function readCreateRoutePlanFromOrderIdsPayload(value: unknown): CreateRoutePlanFromOrderIdsPayload {
+  const object = requireObject(value);
+  if (!Array.isArray(object.orderIds) || object.orderIds.length === 0) {
+    throw new Error('orderIds must be a non-empty array');
+  }
+  return {
+    depot: readDepot(object.depot),
+    name: requireNonEmptyString(object.name),
+    orderIds: object.orderIds.map(requireNonEmptyString),
+    planDate: requirePlanDate(object.planDate)
+  };
 }
 
 function readCreateRoutePlanPayload(value: unknown): CreateRoutePlanPayload {

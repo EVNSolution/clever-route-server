@@ -524,6 +524,62 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('rejects selected order ids that are absent from the authenticated shop without persisting a route', async () => {
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness({ deliveryFacts: [] });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.createRoutePlanDraftFromOrderIds({
+      createdBy: 'route-ops',
+      depot: { address: 'Depot', latitude: 43.65, longitude: -79.38 },
+      name: 'Woo batch',
+      orderIds: ['other-shop-order-id'],
+      planDate: '2026-05-08',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toMatchObject({
+      blockers: ['other-shop-order-id: delivery facts not found'],
+      code: 'ROUTE_PLAN_BATCH_INVALID'
+    });
+
+    expect(prisma.orderDeliveryFact.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { orderId: { in: ['other-shop-order-id'] }, shopId: 'shop-id' } })
+    );
+    expect(prisma.routePlan.create).not.toHaveBeenCalled();
+    expect(routePlanStopCreateMany).not.toHaveBeenCalled();
+  });
+
+  test('keeps selected-order route creation compatible with intentional multi-route membership', async () => {
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness({
+      deliveryFacts: [
+        orderDeliveryFact({
+          orderId: 'order-1',
+          readiness: 'NEEDS_REVIEW',
+          reviewReasons: ['already_planned'],
+          stopId: 'stop-1'
+        })
+      ]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.createRoutePlanDraftFromOrderIds({
+      createdBy: 'route-ops',
+      depot: { address: 'Depot', latitude: 43.65, longitude: -79.38 },
+      name: 'Another valid route',
+      orderIds: ['order-1'],
+      planDate: '2026-05-08',
+      shopDomain: 'example.myshopify.com'
+    })).resolves.toEqual(expect.objectContaining({ id: 'route-plan-id' }));
+
+    expect(prisma.order.upsert).not.toHaveBeenCalled();
+    expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+    expect(routePlanStopCreateMany).toHaveBeenCalledWith({
+      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1, shopId: 'shop-id' }]
+    });
+  });
+
   test('uses saved shop depot coordinates when selected-order route creation omits depot coordinates', async () => {
     const { prisma } = createPrismaHarness({
       shop: {
