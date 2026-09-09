@@ -1287,6 +1287,38 @@ describe('PrismaRoutePlanRepository', () => {
     expect(auditCreateArg?.data.notificationFactId).toBeNull();
   });
 
+  test('does not enqueue customer notifications for standalone route-copy orders', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: {
+        deliveryStop: {
+          order: {
+            email: 'copied@example.test',
+            sellerOrderSourceKind: 'CLEVER_ROUTE_COPY',
+            sourcePlatform: 'SHOPIFY'
+          },
+          orderId: 'order-copy'
+        },
+        deliveryStopId: 'stop-copy',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-copy',
+      payload: { idempotencyKey: 'route-copy-stop-completed', status: 'COMPLETED' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.notification).toMatchObject({ factId: null, orderId: 'order-copy', status: 'SKIPPED' });
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
+  });
+
   test('duplicate admin stop transition returns current route without duplicate side effects', async () => {
     const { prisma } = createPrismaHarness({
       adminStopActionAudit: {

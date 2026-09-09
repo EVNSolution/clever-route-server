@@ -167,7 +167,8 @@ describe('route grouping contracts', () => {
         sourceShopifyOrderGid: 'gid://shopify/Order/1001'
       },
       sourceOrderNumber: '1001',
-      sourcePlatform: 'CUSTOM',
+      sellerOrderSourceKind: 'CLEVER_ROUTE_COPY',
+      sourcePlatform: 'SHOPIFY',
       totalPriceAmount: 125.5
     });
     expect(orderData?.orderItems.create).toEqual([expect.objectContaining({ lineIndex: 0, name: 'Kimchi', quantity: 2, sku: 'KIMCHI-1' })]);
@@ -176,7 +177,7 @@ describe('route grouping contracts', () => {
       deliverySession: 'AM',
       readiness: 'READY_TO_PLAN',
       routeScopeKey: 'toronto-am',
-      sourcePlatform: 'CUSTOM'
+      sourcePlatform: 'SHOPIFY'
     });
     expect(orderData?.deliveryStops.create).toMatchObject({ address1: '100 King St', recipientName: 'Receiving', status: 'PENDING' });
     const routePlanCreateCalls = tx.routePlan.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>;
@@ -733,7 +734,7 @@ describe('route grouping contracts', () => {
     expect(schema).toMatch(/enum CommerceSourcePlatform \{[\s\S]*?CUSTOM[\s\S]*?\}/u);
     expect(service).toContain("sourcePlatform: 'CUSTOM'");
     expect(service).toContain('isCustomStop: order.order.sourcePlatform ===');
-    expect(orderRepository).toContain("sourcePlatform: { not: 'CUSTOM' }");
+    expect(orderRepository).toContain("sellerOrderSourceKind: { not: 'CLEVER_ROUTE_COPY' }");
   });
 
   test('moves retained route stops to temporary sequences before compacting them', async () => {
