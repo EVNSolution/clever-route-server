@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { RouteOptimizationJobActiveError } from '../src/modules/route-plans/route-optimization-job.types.js';
 import {
+  RoutePlanBatchInvalidError,
   RoutePlanGeometryRefreshFailedError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanRefreshNotAllowedError,
@@ -396,6 +397,100 @@ describe('Admin route plan routes', () => {
         },
         shopDomain: 'example.myshopify.com'
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('creates a route plan from shop-scoped selected order ids without accepting client order fields', async () => {
+    const { createRoutePlan, createRoutePlanFromOrderIds, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: {
+          depot: { address: 'Shopify departure location', latitude: 43.6532, longitude: -79.3832 },
+          name: 'CLEVER route draft',
+          orderIds: ['order-1', 'order-2'],
+          planDate: '2026-05-08'
+        },
+        url: '/admin/route-plans'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { routePlan: routePlanSummary }, error: null });
+      expect(createRoutePlan).not.toHaveBeenCalled();
+      expect(createRoutePlanFromOrderIds).toHaveBeenCalledWith({
+        appId: 'clever',
+        createdBy: 'shopify-user-id',
+        payload: {
+          depot: { address: 'Shopify departure location', latitude: 43.6532, longitude: -79.3832 },
+          name: 'CLEVER route draft',
+          orderIds: ['order-1', 'order-2'],
+          planDate: '2026-05-08'
+        },
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects mixed full-order and selected-order-id route creation payloads', async () => {
+    const { createRoutePlan, createRoutePlanFromOrderIds, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { ...routePlanPayload(), orderIds: ['order-1'] },
+        url: '/admin/route-plans'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid route plan payload' }
+      });
+      expect(createRoutePlan).not.toHaveBeenCalled();
+      expect(createRoutePlanFromOrderIds).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns selected-order validation failures without falling back to full-order creation', async () => {
+    const { createRoutePlan, createRoutePlanFromOrderIds, dependencies } = createDependencyHarness();
+    createRoutePlanFromOrderIds.mockRejectedValueOnce(
+      new RoutePlanBatchInvalidError(['other-shop-order-id: delivery facts not found'])
+    );
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: {
+          depot: { address: null, latitude: null, longitude: null },
+          name: 'CLEVER route draft',
+          orderIds: ['other-shop-order-id'],
+          planDate: '2026-05-08'
+        },
+        url: '/admin/route-plans'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_PLAN_BATCH_INVALID',
+          message: 'Cannot create route from selected orders: other-shop-order-id: delivery facts not found'
+        }
+      });
+      expect(createRoutePlan).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -1299,6 +1394,9 @@ function createDependencyHarness(): {
   createRoutePlan: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['createRoutePlan']>
   >;
+  createRoutePlanFromOrderIds: ReturnType<
+    typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routePlanService']['createRoutePlanFromOrderIds']>>
+  >;
   dependencies: AdminRoutePlanDependencies;
   getRoutePlanDetail: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['getRoutePlanDetail']>
@@ -1338,6 +1436,9 @@ function createDependencyHarness(): {
   const createRoutePlan = vi.fn<AdminRoutePlanDependencies['routePlanService']['createRoutePlan']>(
     () => Promise.resolve(routePlanSummary)
   );
+  const createRoutePlanFromOrderIds = vi.fn<
+    NonNullable<AdminRoutePlanDependencies['routePlanService']['createRoutePlanFromOrderIds']>
+  >(() => Promise.resolve(routePlanSummary));
   const assignRoutePlanDriver = vi.fn<
     AdminRoutePlanDependencies['routePlanService']['assignRoutePlanDriver']
   >(() =>
@@ -1497,10 +1598,12 @@ function createDependencyHarness(): {
   return {
     assignRoutePlanDriver,
     createRoutePlan,
+    createRoutePlanFromOrderIds,
     dependencies: {
       routePlanService: {
         assignRoutePlanDriver,
         createRoutePlan,
+        createRoutePlanFromOrderIds,
         deleteRoutePlan,
         getRoutePlanDetail,
         listRoutePlans,
