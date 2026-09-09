@@ -78,6 +78,52 @@ export function registerAdminRouteGroupRoutes(
     }
   });
 
+  app.post<{ Body: unknown; Params: { routePlanId: string } }>('/admin/route-plans/:routePlanId/route-group', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readCreateGroupingFromRoutePlanPayload(request.body);
+      const routeGroup = await dependencies.routeGroupingService.createGroupingFromRoutePlan({
+        actor: authenticated.subject,
+        appId: authenticated.appId,
+        routePlanId: request.params.routePlanId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+      return reply.code(201).send({ data: { routeGroup }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
+  app.post<{ Body: unknown; Params: { routePlanId: string } }>('/admin/route-plans/:routePlanId/copies', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readCopyStandaloneRoutePlanPayload(request.body);
+      const routePlan = await dependencies.routeGroupingService.copyStandaloneRoutePlan({
+        actor: authenticated.subject,
+        appId: authenticated.appId,
+        routePlanId: request.params.routePlanId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      if (routePlan === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+      return reply.code(201).send({ data: { routePlan }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
   app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/copies', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
@@ -715,6 +761,26 @@ function readSaveDraftPayload(value: unknown): {
     ...(object.removedOrderIds === undefined ? {} : { removedOrderIds: readStringArray(object.removedOrderIds) }),
     routes: readDraftRouteRows(object.routes)
   };
+}
+
+function readCreateGroupingFromRoutePlanPayload(value: unknown): {
+  expectedRoutePlanUpdatedAt: string;
+  mode?: 'MANUAL_ORDER';
+  routes: ReturnType<typeof readDraftRouteRows>;
+} {
+  const object = requireObject(value);
+  const mode = object.mode === undefined ? undefined : requireNonEmptyString(object.mode);
+  if (mode !== undefined && mode !== 'MANUAL_ORDER') throw new BadRouteGroupPayloadError('unsupported draft save mode');
+  return {
+    expectedRoutePlanUpdatedAt: readRevisionTimestamp(object.expectedRoutePlanUpdatedAt, 'expectedRoutePlanUpdatedAt'),
+    ...(mode === undefined ? {} : { mode }),
+    routes: readDraftRouteRows(object.routes)
+  };
+}
+
+function readCopyStandaloneRoutePlanPayload(value: unknown): { expectedRoutePlanUpdatedAt: string } {
+  const object = requireObject(value);
+  return { expectedRoutePlanUpdatedAt: readRevisionTimestamp(object.expectedRoutePlanUpdatedAt, 'expectedRoutePlanUpdatedAt') };
 }
 
 function summarizeDraftRoutes(routes: ReturnType<typeof readDraftRouteRows>): {

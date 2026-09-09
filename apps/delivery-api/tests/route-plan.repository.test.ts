@@ -441,6 +441,8 @@ describe('PrismaRoutePlanRepository', () => {
         endAt: '2026-05-08T15:30:00.000Z',
         startAt: '2026-05-08T14:00:00.000Z'
       },
+      scheduledStartAt: '2026-05-08T13:30:00.000Z',
+      scheduledStartTimeZone: 'America/Toronto',
       totalAmount: { amount: '30.30', currencyCode: 'CAD' }
     });
     const query = prisma.routePlan.findMany.mock.calls[0]?.[0] as { include?: unknown; select?: Record<string, unknown> };
@@ -450,6 +452,10 @@ describe('PrismaRoutePlanRepository', () => {
     expect(JSON.stringify(query.select)).not.toContain('rawPayload');
     expect(JSON.stringify(query.select)).not.toContain('shippingAddress');
     expect(query.select?.routeGeometryCaches).toMatchObject({ take: 1 });
+    expect(query.select?.routeGroupingChildVersions).toMatchObject({
+      take: 1,
+      where: { status: 'CURRENT', supersededAt: null }
+    });
   });
 
   test('does not combine route totals across currencies', async () => {
@@ -1279,6 +1285,38 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
     const auditCreateArg = prisma.adminRouteStopActionAudit.create.mock.calls[0]?.[0] as unknown as { data: Record<string, unknown> } | undefined;
     expect(auditCreateArg?.data.notificationFactId).toBeNull();
+  });
+
+  test('does not enqueue customer notifications for standalone route-copy orders', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: {
+        deliveryStop: {
+          order: {
+            email: 'copied@example.test',
+            sellerOrderSourceKind: 'CLEVER_ROUTE_COPY',
+            sourcePlatform: 'SHOPIFY'
+          },
+          orderId: 'order-copy'
+        },
+        deliveryStopId: 'stop-copy',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-copy',
+      payload: { idempotencyKey: 'route-copy-stop-completed', status: 'COMPLETED' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.notification).toMatchObject({ factId: null, orderId: 'order-copy', status: 'SKIPPED' });
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
   });
 
   test('duplicate admin stop transition returns current route without duplicate side effects', async () => {
@@ -2671,7 +2709,10 @@ function routePlanListRecord() {
     sequence: input.sequence
   });
   return {
-    constraints: {},
+    constraints: {
+      scheduledStartAt: '2026-05-08T13:30:00.000Z',
+      scheduledStartTimeZone: 'America/Toronto'
+    },
     createdAt: new Date('2026-05-07T12:30:00.000Z'),
     depotLatitude: '43.6532',
     depotLongitude: '-79.3832',

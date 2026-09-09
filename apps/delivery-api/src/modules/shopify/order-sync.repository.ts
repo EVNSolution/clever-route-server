@@ -1555,7 +1555,10 @@ export function toCanonicalOrderWhere(
   filters: ListCanonicalOrdersFilters,
   now: Date = new Date(),
 ): Prisma.OrderWhereInput {
-  const AND: Prisma.OrderWhereInput[] = [{ sourcePlatform: { not: 'CUSTOM' } }];
+  const AND: Prisma.OrderWhereInput[] = [
+    { sourcePlatform: { not: 'CUSTOM' } },
+    { OR: [{ sellerOrderSourceKind: null }, { sellerOrderSourceKind: { not: 'CLEVER_ROUTE_COPY' } }] }
+  ];
   if (filters.search !== undefined && filters.search.trim() !== "") {
     const search = filters.search.trim();
     const textFields = [

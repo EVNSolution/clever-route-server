@@ -34,7 +34,9 @@ import {
   RouteGroupingStopMembershipConflictError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
+  type CopyStandaloneRoutePlanInput,
   type CopyRouteGroupingInput,
+  type CreateRouteGroupingFromRoutePlanInput,
   type CreateCustomRouteGroupingStopInput,
   type CreateRouteGroupingBranchInput,
   type CreateRouteGroupingInput,
@@ -58,6 +60,7 @@ import {
   type RouteGroupingSummaryDto,
   type RouteGroupingWarningDto,
   type SaveRouteGroupingDraftInput,
+  type StandaloneRoutePlanCopyDto,
   type SaveRouteGroupingPolygonsInput,
   type UpdateRouteGroupingBranchInput,
   type UpdateRouteGroupingBranchOrdersInput,
@@ -131,6 +134,7 @@ type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
 };
 
 type LoadedGrouping = Prisma.RouteGroupingGetPayload<{ include: ReturnType<typeof groupingInclude> }>;
+type LoadedStandaloneRouteCopySource = Prisma.RoutePlanGetPayload<{ include: ReturnType<typeof standaloneRouteCopyInclude> }>;
 type LoadedChild = LoadedGrouping['childVersions'][number];
 type LoadedAssignment = LoadedGrouping['orders'][number];
 type LoadedBranch = LoadedGrouping['branches'][number];
@@ -514,6 +518,246 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     });
     if (groupingId === null) return null;
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
+  async copyStandaloneRoutePlan(input: CopyStandaloneRoutePlanInput): Promise<StandaloneRoutePlanCopyDto | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+      });
+      if (shop === null) return null;
+
+      const exists = await tx.routePlan.findFirst({ select: { id: true }, where: { id: input.routePlanId, shopId: shop.id } });
+      if (exists === null) return null;
+      const locked = await lockRoutePlanMembership(tx, input.routePlanId, shop.id);
+      if (locked.currentRouteVersionId !== null) {
+        throw new RouteGroupingConflictError('route already belongs to a group; reload and retry');
+      }
+      if (locked.status !== 'READY') {
+        throw new RouteGroupingValidationError(['only Ready standalone routes can be copied']);
+      }
+      if (locked.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) {
+        throw new RouteGroupingConflictError();
+      }
+
+      const source = await tx.routePlan.findFirst({
+        include: standaloneRouteCopyInclude(),
+        where: { id: input.routePlanId, shopId: shop.id }
+      });
+      if (source === null) return null;
+
+      const copiedStops: Array<{ deliveryStopId: string; source: LoadedStandaloneRouteCopySource['routeStops'][number] }> = [];
+      for (const sourceRouteStop of source.routeStops) {
+        const copied = await createStandaloneVirtualOrderCopy(tx, sourceRouteStop.deliveryStop, shop.id);
+        copiedStops.push({ deliveryStopId: copied.deliveryStopId, source: sourceRouteStop });
+      }
+
+      const copy = await tx.routePlan.create({
+        data: {
+          constraints: toJson(source.constraints),
+          createdBy: input.actor,
+          depotLatitude: source.depotLatitude,
+          depotLongitude: source.depotLongitude,
+          driverId: null,
+          isStoreReviewData: source.isStoreReviewData,
+          metrics: toJson(source.metrics),
+          name: `${source.name} Copy`,
+          optimizerVersion: source.optimizerVersion,
+          planDate: source.planDate,
+          shopId: source.shopId,
+          status: 'READY',
+          vehicleId: null
+        },
+        select: {
+          constraints: true,
+          createdAt: true,
+          depotLatitude: true,
+          depotLongitude: true,
+          id: true,
+          name: true,
+          planDate: true,
+          updatedAt: true
+        }
+      });
+      if (copiedStops.length > 0) {
+        await tx.routePlanStop.createMany({
+          data: copiedStops.map(({ deliveryStopId, source: sourceRouteStop }) => ({
+            deliveryStopId,
+            distanceFromPreviousMeters: sourceRouteStop.distanceFromPreviousMeters,
+            durationFromPreviousSeconds: sourceRouteStop.durationFromPreviousSeconds,
+            estimatedArrivalAt: sourceRouteStop.estimatedArrivalAt,
+            routePlanId: copy.id,
+            sequence: sourceRouteStop.sequence,
+            shopId: shop.id
+          }))
+        });
+      }
+
+      return {
+        createdAt: copy.createdAt.toISOString(),
+        departureTime: readDepartureTime(copy.constraints),
+        depot: { latitude: decimalNumber(copy.depotLatitude), longitude: decimalNumber(copy.depotLongitude) },
+        driverId: null,
+        id: copy.id,
+        name: copy.name,
+        planDate: formatDateOnly(copy.planDate) ?? '',
+        scheduledStartAt: readScheduledStartAt(copy.constraints),
+        scheduledStartTimeZone: readScheduledStartTimeZone(copy.constraints),
+        status: 'READY',
+        stopsCount: copiedStops.length,
+        updatedAt: copy.updatedAt.toISOString(),
+        vehicleId: null
+      };
+    });
+  }
+
+  async createGroupingFromRoutePlan(input: CreateRouteGroupingFromRoutePlanInput): Promise<RouteGroupingDetailDto | null> {
+    const routes = normalizeDraftRoutes(input.routes);
+    if (routes.length < 2) throw new RouteGroupingValidationError(['split draft must include at least two routes']);
+    const sourceRows = routes.filter((route) => route.routePlanId === input.routePlanId);
+    if (sourceRows.length !== 1 || routes.some((route) => route.routePlanId !== null && route.routePlanId !== input.routePlanId)) {
+      throw new RouteGroupingValidationError(['split draft must contain the source route exactly once and no other existing routes']);
+    }
+    const submittedOrderIds = routes.flatMap((route) => route.orderIds);
+    if (new Set(submittedOrderIds).size !== submittedOrderIds.length) {
+      throw new RouteGroupingValidationError(['route draft order ids must be unique']);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+      });
+      if (shop === null) return null;
+
+      const lockedRoutePlan = await lockRoutePlanMembership(tx, input.routePlanId, shop.id);
+      if (lockedRoutePlan.currentRouteVersionId !== null) {
+        throw new RouteGroupingConflictError('route already belongs to a group; reload and retry');
+      }
+      if (lockedRoutePlan.status !== 'READY') {
+        throw new RouteGroupingValidationError(['only Ready standalone routes can be split']);
+      }
+      if (lockedRoutePlan.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) {
+        throw new RouteGroupingConflictError();
+      }
+
+      const sourceRoutePlan = await tx.routePlan.findFirst({
+        include: {
+          routeStops: {
+            include: { deliveryStop: { select: { orderId: true } } },
+            orderBy: { sequence: 'asc' }
+          }
+        },
+        where: { id: input.routePlanId, shopId: shop.id }
+      });
+      if (sourceRoutePlan === null) return null;
+      const sourceOrderIds = sourceRoutePlan.routeStops.map((stop) => stop.deliveryStop.orderId);
+      if (!sameStringSet(sourceOrderIds, submittedOrderIds)) {
+        throw new RouteGroupingValidationError(['split draft must partition every source route order exactly once']);
+      }
+
+      const dateRange = readGroupingDateRange({ planDate: formatDateOnly(sourceRoutePlan.planDate) ?? '' });
+      const facts = await tx.orderDeliveryFact.findMany({
+        include: {
+          order: {
+            include: {
+              deliveryStops: { include: { routePlanStops: { select: { id: true } } }, take: 1 }
+            }
+          }
+        },
+        where: { orderId: { in: sourceOrderIds }, shopId: shop.id }
+      });
+      const blockers = validateCreateFacts({ dateRange, facts, orderIds: sourceOrderIds });
+      if (blockers.length > 0) throw new RouteGroupingValidationError(blockers);
+      const orderedFacts = sourceOrderIds
+        .map((orderId) => facts.find((fact) => fact.orderId === orderId))
+        .filter((fact): fact is typeof facts[number] => fact !== undefined);
+      const grouping = await tx.routeGrouping.create({
+        data: {
+          createdBy: input.actor,
+          dateRangeEnd: dateRange.end,
+          dateRangeStart: dateRange.start,
+          deliverySession: sharedFactValue(orderedFacts, 'deliverySession'),
+          name: sourceRoutePlan.name,
+          planDate: sourceRoutePlan.planDate,
+          routeScopeKey: sharedFactValue(orderedFacts, 'routeScopeKey'),
+          serviceType: sharedFactValue(orderedFacts, 'serviceType'),
+          shopId: shop.id,
+          status: 'READY'
+        },
+        select: { id: true }
+      });
+      const groupingVersion = await tx.routeGroupingVersion.create({
+        data: { actor: input.actor, groupingId: grouping.id, shopId: shop.id, status: 'CURRENT', version: 1 },
+        select: { id: true }
+      });
+      await tx.routeGroupingOrder.createMany({
+        data: orderedFacts.map((fact, index) => ({
+          deliveryStopId: fact.order.deliveryStops[0]?.id ?? '',
+          groupingId: grouping.id,
+          orderId: fact.orderId,
+          shopId: shop.id,
+          sourceSequence: index + 1
+        }))
+      });
+      await createRouteGroupingInventory(tx, {
+        actor: input.actor,
+        groupingId: grouping.id,
+        name: sourceRoutePlan.name,
+        orderIds: sourceOrderIds,
+        shopId: shop.id
+      });
+
+      const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: grouping.id } });
+      if (loaded === null) throw new RouteGroupingValidationError(['created grouping not found']);
+      const sourceRoute = sourceRows[0];
+      if (sourceRoute === undefined) throw new RouteGroupingValidationError(['split source route is required']);
+      const sourceRouteIdx = resolveNewChildRouteIdx(sourceRoute.routeIdx, await nextGlobalRouteIdx(tx, shop.id));
+      const sourceAssignmentsById = new Map(loaded.orders.map((assignment) => [assignment.orderId, assignment]));
+      const sourceAssignments = sourceOrderIds
+        .map((orderId) => sourceAssignmentsById.get(orderId))
+        .filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
+      const sourceChild = await tx.routeGroupingChildVersion.create({
+        data: {
+          driverId: lockedRoutePlan.driverId,
+          groupingId: grouping.id,
+          groupingVersionId: groupingVersion.id,
+          notificationStatus: 'SKIPPED',
+          routePlanId: input.routePlanId,
+          shopId: shop.id,
+          snapshot: createChildSnapshot(
+            loaded,
+            sourceAssignments,
+            lockedRoutePlan.driverId,
+            lockedRoutePlan.name,
+            1,
+            null,
+            sourceRoute.sortOrder ?? sourceRouteIdx,
+            sourceRouteIdx
+          ),
+          status: 'CURRENT',
+          version: 1
+        },
+        select: { id: true }
+      });
+      await rebindCurrentOrdersToRouteVersion(tx, {
+        groupingId: grouping.id,
+        nextRouteVersionId: sourceChild.id,
+        orderIds: sourceOrderIds,
+        shopId: shop.id
+      });
+
+      return this.saveDraftInTransaction(tx, {
+        appId: input.appId,
+        groupingId: grouping.id,
+        mode: input.mode ?? 'MANUAL_ORDER',
+        routes: routes.map((route) => route.routePlanId === input.routePlanId
+          ? { ...route, expectedRoutePlanUpdatedAt: input.expectedRoutePlanUpdatedAt, routeIdx: sourceRouteIdx }
+          : route),
+        shopDomain: input.shopDomain
+      }, { materializeUnassignedRoutes: true });
+    });
   }
 
   async getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null> {
@@ -1306,7 +1550,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
-  async saveDraftInTransaction(tx: Tx, input: SaveRouteGroupingDraftInput): Promise<RouteGroupingDetailDto | null> {
+  async saveDraftInTransaction(
+    tx: Tx,
+    input: SaveRouteGroupingDraftInput,
+    options: { materializeUnassignedRoutes?: boolean } = {}
+  ): Promise<RouteGroupingDetailDto | null> {
     const routes = normalizeDraftRoutes(input.routes);
     const deletedRoutePlanIds = normalizeExplicitDraftIds(input.deletedRoutePlanIds ?? [], 'deletedRoutePlanIds');
     const removedOrderIds = normalizeExplicitDraftIds(input.removedOrderIds ?? [], 'removedOrderIds');
@@ -1479,7 +1727,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
       if (route.routePlanId !== null) throw new RouteGroupingValidationError(['route draft route plans must belong to the current route grouping']);
       const routeIdx = resolveNewChildRouteIdx(route.routeIdx, await nextGlobalRouteIdx(tx, group.shopId));
-      if (driverId === null) {
+      if (driverId === null && options.materializeUnassignedRoutes !== true) {
         await tx.routeGroupingChildVersion.create({
           data: {
             driverId: null,
@@ -3018,6 +3266,26 @@ function groupingInclude() {
   } satisfies Prisma.RouteGroupingInclude;
 }
 
+function standaloneRouteCopyInclude() {
+  return {
+    routeStops: {
+      include: {
+        deliveryStop: {
+          include: {
+            order: {
+              include: {
+                deliveryFacts: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+                orderItems: { orderBy: { lineIndex: 'asc' as const } }
+              }
+            }
+          }
+        }
+      },
+      orderBy: { sequence: 'asc' as const }
+    }
+  } satisfies Prisma.RoutePlanInclude;
+}
+
 function groupingListInclude() {
   return {
     childVersions: {
@@ -3165,6 +3433,128 @@ async function createVirtualCopyMemberships(
     });
   }
   return memberships;
+}
+
+async function createStandaloneVirtualOrderCopy(
+  tx: Tx,
+  sourceStop: LoadedStandaloneRouteCopySource['routeStops'][number]['deliveryStop'],
+  shopId: string
+): Promise<{ deliveryStopId: string }> {
+  const localId = randomUUID();
+  const sourceOrder = sourceStop.order;
+  const sourceFact = sourceOrder.deliveryFacts[0];
+  const created = await tx.order.create({
+    data: {
+      customerId: sourceOrder.customerId,
+      destinationId: sourceOrder.destinationId,
+      email: sourceOrder.email,
+      financialStatus: sourceOrder.financialStatus,
+      fulfillmentStatus: sourceOrder.fulfillmentStatus,
+      isStoreReviewData: sourceOrder.isStoreReviewData,
+      name: sourceOrder.name,
+      phone: sourceOrder.phone ?? sourceStop.phone,
+      processedAt: sourceOrder.processedAt,
+      rawPayload: {
+        kind: 'CLEVER_VIRTUAL_ROUTE_COPY',
+        schemaVersion: 1,
+        sourceDeliveryStopId: sourceStop.id,
+        sourceOrderId: sourceOrder.id,
+        sourceOrderNumber: sourceOrder.sourceOrderNumber,
+        sourcePlatform: sourceOrder.sourcePlatform,
+        sourceShopifyOrderGid: sourceOrder.shopifyOrderGid,
+        sourceSiteUrl: sourceOrder.sourceSiteUrl
+      },
+      serviceDate: sourceOrder.serviceDate,
+      sellerOrderKey: localId,
+      sellerOrderSourceKind: 'CLEVER_ROUTE_COPY',
+      sellerOrderVersion: 1,
+      ...(sourceOrder.shippingAddress === null ? {} : { shippingAddress: toJson(sourceOrder.shippingAddress) }),
+      shopId,
+      shopifyOrderGid: `gid://clever/VirtualRouteOrder/${localId}`,
+      sourceOrderId: `virtual-route-order:${localId}`,
+      sourceOrderNumber: sourceOrder.sourceOrderNumber,
+      sourcePlatform: sourceOrder.sourcePlatform,
+      sourceSiteUrl: sourceOrder.sourceSiteUrl,
+      sourceUpdatedAt: new Date(),
+      totalPriceAmount: sourceOrder.totalPriceAmount,
+      currencyCode: sourceOrder.currencyCode,
+      deliveryStops: {
+        create: {
+          address1: sourceStop.address1,
+          address2: sourceStop.address2,
+          city: sourceStop.city,
+          countryCode: sourceStop.countryCode,
+          deliveryDate: sourceStop.deliveryDate,
+          geocodeStatus: sourceStop.geocodeStatus,
+          instructions: sourceStop.instructions,
+          latitude: sourceStop.latitude,
+          longitude: sourceStop.longitude,
+          phone: sourceStop.phone ?? sourceOrder.phone,
+          postalCode: sourceStop.postalCode,
+          priority: sourceStop.priority,
+          province: sourceStop.province,
+          recipientName: sourceStop.recipientName,
+          serviceMinutes: sourceStop.serviceMinutes,
+          status: 'PENDING',
+          timeWindowEnd: sourceStop.timeWindowEnd,
+          timeWindowStart: sourceStop.timeWindowStart
+        }
+      },
+      deliveryFacts: {
+        create: {
+          batchEligible: sourceFact?.batchEligible ?? true,
+          deliveryArea: sourceFact?.deliveryArea ?? null,
+          deliveryDate: sourceFact?.deliveryDate ?? sourceStop.deliveryDate,
+          deliveryDateWeekday: sourceFact?.deliveryDateWeekday ?? null,
+          deliveryDateWeekdayMismatch: sourceFact?.deliveryDateWeekdayMismatch ?? false,
+          deliveryDateWeekdayVerified: sourceFact?.deliveryDateWeekdayVerified ?? false,
+          deliveryDayParseStatus: sourceFact?.deliveryDayParseStatus ?? 'PARSED',
+          deliveryDayUnparsedReason: sourceFact?.deliveryDayUnparsedReason ?? null,
+          deliverySession: sourceFact?.deliverySession ?? null,
+          deliveryWeekday: sourceFact?.deliveryWeekday ?? null,
+          geocodeStatus: sourceStop.geocodeStatus,
+          matchedMappingPaths: sourceFact === undefined ? {} : toJson(sourceFact.matchedMappingPaths),
+          ...(sourceFact?.mappingDiagnostics === null || sourceFact?.mappingDiagnostics === undefined
+            ? {}
+            : { mappingDiagnostics: toJson(sourceFact.mappingDiagnostics) }),
+          planningGroupKey: sourceFact?.planningGroupKey ?? null,
+          rawDeliveryArea: sourceFact?.rawDeliveryArea ?? null,
+          rawDeliveryDate: sourceFact?.rawDeliveryDate ?? null,
+          rawDeliveryDay: sourceFact?.rawDeliveryDay ?? null,
+          rawDeliveryTimeWindow: sourceFact?.rawDeliveryTimeWindow ?? null,
+          rawPickupDay: sourceFact?.rawPickupDay ?? null,
+          readiness: sourceFact?.readiness ?? 'READY_TO_PLAN',
+          reviewReasons: sourceFact === undefined ? [] : toJson(sourceFact.reviewReasons),
+          routeScopeKey: sourceFact?.routeScopeKey ?? null,
+          serviceType: sourceFact?.serviceType ?? null,
+          shopId,
+          sourceOrderId: `virtual-route-order:${localId}`,
+          sourceOrderNumber: sourceOrder.sourceOrderNumber,
+          sourcePlatform: sourceOrder.sourcePlatform,
+          sourceSiteUrl: sourceOrder.sourceSiteUrl,
+          sourceUpdatedAt: new Date(),
+          timeWindowEnd: sourceFact?.timeWindowEnd ?? sourceStop.timeWindowEnd,
+          timeWindowStart: sourceFact?.timeWindowStart ?? sourceStop.timeWindowStart
+        }
+      },
+      orderItems: {
+        create: sourceOrder.orderItems.map((item) => ({
+          lineIndex: item.lineIndex,
+          name: item.name,
+          options: toJson(item.options),
+          productId: item.productId,
+          quantity: item.quantity,
+          shopId,
+          sku: item.sku,
+          variationId: item.variationId
+        }))
+      }
+    },
+    include: { deliveryStops: { select: { id: true }, take: 1 } }
+  });
+  const deliveryStopId = created.deliveryStops[0]?.id;
+  if (deliveryStopId === undefined) throw new Error('Standalone route copy did not create a delivery stop');
+  return { deliveryStopId };
 }
 
 function routeGeometryCacheSummarySelect() {

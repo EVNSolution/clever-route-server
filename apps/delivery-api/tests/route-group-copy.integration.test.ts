@@ -24,6 +24,155 @@ describeDatabase('route group copy database invariants', () => {
     await prisma.$disconnect();
   });
 
+  test('copies a standalone route and then materializes a two-route split without changing the source', async () => {
+    const suffix = Date.now();
+    const sourceOrders = await Promise.all([1, 2].map((index) => prisma.order.create({
+      data: {
+        currencyCode: 'CAD',
+        email: `standalone-copy-${index}@example.test`,
+        financialStatus: 'paid',
+        fulfillmentStatus: 'unfulfilled',
+        name: `#standalone-copy-${index}`,
+        phone: `+1416555010${index}`,
+        rawPayload: { source: 'standalone-copy-integration' },
+        shopId,
+        shopifyOrderGid: `gid://shopify/Order/standalone-copy-${suffix}-${index}`,
+        sourceOrderId: `standalone-copy-${suffix}-${index}`,
+        sourceOrderNumber: `${suffix}-${index}`,
+        sourcePlatform: 'SHOPIFY',
+        totalPriceAmount: 10 * index,
+        deliveryFacts: {
+          create: {
+            batchEligible: true,
+            deliveryArea: 'Toronto',
+            deliveryDate: new Date('2026-09-09T00:00:00.000Z'),
+            deliveryDayParseStatus: 'PARSED',
+            geocodeStatus: 'RESOLVED',
+            matchedMappingPaths: {},
+            readiness: 'READY_TO_PLAN',
+            reviewReasons: [],
+            routeScopeKey: 'toronto-am',
+            serviceType: 'DELIVERY',
+            shopId,
+            sourceOrderId: `standalone-copy-${suffix}-${index}`,
+            sourceOrderNumber: `${suffix}-${index}`,
+            sourcePlatform: 'SHOPIFY'
+          }
+        },
+        deliveryStops: {
+          create: {
+            address1: `${100 + index} King St`,
+            city: 'Toronto',
+            countryCode: 'CA',
+            deliveryDate: new Date('2026-09-09T00:00:00.000Z'),
+            geocodeStatus: 'RESOLVED',
+            latitude: 43.65 + index / 100,
+            longitude: -79.38 - index / 100,
+            recipientName: `Recipient ${index}`
+          }
+        },
+        orderItems: {
+          create: {
+            lineIndex: 0,
+            name: `Item ${index}`,
+            options: {},
+            productId: 100 + index,
+            quantity: index,
+            shopId,
+            variationId: 0
+          }
+        }
+      },
+      include: { deliveryStops: true }
+    })));
+    const sourceRoute = await prisma.routePlan.create({
+      data: {
+        constraints: {
+          departureTime: '08:30',
+          scheduledStartAt: '2026-09-09T12:30:00.000Z',
+          scheduledStartTimeZone: 'America/Toronto'
+        },
+        depotLatitude: 43.7,
+        depotLongitude: -79.4,
+        driverId: null,
+        metrics: { distanceMeters: 1000, durationSeconds: 600, stopsCount: 2 },
+        name: 'Standalone source',
+        optimizerVersion: 'integration',
+        planDate: new Date('2026-09-09T00:00:00.000Z'),
+        shopId,
+        status: 'READY'
+      }
+    });
+    await prisma.routePlanStop.createMany({
+      data: sourceOrders.map((order, index) => ({
+        deliveryStopId: order.deliveryStops[0]!.id,
+        estimatedArrivalAt: new Date(`2026-09-09T1${index + 3}:00:00.000Z`),
+        routePlanId: sourceRoute.id,
+        sequence: index + 1,
+        shopId
+      }))
+    });
+    const service = new PrismaRouteGroupingService(prisma, new FakeDriverPushProvider());
+
+    const copy = await service.copyStandaloneRoutePlan({
+      actor: 'integration',
+      expectedRoutePlanUpdatedAt: sourceRoute.updatedAt.toISOString(),
+      routePlanId: sourceRoute.id,
+      shopDomain
+    });
+    expect(copy).toMatchObject({
+      driverId: null,
+      name: 'Standalone source Copy',
+      scheduledStartTimeZone: 'America/Toronto',
+      status: 'READY',
+      stopsCount: 2,
+      vehicleId: null
+    });
+    const copiedRoute = await prisma.routePlan.findUniqueOrThrow({
+      include: {
+        routeGroupingChildVersions: true,
+        routeStops: {
+          include: { deliveryStop: { include: { order: { include: { deliveryFacts: true, orderItems: true } } } } },
+          orderBy: { sequence: 'asc' }
+        }
+      },
+      where: { id: copy!.id }
+    });
+    const copiedOrderIds = copiedRoute.routeStops.map((stop) => stop.deliveryStop.orderId);
+    expect(copiedOrderIds).not.toEqual(sourceOrders.map((order) => order.id));
+    expect(copiedRoute.routeGroupingChildVersions).toHaveLength(0);
+    expect(copiedRoute.routeStops[0]?.deliveryStop.order).toMatchObject({
+      currencyCode: 'CAD',
+      email: 'standalone-copy-1@example.test',
+      financialStatus: 'paid',
+      sellerOrderSourceKind: 'CLEVER_ROUTE_COPY',
+      sourcePlatform: 'SHOPIFY'
+    });
+    expect(copiedRoute.routeStops[0]?.deliveryStop.order.totalPriceAmount?.toString()).toBe('10');
+    expect(copiedRoute.routeStops[0]?.deliveryStop.order.orderItems).toEqual([
+      expect.objectContaining({ name: 'Item 1', quantity: 1 })
+    ]);
+    expect(copiedRoute.routeStops[0]?.deliveryStop.order.deliveryFacts).toEqual([
+      expect.objectContaining({ readiness: 'READY_TO_PLAN', routeScopeKey: 'toronto-am', sourcePlatform: 'SHOPIFY' })
+    ]);
+
+    const split = await service.createGroupingFromRoutePlan({
+      actor: 'integration',
+      expectedRoutePlanUpdatedAt: copy!.updatedAt,
+      mode: 'MANUAL_ORDER',
+      routePlanId: copy!.id,
+      routes: [
+        { branchId: null, label: 'Copied route A', orderIds: [copiedOrderIds[0]!], routePlanId: copy!.id },
+        { branchId: null, label: 'Copied route B', orderIds: [copiedOrderIds[1]!], routePlanId: null, tempId: 'temp-2' }
+      ],
+      shopDomain
+    });
+    expect(split?.children.filter((child) => child.routePlanId !== null)).toHaveLength(2);
+    await expect(prisma.routeGroupingChildVersion.count({ where: { routePlanId: sourceRoute.id } })).resolves.toBe(0);
+    await expect(prisma.routePlanStop.count({ where: { routePlanId: sourceRoute.id } })).resolves.toBe(2);
+    await expect(prisma.order.count({ where: { id: { in: sourceOrders.map((order) => order.id) } } })).resolves.toBe(2);
+  });
+
   test('two independent VIRTUAL copies survive deleting either sibling without mutating the source', async () => {
     const sourceOrder = await prisma.order.create({
       data: {

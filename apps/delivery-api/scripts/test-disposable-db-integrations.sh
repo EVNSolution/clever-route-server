@@ -322,8 +322,10 @@ DSV_G010_DATABASE_URL="$g010_url" \
 npm test -- dsv-assignment-command.integration.test.ts dsv-g009-tenant-composite-fks.integration.test.ts
 
 G005_DATABASE_TARGET_CLASS='safe-local-g005-temp-cluster' \
+ROUTE_COPY_DATABASE_TARGET_CLASS='safe-local-route-copy-disposable' \
+ROUTE_COPY_DATABASE_URL="$g005_url" \
 DATABASE_URL="$g005_url" \
-npm test -- dsv-v1-read-query.integration.test.ts
+npm test -- dsv-v1-read-query.integration.test.ts route-group-copy.integration.test.ts
 
 DRIVER_ROUTE_ORDER_DATABASE_TARGET_CLASS='safe-local-driver-route-order-temp-cluster' \
 DATABASE_URL="$driver_route_order_url" \
