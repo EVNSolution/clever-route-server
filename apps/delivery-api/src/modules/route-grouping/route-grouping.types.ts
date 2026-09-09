@@ -322,6 +322,16 @@ export type SaveRouteGroupingDraftInput = {
   shopDomain: string;
 };
 
+export type CreateRouteGroupingFromRoutePlanInput = {
+  actor: string;
+  appId?: string | undefined;
+  expectedRoutePlanUpdatedAt: string;
+  mode?: 'MANUAL_ORDER';
+  routePlanId: string;
+  routes: RouteGroupingDraftRouteInput[];
+  shopDomain: string;
+};
+
 export type NextRouteGroupingRouteIdxInput = {
   appId?: string | undefined;
   groupingId: string;
@@ -335,6 +345,7 @@ export type RouteGroupingService = {
   createBranch(input: CreateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   createCustomStop(input: CreateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null>;
   createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto>;
+  createGroupingFromRoutePlan(input: CreateRouteGroupingFromRoutePlanInput): Promise<RouteGroupingDetailDto | null>;
   deleteBranch(input: { appId?: string | undefined; branchId: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   deleteCustomStop(input: { appId?: string | undefined; deliveryStopId: string; expectedUpdatedAt?: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;

@@ -36,6 +36,30 @@ All rows with the same parent `routeGroups[].id` share one presentation color. T
 
 `switchRoutes` remains the sibling-navigation contract. Copy behavior and all route/order identities remain unchanged.
 
+## Standalone split-on-save contract
+
+`POST /admin/route-plans/:routePlanId/route-group` is the only server mutation required when an operator adds draft sibling rows to an ordinary copied route and presses Save. Adding or reverting an empty row remains client-local and creates no group or route.
+
+The request reuses the group draft row shape:
+
+```json
+{
+  "expectedRoutePlanUpdatedAt": "2026-09-09T12:00:00.000Z",
+  "mode": "MANUAL_ORDER",
+  "routes": [
+    { "routePlanId": "existing-copy-id", "orderIds": ["order-a"] },
+    { "routePlanId": null, "tempId": "temp-2", "orderIds": ["order-b"] },
+    { "routePlanId": null, "tempId": "temp-3", "orderIds": ["order-c"] }
+  ]
+}
+```
+
+The source `routePlanId` must occur exactly once. Every other row must be new, and the submitted rows must partition the source route's complete order set exactly once. The source must still be standalone, `READY`, and at the exact supplied `updatedAt` revision. A stale or newly grouped source returns `409`; an in-progress or completed source and malformed partitions return `400`; a source outside the authenticated shop returns `404`.
+
+One database transaction creates the parent relationship, grouping inventory and memberships, attaches the existing source route as the first current child, updates its order allocation in place, and materializes every new row as a real `RoutePlan`, including unassigned rows. Any failure rolls back the whole save. The existing route ID, name unless edited, driver unless edited, vehicle unless edited, schedule unless edited, and execution history are preserved. The operation sends no driver or customer notification.
+
+The successful `201` response is `{ data: { routeGroup }, error: null }`. The client should navigate using the returned `routeGroup.id` while retaining the source `routePlanId` for the selected child. The parent group has no separate table row or visible group-leader title; its current child memberships provide shared color and sibling navigation.
+
 ## Additive server correction
 
 The standalone Route Ops DTO now preserves values that already existed in `RoutePlanSummary` but were previously omitted at the HTTP boundary:

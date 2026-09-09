@@ -20,6 +20,101 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('route grouping contracts', () => {
+  test('turns one Ready standalone route into the first child and materializes unassigned sibling routes in one transaction', async () => {
+    const tx = standaloneSplitTransactionHarness();
+    const prisma = { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) };
+    const service = new PrismaRouteGroupingService(prisma as never, new FakeDriverPushProvider());
+    const saved = { id: 'group-split' } as never;
+    const saveDraft = vi.spyOn(service, 'saveDraftInTransaction').mockResolvedValue(saved);
+
+    await expect(service.createGroupingFromRoutePlan({
+      actor: 'admin',
+      expectedRoutePlanUpdatedAt: '2026-09-09T12:00:00.000Z',
+      mode: 'MANUAL_ORDER',
+      routePlanId: 'route-source',
+      routes: [
+        { branchId: null, label: 'Copy route A', orderIds: ['order-1'], routePlanId: 'route-source' },
+        { branchId: null, label: 'Copy route B', orderIds: ['order-2'], routePlanId: null, tempId: 'temp-2' },
+        { branchId: null, label: 'Copy route C', orderIds: [], routePlanId: null, tempId: 'temp-3' }
+      ],
+      shopDomain: 'tenant.example'
+    })).resolves.toBe(saved);
+
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(tx.routeGrouping.create).toHaveBeenCalledOnce();
+    const childCreate = tx.routeGroupingChildVersion.create.mock.calls[0]?.[0] as unknown as {
+      data: { driverId: string | null; groupingId: string; routePlanId: string | null; status: string };
+      select: { id: boolean };
+    };
+    expect(childCreate).toMatchObject({
+      data: { driverId: 'driver-1', groupingId: 'group-split', routePlanId: 'route-source', status: 'CURRENT' },
+      select: { id: true }
+    });
+    const orderRebind = tx.order.updateMany.mock.calls[0]?.[0] as unknown as {
+      data: { currentRouteVersionId: string };
+      where: { id: { in: string[] } };
+    };
+    expect(orderRebind).toMatchObject({
+      data: { currentRouteVersionId: 'child-source' },
+      where: { id: { in: ['order-1', 'order-2'] } }
+    });
+    const saveCall = saveDraft.mock.calls[0] as unknown as [
+      unknown,
+      { groupingId: string; mode: string; routes: Array<{ expectedRoutePlanUpdatedAt?: string; routePlanId?: string | null; tempId?: string | null }> },
+      { materializeUnassignedRoutes: boolean }
+    ];
+    expect(saveCall[0]).toBe(tx);
+    expect(saveCall[1]).toMatchObject({ groupingId: 'group-split', mode: 'MANUAL_ORDER' });
+    expect(saveCall[1].routes).toHaveLength(3);
+    expect(saveCall[1].routes[0]).toMatchObject({
+      expectedRoutePlanUpdatedAt: '2026-09-09T12:00:00.000Z',
+      orderIds: ['order-1'],
+      routeIdx: 5,
+      routePlanId: 'route-source'
+    });
+    expect(saveCall[1].routes[1]).toMatchObject({ orderIds: ['order-2'], routePlanId: null, tempId: 'temp-2' });
+    expect(saveCall[1].routes[2]).toMatchObject({ orderIds: [], routePlanId: null, tempId: 'temp-3' });
+    expect(saveCall[2]).toEqual({ materializeUnassignedRoutes: true });
+  });
+
+  test('rejects stale, grouped, or non-Ready standalone split sources before creating a group', async () => {
+    for (const locked of [
+      { currentRouteVersionId: null, status: 'IN_PROGRESS', updatedAt: new Date('2026-09-09T12:00:00.000Z') },
+      { currentRouteVersionId: 'child-existing', status: 'READY', updatedAt: new Date('2026-09-09T12:00:00.000Z') },
+      { currentRouteVersionId: null, status: 'READY', updatedAt: new Date('2026-09-09T12:01:00.000Z') }
+    ]) {
+      const tx = standaloneSplitTransactionHarness(locked);
+      const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+      await expect(service.createGroupingFromRoutePlan({
+        actor: 'admin',
+        expectedRoutePlanUpdatedAt: '2026-09-09T12:00:00.000Z',
+        routePlanId: 'route-source',
+        routes: [
+          { branchId: null, orderIds: ['order-1'], routePlanId: 'route-source' },
+          { branchId: null, orderIds: ['order-2'], routePlanId: null }
+        ],
+        shopDomain: 'tenant.example'
+      })).rejects.toBeInstanceOf(locked.status === 'IN_PROGRESS' ? RouteGroupingValidationError : RouteGroupingConflictError);
+      expect(tx.routeGrouping.create).not.toHaveBeenCalled();
+    }
+  });
+
+  test('requires the split draft to partition the source order set exactly once', async () => {
+    const tx = standaloneSplitTransactionHarness();
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+    await expect(service.createGroupingFromRoutePlan({
+      actor: 'admin',
+      expectedRoutePlanUpdatedAt: '2026-09-09T12:00:00.000Z',
+      routePlanId: 'route-source',
+      routes: [
+        { branchId: null, orderIds: ['order-1'], routePlanId: 'route-source' },
+        { branchId: null, orderIds: ['order-3'], routePlanId: null }
+      ],
+      shopDomain: 'tenant.example'
+    })).rejects.toBeInstanceOf(RouteGroupingValidationError);
+    expect(tx.routeGrouping.create).not.toHaveBeenCalled();
+  });
+
   test('REFERENCE copy reuses SHOPIFY order and stop ids without cloning route execution state', async () => {
     const source = copySourceFixture('SHOPIFY');
     const tx = copyTransactionHarness(source);
@@ -1531,6 +1626,113 @@ function copyTransactionHarness(source: ReturnType<typeof copySourceFixture>) {
     routeGroupingVersion: { create: vi.fn().mockResolvedValue({ id: 'version-copy' }) },
     routePlan: { create: vi.fn() },
     routePlanStop: { findMany: vi.fn().mockResolvedValue([]) },
+    shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+  };
+}
+
+function standaloneSplitTransactionHarness(lockedOverrides: Partial<{
+  currentRouteVersionId: string | null;
+  status: string;
+  updatedAt: Date;
+}> = {}) {
+  const assignments = ['1', '2'].map((suffix, index) => ({
+    assignedDriver: null,
+    assignedDriverId: null,
+    assignedPolygon: null,
+    assignedPolygonId: null,
+    assignmentStatus: 'UNASSIGNED',
+    deliveryStop: { latitude: 43.7, longitude: -79.4 },
+    deliveryStopId: `stop-${suffix}`,
+    id: `membership-${suffix}`,
+    order: { customerRouteNotifications: [], orderItems: [], shopifyOrderGid: `gid://shopify/Order/${suffix}` },
+    orderId: `order-${suffix}`,
+    sourceSequence: index + 1
+  }));
+  const loaded = {
+    branches: [],
+    childVersions: [],
+    currentVersion: 1,
+    dateRangeEnd: new Date('2026-09-09T00:00:00.000Z'),
+    dateRangeStart: new Date('2026-09-09T00:00:00.000Z'),
+    deliverySession: null,
+    id: 'group-split',
+    inventory: { id: 'inventory-split' },
+    name: 'Copy route',
+    orders: assignments,
+    planDate: new Date('2026-09-09T00:00:00.000Z'),
+    polygons: [],
+    routeScopeKey: null,
+    serviceType: null,
+    shop: { defaultDepotAddress: null, defaultDepotLatitude: null, defaultDepotLongitude: null },
+    shopId: 'shop-1',
+    status: 'READY',
+    updatedAt: new Date('2026-09-09T12:00:00.000Z'),
+    versions: [{ id: 'group-version-1', status: 'CURRENT', version: 1 }]
+  };
+  let queryCount = 0;
+  return {
+    $queryRaw: vi.fn().mockImplementation(() => {
+      queryCount += 1;
+      if (queryCount === 1) {
+        return Promise.resolve([{
+          constraints: {},
+          currentRouteVersionId: null,
+          driverId: 'driver-1',
+          name: 'Copy route',
+          status: 'READY',
+          updatedAt: new Date('2026-09-09T12:00:00.000Z'),
+          vehicleId: null,
+          ...lockedOverrides
+        }]);
+      }
+      if (queryCount === 2) return Promise.resolve([{ locked: 1 }]);
+      return Promise.resolve([{ maxRouteIdx: 4, rowCount: 4 }]);
+    }),
+    inventory: {
+      update: vi.fn().mockResolvedValue({ id: 'inventory-split' }),
+      upsert: vi.fn().mockResolvedValue({ id: 'inventory-split' })
+    },
+    inventoryEvent: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    inventoryOrder: {
+      createMany: vi.fn().mockResolvedValue({ count: 2 }),
+      findMany: vi.fn().mockResolvedValue([])
+    },
+    order: {
+      findMany: vi.fn().mockResolvedValue([
+        { id: 'order-1', orderItems: [] },
+        { id: 'order-2', orderItems: [] }
+      ]),
+      updateMany: vi.fn().mockResolvedValue({ count: 2 })
+    },
+    orderDeliveryFact: {
+      findMany: vi.fn().mockResolvedValue(assignments.map((assignment) => ({
+        deliveryDate: new Date('2026-09-09T00:00:00.000Z'),
+        deliverySession: null,
+        order: {
+          deliveryStops: [{ id: assignment.deliveryStopId, latitude: 43.7, longitude: -79.4, routePlanStops: [{ id: `route-stop-${assignment.orderId}` }] }]
+        },
+        orderId: assignment.orderId,
+        routeScopeKey: null,
+        serviceType: null
+      })))
+    },
+    routeGrouping: {
+      create: vi.fn().mockResolvedValue({ id: 'group-split' }),
+      findUnique: vi.fn().mockResolvedValue(loaded)
+    },
+    routeGroupingChildVersion: {
+      create: vi.fn().mockResolvedValue({ id: 'child-source' })
+    },
+    routeGroupingOrder: { createMany: vi.fn().mockResolvedValue({ count: 2 }) },
+    routeGroupingVersion: { create: vi.fn().mockResolvedValue({ id: 'group-version-1' }) },
+    routePlan: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'route-source',
+        name: 'Copy route',
+        planDate: new Date('2026-09-09T00:00:00.000Z'),
+        routeStops: assignments.map((assignment, index) => ({ deliveryStop: { orderId: assignment.orderId }, sequence: index + 1 }))
+      })
+    },
     shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
   };
 }

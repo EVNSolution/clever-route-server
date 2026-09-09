@@ -25,6 +25,63 @@ const routeGroup = {
 };
 
 describe('Admin route group routes', () => {
+  test('atomically saves a standalone route split through the route-plan resource', async () => {
+    const { createGroupingFromRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+        method: 'POST',
+        payload: {
+          expectedRoutePlanUpdatedAt: '2026-07-20T09:20:00-04:00',
+          mode: 'MANUAL_ORDER',
+          routes: [
+            { label: 'Copy route A', orderIds: ['order-1'], routePlanId: 'route-plan-1' },
+            { label: 'Copy route B', orderIds: ['order-2'], routePlanId: null, tempId: 'temp-2' },
+            { label: 'Copy route C', orderIds: ['order-3'], routePlanId: null, tempId: 'temp-3' }
+          ]
+        },
+        url: '/admin/route-plans/route-plan-1/route-group'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { routeGroup }, error: null });
+      expect(createGroupingFromRoutePlan).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever-route-dev',
+        expectedRoutePlanUpdatedAt: '2026-07-20T13:20:00.000Z',
+        mode: 'MANUAL_ORDER',
+        routePlanId: 'route-plan-1',
+        routes: [
+          { branchId: null, label: 'Copy route A', orderIds: ['order-1'], routePlanId: 'route-plan-1' },
+          { branchId: null, label: 'Copy route B', orderIds: ['order-2'], routePlanId: null, tempId: 'temp-2' },
+          { branchId: null, label: 'Copy route C', orderIds: ['order-3'], routePlanId: null, tempId: 'temp-3' }
+        ],
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects a standalone split without an exact source revision', async () => {
+    const { createGroupingFromRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { routes: [{ orderIds: ['order-1'], routePlanId: 'route-plan-1' }, { orderIds: [], routePlanId: null }] },
+        url: '/admin/route-plans/route-plan-1/route-group'
+      });
+      expect(response.statusCode).toBe(400);
+      expect(createGroupingFromRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('copies a route group only after an explicit provider-neutral mode selection', async () => {
     const { copyGrouping, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -795,6 +852,7 @@ function createDependencyHarness(): {
   createBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createBranch']>>;
   createCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>>;
   createGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>>;
+  createGroupingFromRoutePlan: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGroupingFromRoutePlan']>>;
   deleteBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>>;
   deleteCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteCustomStop']>>;
   deleteGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteGrouping']>>;
@@ -832,6 +890,7 @@ function createDependencyHarness(): {
   const copyGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyGrouping']>(() => Promise.resolve(routeGroup));
   const createCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>(() => Promise.resolve(routeGroup));
   const createGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>(() => Promise.resolve(routeGroup));
+  const createGroupingFromRoutePlan = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGroupingFromRoutePlan']>(() => Promise.resolve(routeGroup));
   const deleteBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>(() => Promise.resolve(routeGroup));
   const deleteCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteCustomStop']>(() => Promise.resolve(routeGroup));
   const listGroupings = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['listGroupings']>(() => Promise.resolve([routeGroup]));
@@ -856,6 +915,7 @@ function createDependencyHarness(): {
     copyGrouping,
     createCustomStop,
     createGrouping,
+    createGroupingFromRoutePlan,
     deleteBranch,
     deleteCustomStop,
     deleteGrouping,
@@ -866,6 +926,7 @@ function createDependencyHarness(): {
         createBranch,
         createCustomStop,
         createGrouping,
+        createGroupingFromRoutePlan,
         deleteBranch,
         deleteCustomStop,
         deleteGrouping,

@@ -19,7 +19,7 @@ const reviewedMutationInventory = [
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:1',
-  'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.create:7',
+  'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.create:8',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.update:4',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.updateMany:2',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.create:1',
@@ -174,9 +174,10 @@ describe('route membership mutation authority', () => {
       source.indexOf('export async function replaceCurrentRouteGroupingChildVersion(')
     );
     expect(rebindAuthority).toContain('if (result.count !== orderIds.length)');
-    expect(source.match(/await rebindCurrentOrdersToRouteVersion\(/gu)).toHaveLength(5);
+    expect(source.match(/await rebindCurrentOrdersToRouteVersion\(/gu)).toHaveLength(6);
     const rebindCallerBodies = [
       source.slice(source.indexOf('export async function replaceCurrentRouteGroupingChildVersion('), source.indexOf('export class PrismaRouteGroupingService')),
+      source.slice(source.indexOf('async createGroupingFromRoutePlan('), source.indexOf('async getGrouping(')),
       source.slice(source.indexOf('async generateChildRoutes('), source.indexOf('async reOptimizeRoutes(')),
       source.slice(source.indexOf('async reOptimizeRoutes('), source.indexOf('async deleteBranch(')),
       source.slice(source.indexOf('async rollback('), source.indexOf('private async refreshChildRouteGeometry(')),
@@ -186,7 +187,13 @@ describe('route membership mutation authority', () => {
       expect(body).toContain('routeGroupingChildVersion.create(');
       expect(body).toContain('await rebindCurrentOrdersToRouteVersion(');
     }
-    const rollbackBody = rebindCallerBodies[3] ?? '';
+    const standaloneSplitBody = rebindCallerBodies[1] ?? '';
+    expect(standaloneSplitBody).toContain('await lockRoutePlanMembership(');
+    expect(standaloneSplitBody.indexOf('await lockRoutePlanMembership('))
+      .toBeLessThan(standaloneSplitBody.indexOf('routeGroupingChildVersion.create('));
+    expect(standaloneSplitBody).toContain("lockedRoutePlan.status !== 'READY'");
+    expect(standaloneSplitBody).toContain('lockedRoutePlan.currentRouteVersionId !== null');
+    const rollbackBody = rebindCallerBodies[4] ?? '';
     expect(rollbackBody).toContain('assignments: archivedChildAssignments(loaded, child)');
     expect(rollbackBody).toContain('snapshot: canonicalSnapshot');
     expect(rollbackBody).not.toContain('snapshot: { ...snapshot');
