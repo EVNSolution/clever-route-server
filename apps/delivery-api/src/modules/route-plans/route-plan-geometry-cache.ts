@@ -73,16 +73,38 @@ export function routeGeometryCacheUpsertArgs(input: RouteGeometryCacheWrite): Pr
 
 export function computeRouteShapeSignature(detail: RoutePlanDetail): string {
   const routePlan = detail.routePlan;
-  return stableHash({
-    depot: normalizeCoordinatePair(routePlan.depot.latitude, routePlan.depot.longitude),
+  return computeRouteShapeSignatureFromParts({
+    depot: routePlan.depot,
     routeEndMode: routePlan.routeEndMode,
-    stops: [...detail.stops]
+    stops: detail.stops.map((stop) => ({
+      coordinates: stop.coordinates,
+      deliveryStopId: stop.deliveryStopId,
+      orderId: stop.orderId,
+      sequence: stop.sequence
+    }))
+  });
+}
+
+export function computeRouteShapeSignatureFromParts(input: {
+  depot: { latitude: number | null; longitude: number | null };
+  routeEndMode: string;
+  stops: Array<{
+    coordinates: { latitude: number | null; longitude: number | null };
+    deliveryStopId: string;
+    orderId: string;
+    sequence: number;
+  }>;
+}): string {
+  return stableHash({
+    depot: normalizeCoordinatePair(input.depot.latitude, input.depot.longitude),
+    routeEndMode: input.routeEndMode,
+    stops: [...input.stops]
       .sort((left, right) => left.sequence - right.sequence)
       .map((stop) => ({
+        coordinates: normalizeCoordinatePair(stop.coordinates.latitude, stop.coordinates.longitude),
         deliveryStopId: stop.deliveryStopId,
         orderId: stop.orderId,
-        sequence: stop.sequence,
-        coordinates: normalizeCoordinatePair(stop.coordinates.latitude, stop.coordinates.longitude)
+        sequence: stop.sequence
       }))
   });
 }
@@ -249,7 +271,7 @@ function readCoordinateTuple(value: unknown): [number, number] | null {
   return [longitude, latitude];
 }
 
-function readRouteMetrics(value: unknown): RoutePlanRouteMetrics | null {
+export function readRouteMetrics(value: unknown): RoutePlanRouteMetrics | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   return {

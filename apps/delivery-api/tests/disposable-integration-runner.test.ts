@@ -33,6 +33,7 @@ describe('disposable DB integration runner', () => {
     expect(script).toContain('127.0.0.1:55492 / clever_deletion_upgrade');
     expect(script).toContain('Deletion lifecycle populated legacy reconciliation: PASS');
     expect(script).toContain('DUPLICATE_MIGRATION_RECONCILED');
+    expect(script).toContain("psql -U \"$database_user\" -d \"$database_name\" -Atqc 'SELECT 1'");
     expect(script).toContain('trap cleanup EXIT');
     expect(script).not.toContain(':55444');
     expect(script).not.toContain(':55455');

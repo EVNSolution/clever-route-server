@@ -3207,11 +3207,15 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
 
       expect(routes.statusCode).toBe(200);
-      expect(
-        readApiData<{ routePlans: Array<{ name: string }> }>(
-          routes,
-        ).routePlans.map((routePlan) => routePlan.name),
-      ).toEqual(["Route draft"]);
+      const listedRoutes = readApiData<{
+        routePlans: Array<{ deliveredCount: number; etaRange: unknown; name: string; totalAmount: unknown }>;
+      }>(routes).routePlans;
+      expect(listedRoutes.map((routePlan) => routePlan.name)).toEqual(["Route draft"]);
+      expect(listedRoutes[0]).toMatchObject({
+        deliveredCount: 1,
+        etaRange: { endAt: "2026-05-26T16:00:00.000Z", startAt: "2026-05-26T15:00:00.000Z" },
+        totalAmount: { amount: "45.00", currencyCode: "CAD" },
+      });
       expect(orders.statusCode).toBe(200);
       expect(
         readApiData<{
@@ -7847,12 +7851,14 @@ function canonicalOrder(
 function routePlanSummary() {
   return {
     createdAt: "2026-05-26T12:00:00.000Z",
+    deliveredCount: 1,
     deliveryAreas: ["Toronto"],
     deliveryDate: "2026-05-26",
     deliveryDays: ["Tuesday"],
     depot: { latitude: 43.6532, longitude: -79.3832 },
     driver: null,
     driverId: null,
+    etaRange: { endAt: "2026-05-26T16:00:00.000Z", startAt: "2026-05-26T15:00:00.000Z" },
     id: "route-plan-id",
     missingCoordinates: 0,
     name: "Route draft",
@@ -7860,6 +7866,7 @@ function routePlanSummary() {
     routeEndMode: "END_AT_LAST_STOP" as const,
     status: "DRAFT",
     stopsCount: 2,
+    totalAmount: { amount: "45.00", currencyCode: "CAD" },
     updatedAt: "2026-05-26T12:00:00.000Z",
   };
 }

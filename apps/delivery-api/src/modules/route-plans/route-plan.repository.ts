@@ -45,8 +45,15 @@ import type {
   RoutePlanRouteScopeInput,
   RoutePlanSummary
 } from './route-plan.types.js';
-import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
+import {
+  applyCachedRouteGeometry,
+  computeRouteShapeSignature,
+  computeRouteShapeSignatureFromParts,
+  readRouteMetrics,
+  routeGeometryCacheUpsertArgs
+} from './route-plan-geometry-cache.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
+import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from './route-plan-summary-normalization.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
 import { resolveNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
@@ -82,6 +89,10 @@ type RoutePlanGeometryCacheRecord = {
 
 type RoutePlanGeometryCacheSummaryRecord = Omit<RoutePlanGeometryCacheRecord, 'geometry' | 'stopPoints'>;
 type RoutePlanGeometryCacheMetadataRecord = Omit<RoutePlanGeometryCacheRecord, 'geometry' | 'metrics' | 'stopPoints'>;
+
+type RoutePlanListRecord = Prisma.RoutePlanGetPayload<{
+  select: ReturnType<typeof routePlanListSelect>;
+}>;
 
 type RoutePlanRecord = {
   createdAt: Date;
@@ -1217,12 +1228,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       ...(input.deliveryDate === undefined ? {} : { planDate: parsePlanDate(input.deliveryDate) })
     };
     const routePlans = await this.prisma.routePlan.findMany({
-      include: routePlanSummaryInclude(),
       orderBy: { createdAt: 'desc' },
+      select: routePlanListSelect(),
       where
     });
 
-    return (routePlans as RoutePlanRecord[]).map((routePlan) => toRoutePlanSummary(routePlan));
+    return (routePlans as RoutePlanListRecord[]).map(toRoutePlanListSummary);
   }
 
   async findRoutePlanDetail(input: {
@@ -2631,52 +2642,80 @@ async function collapseRouteGroupingSplitAfterChildDelete(
   }
 }
 
-function routePlanSummaryInclude() {
+function routePlanListSelect() {
   return {
-    driverEvents: routeLifecycleEventQuery(),
+    constraints: true,
+    createdAt: true,
+    depotLatitude: true,
+    depotLongitude: true,
     driver: {
-      include: {
-        _count: {
-          select: {
-            driverEvents: true
-          }
-        }
+      select: {
+        _count: { select: { driverEvents: true } },
+        authSubject: true,
+        createdAt: true,
+        displayName: true,
+        id: true,
+        lastSeenAt: true,
+        phone: true,
+        status: true,
+        updatedAt: true
       }
+    },
+    driverEvents: routeLifecycleEventQuery(),
+    driverId: true,
+    id: true,
+    metrics: true,
+    name: true,
+    planDate: true,
+    routeGeometryCaches: {
+      orderBy: { generatedAt: 'desc' as const },
+      select: routeGeometryCacheSummarySelect(),
+      take: 1
     },
     routeGroupingChildVersions: {
       orderBy: { createdAt: 'desc' as const },
-      select: {
-        groupingId: true,
-        status: true,
-        version: true
-      },
+      select: { groupingId: true, status: true, version: true },
       take: 1
     },
-    routeGeometryCaches: {
-      orderBy: { generatedAt: 'desc' as const },
-      select: routeGeometryCacheSummarySelect()
-    },
     routeStops: {
-      include: {
+      orderBy: { sequence: 'asc' as const },
+      select: {
         deliveryStop: {
-          include: {
+          select: {
+            deliveryDate: true,
+            id: true,
+            latitude: true,
+            longitude: true,
             order: {
-              include: {
+              select: {
+                currencyCode: true,
+                id: true,
                 orderItems: {
-                  orderBy: { lineIndex: 'asc' as const }
+                  orderBy: { lineIndex: 'asc' as const },
+                  select: {
+                    name: true,
+                    options: true,
+                    productId: true,
+                    quantity: true,
+                    sku: true,
+                    variationId: true
+                  }
                 },
-                deliveryCustomerProfileLinks: {
-                  include: { profile: true },
-                  take: 1
-                }
+                totalPriceAmount: true
               }
-            }
+            },
+            orderId: true,
+            status: true
           }
-        }
-      },
-      orderBy: { sequence: 'asc' as const }
-    }
-  };
+        },
+        deliveryStopId: true,
+        estimatedArrivalAt: true,
+        sequence: true
+      }
+    },
+    status: true,
+    updatedAt: true
+  } as const;
 }
 
 function routePlanInclude() {
@@ -2834,6 +2873,59 @@ type RoutePlanSummaryOptions = {
   includeRouteMetrics?: boolean;
 };
 
+function toRoutePlanListSummary(routePlan: RoutePlanListRecord): RoutePlanSummary {
+  const metrics = objectOrNull(routePlan.metrics);
+  const itemSummary = aggregateOrderItems(
+    routePlan.routeStops.flatMap(({ deliveryStop }) => deliveryStop.order.orderItems.map(toOrderItemDto)),
+    isRouteReadyStatus(routePlan.status) ? null : readString(metrics?.itemFingerprint)
+  );
+  const depot = {
+    latitude: decimalNumber(routePlan.depotLatitude),
+    longitude: decimalNumber(routePlan.depotLongitude)
+  };
+  const cache = routePlan.routeGeometryCaches[0] ?? null;
+  const shapeSignature = computeRouteShapeSignatureFromParts({
+    depot,
+    routeEndMode: readRouteEndMode(routePlan.constraints),
+    stops: routePlan.routeStops.map((stop) => ({
+      coordinates: {
+        latitude: decimalNumber(stop.deliveryStop.latitude),
+        longitude: decimalNumber(stop.deliveryStop.longitude)
+      },
+      deliveryStopId: stop.deliveryStopId,
+      orderId: stop.deliveryStop.orderId,
+      sequence: stop.sequence
+    }))
+  });
+
+  return {
+    createdAt: routePlan.createdAt.toISOString(),
+    deliveredCount: routePlan.routeStops.filter(({ deliveryStop }) => deliveryStop.status === 'DELIVERED').length,
+    deliveryAreas: readStringArray(metrics?.deliveryAreas) ?? [],
+    deliveryDate: deriveRouteDate(routePlan as unknown as RoutePlanRecord),
+    deliveryDays: readStringArray(metrics?.deliveryDays) ?? [],
+    depot,
+    departureTime: readDepartureTime(routePlan.constraints),
+    driver: toRoutePlanDriverSummary(routePlan.driver),
+    driverId: routePlan.driverId,
+    etaRange: normalizeRouteEtaRange(routePlan.routeStops.map(({ estimatedArrivalAt }) => estimatedArrivalAt)),
+    id: routePlan.id,
+    itemSummary,
+    missingCoordinates: readFiniteNumber(metrics?.missingCoordinates)
+      ?? routePlan.routeStops.filter(({ deliveryStop }) => deliveryStop.latitude === null || deliveryStop.longitude === null).length,
+    name: routePlan.name,
+    planDate: formatDateOnly(routePlan.planDate),
+    routeEndMode: readRouteEndMode(routePlan.constraints),
+    routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
+    routeMetrics: cache?.shapeSignature === shapeSignature ? readRouteMetrics(cache.metrics) : null,
+    scheduledStartAt: readScheduledStartAt(routePlan.constraints),
+    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    stopsCount: readFiniteNumber(metrics?.stopsCount) ?? routePlan.routeStops.length,
+    totalAmount: normalizeRouteTotalAmount(routePlan.routeStops.map(({ deliveryStop }) => deliveryStop.order)),
+    updatedAt: routePlan.updatedAt.toISOString()
+  };
+}
+
 function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanOrderInput[], options: RoutePlanSummaryOptions = {}): RoutePlanSummary {
   const metrics = readMetrics(routePlan.metrics, inputOrders, routePlan.routeStops ?? []);
   const routeMetrics = options.includeRouteMetrics === false ? null : readRoutePlanSummaryMetrics(routePlan);
@@ -2845,6 +2937,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
   );
   return {
     createdAt: routePlan.createdAt.toISOString(),
+    deliveredCount: (routePlan.routeStops ?? []).filter(({ deliveryStop }) => deliveryStop.status === 'DELIVERED').length,
     deliveryDate: deriveRouteDate(routePlan),
     deliveryAreas: metrics.deliveryAreas,
     deliveryDays: metrics.deliveryDays,
@@ -2855,6 +2948,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     departureTime: readDepartureTime(routePlan.constraints),
     driver: toRoutePlanDriverSummary(routePlan.driver ?? null),
     driverId: routePlan.driverId ?? routePlan.driver?.id ?? null,
+    etaRange: normalizeRouteEtaRange((routePlan.routeStops ?? []).map(({ estimatedArrivalAt }) => estimatedArrivalAt)),
     id: routePlan.id,
     itemSummary,
     missingCoordinates: metrics.missingCoordinates,
@@ -2866,6 +2960,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     routeMetrics,
     status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
     stopsCount: metrics.stopsCount,
+    totalAmount: normalizeRouteTotalAmount((routePlan.routeStops ?? []).map(({ deliveryStop }) => deliveryStop.order)),
     updatedAt: routePlan.updatedAt.toISOString()
   };
 }

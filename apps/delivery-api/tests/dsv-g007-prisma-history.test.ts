@@ -163,10 +163,11 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(104);
+    expect(migrations).toHaveLength(105);
     expect(migrations).toContain('20260907000000_restore_active_job_uniqueness');
     expect(migrations).toContain('20260907010000_dsv_driver_inquiries');
     expect(migrations).toContain('20260907120000_store_review_data_visibility');
+    expect(migrations).toContain('20260909090000_support_standalone_route_notifications');
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -396,7 +397,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260907010000_dsv_driver_inquiries')).toBeLessThan(
       migrations.indexOf('20260907120000_store_review_data_visibility')
     );
-    expect(migrations.at(-1)).toBe('20260907130000_add_driver_destination_open_time');
+    expect(migrations.indexOf('20260907130000_add_driver_destination_open_time')).toBeLessThan(
+      migrations.indexOf('20260909090000_support_standalone_route_notifications')
+    );
+    expect(migrations.at(-1)).toBe('20260909090000_support_standalone_route_notifications');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {

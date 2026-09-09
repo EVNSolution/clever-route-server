@@ -1048,6 +1048,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   deliveryAreas: string[];
   deliveryDate: string | null;
   departureTime: string | null;
+  deliveredCount: number;
   driverId: string | null;
   depot: {
     latitude: number | null;
@@ -1055,6 +1056,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   };
   id: string;
   itemSummary: RoutePlanSummary["itemSummary"];
+  etaRange: NonNullable<RoutePlanSummary["etaRange"]> | null;
   missingCoordinates: number;
   name: string;
   planDate: string;
@@ -1064,6 +1066,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   > | null;
   status: string;
   stopsCount: number;
+  totalAmount: NonNullable<RoutePlanSummary["totalAmount"]> | null;
   updatedAt: string;
 } {
   return {
@@ -1071,10 +1074,12 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     deliveryAreas: routePlan.deliveryAreas,
     deliveryDate: routePlan.deliveryDate ?? null,
     departureTime: routePlan.departureTime ?? null,
+    deliveredCount: routePlan.deliveredCount ?? 0,
     driverId: routePlan.driverId ?? null,
     depot: routePlan.depot,
     id: routePlan.id,
     itemSummary: routePlan.itemSummary ?? emptyRouteItemSummary(),
+    etaRange: routePlan.etaRange ?? null,
     missingCoordinates: routePlan.missingCoordinates,
     name: routePlan.name,
     planDate: routePlan.planDate,
@@ -1082,6 +1087,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     routeGroupingChild: routePlan.routeGroupingChild ?? null,
     status: routePlan.status,
     stopsCount: routePlan.stopsCount,
+    totalAmount: routePlan.totalAmount ?? null,
     updatedAt: routePlan.updatedAt,
   };
 }

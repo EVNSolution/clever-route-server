@@ -1197,6 +1197,90 @@ describe('route grouping contracts', () => {
     expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
   });
 
+  test('publishes an ordinary route once per stable publication version', async () => {
+    const provider = new FakeDriverPushProvider();
+    const routePlan = {
+      assignmentGeneration: 3n,
+      constraints: {},
+      depotLatitude: '43.65',
+      depotLongitude: '-79.38',
+      driver: { accountId: 'account-1' },
+      driverId: 'driver-1',
+      name: 'Route 1',
+      routeStops: [],
+      shop: { id: 'shop-1', shopDomain: 'tenant.example' },
+    };
+    let attempt: null | { action: 'ASSIGNED' | 'CHANGED'; createdAt: Date; id: string; idempotencyKey: string; status: string } = null;
+    const prisma = {
+      driverPushToken: {
+        findMany: vi.fn().mockResolvedValue([{ devicePushToken: 'token-1', id: 'token-1' }]),
+        updateMany: vi.fn()
+      },
+      driverRouteNotificationAttempt: {
+        count: vi.fn(() => Promise.resolve(attempt?.status === 'SENT' ? 1 : 0)),
+        findFirst: vi.fn(({ where }: { where: { idempotencyKey: { in: string[] } } }) =>
+          Promise.resolve(attempt !== null && where.idempotencyKey.in.includes(attempt.idempotencyKey) ? attempt : null)),
+        update: vi.fn(({ data }: { data: { status: string } }) => {
+          if (attempt !== null) attempt.status = data.status;
+          return Promise.resolve(attempt);
+        }),
+        upsert: vi.fn(({ create }: { create: { action: 'ASSIGNED' | 'CHANGED'; idempotencyKey: string } }) => {
+          attempt = { action: create.action, createdAt: new Date(), id: 'attempt-1', idempotencyKey: create.idempotencyKey, status: 'PENDING' };
+          return Promise.resolve(attempt);
+        })
+      },
+      routeGroupingChildVersion: { findFirst: vi.fn().mockResolvedValue(null) },
+      routePlan: { findFirst: vi.fn(() => Promise.resolve(routePlan)) }
+    };
+    const service = new PrismaRouteGroupingService(prisma as never, provider);
+
+    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+
+    expect(provider.sentMessages).toHaveLength(1);
+    expect(provider.sentMessages[0]).toMatchObject({
+      action: 'assigned',
+      routePlanId: 'route-1'
+    });
+    expect(provider.sentMessages[0]?.publicationVersion).toMatch(/^[0-9a-f]{64}$/u);
+    expect(prisma.driverRouteNotificationAttempt.upsert).toHaveBeenCalledOnce();
+  });
+
+  test('uses a changed notification for a new ordinary-route publication version', async () => {
+    const provider = new FakeDriverPushProvider();
+    const prisma = {
+      driverPushToken: {
+        findMany: vi.fn().mockResolvedValue([{ devicePushToken: 'token-1', id: 'token-1' }]),
+        updateMany: vi.fn()
+      },
+      driverRouteNotificationAttempt: {
+        count: vi.fn().mockResolvedValue(1),
+        findFirst: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({ id: 'attempt-2' }),
+        upsert: vi.fn().mockResolvedValue({ id: 'attempt-2' })
+      },
+      routeGroupingChildVersion: { findFirst: vi.fn().mockResolvedValue(null) },
+      routePlan: { findFirst: vi.fn().mockResolvedValue({
+        assignmentGeneration: 3n,
+        constraints: {},
+        depotLatitude: '43.65',
+        depotLongitude: '-79.38',
+        driver: { accountId: 'account-1' },
+        driverId: 'driver-1',
+        name: 'Route 1 changed',
+        routeStops: [],
+        shop: { id: 'shop-1', shopDomain: 'tenant.example' },
+      }) }
+    };
+    const service = new PrismaRouteGroupingService(prisma as never, provider);
+
+    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+
+    expect(provider.sentMessages[0]).toMatchObject({ action: 'changed' });
+    expect(provider.sentMessages[0]?.publicationVersion).toMatch(/^[0-9a-f]{64}$/u);
+    expect(prisma.driverRouteNotificationAttempt.upsert).toHaveBeenCalledOnce();
+  });
+
   test('keeps parent switch route on the group id, not the first child route', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
@@ -1244,6 +1328,22 @@ describe('route grouping contracts', () => {
     expect(source).toContain('itemSummary: routeItemSummary(input.assignments)');
     expect(groupingTypes).toContain('itemCount: number');
     expect(routePlanTypes).toContain('itemCount?: number');
+  });
+
+  test('keeps grouped route rows on the normalized list contract without loading detail-only relations', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const listBody = source.slice(source.indexOf('async listGroupings('), source.indexOf('async updateBranch('));
+    const listInclude = source.slice(source.indexOf('function groupingListInclude()'), source.indexOf('async function lockRouteGroupingCopySource'));
+    const summary = source.slice(source.indexOf('function toMinimalRoutePlanSummary'), source.indexOf('function deriveGroupingDisplayStatus'));
+
+    expect(listBody).toContain('include: groupingListInclude()');
+    expect(listInclude).not.toContain('branches:');
+    expect(listInclude).not.toContain('polygons:');
+    expect(listInclude).not.toContain('versions:');
+    expect(listInclude).toContain('take: 1');
+    expect(summary).toContain('deliveredCount:');
+    expect(summary).toContain('etaRange: normalizeRouteEtaRange');
+    expect(summary).toContain('totalAmount: normalizeRouteTotalAmount');
   });
 
   test('fake FCM provider records string-safe route payload fields', async () => {
