@@ -20,6 +20,7 @@ import {
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { DEFAULT_SHOPIFY_APP_ID, appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
+import { isIanaTimezone } from '../driver/driver-route-timezone.js';
 
 export type CustomerEmailPreviewInput = {
   appId?: string | undefined;
@@ -151,6 +152,7 @@ type CustomerEmailPrismaClient = Pick<
 >;
 
 type CustomerEmailRoutePlanRow = {
+  constraints: unknown;
   id: string;
   name: string;
   planDate: Date;
@@ -187,6 +189,7 @@ type CustomerEmailRoutePlanRow = {
     sequence: number;
   }>;
   shop: {
+    commerceConnections: Array<{ timezone: string | null }>;
     customerEmailSettings: unknown;
     id: string;
     routeOpsUiSettings: unknown;
@@ -679,6 +682,7 @@ export class CustomerEmailService {
   ): Promise<CustomerEmailRoutePlanRow | null> {
     const routePlan = await client.routePlan.findFirst({
       select: {
+        constraints: true,
         id: true,
         name: true,
         planDate: true,
@@ -726,7 +730,15 @@ export class CustomerEmailService {
             sequence: true,
           },
         },
-        shop: { select: { customerEmailSettings: true, id: true, routeOpsUiSettings: true, shopDomain: true } },
+        shop: {
+          select: {
+            commerceConnections: { select: { timezone: true }, where: { status: 'ACTIVE' } },
+            customerEmailSettings: true,
+            id: true,
+            routeOpsUiSettings: true,
+            shopDomain: true,
+          },
+        },
       },
       where: {
         id: input.routePlanId,
@@ -1253,6 +1265,7 @@ function customerEmailPreviewToken(
         estimatedArrivalAt: stop.estimatedArrivalAt?.toISOString() ?? null,
         sequence: stop.sequence,
       })),
+      timezone: resolveCustomerEmailTimezone(routePlan),
     },
     senderEmail: settings.senderEmail,
     senderName: settings.senderName,
@@ -1278,12 +1291,16 @@ function computeCurrentProgressSequence(stops: CustomerEmailRoutePlanRow['routeS
 }
 
 function renderContext(routePlan: CustomerEmailRoutePlanRow, stop: CustomerEmailRoutePlanRow['routeStops'][number]): Record<string, string> {
+  const timezone = resolveCustomerEmailTimezone(routePlan);
   return {
     customerName: stop.deliveryStop.recipientName ?? '',
     deliveryAddress: formatAddress(stop.deliveryStop),
     deliveryDate: formatDate(stop.deliveryStop.deliveryDate ?? routePlan.planDate),
     deliveryWeekday: stop.deliveryStop.order.deliveryFacts[0]?.deliveryWeekday ?? '',
     eta: stop.estimatedArrivalAt === null ? '' : stop.estimatedArrivalAt.toISOString(),
+    etaWindow: stop.estimatedArrivalAt === null || timezone === null
+      ? ''
+      : formatEtaWindow(stop.estimatedArrivalAt, timezone),
     inventoryList: formatInventoryList(stop.deliveryStop.order.orderItems),
     orderNumber: stop.deliveryStop.order.name,
     routeName: routePlan.name,
@@ -1299,12 +1316,48 @@ function testTemplateContext(settings: CustomerEmailSettings): Record<string, st
     deliveryDate: formatDate(new Date()),
     deliveryWeekday: '',
     eta: 'TBD',
+    etaWindow: 'Aug 4, 2026, 9:30 AM EDT - Aug 4, 2026, 10:30 AM EDT',
     inventoryList: '',
     orderNumber: '#1001',
     routeName: 'Test route',
     sequence: '1',
     shopName: settings.senderName,
   };
+}
+
+function resolveCustomerEmailTimezone(routePlan: CustomerEmailRoutePlanRow): string | null {
+  const constraints = isRecord(routePlan.constraints) ? routePlan.constraints : null;
+  const routeScope = constraints !== null && isRecord(constraints.routeScope) ? constraints.routeScope : null;
+  const routeTimezone = [
+    readNonEmptyString(constraints?.timezone),
+    readNonEmptyString(routeScope?.timezone),
+    readNonEmptyString(constraints?.scheduledStartTimeZone),
+  ].find((value): value is string => value !== null && isIanaTimezone(value));
+  if (routeTimezone !== undefined) return routeTimezone;
+
+  const connectionTimezones = [...new Set(routePlan.shop.commerceConnections
+    .map((connection) => connection.timezone?.trim() ?? '')
+    .filter((value) => value !== '' && isIanaTimezone(value)))];
+  return connectionTimezones.length === 1 ? connectionTimezones[0] ?? null : null;
+}
+
+function formatEtaWindow(eta: Date, timezone: string): string {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    hour: 'numeric',
+    hour12: true,
+    minute: '2-digit',
+    month: 'short',
+    timeZone: timezone,
+    timeZoneName: 'short',
+    year: 'numeric',
+  });
+  const halfWindowMs = 30 * 60 * 1000;
+  return `${formatter.format(new Date(eta.getTime() - halfWindowMs))} - ${formatter.format(new Date(eta.getTime() + halfWindowMs))}`;
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
 function renderTemplate(template: string, context: Record<string, string>): { diagnostics: CustomerEmailRenderDiagnostic[]; value: string } {

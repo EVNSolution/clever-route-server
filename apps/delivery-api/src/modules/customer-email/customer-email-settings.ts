@@ -88,6 +88,7 @@ export const CUSTOMER_EMAIL_TEMPLATE_VARIABLES = [
   'deliveryDate',
   'deliveryWeekday',
   'eta',
+  'etaWindow',
   'inventoryList',
   'orderNumber',
   'routeName',
@@ -109,7 +110,7 @@ export function defaultCustomerEmailSettings(): CustomerEmailSettings {
     senderName: 'CLEVER',
     templates: {
       DELIVERY_SCHEDULED: {
-        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is scheduled for delivery on {{deliveryDate}}.\n\nDelivery address:\n{{deliveryAddress}}',
+        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is scheduled for delivery on {{deliveryDate}}.\n\nEstimated arrival window: {{etaWindow}}\n\nDelivery address:\n{{deliveryAddress}}',
         enabled: true,
         subject: 'Your delivery is scheduled',
         version: 1,
