@@ -344,6 +344,49 @@ describe('CustomerEmailService', () => {
     }));
   });
 
+  test('saves and refetches an ETA-window template without sending, then rejects a stale retry', async () => {
+    const { prisma, service, transport } = createHarness();
+    const updatedAt = new Date('2026-09-09T00:00:00.000Z');
+    const current = { ...defaultCustomerEmailSettings(), senderEmail: 'sender@example.com' };
+    const saved = {
+      ...current,
+      templates: {
+        ...current.templates,
+        DELIVERY_SCHEDULED: {
+          body: 'Window {{etaWindow}}',
+          enabled: true,
+          subject: 'Scheduled {{deliveryDate}}',
+          version: 2,
+        },
+      },
+    };
+    prisma.shop.findUnique
+      .mockResolvedValueOnce({ customerEmailSettings: current, id: 'shop-id', updatedAt })
+      .mockResolvedValueOnce({ customerEmailSettings: saved })
+      .mockResolvedValueOnce({ customerEmailSettings: saved, id: 'shop-id', updatedAt: new Date('2026-09-09T00:01:00.000Z') });
+    prisma.shop.updateMany.mockResolvedValue({ count: 1 });
+    const payload = {
+      body: 'Window {{etaWindow}}',
+      enabled: true,
+      expectedVersion: 1,
+      subject: 'Scheduled {{deliveryDate}}',
+    };
+
+    await expect(service.saveTemplateSettings({
+      payload,
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ templates: { DELIVERY_SCHEDULED: { version: 2 } } });
+    await expect(service.getSettings({ shopDomain: 'example.myshopify.com' }))
+      .resolves.toMatchObject({ templates: { DELIVERY_SCHEDULED: { body: 'Window {{etaWindow}}', version: 2 } } });
+    await expect(service.saveTemplateSettings({
+      payload,
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'TEMPLATE_VERSION_CONFLICT' });
+    expect(transport.send).not.toHaveBeenCalled();
+  });
+
   test('previews eligible recipients and reports missing canonical order email', async () => {
     const { prisma, service } = createHarness();
     const settings = defaultCustomerEmailSettings();
@@ -396,6 +439,119 @@ describe('CustomerEmailService', () => {
         },
       }],
       skipped: [{ code: 'CUSTOMER_EMAIL_MISSING', deliveryStopId: 'stop-2' }],
+    });
+  });
+
+  test('renders the same per-stop ETA window for preview and automatic delivery', async () => {
+    const { prisma, service, transport } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    const settings = {
+      ...defaults,
+      automatic: {
+        consent: {
+          acceptedAt: '2026-09-09T00:00:00.000Z',
+          acceptedBy: 'operator-id',
+          noticeVersion: 'customer-email-automatic-v1',
+          settingsVersion: 'v3:g1',
+        },
+        enabled: true,
+      },
+      senderEmail: 'sender@example.com',
+      templates: {
+        ...defaults.templates,
+        DELIVERY_SCHEDULED: {
+          body: 'Window {{etaWindow}}',
+          enabled: true,
+          subject: 'Scheduled {{orderNumber}}',
+          version: 2,
+        },
+      },
+    };
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      constraints: { routeScope: { timezone: 'America/New_York' } },
+      customerEmailSettings: settings,
+      stops: [stopRow({
+        email: 'customer@example.com',
+        estimatedArrivalAt: new Date('2026-08-04T10:00:00.000Z'),
+        id: 'stop-1',
+        sequence: 1,
+        status: 'PENDING',
+      })],
+    }));
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+
+    const preview = await service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    });
+    const renderedBody = 'Window Aug 4, 2026, 5:30 AM EDT - Aug 4, 2026, 6:30 AM EDT';
+    expect(preview).toMatchObject({ recipients: [{ rendered: { body: renderedBody } }] });
+
+    await expect(service.sendAutomatic({
+      deliveryStopIds: ['stop-1'],
+      idempotencyKey: 'schedule:stop-1',
+      recipientEmail: 'customer@example.com',
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ status: 'SENT' });
+    expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({ body: renderedBody }));
+  });
+
+  test('handles DST boundaries and reports a missing ETA window when timezone authority is ambiguous', async () => {
+    const { prisma, service } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    const settings = {
+      ...defaults,
+      senderEmail: 'sender@example.com',
+      templates: {
+        ...defaults.templates,
+        DELIVERY_SCHEDULED: {
+          body: 'Window {{etaWindow}}',
+          enabled: true,
+          subject: 'Scheduled',
+          version: 2,
+        },
+      },
+    };
+    prisma.routePlan.findFirst.mockResolvedValueOnce(routePlanRow({
+      constraints: { timezone: 'America/Toronto' },
+      customerEmailSettings: settings,
+      stops: [stopRow({
+        estimatedArrivalAt: new Date('2026-11-01T06:00:00.000Z'),
+        id: 'stop-1',
+        sequence: 1,
+        status: 'PENDING',
+      })],
+    }));
+
+    await expect(service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({
+      recipients: [{
+        diagnostics: { body: [] },
+        rendered: { body: 'Window Nov 1, 2026, 1:30 AM EDT - Nov 1, 2026, 1:30 AM EST' },
+      }],
+    });
+
+    prisma.routePlan.findFirst.mockResolvedValueOnce(routePlanRow({
+      commerceConnectionTimezones: ['America/Toronto', 'America/Vancouver'],
+      constraints: {},
+      customerEmailSettings: settings,
+      stops: [stopRow({ id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    await expect(service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({
+      recipients: [{
+        diagnostics: { body: [{ code: 'MISSING_TEMPLATE_VALUE', key: 'etaWindow' }] },
+        rendered: { body: 'Window ' },
+      }],
     });
   });
 
@@ -890,6 +1046,33 @@ describe('CustomerEmailService', () => {
       actor: 'admin-user', commandId: 'stale-command', confirmed: true, deliveryStopIds: ['stop-2'],
       routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'DELIVERY_SCHEDULED',
     })).rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_COMMAND_CONFLICT' });
+    expect(transport.send).not.toHaveBeenCalled();
+  });
+
+  test('rejects a preview token after the authoritative timezone changes', async () => {
+    const { prisma, service, transport } = createHarness();
+    const original = routePlanRow({
+      constraints: { timezone: 'America/Toronto' },
+      stops: [stopRow({ id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    });
+    prisma.routePlan.findFirst.mockResolvedValue(original);
+    const preview = await service.preview({
+      routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'DELIVERY_SCHEDULED',
+    });
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      constraints: { timezone: 'America/Vancouver' },
+      stops: [stopRow({ id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'timezone-change',
+      confirmed: true,
+      previewToken: preview?.previewToken,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_PREVIEW_CONFLICT' });
     expect(transport.send).not.toHaveBeenCalled();
   });
 
@@ -1510,14 +1693,24 @@ function createHarness(attempts?: {
   };
 }
 
-function routePlanRow(input: { customerEmailSettings?: unknown; routeOpsUiSettings?: unknown; status?: string; stops: ReturnType<typeof stopRow>[] }) {
+function routePlanRow(input: {
+  commerceConnectionTimezones?: Array<string | null>;
+  constraints?: unknown;
+  customerEmailSettings?: unknown;
+  routeOpsUiSettings?: unknown;
+  status?: string;
+  stops: ReturnType<typeof stopRow>[];
+}) {
   return {
+    constraints: input.constraints ?? {},
     id: 'route-id',
     name: 'Route A',
     planDate: new Date('2026-08-03T00:00:00.000Z'),
     status: input.status ?? 'IN_PROGRESS',
     routeStops: input.stops,
     shop: {
+      commerceConnections: (input.commerceConnectionTimezones ?? ['America/Toronto'])
+        .map((timezone) => ({ timezone })),
       customerEmailSettings: input.customerEmailSettings ?? {
         ...defaultCustomerEmailSettings(),
         senderEmail: 'sender@example.com',
