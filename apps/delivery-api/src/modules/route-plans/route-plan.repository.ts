@@ -2675,7 +2675,8 @@ function routePlanListSelect() {
     routeGroupingChildVersions: {
       orderBy: { createdAt: 'desc' as const },
       select: { groupingId: true, status: true, version: true },
-      take: 1
+      take: 1,
+      where: { status: 'CURRENT' as const, supersededAt: null }
     },
     routeStops: {
       orderBy: { sequence: 'asc' as const },
@@ -2919,6 +2920,7 @@ function toRoutePlanListSummary(routePlan: RoutePlanListRecord): RoutePlanSummar
     routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
     routeMetrics: cache?.shapeSignature === shapeSignature ? readRouteMetrics(cache.metrics) : null,
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
+    scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
     status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
     stopsCount: readFiniteNumber(metrics?.stopsCount) ?? routePlan.routeStops.length,
     totalAmount: normalizeRouteTotalAmount(routePlan.routeStops.map(({ deliveryStop }) => deliveryStop.order)),
@@ -2956,6 +2958,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     planDate: formatDateOnly(routePlan.planDate),
     routeEndMode: readRouteEndMode(routePlan.constraints),
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
+    scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
     routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
     routeMetrics,
     status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
@@ -3237,6 +3240,17 @@ function readScheduledStartAt(value: unknown): string | null {
   if (scheduledStartAt === null || !scheduledStartAt.includes('T')) return null;
   const instant = new Date(scheduledStartAt);
   return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
+}
+
+function readScheduledStartTimeZone(value: unknown): string | null {
+  const scheduledStartTimeZone = readString(objectOrNull(value)?.scheduledStartTimeZone);
+  if (scheduledStartTimeZone === null) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: scheduledStartTimeZone }).format(new Date(0));
+    return scheduledStartTimeZone;
+  } catch {
+    return null;
+  }
 }
 
 function readRouteEndMode(value: unknown): RoutePlanEndMode {

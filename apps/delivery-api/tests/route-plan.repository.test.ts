@@ -441,6 +441,8 @@ describe('PrismaRoutePlanRepository', () => {
         endAt: '2026-05-08T15:30:00.000Z',
         startAt: '2026-05-08T14:00:00.000Z'
       },
+      scheduledStartAt: '2026-05-08T13:30:00.000Z',
+      scheduledStartTimeZone: 'America/Toronto',
       totalAmount: { amount: '30.30', currencyCode: 'CAD' }
     });
     const query = prisma.routePlan.findMany.mock.calls[0]?.[0] as { include?: unknown; select?: Record<string, unknown> };
@@ -450,6 +452,10 @@ describe('PrismaRoutePlanRepository', () => {
     expect(JSON.stringify(query.select)).not.toContain('rawPayload');
     expect(JSON.stringify(query.select)).not.toContain('shippingAddress');
     expect(query.select?.routeGeometryCaches).toMatchObject({ take: 1 });
+    expect(query.select?.routeGroupingChildVersions).toMatchObject({
+      take: 1,
+      where: { status: 'CURRENT', supersededAt: null }
+    });
   });
 
   test('does not combine route totals across currencies', async () => {
@@ -2671,7 +2677,10 @@ function routePlanListRecord() {
     sequence: input.sequence
   });
   return {
-    constraints: {},
+    constraints: {
+      scheduledStartAt: '2026-05-08T13:30:00.000Z',
+      scheduledStartTimeZone: 'America/Toronto'
+    },
     createdAt: new Date('2026-05-07T12:30:00.000Z'),
     depotLatitude: '43.6532',
     depotLongitude: '-79.3832',

@@ -1049,6 +1049,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   deliveryDate: string | null;
   departureTime: string | null;
   deliveredCount: number;
+  driver: Pick<NonNullable<RoutePlanSummary["driver"]>, "displayName" | "id"> | null;
   driverId: string | null;
   depot: {
     latitude: number | null;
@@ -1061,9 +1062,12 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   name: string;
   planDate: string;
   routeEndMode: RoutePlanSummary["routeEndMode"];
+  routeMetrics: NonNullable<RoutePlanSummary["routeMetrics"]> | null;
   routeGroupingChild: NonNullable<
     RoutePlanSummary["routeGroupingChild"]
   > | null;
+  scheduledStartAt: string | null;
+  scheduledStartTimeZone: string | null;
   status: string;
   stopsCount: number;
   totalAmount: NonNullable<RoutePlanSummary["totalAmount"]> | null;
@@ -1075,6 +1079,9 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     deliveryDate: routePlan.deliveryDate ?? null,
     departureTime: routePlan.departureTime ?? null,
     deliveredCount: routePlan.deliveredCount ?? 0,
+    driver: routePlan.driver === null || routePlan.driver === undefined
+      ? null
+      : { displayName: routePlan.driver.displayName, id: routePlan.driver.id },
     driverId: routePlan.driverId ?? null,
     depot: routePlan.depot,
     id: routePlan.id,
@@ -1084,7 +1091,10 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     name: routePlan.name,
     planDate: routePlan.planDate,
     routeEndMode: routePlan.routeEndMode,
+    routeMetrics: routePlan.routeMetrics ?? null,
     routeGroupingChild: routePlan.routeGroupingChild ?? null,
+    scheduledStartAt: routePlan.scheduledStartAt ?? null,
+    scheduledStartTimeZone: routePlan.scheduledStartTimeZone ?? null,
     status: routePlan.status,
     stopsCount: routePlan.stopsCount,
     totalAmount: routePlan.totalAmount ?? null,
