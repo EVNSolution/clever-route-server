@@ -115,6 +115,99 @@ describe('route grouping contracts', () => {
     expect(tx.routeGrouping.create).not.toHaveBeenCalled();
   });
 
+  test('copies a standalone Ready route into independent orders and stops without mutating the source', async () => {
+    const tx = standaloneCopyTransactionHarness();
+    const service = new PrismaRouteGroupingService(
+      { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never,
+      new FakeDriverPushProvider()
+    );
+
+    const result = await service.copyStandaloneRoutePlan({
+      actor: 'admin',
+      expectedRoutePlanUpdatedAt: '2026-09-09T12:00:00.000Z',
+      routePlanId: 'route-source',
+      shopDomain: 'tenant.example'
+    });
+
+    expect(result).toEqual({
+      createdAt: '2026-09-09T12:01:00.000Z',
+      departureTime: '08:30',
+      depot: { latitude: 43.7, longitude: -79.4 },
+      driverId: null,
+      id: 'route-copy',
+      name: 'Morning route Copy',
+      planDate: '2026-09-09',
+      scheduledStartAt: '2026-09-09T12:30:00.000Z',
+      scheduledStartTimeZone: 'America/Toronto',
+      status: 'READY',
+      stopsCount: 1,
+      updatedAt: '2026-09-09T12:01:00.000Z',
+      vehicleId: null
+    });
+    const orderCreateCalls = tx.order.create.mock.calls as unknown as Array<[{
+      data: Record<string, unknown> & {
+        deliveryFacts: { create: unknown };
+        deliveryStops: { create: unknown };
+        orderItems: { create: unknown };
+      };
+    }]>;
+    const orderData = orderCreateCalls[0]?.[0].data;
+    expect(orderData).toBeDefined();
+    expect(orderData).toMatchObject({
+      currencyCode: 'CAD',
+      email: 'recipient@example.test',
+      financialStatus: 'paid',
+      fulfillmentStatus: 'unfulfilled',
+      name: '#1001',
+      phone: '+14165550100',
+      rawPayload: {
+        kind: 'CLEVER_VIRTUAL_ROUTE_COPY',
+        sourceDeliveryStopId: 'stop-source',
+        sourceOrderId: 'order-source',
+        sourceShopifyOrderGid: 'gid://shopify/Order/1001'
+      },
+      sourceOrderNumber: '1001',
+      sourcePlatform: 'CUSTOM',
+      totalPriceAmount: 125.5
+    });
+    expect(orderData?.orderItems.create).toEqual([expect.objectContaining({ lineIndex: 0, name: 'Kimchi', quantity: 2, sku: 'KIMCHI-1' })]);
+    expect(orderData?.deliveryFacts.create).toMatchObject({
+      deliveryArea: 'Toronto',
+      deliverySession: 'AM',
+      readiness: 'READY_TO_PLAN',
+      routeScopeKey: 'toronto-am',
+      sourcePlatform: 'CUSTOM'
+    });
+    expect(orderData?.deliveryStops.create).toMatchObject({ address1: '100 King St', recipientName: 'Receiving', status: 'PENDING' });
+    const routePlanCreateCalls = tx.routePlan.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>;
+    expect(routePlanCreateCalls[0]?.[0].data).toMatchObject({ driverId: null, name: 'Morning route Copy', status: 'READY', vehicleId: null });
+    expect(tx.routePlanStop.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ deliveryStopId: 'stop-copy', routePlanId: 'route-copy', sequence: 1 })]
+    });
+  });
+
+  test('rejects stale, grouped, and started standalone route copies before cloning data', async () => {
+    for (const locked of [
+      { currentRouteVersionId: null, status: 'READY', updatedAt: new Date('2026-09-09T11:59:00.000Z') },
+      { currentRouteVersionId: 'child-current', status: 'READY', updatedAt: new Date('2026-09-09T12:00:00.000Z') },
+      { currentRouteVersionId: null, status: 'IN_PROGRESS', updatedAt: new Date('2026-09-09T12:00:00.000Z') }
+    ]) {
+      const tx = standaloneCopyTransactionHarness(locked);
+      const service = new PrismaRouteGroupingService(
+        { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never,
+        new FakeDriverPushProvider()
+      );
+      await expect(service.copyStandaloneRoutePlan({
+        actor: 'admin',
+        expectedRoutePlanUpdatedAt: '2026-09-09T12:00:00.000Z',
+        routePlanId: 'route-source',
+        shopDomain: 'tenant.example'
+      })).rejects.toBeInstanceOf(locked.status === 'IN_PROGRESS' ? RouteGroupingValidationError : RouteGroupingConflictError);
+      expect(tx.order.create).not.toHaveBeenCalled();
+      expect(tx.routePlan.create).not.toHaveBeenCalled();
+    }
+  });
+
   test('REFERENCE copy reuses SHOPIFY order and stop ids without cloning route execution state', async () => {
     const source = copySourceFixture('SHOPIFY');
     const tx = copyTransactionHarness(source);
@@ -1626,6 +1719,137 @@ function copyTransactionHarness(source: ReturnType<typeof copySourceFixture>) {
     routeGroupingVersion: { create: vi.fn().mockResolvedValue({ id: 'version-copy' }) },
     routePlan: { create: vi.fn() },
     routePlanStop: { findMany: vi.fn().mockResolvedValue([]) },
+    shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+  };
+}
+
+function standaloneCopyTransactionHarness(lockedOverrides: Partial<{
+  currentRouteVersionId: string | null;
+  status: string;
+  updatedAt: Date;
+}> = {}) {
+  const source = {
+    constraints: {
+      departureTime: '08:30',
+      scheduledStartAt: '2026-09-09T12:30:00.000Z',
+      scheduledStartTimeZone: 'America/Toronto'
+    },
+    depotLatitude: 43.7,
+    depotLongitude: -79.4,
+    id: 'route-source',
+    isStoreReviewData: false,
+    metrics: { distanceMeters: 1000, stopsCount: 1 },
+    name: 'Morning route',
+    optimizerVersion: 'optimizer-v1',
+    planDate: new Date('2026-09-09T00:00:00.000Z'),
+    routeStops: [{
+      deliveryStop: {
+        address1: '100 King St',
+        address2: 'Dock 2',
+        city: 'Toronto',
+        countryCode: 'CA',
+        deliveryDate: new Date('2026-09-09T00:00:00.000Z'),
+        geocodeStatus: 'RESOLVED',
+        id: 'stop-source',
+        instructions: 'Use loading dock',
+        latitude: 43.65,
+        longitude: -79.38,
+        order: {
+          customerId: null,
+          currencyCode: 'CAD',
+          deliveryFacts: [{
+            batchEligible: true,
+            deliveryArea: 'Toronto',
+            deliveryDate: new Date('2026-09-09T00:00:00.000Z'),
+            deliveryDateWeekday: 'Wednesday',
+            deliveryDateWeekdayMismatch: false,
+            deliveryDateWeekdayVerified: true,
+            deliveryDayParseStatus: 'PARSED',
+            deliveryDayUnparsedReason: null,
+            deliverySession: 'AM',
+            deliveryWeekday: 'Wednesday',
+            geocodeStatus: 'RESOLVED',
+            matchedMappingPaths: { deliveryDate: ['note_attributes.delivery_date'] },
+            mappingDiagnostics: null,
+            planningGroupKey: '2026-09-09:AM',
+            rawDeliveryArea: 'Toronto',
+            rawDeliveryDate: '2026-09-09',
+            rawDeliveryDay: 'Wednesday',
+            rawDeliveryTimeWindow: '09:00-12:00',
+            rawPickupDay: null,
+            readiness: 'READY_TO_PLAN',
+            reviewReasons: [],
+            routeScopeKey: 'toronto-am',
+            serviceType: 'DELIVERY',
+            timeWindowEnd: new Date('2026-09-09T16:00:00.000Z'),
+            timeWindowStart: new Date('2026-09-09T14:00:00.000Z')
+          }],
+          destinationId: null,
+          email: 'recipient@example.test',
+          financialStatus: 'paid',
+          fulfillmentStatus: 'unfulfilled',
+          id: 'order-source',
+          isStoreReviewData: false,
+          name: '#1001',
+          orderItems: [{ lineIndex: 0, name: 'Kimchi', options: {}, productId: 10, quantity: 2, shopId: 'shop-1', sku: 'KIMCHI-1', variationId: 0 }],
+          phone: '+14165550100',
+          processedAt: new Date('2026-09-08T10:00:00.000Z'),
+          serviceDate: new Date('2026-09-09T00:00:00.000Z'),
+          shippingAddress: { address1: '100 King St' },
+          shopifyOrderGid: 'gid://shopify/Order/1001',
+          sourceOrderNumber: '1001',
+          sourcePlatform: 'SHOPIFY',
+          sourceSiteUrl: 'https://tenant.example',
+          totalPriceAmount: 125.5
+        },
+        phone: '+14165550100',
+        postalCode: 'M5H 1J9',
+        priority: 7,
+        province: 'ON',
+        recipientName: 'Receiving',
+        serviceMinutes: 12,
+        timeWindowEnd: new Date('2026-09-09T16:00:00.000Z'),
+        timeWindowStart: new Date('2026-09-09T14:00:00.000Z')
+      },
+      distanceFromPreviousMeters: 500,
+      durationFromPreviousSeconds: 60,
+      estimatedArrivalAt: new Date('2026-09-09T13:00:00.000Z'),
+      sequence: 1
+    }],
+    shopId: 'shop-1'
+  };
+  let findCount = 0;
+  return {
+    $queryRaw: vi.fn().mockResolvedValue([{
+      constraints: source.constraints,
+      currentRouteVersionId: null,
+      driverId: 'driver-source',
+      name: source.name,
+      status: 'READY',
+      updatedAt: new Date('2026-09-09T12:00:00.000Z'),
+      vehicleId: 'vehicle-source',
+      ...lockedOverrides
+    }]),
+    order: {
+      create: vi.fn().mockResolvedValue({ deliveryStops: [{ id: 'stop-copy' }], id: 'order-copy' })
+    },
+    routePlan: {
+      create: vi.fn().mockResolvedValue({
+        constraints: source.constraints,
+        createdAt: new Date('2026-09-09T12:01:00.000Z'),
+        depotLatitude: 43.7,
+        depotLongitude: -79.4,
+        id: 'route-copy',
+        name: 'Morning route Copy',
+        planDate: source.planDate,
+        updatedAt: new Date('2026-09-09T12:01:00.000Z')
+      }),
+      findFirst: vi.fn().mockImplementation(() => {
+        findCount += 1;
+        return Promise.resolve(findCount === 1 ? { id: source.id } : source);
+      })
+    },
+    routePlanStop: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
     shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
   };
 }

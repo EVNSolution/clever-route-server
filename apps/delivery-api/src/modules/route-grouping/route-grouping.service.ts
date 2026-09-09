@@ -34,6 +34,7 @@ import {
   RouteGroupingStopMembershipConflictError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
+  type CopyStandaloneRoutePlanInput,
   type CopyRouteGroupingInput,
   type CreateRouteGroupingFromRoutePlanInput,
   type CreateCustomRouteGroupingStopInput,
@@ -59,6 +60,7 @@ import {
   type RouteGroupingSummaryDto,
   type RouteGroupingWarningDto,
   type SaveRouteGroupingDraftInput,
+  type StandaloneRoutePlanCopyDto,
   type SaveRouteGroupingPolygonsInput,
   type UpdateRouteGroupingBranchInput,
   type UpdateRouteGroupingBranchOrdersInput,
@@ -132,6 +134,7 @@ type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
 };
 
 type LoadedGrouping = Prisma.RouteGroupingGetPayload<{ include: ReturnType<typeof groupingInclude> }>;
+type LoadedStandaloneRouteCopySource = Prisma.RoutePlanGetPayload<{ include: ReturnType<typeof standaloneRouteCopyInclude> }>;
 type LoadedChild = LoadedGrouping['childVersions'][number];
 type LoadedAssignment = LoadedGrouping['orders'][number];
 type LoadedBranch = LoadedGrouping['branches'][number];
@@ -515,6 +518,98 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     });
     if (groupingId === null) return null;
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
+  async copyStandaloneRoutePlan(input: CopyStandaloneRoutePlanInput): Promise<StandaloneRoutePlanCopyDto | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+      });
+      if (shop === null) return null;
+
+      const exists = await tx.routePlan.findFirst({ select: { id: true }, where: { id: input.routePlanId, shopId: shop.id } });
+      if (exists === null) return null;
+      const locked = await lockRoutePlanMembership(tx, input.routePlanId, shop.id);
+      if (locked.currentRouteVersionId !== null) {
+        throw new RouteGroupingConflictError('route already belongs to a group; reload and retry');
+      }
+      if (locked.status !== 'READY') {
+        throw new RouteGroupingValidationError(['only Ready standalone routes can be copied']);
+      }
+      if (locked.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) {
+        throw new RouteGroupingConflictError();
+      }
+
+      const source = await tx.routePlan.findFirst({
+        include: standaloneRouteCopyInclude(),
+        where: { id: input.routePlanId, shopId: shop.id }
+      });
+      if (source === null) return null;
+
+      const copiedStops: Array<{ deliveryStopId: string; source: LoadedStandaloneRouteCopySource['routeStops'][number] }> = [];
+      for (const sourceRouteStop of source.routeStops) {
+        const copied = await createStandaloneVirtualOrderCopy(tx, sourceRouteStop.deliveryStop, shop.id);
+        copiedStops.push({ deliveryStopId: copied.deliveryStopId, source: sourceRouteStop });
+      }
+
+      const copy = await tx.routePlan.create({
+        data: {
+          constraints: toJson(source.constraints),
+          createdBy: input.actor,
+          depotLatitude: source.depotLatitude,
+          depotLongitude: source.depotLongitude,
+          driverId: null,
+          isStoreReviewData: source.isStoreReviewData,
+          metrics: toJson(source.metrics),
+          name: `${source.name} Copy`,
+          optimizerVersion: source.optimizerVersion,
+          planDate: source.planDate,
+          shopId: source.shopId,
+          status: 'READY',
+          vehicleId: null
+        },
+        select: {
+          constraints: true,
+          createdAt: true,
+          depotLatitude: true,
+          depotLongitude: true,
+          id: true,
+          name: true,
+          planDate: true,
+          updatedAt: true
+        }
+      });
+      if (copiedStops.length > 0) {
+        await tx.routePlanStop.createMany({
+          data: copiedStops.map(({ deliveryStopId, source: sourceRouteStop }) => ({
+            deliveryStopId,
+            distanceFromPreviousMeters: sourceRouteStop.distanceFromPreviousMeters,
+            durationFromPreviousSeconds: sourceRouteStop.durationFromPreviousSeconds,
+            estimatedArrivalAt: sourceRouteStop.estimatedArrivalAt,
+            routePlanId: copy.id,
+            sequence: sourceRouteStop.sequence,
+            shopId: shop.id
+          }))
+        });
+      }
+
+      return {
+        createdAt: copy.createdAt.toISOString(),
+        departureTime: readDepartureTime(copy.constraints),
+        depot: { latitude: decimalNumber(copy.depotLatitude), longitude: decimalNumber(copy.depotLongitude) },
+        driverId: null,
+        id: copy.id,
+        name: copy.name,
+        planDate: formatDateOnly(copy.planDate) ?? '',
+        scheduledStartAt: readScheduledStartAt(copy.constraints),
+        scheduledStartTimeZone: readScheduledStartTimeZone(copy.constraints),
+        status: 'READY',
+        stopsCount: copiedStops.length,
+        updatedAt: copy.updatedAt.toISOString(),
+        vehicleId: null
+      };
+    });
   }
 
   async createGroupingFromRoutePlan(input: CreateRouteGroupingFromRoutePlanInput): Promise<RouteGroupingDetailDto | null> {
@@ -3171,6 +3266,26 @@ function groupingInclude() {
   } satisfies Prisma.RouteGroupingInclude;
 }
 
+function standaloneRouteCopyInclude() {
+  return {
+    routeStops: {
+      include: {
+        deliveryStop: {
+          include: {
+            order: {
+              include: {
+                deliveryFacts: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+                orderItems: { orderBy: { lineIndex: 'asc' as const } }
+              }
+            }
+          }
+        }
+      },
+      orderBy: { sequence: 'asc' as const }
+    }
+  } satisfies Prisma.RoutePlanInclude;
+}
+
 function groupingListInclude() {
   return {
     childVersions: {
@@ -3318,6 +3433,123 @@ async function createVirtualCopyMemberships(
     });
   }
   return memberships;
+}
+
+async function createStandaloneVirtualOrderCopy(
+  tx: Tx,
+  sourceStop: LoadedStandaloneRouteCopySource['routeStops'][number]['deliveryStop'],
+  shopId: string
+): Promise<{ deliveryStopId: string }> {
+  const localId = randomUUID();
+  const sourceOrder = sourceStop.order;
+  const sourceFact = sourceOrder.deliveryFacts[0];
+  const created = await tx.order.create({
+    data: {
+      customerId: sourceOrder.customerId,
+      destinationId: sourceOrder.destinationId,
+      email: sourceOrder.email,
+      financialStatus: sourceOrder.financialStatus,
+      fulfillmentStatus: sourceOrder.fulfillmentStatus,
+      isStoreReviewData: sourceOrder.isStoreReviewData,
+      name: sourceOrder.name,
+      phone: sourceOrder.phone ?? sourceStop.phone,
+      processedAt: sourceOrder.processedAt,
+      rawPayload: {
+        kind: 'CLEVER_VIRTUAL_ROUTE_COPY',
+        schemaVersion: 1,
+        sourceDeliveryStopId: sourceStop.id,
+        sourceOrderId: sourceOrder.id,
+        sourceOrderNumber: sourceOrder.sourceOrderNumber,
+        sourcePlatform: sourceOrder.sourcePlatform,
+        sourceShopifyOrderGid: sourceOrder.shopifyOrderGid,
+        sourceSiteUrl: sourceOrder.sourceSiteUrl
+      },
+      serviceDate: sourceOrder.serviceDate,
+      ...(sourceOrder.shippingAddress === null ? {} : { shippingAddress: toJson(sourceOrder.shippingAddress) }),
+      shopId,
+      shopifyOrderGid: `gid://clever/VirtualRouteOrder/${localId}`,
+      sourceOrderId: `virtual-route-order:${localId}`,
+      sourceOrderNumber: sourceOrder.sourceOrderNumber,
+      sourcePlatform: 'CUSTOM',
+      sourceUpdatedAt: new Date(),
+      totalPriceAmount: sourceOrder.totalPriceAmount,
+      currencyCode: sourceOrder.currencyCode,
+      deliveryStops: {
+        create: {
+          address1: sourceStop.address1,
+          address2: sourceStop.address2,
+          city: sourceStop.city,
+          countryCode: sourceStop.countryCode,
+          deliveryDate: sourceStop.deliveryDate,
+          geocodeStatus: sourceStop.geocodeStatus,
+          instructions: sourceStop.instructions,
+          latitude: sourceStop.latitude,
+          longitude: sourceStop.longitude,
+          phone: sourceStop.phone ?? sourceOrder.phone,
+          postalCode: sourceStop.postalCode,
+          priority: sourceStop.priority,
+          province: sourceStop.province,
+          recipientName: sourceStop.recipientName,
+          serviceMinutes: sourceStop.serviceMinutes,
+          status: 'PENDING',
+          timeWindowEnd: sourceStop.timeWindowEnd,
+          timeWindowStart: sourceStop.timeWindowStart
+        }
+      },
+      deliveryFacts: {
+        create: {
+          batchEligible: sourceFact?.batchEligible ?? true,
+          deliveryArea: sourceFact?.deliveryArea ?? null,
+          deliveryDate: sourceFact?.deliveryDate ?? sourceStop.deliveryDate,
+          deliveryDateWeekday: sourceFact?.deliveryDateWeekday ?? null,
+          deliveryDateWeekdayMismatch: sourceFact?.deliveryDateWeekdayMismatch ?? false,
+          deliveryDateWeekdayVerified: sourceFact?.deliveryDateWeekdayVerified ?? false,
+          deliveryDayParseStatus: sourceFact?.deliveryDayParseStatus ?? 'PARSED',
+          deliveryDayUnparsedReason: sourceFact?.deliveryDayUnparsedReason ?? null,
+          deliverySession: sourceFact?.deliverySession ?? null,
+          deliveryWeekday: sourceFact?.deliveryWeekday ?? null,
+          geocodeStatus: sourceStop.geocodeStatus,
+          matchedMappingPaths: sourceFact === undefined ? {} : toJson(sourceFact.matchedMappingPaths),
+          ...(sourceFact?.mappingDiagnostics === null || sourceFact?.mappingDiagnostics === undefined
+            ? {}
+            : { mappingDiagnostics: toJson(sourceFact.mappingDiagnostics) }),
+          planningGroupKey: sourceFact?.planningGroupKey ?? null,
+          rawDeliveryArea: sourceFact?.rawDeliveryArea ?? null,
+          rawDeliveryDate: sourceFact?.rawDeliveryDate ?? null,
+          rawDeliveryDay: sourceFact?.rawDeliveryDay ?? null,
+          rawDeliveryTimeWindow: sourceFact?.rawDeliveryTimeWindow ?? null,
+          rawPickupDay: sourceFact?.rawPickupDay ?? null,
+          readiness: sourceFact?.readiness ?? 'READY_TO_PLAN',
+          reviewReasons: sourceFact === undefined ? [] : toJson(sourceFact.reviewReasons),
+          routeScopeKey: sourceFact?.routeScopeKey ?? null,
+          serviceType: sourceFact?.serviceType ?? null,
+          shopId,
+          sourceOrderId: `virtual-route-order:${localId}`,
+          sourceOrderNumber: sourceOrder.sourceOrderNumber,
+          sourcePlatform: 'CUSTOM',
+          sourceUpdatedAt: new Date(),
+          timeWindowEnd: sourceFact?.timeWindowEnd ?? sourceStop.timeWindowEnd,
+          timeWindowStart: sourceFact?.timeWindowStart ?? sourceStop.timeWindowStart
+        }
+      },
+      orderItems: {
+        create: sourceOrder.orderItems.map((item) => ({
+          lineIndex: item.lineIndex,
+          name: item.name,
+          options: toJson(item.options),
+          productId: item.productId,
+          quantity: item.quantity,
+          shopId,
+          sku: item.sku,
+          variationId: item.variationId
+        }))
+      }
+    },
+    include: { deliveryStops: { select: { id: true }, take: 1 } }
+  });
+  const deliveryStopId = created.deliveryStops[0]?.id;
+  if (deliveryStopId === undefined) throw new Error('Standalone route copy did not create a delivery stop');
+  return { deliveryStopId };
 }
 
 function routeGeometryCacheSummarySelect() {

@@ -24,7 +24,66 @@ const routeGroup = {
   warningState: []
 };
 
+const standaloneRoutePlanCopy = {
+  createdAt: '2026-07-20T13:21:00.000Z',
+  departureTime: '09:20',
+  depot: { latitude: 43.7, longitude: -79.4 },
+  driverId: null,
+  id: 'route-plan-copy',
+  name: 'Route A Copy',
+  planDate: '2026-07-20',
+  scheduledStartAt: '2026-07-20T13:20:00.000Z',
+  scheduledStartTimeZone: 'America/Toronto',
+  status: 'READY' as const,
+  stopsCount: 3,
+  updatedAt: '2026-07-20T13:21:00.000Z',
+  vehicleId: null
+};
+
 describe('Admin route group routes', () => {
+  test('copies a standalone route through the route-plan resource', async () => {
+    const { copyStandaloneRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+        method: 'POST',
+        payload: { expectedRoutePlanUpdatedAt: '2026-07-20T09:20:00-04:00' },
+        url: '/admin/route-plans/route-plan-1/copies'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { routePlan: standaloneRoutePlanCopy }, error: null });
+      expect(copyStandaloneRoutePlan).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever-route-dev',
+        expectedRoutePlanUpdatedAt: '2026-07-20T13:20:00.000Z',
+        routePlanId: 'route-plan-1',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects a standalone route copy without an exact source revision', async () => {
+    const { copyStandaloneRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: {},
+        url: '/admin/route-plans/route-plan-1/copies'
+      });
+      expect(response.statusCode).toBe(400);
+      expect(copyStandaloneRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('atomically saves a standalone route split through the route-plan resource', async () => {
     const { createGroupingFromRoutePlan, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -849,6 +908,7 @@ describe('Admin route group routes', () => {
 
 function createDependencyHarness(): {
   copyGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyGrouping']>>;
+  copyStandaloneRoutePlan: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyStandaloneRoutePlan']>>;
   createBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createBranch']>>;
   createCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>>;
   createGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>>;
@@ -888,6 +948,7 @@ function createDependencyHarness(): {
     }
   }));
   const copyGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyGrouping']>(() => Promise.resolve(routeGroup));
+  const copyStandaloneRoutePlan = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyStandaloneRoutePlan']>(() => Promise.resolve(standaloneRoutePlanCopy));
   const createCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>(() => Promise.resolve(routeGroup));
   const createGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>(() => Promise.resolve(routeGroup));
   const createGroupingFromRoutePlan = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGroupingFromRoutePlan']>(() => Promise.resolve(routeGroup));
@@ -913,6 +974,7 @@ function createDependencyHarness(): {
   return {
     createBranch,
     copyGrouping,
+    copyStandaloneRoutePlan,
     createCustomStop,
     createGrouping,
     createGroupingFromRoutePlan,
@@ -923,6 +985,7 @@ function createDependencyHarness(): {
       geocodingService: { geocode },
       routeGroupingService: {
         copyGrouping,
+        copyStandaloneRoutePlan,
         createBranch,
         createCustomStop,
         createGrouping,

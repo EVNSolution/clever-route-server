@@ -34,7 +34,48 @@ The authoritative relationship is the current child membership under `routeGroup
 
 All rows with the same parent `routeGroups[].id` share one presentation color. The existing `child.color` is retained for compatibility with route editing and snapshots, but it is not a separate group identity and must not produce different table colors for siblings. An ordinary route has no group color.
 
-`switchRoutes` remains the sibling-navigation contract. Copy behavior and all route/order identities remain unchanged.
+`switchRoutes` remains the sibling-navigation contract.
+
+## Standalone Copy contract
+
+`POST /admin/route-plans/:routePlanId/copies` creates the ordinary route that starts the Copy → Split → Save flow.
+
+```json
+{
+  "expectedRoutePlanUpdatedAt": "2026-09-09T12:00:00.000Z"
+}
+```
+
+The source must still be standalone, `READY`, and at the exact supplied `updatedAt` revision. A stale or newly grouped source returns `409`; an in-progress or completed source returns `400`; a source outside the authenticated shop returns `404`.
+
+The operation leaves the source unchanged and creates one unassigned, ungrouped `READY` route named `${source.name} Copy`. It preserves the plan date, schedule and IANA timezone, depot, constraints, route metrics, stop order, planned arrival/leg metrics, customer contact and address fields, order amount/currency, line items, delivery facts, and traceable source-commerce references. Each copied order and delivery stop receives a distinct local identity, so later driver progress or stop completion cannot mutate the source route. Driver, vehicle, assignment generation, grouping membership, notifications, geometry cache, and execution history are not copied.
+
+The successful response is:
+
+```json
+{
+  "data": {
+    "routePlan": {
+      "id": "new-route-plan-id",
+      "name": "Source route Copy",
+      "status": "READY",
+      "driverId": null,
+      "vehicleId": null,
+      "planDate": "2026-09-09",
+      "departureTime": "08:30",
+      "scheduledStartAt": "2026-09-09T12:30:00.000Z",
+      "scheduledStartTimeZone": "America/Toronto",
+      "depot": { "latitude": 43.7, "longitude": -79.4 },
+      "stopsCount": 3,
+      "createdAt": "2026-09-09T12:01:00.000Z",
+      "updatedAt": "2026-09-09T12:01:00.000Z"
+    }
+  },
+  "error": null
+}
+```
+
+The client should navigate to `routePlan.id` before creating local split rows.
 
 ## Standalone split-on-save contract
 
