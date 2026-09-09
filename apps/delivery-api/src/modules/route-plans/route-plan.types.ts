@@ -100,10 +100,15 @@ export type RoutePlanSummary = {
     longitude: number | null;
   };
   departureTime?: string | null;
+  deliveredCount?: number;
   driver?: RoutePlanDriverSummary | null;
   driverId?: string | null;
   id: string;
   itemSummary?: RouteItemSummary;
+  etaRange?: {
+    endAt: string;
+    startAt: string;
+  } | null;
   missingCoordinates: number;
   name: string;
   planDate: string;
@@ -118,6 +123,10 @@ export type RoutePlanSummary = {
   routeMetrics?: RoutePlanRouteMetrics | null;
   status: string;
   stopsCount: number;
+  totalAmount?: {
+    amount: string;
+    currencyCode: string;
+  } | null;
   updatedAt: string;
 };
 

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DriverEventType, type DriverRouteNotificationStatus, type Prisma, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type {
@@ -14,6 +14,7 @@ import type {
 import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheCreateData } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import { toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
+import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from '../route-plans/route-plan-summary-normalization.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
 import { aggregateOrderItems, toOrderItemDto } from '../order-items/order-items.js';
@@ -242,8 +243,9 @@ type RouteGroupingServiceOptions = {
 
 type DriverRouteNotificationTarget = {
   accountId: string;
-  childVersion: number;
-  routeGroupingId: string;
+  childVersion?: number;
+  publicationVersion?: string;
+  routeGroupingId?: string;
   routePlanId: string;
 };
 
@@ -644,11 +646,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     if (shop === null) return [];
     const rangeFilter = routeGroupingRangeFilter(input);
     const groups = await this.prisma.routeGrouping.findMany({
-      include: groupingInclude(),
+      include: groupingListInclude(),
       orderBy: { createdAt: 'desc' },
       where: { shopId: shop.id, ...rangeFilter }
     });
-    return groups.map((group) => toGroupingSummaryDto(group));
+    return groups.map((group) => toGroupingSummaryDto(group as unknown as LoadedGrouping));
   }
 
 
@@ -2034,7 +2036,16 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       },
       where: { routePlanId: input.routePlanId, status: 'CURRENT', supersededAt: null }
     });
-    if (child === null || child.grouping.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) return;
+    if (child === null) {
+      await this.recordStandaloneRoutePublished(input).catch((error: unknown) => {
+        console.warn('[route-grouping] standalone driver route notification failed after publish commit', {
+          errorName: error instanceof Error ? error.name : typeof error,
+          routePlanId: input.routePlanId
+        });
+      });
+      return;
+    }
+    if (child.grouping.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) return;
     const publishedAt = new Date();
     await this.prisma.$transaction([
       this.prisma.routeGroupingChildVersion.update({ data: { publishedAt }, where: { id: child.id } }),
@@ -2045,6 +2056,121 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         errorName: error instanceof Error ? error.name : typeof error,
         routePlanId: input.routePlanId
       });
+    });
+  }
+
+  private async recordStandaloneRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void> {
+    const routePlan = await this.prisma.routePlan.findFirst({
+      select: {
+        assignmentGeneration: true,
+        constraints: true,
+        depotLatitude: true,
+        depotLongitude: true,
+        driver: { select: { accountId: true } },
+        driverId: true,
+        name: true,
+        routeStops: {
+          orderBy: { sequence: 'asc' },
+          select: {
+            deliveryStop: {
+              select: {
+                address1: true,
+                address2: true,
+                city: true,
+                countryCode: true,
+                instructions: true,
+                latitude: true,
+                longitude: true,
+                order: {
+                  select: {
+                    currencyCode: true,
+                    email: true,
+                    id: true,
+                    name: true,
+                    orderItems: {
+                      orderBy: { lineIndex: 'asc' },
+                      select: { name: true, options: true, productId: true, quantity: true, sku: true, variationId: true }
+                    },
+                    phone: true,
+                    totalPriceAmount: true
+                  }
+                },
+                phone: true,
+                postalCode: true,
+                province: true,
+                recipientName: true,
+                serviceMinutes: true,
+                timeWindowEnd: true,
+                timeWindowStart: true
+              }
+            },
+            deliveryStopId: true,
+            distanceFromPreviousMeters: true,
+            durationFromPreviousSeconds: true,
+            estimatedArrivalAt: true,
+            sequence: true
+          }
+        },
+        shop: { select: { id: true, shopDomain: true } },
+      },
+      where: { id: input.routePlanId }
+    });
+    if (
+      routePlan === null
+      || routePlan.shop.shopDomain !== normalizeShopDomain(input.shopDomain)
+      || routePlan.driverId === null
+      || routePlan.driver?.accountId === null
+      || routePlan.driver?.accountId === undefined
+    ) return;
+
+    const publicationVersion = standaloneRoutePublicationVersion(routePlan);
+    const keyPrefix = `${routePlan.shop.id}:${input.routePlanId}:${routePlan.driverId}:${publicationVersion}`;
+    const assignedKey = `${keyPrefix}:ASSIGNED`;
+    const changedKey = `${keyPrefix}:CHANGED`;
+    const currentAttempt = await this.prisma.driverRouteNotificationAttempt.findFirst({
+      orderBy: { createdAt: 'asc' },
+      where: { idempotencyKey: { in: [assignedKey, changedKey] } }
+    });
+    if (currentAttempt?.status === 'SENT') return;
+
+    const action = currentAttempt?.action
+      ?? (await this.prisma.driverRouteNotificationAttempt.count({
+        where: { driverId: routePlan.driverId, groupingId: null, routePlanId: input.routePlanId, status: 'SENT' }
+      }) > 0 ? 'CHANGED' : 'ASSIGNED');
+    const idempotencyKey = action === 'CHANGED' ? changedKey : assignedKey;
+    const pending = await this.prisma.driverRouteNotificationAttempt.upsert({
+      create: {
+        action,
+        driverId: routePlan.driverId,
+        idempotencyKey,
+        metadata: {
+          assignmentGeneration: routePlan.assignmentGeneration.toString(),
+          kind: 'STANDALONE_ROUTE_PUBLICATION',
+          publicationVersion
+        },
+        provider: this.pushProvider.providerName,
+        routePlanId: input.routePlanId,
+        shopId: routePlan.shop.id,
+        status: 'PENDING'
+      },
+      update: { attemptedAt: new Date(), provider: this.pushProvider.providerName, status: 'PENDING' },
+      where: { idempotencyKey }
+    });
+    const result = await this.sendRouteNotificationToAccount({
+      accountId: routePlan.driver.accountId,
+      action: action === 'ASSIGNED' ? 'assigned' : 'changed',
+      publicationVersion,
+      routePlanId: input.routePlanId
+    });
+    await this.prisma.driverRouteNotificationAttempt.update({
+      data: {
+        completedAt: new Date(),
+        errorCode: result.errorCode ?? null,
+        errorMessage: result.errorMessage ?? null,
+        providerMessageId: result.providerMessageId ?? null,
+        status: result.status
+      },
+      where: { id: pending.id }
     });
   }
 
@@ -2121,9 +2247,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const tokenResults = await Promise.all(tokens.map(async (token) => ({
       result: await this.pushProvider.sendRouteNotification({
         action: input.action,
-        childVersion: input.childVersion,
         devicePushToken: token.devicePushToken,
-        routeGroupingId: input.routeGroupingId,
+        ...(input.childVersion === undefined ? {} : { childVersion: input.childVersion }),
+        ...(input.publicationVersion === undefined ? {} : { publicationVersion: input.publicationVersion }),
+        ...(input.routeGroupingId === undefined ? {} : { routeGroupingId: input.routeGroupingId }),
         routePlanId: input.routePlanId
       }),
       token
@@ -2662,7 +2789,7 @@ function dedupeDriverNotificationTargets(
   for (const target of targets) {
     const key = `${target.accountId}:${target.routePlanId}`;
     const existing = uniqueTargets.get(key);
-    if (existing === undefined || target.childVersion > existing.childVersion) {
+    if (existing === undefined || (target.childVersion ?? 0) > (existing.childVersion ?? 0)) {
       uniqueTargets.set(key, target);
     }
   }
@@ -2888,6 +3015,52 @@ function groupingInclude() {
     polygons: { orderBy: { drawOrder: 'asc' as const } },
     shop: true,
     versions: { orderBy: { version: 'desc' as const } }
+  } satisfies Prisma.RouteGroupingInclude;
+}
+
+function groupingListInclude() {
+  return {
+    childVersions: {
+      include: {
+        driver: true,
+        notificationAttempts: { select: { routePlanId: true, status: true } },
+        routePlan: {
+          include: {
+            driver: true,
+            driverEvents: {
+              orderBy: { occurredAt: 'desc' as const },
+              select: { eventType: true },
+              take: 1,
+              where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_COMPLETED] } }
+            },
+            routeGeometryCaches: {
+              orderBy: { generatedAt: 'desc' as const },
+              select: routeGeometryCacheSummarySelect(),
+              take: 1
+            },
+            routeStops: {
+              orderBy: { sequence: 'asc' as const },
+              select: { deliveryStopId: true, estimatedArrivalAt: true, sequence: true }
+            }
+          }
+        }
+      },
+      orderBy: [{ version: 'desc' as const }, { createdAt: 'desc' as const }]
+    },
+    inventory: { select: { id: true } },
+    orders: {
+      include: {
+        deliveryStop: { include: { routePlanStops: { select: { routePlanId: true } } } },
+        order: {
+          include: {
+            customerRouteNotifications: { select: { status: true } },
+            orderItems: { orderBy: { lineIndex: 'asc' as const } }
+          }
+        }
+      },
+      orderBy: { sourceSequence: 'asc' as const }
+    },
+    shop: { select: { defaultDepotAddress: true, defaultDepotLatitude: true, defaultDepotLongitude: true } }
   } satisfies Prisma.RouteGroupingInclude;
 }
 
@@ -4427,12 +4600,14 @@ function readScheduledStartTimeZone(value: unknown): string | null {
 function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan']>, routeMetrics: RoutePlanRouteMetrics | null, assignments: LoadedAssignment[]) {
   return {
     createdAt: routePlan.createdAt.toISOString(),
+    deliveredCount: assignments.filter(({ deliveryStop }) => deliveryStop.status === 'DELIVERED').length,
     deliveryAreas: [],
     deliveryDays: [],
     depot: { latitude: decimalNumber(routePlan.depotLatitude), longitude: decimalNumber(routePlan.depotLongitude) },
     departureTime: readDepartureTime(routePlan.constraints),
     driver: null,
     driverId: routePlan.driverId,
+    etaRange: normalizeRouteEtaRange(routePlan.routeStops.map(({ estimatedArrivalAt }) => estimatedArrivalAt)),
     id: routePlan.id,
     itemSummary: routeItemSummary(assignments),
     missingCoordinates: 0,
@@ -4444,6 +4619,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
     status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
     stopsCount: routePlan.routeStops.length,
+    totalAmount: normalizeRouteTotalAmount(assignments.map(({ order }) => order)),
     updatedAt: routePlan.updatedAt.toISOString()
   };
 }
@@ -4507,6 +4683,34 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
 
 function normalizeShopDomain(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function standaloneRoutePublicationVersion(routePlan: {
+  assignmentGeneration: bigint;
+  constraints: unknown;
+  depotLatitude: unknown;
+  depotLongitude: unknown;
+  driverId: string | null;
+  name: string;
+  routeStops: unknown[];
+}): string {
+  const payload = JSON.parse(JSON.stringify({
+    assignmentGeneration: routePlan.assignmentGeneration.toString(),
+    constraints: routePlan.constraints,
+    depotLatitude: routePlan.depotLatitude,
+    depotLongitude: routePlan.depotLongitude,
+    driverId: routePlan.driverId,
+    name: routePlan.name,
+    routeStops: routePlan.routeStops
+  })) as unknown;
+  return createHash('sha256').update(stableNotificationJson(payload)).digest('hex');
+}
+
+function stableNotificationJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableNotificationJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableNotificationJson(record[key])}`).join(',')}}`;
 }
 
 

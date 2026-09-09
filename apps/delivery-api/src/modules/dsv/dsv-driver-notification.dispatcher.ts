@@ -22,8 +22,8 @@ type DriverNotificationAttempt = {
   action: 'ASSIGNED' | 'CANCELLED' | 'CHANGED' | 'RELEASED';
   attemptedAt: Date;
   driver?: { accountId: string | null } | null;
-  groupingId: string;
-  groupingVersion: number;
+  groupingId: string | null;
+  groupingVersion: number | null;
   id: string;
   metadata: Prisma.JsonValue | null;
   routePlanId: string;
@@ -175,12 +175,14 @@ export class PrismaDsvDriverNotificationDispatcher {
 
   private async sendToken(attempt: DriverNotificationAttempt, devicePushToken: string): Promise<DriverRoutePushResult> {
     try {
+      const publicationVersion = readPublicationVersion(attempt.metadata);
       return await this.pushProvider.sendRouteNotification({
         action: toPushAction(attempt.action),
-        childVersion: attempt.groupingVersion,
         devicePushToken,
         metadata: readMinimalMetadata(attempt.metadata),
-        routeGroupingId: attempt.groupingId,
+        ...(attempt.groupingVersion === null ? {} : { childVersion: attempt.groupingVersion }),
+        ...(publicationVersion === null ? {} : { publicationVersion }),
+        ...(attempt.groupingId === null ? {} : { routeGroupingId: attempt.groupingId }),
         routePlanId: attempt.routePlanId
       });
     } catch (error) {
@@ -228,4 +230,11 @@ function readMinimalMetadata(metadata: Prisma.JsonValue | null): Record<string, 
   const orderMessageId = metadata.orderMessageId;
   if (typeof orderMessageId === 'string' && orderMessageId.trim() !== '') output.orderMessageId = orderMessageId;
   return Object.keys(output).length === 0 ? undefined : output;
+}
+
+function readPublicationVersion(metadata: Prisma.JsonValue | null): string | null {
+  if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  return typeof metadata.publicationVersion === 'string' && metadata.publicationVersion !== ''
+    ? metadata.publicationVersion
+    : null;
 }

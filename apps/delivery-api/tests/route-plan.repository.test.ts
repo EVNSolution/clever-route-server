@@ -427,6 +427,44 @@ describe('PrismaRoutePlanRepository', () => {
     }));
   });
 
+  test('returns normalized list totals, delivered count, and ETA range from a list-only projection', async () => {
+    const { prisma } = createPrismaHarness({ routePlansForList: [routePlanListRecord()] });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const [route] = await repository.listRoutePlans({ shopDomain: 'example.myshopify.com' });
+
+    expect(route).toMatchObject({
+      deliveredCount: 1,
+      etaRange: {
+        endAt: '2026-05-08T15:30:00.000Z',
+        startAt: '2026-05-08T14:00:00.000Z'
+      },
+      totalAmount: { amount: '30.30', currencyCode: 'CAD' }
+    });
+    const query = prisma.routePlan.findMany.mock.calls[0]?.[0] as { include?: unknown; select?: Record<string, unknown> };
+    expect(query.include).toBeUndefined();
+    expect(query.select).toBeDefined();
+    expect(JSON.stringify(query.select)).not.toContain('deliveryCustomerProfileLinks');
+    expect(JSON.stringify(query.select)).not.toContain('rawPayload');
+    expect(JSON.stringify(query.select)).not.toContain('shippingAddress');
+    expect(query.select?.routeGeometryCaches).toMatchObject({ take: 1 });
+  });
+
+  test('does not combine route totals across currencies', async () => {
+    const mixed = routePlanListRecord();
+    mixed.routeStops[1]!.deliveryStop.order.currencyCode = 'USD';
+    const { prisma } = createPrismaHarness({ routePlansForList: [mixed] });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const [route] = await repository.listRoutePlans({ shopDomain: 'example.myshopify.com' });
+
+    expect(route?.totalAmount).toBeNull();
+  });
+
   test('allows route plan drafts when selected orders also belong to another ready route plan', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness({
       existingRoutePlanStops: [{ deliveryStopId: 'stop-1' }]
@@ -2201,6 +2239,7 @@ function createPrismaHarness(input: {
   routeGeometryCacheFindUnique?: Record<string, unknown> | null;
   routePlanFindFirst?: Record<string, unknown> | null;
   routePlanProjection?: Record<string, unknown> | null;
+  routePlansForList?: Array<Record<string, unknown>>;
   routePlanStopFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string; status?: string } | null;
   routePlansForCollapse?: Array<{ id: string; status: string }>;
@@ -2440,7 +2479,7 @@ function createPrismaHarness(input: {
           return Promise.resolve(input.routePlansForCollapse
             ?? ids.map((id) => ({ id, status: 'DRAFT' })));
         }
-        return Promise.resolve([]);
+        return Promise.resolve(input.routePlansForList ?? []);
       }),
       update: vi.fn(() => Promise.resolve({ id: 'route-plan-id' })),
       updateMany: vi.fn(() => Promise.resolve({ count: input.routePlanUpdateManyCount ?? 1 })),
@@ -2538,6 +2577,68 @@ function routePlanRecord(input: {
     routeStops: input.routeStops ?? [],
     status: input.status ?? 'READY',
     updatedAt: input.updatedAt ?? new Date('2026-05-07T12:30:00.000Z')
+  };
+}
+
+function routePlanListRecord() {
+  const stop = (input: {
+    amount: string;
+    currencyCode: string;
+    eta: string;
+    id: string;
+    sequence: number;
+    status: string;
+  }) => ({
+    deliveryStop: {
+      deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+      id: `stop-${input.id}`,
+      latitude: '43.6532',
+      longitude: '-79.3832',
+      order: {
+        currencyCode: input.currencyCode,
+        id: `order-${input.id}`,
+        orderItems: [{
+          name: 'Tomato box',
+          options: [],
+          productId: 100,
+          quantity: input.sequence,
+          sku: 'TOMATO',
+          variationId: 0
+        }],
+        totalPriceAmount: input.amount
+      },
+      orderId: `order-${input.id}`,
+      status: input.status
+    },
+    deliveryStopId: `stop-${input.id}`,
+    estimatedArrivalAt: new Date(input.eta),
+    sequence: input.sequence
+  });
+  return {
+    constraints: {},
+    createdAt: new Date('2026-05-07T12:30:00.000Z'),
+    depotLatitude: '43.6532',
+    depotLongitude: '-79.3832',
+    driver: null,
+    driverEvents: [],
+    driverId: null,
+    id: 'route-plan-id',
+    metrics: {
+      deliveryAreas: ['Toronto'],
+      deliveryDays: ['Friday'],
+      missingCoordinates: 0,
+      stopsCount: 2
+    },
+    name: 'Tomatono route',
+    planDate: new Date('2026-05-08T00:00:00.000Z'),
+    routeGeometryCaches: [],
+    routeGroupingChildVersions: [],
+    routeStops: [
+      stop({ amount: '10.10', currencyCode: 'cad', eta: '2026-05-08T14:00:00.000Z', id: '1', sequence: 1, status: 'DELIVERED' }),
+      stop({ amount: '20.20', currencyCode: 'CAD', eta: '2026-05-08T15:30:00.000Z', id: '2', sequence: 2, status: 'FAILED' })
+    ],
+    status: 'READY' as const,
+    updatedAt: new Date('2026-05-07T12:30:00.000Z')
   };
 }
 

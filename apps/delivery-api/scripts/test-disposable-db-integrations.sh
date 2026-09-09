@@ -53,7 +53,7 @@ start_postgres() {
 
   local attempt
   for attempt in {1..60}; do
-    if docker exec "$container_name" pg_isready -U "$database_user" -d "$database_name" >/dev/null 2>&1; then
+    if [[ "$(docker exec "$container_name" psql -U "$database_user" -d "$database_name" -Atqc 'SELECT 1' 2>/dev/null || true)" == '1' ]]; then
       return 0
     fi
     sleep 1

@@ -2084,11 +2084,11 @@ model DriverRouteNotificationAttempt {
   id                String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId            String                        @db.Uuid
   shop              Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  groupingId        String                        @db.Uuid
-  grouping          RouteGrouping                 @relation(fields: [groupingId], references: [id], onDelete: Cascade)
-  groupingVersion   Int
-  childVersionId    String                        @db.Uuid
-  childVersion      RouteGroupingChildVersion     @relation(fields: [childVersionId], references: [id], onDelete: Cascade)
+  groupingId        String?                       @db.Uuid
+  grouping          RouteGrouping?                @relation(fields: [groupingId], references: [id], onDelete: Cascade)
+  groupingVersion   Int?
+  childVersionId    String?                       @db.Uuid
+  childVersion      RouteGroupingChildVersion?    @relation(fields: [childVersionId], references: [id], onDelete: Cascade)
   routePlanId       String                        @db.Uuid
   routePlan         RoutePlan                     @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
   driverId          String?                       @db.Uuid
