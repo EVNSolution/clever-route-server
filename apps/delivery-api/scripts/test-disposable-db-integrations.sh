@@ -12,6 +12,7 @@ if [[ "${1:-}" == "--plan" ]]; then
     'G005: 127.0.0.1:55466 / clever_g005' \
     'Driver route order: 127.0.0.1:55467 / clever_route_order' \
     'G006: 127.0.0.1:55490 / clever_g006' \
+    'Driver password reset: 127.0.0.1:55494 / driver_password_reset' \
     'Deletion lifecycle populated upgrade: 127.0.0.1:55492 / clever_deletion_upgrade'
   exit 0
 fi
@@ -72,6 +73,7 @@ g010_container="clever-api-audit-g010-${audit_suffix}"
 g005_container="clever-api-audit-g005-${audit_suffix}"
 driver_route_order_container="clever-api-audit-driver-route-order-${audit_suffix}"
 g006_container="clever-api-audit-g006-${audit_suffix}"
+driver_password_reset_container="clever-api-audit-driver-password-reset-${audit_suffix}"
 deletion_upgrade_container="clever-api-audit-deletion-upgrade-${audit_suffix}"
 
 g003_url='postgresql://clever_g003:clever_g003@127.0.0.1:55433/clever_g003?schema=public'
@@ -81,6 +83,7 @@ g010_url='postgresql://clever_g007:clever_g007@127.0.0.1:55477/clever_g007_g010_
 g005_url='postgresql://clever_g005:clever_g005@127.0.0.1:55466/clever_g005?schema=public'
 driver_route_order_url='postgresql://clever_route_order:clever_route_order@127.0.0.1:55467/clever_route_order?schema=public'
 g006_url='postgresql://clever_g006:clever_g006@127.0.0.1:55490/clever_g006?schema=public'
+driver_reset_url='postgresql://driver_password_reset:driver_password_reset@127.0.0.1:55494/driver_password_reset?schema=public'
 
 start_postgres "$g003_container" 55433 clever_g003 clever_g003 clever_g003
 start_postgres "$g003_upgrade_container" 55434 clever_g003_upgrade clever_g003_upgrade clever_g003_upgrade
@@ -91,6 +94,7 @@ start_postgres "$g010_container" 55477 clever_g007_g010_eta clever_g007 clever_g
 start_postgres "$g005_container" 55466 clever_g005 clever_g005 clever_g005
 start_postgres "$driver_route_order_container" 55467 clever_route_order clever_route_order clever_route_order
 start_postgres "$g006_container" 55490 clever_g006 clever_g006 clever_g006
+start_postgres "$driver_password_reset_container" 55494 driver_password_reset driver_password_reset driver_password_reset
 start_postgres "$deletion_upgrade_container" 55492 clever_deletion_upgrade clever_deletion_upgrade clever_deletion_upgrade
 
 docker exec -i "$deletion_upgrade_container" psql -v ON_ERROR_STOP=1 \
@@ -297,7 +301,7 @@ g003_upgrade_manifest="$(docker exec "$g003_upgrade_container" psql -At -U cleve
 [[ "$(printf '%s\n' "$g003_upgrade_manifest" | wc -l | tr -d ' ')" == '2' ]] || { echo 'Missing per-shop G003 migration manifest' >&2; exit 1; }
 printf 'G003 populated migration upgrade: PASS\n%s\n' "$g003_upgrade_manifest"
 
-for database_url in "$g002_url" "$email_reconciliation_url" "$g003_url" "$g010_url" "$g005_url" "$driver_route_order_url" "$g006_url"; do
+for database_url in "$g002_url" "$email_reconciliation_url" "$g003_url" "$g010_url" "$g005_url" "$driver_route_order_url" "$g006_url" "$driver_reset_url"; do
   DATABASE_URL="$database_url" npm run prisma:migrate:deploy
 done
 
@@ -342,3 +346,7 @@ G006_DATABASE_TARGET_CLASS='safe-local-g006-disposable' \
 DATABASE_URL="$g006_url" \
 ACTIVE_JOB_UNIQUENESS_DATABASE_URL="$g006_url" \
 npm test -- active-job-uniqueness-migration.integration.test.ts
+
+DATABASE_URL="$driver_reset_url" \
+DRIVER_PASSWORD_RESET_DATABASE_URL="$driver_reset_url" \
+npm test -- dsv-driver-password-reset.integration.test.ts

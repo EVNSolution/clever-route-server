@@ -26,10 +26,13 @@ describe('disposable DB integration runner', () => {
     expect(script).toContain('shopify-webhook-durability.integration.test.ts');
     expect(script).toContain('customer-email-reconciliation.integration.test.ts');
     expect(script).toContain('driver-account-deletion.integration.test.ts');
+    expect(script).toContain('dsv-driver-password-reset.integration.test.ts');
     expect(script).toContain('127.0.0.1:55491/clever_email_reconciliation');
     expect(script).toContain('127.0.0.1:55467/clever_route_order');
     expect(script).toContain('EMAIL_RECONCILIATION_DATABASE_URL="$email_reconciliation_url"');
     expect(script).toContain('DRIVER_ACCOUNT_DELETION_DATABASE_URL="$g006_url"');
+    expect(script).toContain('DRIVER_PASSWORD_RESET_DATABASE_URL="$driver_reset_url"');
+    expect(script).toContain('127.0.0.1:55494/driver_password_reset');
     expect(script).toContain('127.0.0.1:55492 / clever_deletion_upgrade');
     expect(script).toContain('Deletion lifecycle populated legacy reconciliation: PASS');
     expect(script).toContain('DUPLICATE_MIGRATION_RECONCILED');

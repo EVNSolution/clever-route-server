@@ -1,10 +1,19 @@
 import { describe, expect, test } from 'vitest';
 
 import { loadDsvDriverAuthDependencies } from '../src/modules/dsv/dsv-driver-auth.dependencies.js';
+import { loadDsvWebPublicOrigin } from '../src/modules/dsv/dsv-web-public-origin.js';
 
 const prisma = {} as never;
 
 describe('DSV driver auth runtime dependency gate', () => {
+  test('requires a pathless HTTPS public origin except for local development HTTP', () => {
+    expect(loadDsvWebPublicOrigin('https://dsv.example.com', 'production')).toBe('https://dsv.example.com');
+    expect(loadDsvWebPublicOrigin('http://localhost:5173', 'development')).toBe('http://localhost:5173');
+    expect(() => loadDsvWebPublicOrigin('http://localhost:5173', 'production')).toThrow(/HTTPS origin/u);
+    expect(() => loadDsvWebPublicOrigin('http://dsv.example.com', 'development')).toThrow(/HTTPS origin/u);
+    expect(() => loadDsvWebPublicOrigin('https://dsv.example.com/app', 'production')).toThrow(/HTTPS origin/u);
+  });
+
   test('stays disabled only when the explicit feature flag is not enabled', () => {
     expect(loadDsvDriverAuthDependencies({ env: {}, nodeEnv: 'production', prisma })).toBeUndefined();
     expect(loadDsvDriverAuthDependencies({
