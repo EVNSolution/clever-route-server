@@ -167,7 +167,7 @@ describe('privacy routes', () => {
       expect(response.body).toContain('증빙 사진');
       expect(response.body).toContain('EXIF');
       expect(response.body).toContain('비공개 저장소');
-      expect(response.body).toContain('기본 180일');
+      expect(response.body).toContain('기본 365일');
       expect(response.body).toContain('해결된 순서 이벤트 재시도 증거는 기본 90일');
       expect(response.body).toContain('미해결 또는 조정이 필요한 기록은 해결될 때까지');
       expect(response.body).toContain('서명, 수령인 이름, 배송 메모');

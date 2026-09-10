@@ -44,6 +44,7 @@ RUN ln -s ../../node_modules ./apps/delivery-api/node_modules \
 USER clever
 
 FROM base AS runtime
+LABEL org.clever-route.proof-media-iam-role-capability="1"
 ENV NODE_ENV=production
 ENV ROUTE_OPS_WEB_DIST_PATH=/app/external/route-ops-web/dist
 ENV ROUTE_OPS_WEB_PUBLIC_PATH=/app/external/route-ops-web/public

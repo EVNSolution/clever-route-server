@@ -32,8 +32,11 @@ CREDENTIAL_ENCRYPTION_KEY=<base64-or-hex-32-byte-key>
 CLEVER_ADMIN_API_TOKEN=<strong-internal-admin-token>
 CLEVER_ADMIN_WEB_LOGIN_SECRET=<strong-browser-admin-login-secret>
 CLEVER_ADMIN_WEB_SESSION_SECRET=<strong-browser-admin-session-secret>
-DRIVER_PROOF_MEDIA_STORAGE_BACKEND=local
-DRIVER_PROOF_MEDIA_STORAGE_DIR=/app/var/driver-proof-media
+DRIVER_PROOF_MEDIA_STORAGE_BACKEND=s3
+DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER=ec2-iam-role
+DRIVER_PROOF_MEDIA_S3_BUCKET=<private-runtime-value>
+DRIVER_PROOF_MEDIA_S3_REGION=ap-northeast-2
+DRIVER_PROOF_MEDIA_RETENTION_DAYS=365
 ```
 
 Use explicit customer-owned WooCommerce hostnames in
@@ -88,7 +91,6 @@ npm run compose:config
 2. Attach and mount the EBS volume at `/srv/clever-route-server`, then create:
    - `/srv/clever-route-server/data/postgres`
    - `/srv/clever-route-server/data/postgres-backups`
-   - `/srv/clever-route-server/data/driver-proof-media`
    - `/srv/clever-route-server/apps/delivery-api`
 3. Install Docker Engine and the Compose plugin.
 4. Place runtime env at `/srv/clever-route-server/apps/delivery-api/.env`.
@@ -97,6 +99,10 @@ npm run compose:config
    exist.
 6. Verify `/healthz`, `/readyz`, Caddy TLS, and DNS for
    `clever-route.cleversystem.ai` before mobile/webhook cutover.
+
+EBS remains the PostgreSQL and host-state volume. Driver POD bytes use private
+S3 and are not stored on this volume. Complete the separate
+`docs/deployment/driver-proof-media-s3.md` checklist before enabling uploads.
 
 ## Backup and restore
 

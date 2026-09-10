@@ -226,6 +226,14 @@ command -v aws >/dev/null
 command -v python3 >/dev/null
 command -v base64 >/dev/null
 [ -f apps/delivery-api/.env ] || { echo 'missing required runtime env: apps/delivery-api/.env' >&2; exit 65; }
+[ -f .deploy/current-image.env ] || { echo 'proof media S3 rollout blocked: verified rollback manifest is missing' >&2; exit 1; }
+if [ -f .deploy/current-image.env ]; then
+  rollback_proof_iam_capability="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_IAM_ROLE_CAPABILITY_VERSION" {print substr($0, index($0, "=") + 1)}' .deploy/current-image.env | tail -n 1)"
+  rollback_proof_image="$(awk -F= '$1 == "DELIVERY_API_IMAGE" {print substr($0, index($0, "=") + 1)}' .deploy/current-image.env | tail -n 1)"
+  [ "$rollback_proof_iam_capability" = "1" ] \
+    && [ "$(docker image inspect "$rollback_proof_image" --format '{{ index .Config.Labels "org.clever-route.proof-media-iam-role-capability" }}')" = "1" ] \
+    || { echo 'proof media S3 rollout blocked: deploy the IAM-role-compatible bridge before switching storage' >&2; exit 1; }
+fi
 mkdir -p "$(dirname "$COMPOSE_FILE")" "$(dirname "$VROOM_CONFIG")" "$(dirname "$VROOM_KOREA_CONFIG")"
 mkdir -p scripts infra/systemd
 printf '%s' "$COMPOSE_FILE_B64" | base64 -d > "$COMPOSE_FILE"
@@ -272,6 +280,7 @@ DSV_PRODUCTION_BASELINE_APPROVED=$DSV_PRODUCTION_BASELINE_APPROVED
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=$DSV_PRODUCTION_BASELINE_MANIFEST_SHA256
 DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE=$([ -n "$PROOF_READY_FILTER_CONTRACT_SHA" ] && echo true || echo false)
 DRIVER_PROOF_MEDIA_READY_FILTER_CONTRACT_SHA=$PROOF_READY_FILTER_CONTRACT_SHA
+DRIVER_PROOF_MEDIA_IAM_ROLE_CAPABILITY_VERSION=1
 ROUTE_COMPLETION_INVARIANT_CAPABILITY_VERSION=1
 EOF_ENV
 HAD_CURRENT_IMAGE_ENV=0
@@ -286,9 +295,16 @@ if [ "$HAD_CURRENT_IMAGE_ENV" = "1" ]; then
 else
   CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE=''
 fi
-proof_reservations_enabled="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED" {print tolower(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
+proof_scanner_backend="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCANNER_BACKEND" {print tolower(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
+proof_scanner_url_configured="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCANNER_URL" {value=substr($0, index($0, "=") + 1); print length(value) > 0 ? "true" : "false"}' apps/delivery-api/.env | tail -n 1)"
+proof_scan_monitor_backend="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND" {print tolower(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
+proof_scan_monitor_url_configured="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL" {value=substr($0, index($0, "=") + 1); print length(value) > 0 ? "true" : "false"}' apps/delivery-api/.env | tail -n 1)"
+[ "$proof_scanner_backend" = "http" ] && [ "$proof_scanner_url_configured" = "true" ] \
+  || { echo 'proof media S3 rollout blocked: approved HTTP scanner is not configured' >&2; exit 1; }
+[ "$proof_scan_monitor_backend" = "http" ] && [ "$proof_scan_monitor_url_configured" = "true" ] \
+  || { echo 'proof media S3 rollout blocked: approved scan monitor is not configured' >&2; exit 1; }
 rollback_ready_filter_compatible="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE" {print tolower(substr($0, index($0, "=") + 1))}' .deploy/simple-rollback-image.env | tail -n 1)"
-if [ "$proof_reservations_enabled" = "true" ] && [ "$rollback_ready_filter_compatible" != "true" ]; then
+if [ "$rollback_ready_filter_compatible" != "true" ]; then
   echo 'proof media reservation rollout blocked: rollback image does not advertise READY-only reads' >&2
   exit 1
 fi
@@ -406,7 +422,17 @@ updates = {
     'OSRM_TIMEOUT_MS': '10000',
     'FIREBASE_PROJECT_ID': 'clever-routes-prod',
     'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-fcm.json',
+    'DRIVER_PROOF_MEDIA_STORAGE_BACKEND': 's3',
+    'DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER': 'ec2-iam-role',
+    'DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS': '300',
+    'DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED': 'true',
+    'DRIVER_PROOF_MEDIA_RETENTION_DAYS': '365',
     'UVIS_ENABLED': 'false',
+}
+retired_proof_media_keys = {
+    'DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID',
+    'DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY',
+    'DRIVER_PROOF_MEDIA_S3_SESSION_TOKEN',
 }
 uvis_allowed_keys = {
     'UVIS_ENABLED',
@@ -463,6 +489,8 @@ for line in text:
         out.append(line)
         continue
     key = line.split('=', 1)[0]
+    if key in retired_proof_media_keys:
+        continue
     if key in updates:
         out.append(f'{key}={updates[key]}')
         seen.add(key)
@@ -474,9 +502,10 @@ for key, value in updates.items():
 path.write_text('\n'.join(out) + '\n')
 path.chmod(0o600)
 ENVUP
-mkdir -p /srv/clever-route-server/data/driver-proof-media
-chown -R 100:101 /srv/clever-route-server/data/driver-proof-media
-chmod 750 /srv/clever-route-server/data/driver-proof-media
+proof_media_bucket="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_S3_BUCKET" {print substr($0, index($0, "=") + 1)}' apps/delivery-api/.env | tail -n 1)"
+proof_media_region="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_S3_REGION" {print substr($0, index($0, "=") + 1)}' apps/delivery-api/.env | tail -n 1)"
+[ -n "$proof_media_bucket" ] || { echo 'proof media S3 rollout blocked: DRIVER_PROOF_MEDIA_S3_BUCKET is missing' >&2; exit 1; }
+[ -n "$proof_media_region" ] || { echo 'proof media S3 rollout blocked: DRIVER_PROOF_MEDIA_S3_REGION is missing' >&2; exit 1; }
 mkdir -p /srv/clever-route-server/data/customer-email-assets
 chown -R 100:101 /srv/clever-route-server/data/customer-email-assets
 chmod 750 /srv/clever-route-server/data/customer-email-assets
@@ -489,6 +518,8 @@ static_stage_reason="$(should_stage_static)"
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea
 runtime_revision="$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
 [[ "$runtime_revision" =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate delivery API image revision is invalid' >&2; exit 1; }
+[ "$(docker image inspect "$DELIVERY_API_IMAGE" --format '{{ index .Config.Labels "org.clever-route.proof-media-iam-role-capability" }}')" = "1" ] \
+  || { echo 'candidate delivery API does not support proof media IAM-role credentials' >&2; exit 1; }
 if [ "$RUN_MIGRATIONS" = "1" ]; then
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" pull clever-route-api-migrate
   migration_revision="$(docker image inspect "$DELIVERY_API_MIGRATION_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"

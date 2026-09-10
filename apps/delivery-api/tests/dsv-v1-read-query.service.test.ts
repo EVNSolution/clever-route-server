@@ -370,7 +370,9 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const query = firstMockArg<DeliveryStopFindManyQuery>(prisma.deliveryStop.findMany);
     expect(query?.where?.shopId).toBe('shop-a');
     expect(query?.where?.order).toEqual({ isStoreReviewData: false, shopId: 'shop-a' });
-    expect(query?.select?.driverProofMedia.where).toEqual({ shopId: 'shop-a', uploadStatus: 'READY' });
+    expect(query?.select?.driverProofMediaLinks.where).toEqual({
+      proofMedia: { shopId: 'shop-a', uploadStatus: 'READY' },
+    });
   });
 
   test('lists all record dates by default and applies numbered page offsets', async () => {
@@ -422,16 +424,18 @@ describe('PrismaDsvV1ReadQueryService', () => {
             longitude: '126.9900000',
             occurredAt: new Date('2026-07-22T01:00:00.000Z'),
           }],
-          driverProofMedia: [{
-            contentType: 'image/jpeg',
-            deletedAt: null,
-            driver: { displayName: '김도윤' },
-            id: 'proof-1',
-            kind: 'PHOTO',
-            originalFilename: 'delivery.jpg',
-            sizeBytes: 2048,
-            source: 'CAMERA',
-            uploadedAt: new Date('2026-07-22T01:01:00.000Z'),
+          driverProofMediaLinks: [{
+            proofMedia: {
+              contentType: 'image/jpeg',
+              deletedAt: null,
+              driver: { displayName: '김도윤' },
+              id: 'proof-1',
+              kind: 'PHOTO',
+              originalFilename: 'delivery.jpg',
+              sizeBytes: 2048,
+              source: 'CAMERA',
+              uploadedAt: new Date('2026-07-22T01:01:00.000Z'),
+            },
           }],
           id: 'stop-1',
           order: {
@@ -1658,7 +1662,7 @@ type OrderFindManyQuery = {
 };
 
 type DeliveryStopFindManyQuery = {
-  select?: { driverProofMedia: { where: { shopId: string; uploadStatus: string } } };
+  select?: { driverProofMediaLinks: { where: { proofMedia: { shopId: string; uploadStatus: string } } } };
   where?: {
     order?: { isStoreReviewData?: boolean; shopId: string };
     shopId?: string;

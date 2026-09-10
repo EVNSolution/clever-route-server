@@ -133,6 +133,7 @@ describe('Driver proof media route', () => {
       expect(response.statusCode).toBe(201);
       expect(response.json()).toEqual({
         data: {
+          deliveryStopIds: ['stop-id'],
           kind: 'photo',
           mediaId: 'proof-media-id',
           storageKey: 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/proof-media-id.jpg',
@@ -368,6 +369,7 @@ type StoreProofMedia = (input: {
   source: 'camera' | 'library';
 }) => Promise<{
   contentType: string;
+  deliveryStopIds: string[];
   kind: 'photo';
   mediaId: string;
   sha256: string;
@@ -440,6 +442,7 @@ async function createAppHarness(input: {
 
     return Promise.resolve({
       contentType: 'image/jpeg',
+      deliveryStopIds: ['stop-id'],
       kind: 'photo',
       mediaId: 'proof-media-id',
       sha256: 'sha256-fixture',

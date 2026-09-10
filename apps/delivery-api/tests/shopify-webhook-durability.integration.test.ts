@@ -8,6 +8,7 @@ import { afterAll, describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import { PrismaDriverProofMediaRepository } from '../src/modules/driver/driver-proof-media.repository.js';
+import { calculateProofMediaCleanupCutoff } from '../src/modules/driver/driver-proof-media.cleanup.js';
 import {
   DriverEventStopTransitionConflictError,
   PrismaDriverEventRepository
@@ -948,6 +949,75 @@ describeDatabase('Shopify order webhook PostgreSQL durability', () => {
     await expect(secondRepository.storeProofMedia({ ...input, fileBytes: Buffer.from('different-proof') }))
       .rejects.toMatchObject({ name: 'DriverProofMediaIdempotencyConflictError' });
     expect(write).toHaveBeenCalledOnce();
+    await prisma.shop.delete({ where: { id: fixture.shop.id } });
+  }, 15_000);
+
+  test('retains one destination POD through driver deletion and retries cleanup after the 365-day boundary', async () => {
+    const prisma = createClient();
+    const fixture = await createProofMediaDbFixture(prisma);
+    const destination = await prisma.deliveryCustomerProfile.create({ data: {
+      addressFingerprint: randomUUID(), normalizedAddress: {}, shopId: fixture.shop.id
+    } });
+    await prisma.order.update({ where: { id: fixture.stop.orderId }, data: { destinationId: destination.id } });
+    const siblingOrder = await prisma.order.create({ data: {
+      destinationId: destination.id, name: '#POD-SIBLING', rawPayload: {}, shopId: fixture.shop.id,
+      shopifyOrderGid: `gid://shopify/Order/${randomUUID()}`
+    } });
+    const siblingStop = await prisma.deliveryStop.create({ data: { orderId: siblingOrder.id, shopId: fixture.shop.id } });
+    await prisma.routePlanStop.create({ data: {
+      deliveryStopId: siblingStop.id, routePlanId: fixture.routePlan.id, sequence: 2, shopId: fixture.shop.id
+    } });
+    const now = new Date('2026-09-10T12:00:00.000Z');
+    const cutoff = calculateProofMediaCleanupCutoff({ now, retentionDays: 365 });
+    const storage = {
+      createReadAccess: vi.fn(() => Promise.resolve({ url: 'https://synthetic.invalid/signed-proof' })),
+      remove: vi.fn(() => Promise.resolve('removed' as const)),
+      write: vi.fn(() => Promise.resolve())
+    };
+    const repository = new PrismaDriverProofMediaRepository(prisma, { now: () => now, storage });
+    const input = {
+      contentType: 'image/png', deliveryStopId: fixture.stop.id, driverId: fixture.driver.id,
+      fileBytes: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aUioAAAAASUVORK5CYII=', 'base64'),
+      filename: 'synthetic-pod.png', idempotencyKey: 'synthetic-destination-pod',
+      routePlanId: fixture.routePlan.id, shopDomain: fixture.shop.shopDomain, shopId: fixture.shop.id,
+      source: 'camera' as const
+    };
+    const uploaded = await repository.storeProofMedia(input);
+    expect(await repository.storeProofMedia(input)).toEqual(uploaded);
+    expect(storage.write).toHaveBeenCalledOnce();
+    const stopIds = [fixture.stop.id, siblingStop.id].sort();
+    expect(uploaded.deliveryStopIds).toEqual(stopIds);
+    expect(await prisma.driverProofMediaDeliveryStop.count({ where: { proofMediaId: uploaded.mediaId } })).toBe(2);
+    const accessInput = { mediaId: uploaded.mediaId, shopId: fixture.shop.id };
+    expect(await repository.createAdminProofMediaReadAccess(accessInput)).toMatchObject({
+      deliveryStopIds: stopIds, expiresAt: '2026-09-10T12:05:00.000Z', mediaId: uploaded.mediaId
+    });
+    await expect(repository.createAdminProofMediaReadAccess({ ...accessInput, shopId: randomUUID() }))
+      .rejects.toMatchObject({ name: 'DriverProofMediaScopeError' });
+    await expect(prisma.routePlan.delete({ where: { id: fixture.routePlan.id } }))
+      .rejects.toMatchObject({ code: 'P2003' });
+    await expect(prisma.deliveryStop.delete({ where: { id: siblingStop.id } }))
+      .rejects.toMatchObject({ code: 'P2003' });
+    await prisma.driver.delete({ where: { id: fixture.driver.id } });
+    expect(await prisma.driverProofMedia.findUniqueOrThrow({ where: { id: uploaded.mediaId } }))
+      .toMatchObject({ driverId: null, uploadStatus: 'READY' });
+    expect(await repository.createAdminProofMediaReadAccess(accessInput)).toMatchObject({ deliveryStopIds: stopIds });
+
+    await prisma.driverProofMedia.update({ where: { id: uploaded.mediaId }, data: { uploadedAt: cutoff } });
+    const cleanupInput = { deletedAt: now, uploadedBefore: cutoff };
+    await repository.deleteExpiredProofMedia(cleanupInput);
+    expect(await prisma.driverProofMedia.findUnique({ where: { id: uploaded.mediaId } })).not.toBeNull();
+    await prisma.driverProofMedia.update({
+      where: { id: uploaded.mediaId }, data: { uploadedAt: new Date(cutoff.getTime() - 1) }
+    });
+    storage.remove.mockRejectedValueOnce(new Error('synthetic S3 outage'));
+    await expect(repository.deleteExpiredProofMedia(cleanupInput)).rejects.toThrow('synthetic S3 outage');
+    expect(await prisma.driverProofMediaDeliveryStop.count({ where: { proofMediaId: uploaded.mediaId } })).toBe(2);
+    await repository.deleteExpiredProofMedia(cleanupInput);
+    expect(await prisma.driverProofMedia.findUnique({ where: { id: uploaded.mediaId } })).toBeNull();
+    expect(await prisma.driverProofMediaDeliveryStop.count({ where: { proofMediaId: uploaded.mediaId } })).toBe(0);
+    await expect(repository.createAdminProofMediaReadAccess(accessInput))
+      .rejects.toMatchObject({ name: 'DriverProofMediaScopeError' });
     await prisma.shop.delete({ where: { id: fixture.shop.id } });
   }, 15_000);
 

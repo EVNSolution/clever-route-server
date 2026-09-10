@@ -163,7 +163,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(106);
+    expect(migrations).toHaveLength(107);
+    expect(migrations).toContain('20260910170000_link_driver_proof_media_delivery_stops');
     expect(migrations).toContain('20260907000000_restore_active_job_uniqueness');
     expect(migrations).toContain('20260907010000_dsv_driver_inquiries');
     expect(migrations).toContain('20260907120000_store_review_data_visibility');
@@ -404,7 +405,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260909090000_support_standalone_route_notifications')).toBeLessThan(
       migrations.indexOf('20260910150000_add_driver_account_password_reset_links')
     );
-    expect(migrations.at(-1)).toBe('20260910150000_add_driver_account_password_reset_links');
+    expect(migrations.indexOf('20260910150000_add_driver_account_password_reset_links')).toBeLessThan(
+      migrations.indexOf('20260910170000_link_driver_proof_media_delivery_stops')
+    );
+    expect(migrations.at(-1)).toBe('20260910170000_link_driver_proof_media_delivery_stops');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {

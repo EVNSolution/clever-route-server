@@ -462,6 +462,27 @@ paths:
         '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
         '403': { $ref: '#/components/responses/DsvV1Forbidden' }
         '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/proof-media/{mediaId}/access:
+    get:
+      tags: [DSV API v1]
+      summary: Create short-lived DSV administrator access for proof media
+      operationId: getDsvV1ProofMediaAccess
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:records:read']
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/MediaId'
+      responses:
+        '200':
+          description: Store-scoped proof metadata and short-lived private object access.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1ProofMediaAccessEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
   /api/dsv/v1/drivers:
     get:
       tags: [DSV API v1]
@@ -9415,12 +9436,18 @@ components:
           type: 'null'
     DriverProofMediaReference:
       type: object
-      required: [contentType, kind, mediaId, source, storageKey, uploadedAt]
+      required: [contentType, deliveryStopIds, kind, mediaId, source, storageKey, uploadedAt]
       properties:
         kind:
           const: photo
         mediaId:
           type: string
+        deliveryStopIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
         storageKey:
           type: string
         contentType:
@@ -9455,6 +9482,47 @@ components:
               type: string
             expiresAt:
               format: date-time
+              type: string
+        error:
+          type: 'null'
+    DsvV1ProofMediaAccessEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [contentType, deliveryStopIds, expiresAt, kind, mediaId, sha256, sizeBytes, source, uploadedAt, url]
+          properties:
+            contentType:
+              type: string
+            deliveryStopIds:
+              type: array
+              minItems: 1
+              uniqueItems: true
+              items:
+                type: string
+            expiresAt:
+              format: date-time
+              type: string
+            kind:
+              const: photo
+            mediaId:
+              format: uuid
+              type: string
+            sha256:
+              type: string
+            sizeBytes:
+              minimum: 0
+              type: integer
+            source:
+              enum: [camera, library]
+              type: string
+            uploadedAt:
+              format: date-time
+              type: string
+            url:
+              format: uri
               type: string
         error:
           type: 'null'

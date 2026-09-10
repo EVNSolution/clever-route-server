@@ -46,6 +46,11 @@ services:
     env_file:
       - ../../apps/delivery-api/.env
     environment:
+      DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS: 300
+      DRIVER_PROOF_MEDIA_RESERVATIONS_ENABLED: "true"
+      DRIVER_PROOF_MEDIA_RETENTION_DAYS: 365
+      DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER: ec2-iam-role
+      DRIVER_PROOF_MEDIA_STORAGE_BACKEND: s3
       NODE_ENV: production
       CLEVER_TRUST_CADDY_PROXY: "true"
       PORT: 3000
@@ -69,7 +74,6 @@ services:
     volumes:
       - route-ops-web-static:/app/external/route-ops-web:ro
       - /srv/clever-route-server/data/customer-email-assets:/app/var/customer-email-assets
-      - /srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media
       - /srv/clever-route-server/secrets/firebase-fcm.json:/run/secrets/firebase-fcm.json:ro
     networks:
       default:

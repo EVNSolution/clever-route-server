@@ -145,10 +145,8 @@ describe('loadDriverApiDependencies', () => {
   test('wires S3 proof media storage when explicitly configured', () => {
     const dependencies = loadDriverApiDependencies({
       env: {
-        DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID: 'AKIA_TEST',
         DRIVER_PROOF_MEDIA_S3_BUCKET: 'clever-proof-media',
         DRIVER_PROOF_MEDIA_S3_REGION: 'ap-northeast-2',
-        DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY: 'secret-test-key',
         DRIVER_PROOF_MEDIA_STORAGE_BACKEND: 's3',
         JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
@@ -158,25 +156,45 @@ describe('loadDriverApiDependencies', () => {
     expect(dependencies?.proofMediaService).toBeDefined();
   });
 
-  test('exposes the same S3 DELETE backend to HTTP runtime and retention cleanup', async () => {
-    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })));
-    vi.stubGlobal('fetch', fetchMock);
-    const options = loadDriverProofMediaRepositoryStorageOptions({
-      DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID: 'AKIA_TEST',
+  test('does not send EC2 IAM role credentials to a configured S3 endpoint', () => {
+    expect(() => loadDriverProofMediaRepositoryStorageOptions({
       DRIVER_PROOF_MEDIA_S3_BUCKET: 'clever-proof-media',
       DRIVER_PROOF_MEDIA_S3_ENDPOINT: 'https://objects.example.test',
       DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE: 'true',
       DRIVER_PROOF_MEDIA_S3_REGION: 'ap-northeast-2',
-      DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY: 'secret-test-key',
       DRIVER_PROOF_MEDIA_STORAGE_BACKEND: 's3'
-    });
-    if (options.storage === undefined) throw new Error('expected S3 storage');
-    await expect(options.storage.remove('driver-proof/safe/proof.jpg', new AbortController().signal))
-      .resolves.toBe('removed');
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://objects.example.test/clever-proof-media/driver-proof/safe/proof.jpg',
-      expect.objectContaining({ method: 'DELETE' })
-    );
+    })).toThrow('DRIVER_PROOF_MEDIA_S3_ENDPOINT is not allowed with ec2-iam-role credentials');
+  });
+
+  test('requires scanner and monitor before production S3 proof uploads are enabled', () => {
+    const productionS3 = {
+      DRIVER_PROOF_MEDIA_S3_BUCKET: 'clever-proof-media',
+      DRIVER_PROOF_MEDIA_S3_REGION: 'ap-northeast-2',
+      DRIVER_PROOF_MEDIA_STORAGE_BACKEND: 's3',
+      JWT_SECRET: 'test-driver-jwt-secret-32-characters',
+      NODE_ENV: 'production'
+    } as const;
+
+    expect(() => loadDriverApiDependencies({ env: productionS3, prisma: {} as PrismaClient }))
+      .toThrow('DRIVER_PROOF_MEDIA_SCANNER_BACKEND=http is required for production S3 proof media');
+    expect(() => loadDriverApiDependencies({
+      env: {
+        ...productionS3,
+        DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'http',
+        DRIVER_PROOF_MEDIA_SCANNER_URL: 'https://scanner.internal.example/scan'
+      },
+      prisma: {} as PrismaClient
+    })).toThrow('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND=http is required for production S3 proof media');
+    expect(loadDriverApiDependencies({
+      env: {
+        ...productionS3,
+        DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND: 'http',
+        DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL: 'https://alerts.internal.example/proof-media-scan',
+        DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'http',
+        DRIVER_PROOF_MEDIA_SCANNER_URL: 'https://scanner.internal.example/scan'
+      },
+      prisma: {} as PrismaClient
+    })?.proofMediaService).toBeDefined();
   });
 
   test('rejects incomplete S3 proof media storage configuration', () => {
