@@ -43,7 +43,7 @@ type DriverRoutePlanRecord = {
   isStoreReviewData?: boolean;
   name: string;
   planDate: Date;
-  routeGroupingChildVersions?: Array<{ id: string }>;
+  routeGroupingChildVersions?: Array<{ id: string; publishedAt: Date | null }>;
   shop: {
     shopDomain: string;
   };
@@ -69,7 +69,7 @@ const routePlanSelect = {
   planDate: true,
   routeGroupingChildVersions: {
     orderBy: { updatedAt: 'desc' as const },
-    select: { id: true },
+    select: { id: true, publishedAt: true },
     take: 1,
     where: { status: 'CURRENT' as const, supersededAt: null }
   },
@@ -264,6 +264,14 @@ export class PrismaDriverRouteAccessRepository {
       select: routePlanSelect,
       take: 3,
       where: {
+        OR: [
+          { status: 'IN_PROGRESS' },
+          {
+            routeGroupingChildVersions: {
+              some: { publishedAt: { not: null }, status: 'CURRENT', supersededAt: null }
+            }
+          }
+        ],
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: input.routeContext },
         driver: { is: { accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
@@ -271,12 +279,14 @@ export class PrismaDriverRouteAccessRepository {
       }
     });
 
-    if (routePlans.length === 0) {
+    const visibleRoutePlans = routePlans.filter(isDriverVisibleRoutePlan);
+
+    if (visibleRoutePlans.length === 0) {
       return { status: 'NOT_FOUND' };
     }
 
-    if (routePlans.length === 1) {
-      const routePlan = routePlans[0];
+    if (visibleRoutePlans.length === 1) {
+      const routePlan = visibleRoutePlans[0];
       if (routePlan === undefined) {
         return { status: 'NOT_FOUND' };
       }
@@ -286,7 +296,7 @@ export class PrismaDriverRouteAccessRepository {
 
     return {
       status: 'MULTIPLE_MATCHES',
-      matches: routePlans.slice(0, 2).map(buildAmbiguousMatch),
+      matches: visibleRoutePlans.slice(0, 2).map(buildAmbiguousMatch),
       resolutionHint: 'Use the account route list or contact dispatch.'
     };
   }
@@ -330,7 +340,11 @@ function mapRoutePlan(
   }
 
   const currentRouteVersion = routePlan.routeGroupingChildVersions?.[0];
-  if (currentRouteVersion === undefined || routePlan.assignmentGeneration === undefined) {
+  if (
+    currentRouteVersion === undefined
+    || routePlan.assignmentGeneration === undefined
+    || !isDriverVisibleRoutePlan(routePlan)
+  ) {
     return { status: 'NOT_FOUND' };
   }
 
@@ -351,6 +365,15 @@ function mapRoutePlan(
     },
     companyGuidance: buildCompanyGuidance(routePlan)
   };
+}
+
+function isDriverVisibleRoutePlan(routePlan: DriverRoutePlanRecord): boolean {
+  const currentRouteVersion = routePlan.routeGroupingChildVersions?.[0];
+  return currentRouteVersion !== undefined
+    && (
+      currentRouteVersion.publishedAt != null
+      || toRouteExecutionStatus(routePlan.status) === 'IN_PROGRESS'
+    );
 }
 
 function buildCompanyGuidance(routePlan: DriverRoutePlanRecord): DriverRouteAccessCompanyGuidance {

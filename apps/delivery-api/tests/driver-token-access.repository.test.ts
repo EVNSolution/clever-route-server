@@ -14,7 +14,9 @@ describe('PrismaDriverTokenAccessRepository', () => {
           status: 'ACTIVE'
         },
         id: 'route-plan-id',
-        shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' }
+        routeGroupingChildVersions: [{ publishedAt: new Date('2026-05-11T12:00:00.000Z') }],
+        shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' },
+        status: 'READY',
       }
     });
     const repository = new PrismaDriverTokenAccessRepository(prisma as never);
@@ -38,7 +40,14 @@ describe('PrismaDriverTokenAccessRepository', () => {
         },
         id: true,
         isStoreReviewData: true,
-        shop: { select: { id: true, shopDomain: true } }
+        routeGroupingChildVersions: {
+          orderBy: { updatedAt: 'desc' },
+          select: { publishedAt: true },
+          take: 1,
+          where: { status: 'CURRENT', supersededAt: null }
+        },
+        shop: { select: { id: true, shopDomain: true } },
+        status: true,
       },
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
@@ -59,7 +68,9 @@ describe('PrismaDriverTokenAccessRepository', () => {
           status: 'ACTIVE'
         },
         id: 'route-plan-id',
-        shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' }
+        routeGroupingChildVersions: [{ publishedAt: new Date('2026-05-11T12:00:00.000Z') }],
+        shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' },
+        status: 'READY',
       }
     });
     const repository = new PrismaDriverTokenAccessRepository(prisma as never);
@@ -94,7 +105,9 @@ describe('PrismaDriverTokenAccessRepository', () => {
         status: 'ACTIVE' as const
       },
       id: 'route-plan-id',
-      shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' }
+      routeGroupingChildVersions: [],
+      shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' },
+      status: 'COMPLETED',
     };
     const { prisma } = createPrismaHarness({
       account: { status: 'ACTIVE', tokenVersion: 2 },
@@ -142,6 +155,35 @@ describe('PrismaDriverTokenAccessRepository', () => {
         status: 'ACTIVE'
       }
     });
+  });
+
+  test('rejects a cached ready-route token before Dispatch but preserves an active route', async () => {
+    const baseRoutePlan = {
+      driver: {
+        accountId: 'account-id',
+        authSubject: 'driver-driver-id',
+        id: 'driver-id',
+        status: 'ACTIVE' as const,
+      },
+      id: 'route-plan-id',
+      routeGroupingChildVersions: [{ publishedAt: null }],
+      shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' },
+    };
+    const readyRepository = new PrismaDriverTokenAccessRepository(createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan: { ...baseRoutePlan, status: 'READY' },
+    }).prisma as never);
+    const activeRepository = new PrismaDriverTokenAccessRepository(createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan: { ...baseRoutePlan, status: 'IN_PROGRESS' },
+    }).prisma as never);
+
+    await expect(readyRepository.resolveDriverRouteAccess({
+      accountId: 'account-id', routePlanId: 'route-plan-id', tokenVersion: 2,
+    })).resolves.toBeNull();
+    await expect(activeRepository.resolveDriverRouteAccess({
+      accountId: 'account-id', routePlanId: 'route-plan-id', tokenVersion: 2,
+    })).resolves.toMatchObject({ routePlanId: 'route-plan-id' });
   });
 
   test('rejects older tokens after relogin increments the driver token version', async () => {
@@ -201,7 +243,9 @@ function createPrismaHarness(input: {
       status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
     } | null;
     id: string;
+    routeGroupingChildVersions?: Array<{ publishedAt: Date | null }>;
     shop: { id: string; shopDomain: string };
+    status?: string;
   } | null;
   tokenVersion?: number;
 } = {}): {

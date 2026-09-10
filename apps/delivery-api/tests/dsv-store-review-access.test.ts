@@ -44,6 +44,8 @@ describe('store review data boundary', () => {
       driverAccount: { findUnique: vi.fn().mockResolvedValue({ status: 'ACTIVE', tokenVersion: 1 }) },
       routePlan: { findFirst: vi.fn().mockResolvedValue({
         id: 'route', isStoreReviewData: routeReview, shop: { id: 'shop', shopDomain: 'dsv.example' },
+        routeGroupingChildVersions: [{ publishedAt: new Date('2026-05-11T12:00:00.000Z') }],
+        status: 'READY',
         driver: { id: 'driver', accountId: 'account', authSubject: 'driver-driver', status: 'ACTIVE',
           isStoreReviewData: driverReview, account: { isStoreReviewAccount: accountReview } },
       }) },
