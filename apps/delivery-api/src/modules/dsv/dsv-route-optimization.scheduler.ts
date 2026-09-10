@@ -51,7 +51,8 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
     private readonly services: {
       routeOptimizationJobService: Pick<RouteOptimizationJobService, 'createJob' | 'findLatestJob' | 'markApplyingResult' | 'markRunning' | 'recordEngineOutcome'>;
       routeOptimizationService: RouteOptimizationService;
-      routePlanService: Pick<RoutePlanService, 'getRoutePlanDetail' | 'updateRoutePlanStops'>;
+      routePlanService: Pick<RoutePlanService, 'getRoutePlanDetail' | 'updateRoutePlanStops'>
+        & Required<Pick<RoutePlanService, 'refreshRouteGeometryForRoutePlan'>>;
     },
     options: DsvRouteOptimizationSchedulerOptions = {},
   ) {
@@ -115,8 +116,16 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
         detail === null
         || detail.routePlan.driverId === null
         || detail.routePlan.driverId === undefined
-        || detail.stops.length < 2
+        || detail.stops.length === 0
       ) {
+        return;
+      }
+      if (detail.stops.length === 1) {
+        await this.services.routePlanService.refreshRouteGeometryForRoutePlan({
+          routePlanId: pending.routePlanId,
+          shopDomain: pending.shopDomain,
+          source: 'EXPLICIT_REFRESH',
+        });
         return;
       }
 

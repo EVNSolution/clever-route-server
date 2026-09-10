@@ -18,7 +18,7 @@ describe('G003 DSV dispatch import service apply contract', () => {
   test('durably claims commands before canonical work and preserves replay semantics', async () => {
     const source = await serviceSource();
     const claimCallIndex = source.indexOf('const claim = await this.claimApplyCommand(shop.id, input, payloadHash)');
-    const canonicalTransactionIndex = source.indexOf('return await this.prisma.$transaction', claimCallIndex);
+    const canonicalTransactionIndex = source.indexOf('const execution = await this.prisma.$transaction', claimCallIndex);
     const claimMethodStart = source.indexOf('private async claimApplyCommand');
     const claimMethodEnd = source.indexOf('async getImport', claimMethodStart);
     const claimMethod = source.slice(claimMethodStart, claimMethodEnd);
@@ -46,6 +46,9 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(canonicalTransaction).toContain('dsvCommandReceipt.updateMany');
     expect(canonicalTransaction).toContain("status: 'SUCCEEDED'");
     expect(canonicalTransaction).not.toContain('dsvCommandReceipt.create');
+    expect(canonicalTransaction).toContain('this.scheduleOptimization({');
+    expect(canonicalTransaction.indexOf('this.scheduleOptimization({'))
+      .toBeGreaterThan(canonicalTransaction.indexOf('const execution = await this.prisma.$transaction'));
   });
 
   test('compensates only the matching started receipt and deliberately preserves applied batches', async () => {

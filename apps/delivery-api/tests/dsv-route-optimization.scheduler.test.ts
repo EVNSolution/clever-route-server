@@ -18,6 +18,7 @@ describe('DsvRouteOptimizationScheduler', () => {
     };
     const createJob = vi.fn().mockResolvedValue(job);
     const getRoutePlanDetail = vi.fn().mockResolvedValue(detail);
+    const refreshRouteGeometryForRoutePlan = vi.fn();
     const updateRoutePlanStops = vi.fn().mockResolvedValue(detail);
     const optimizeStopOrderWithDiagnostics = vi.fn().mockResolvedValue({
       ok: true,
@@ -44,6 +45,7 @@ describe('DsvRouteOptimizationScheduler', () => {
       },
       routePlanService: {
         getRoutePlanDetail,
+        refreshRouteGeometryForRoutePlan,
         updateRoutePlanStops,
       },
     }, { debounceMs: 50 });
@@ -58,6 +60,7 @@ describe('DsvRouteOptimizationScheduler', () => {
     await vi.advanceTimersByTimeAsync(1);
 
     expect(createJob).toHaveBeenCalledTimes(1);
+    expect(refreshRouteGeometryForRoutePlan).not.toHaveBeenCalled();
     expect(optimizeStopOrderWithDiagnostics).toHaveBeenCalledTimes(1);
     expect(updateRoutePlanStops).toHaveBeenCalledWith(expect.objectContaining({
       mutationContext: { jobId: 'job-1', source: 'route_optimization_job' },
@@ -82,6 +85,7 @@ describe('DsvRouteOptimizationScheduler', () => {
       },
       routePlanService: {
         getRoutePlanDetail: vi.fn().mockResolvedValue(routeDetail()),
+        refreshRouteGeometryForRoutePlan: vi.fn(),
         updateRoutePlanStops: vi.fn(),
       },
     }, { debounceMs: 0, logger });
@@ -95,6 +99,76 @@ describe('DsvRouteOptimizationScheduler', () => {
       routePlanId: 'route-1',
       shopDomain: 'dsv-demo.local',
     }, 'DSV route optimization scheduling failed');
+  });
+
+  test('refreshes geometry to materialize planned ETA for an assigned single-stop route', async () => {
+    vi.useFakeTimers();
+    const detail = routeDetail();
+    detail.routePlan.stopsCount = 1;
+    detail.stops = [detail.stops[0]!];
+    const createJob = vi.fn();
+    const refreshRouteGeometryForRoutePlan = vi.fn().mockResolvedValue(detail);
+    const scheduler = new DsvRouteOptimizationScheduler({
+      routeOptimizationJobService: {
+        createJob,
+        findLatestJob: vi.fn(),
+        markApplyingResult: vi.fn(),
+        markRunning: vi.fn(),
+        recordEngineOutcome: vi.fn(),
+      },
+      routeOptimizationService: { optimizeStopOrder: vi.fn() },
+      routePlanService: {
+        getRoutePlanDetail: vi.fn().mockResolvedValue(detail),
+        refreshRouteGeometryForRoutePlan,
+        updateRoutePlanStops: vi.fn(),
+      },
+    }, { debounceMs: 0 });
+
+    scheduler.schedule({ routePlanIds: ['route-1'], shopDomain: 'DSV-DEMO.LOCAL' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(refreshRouteGeometryForRoutePlan).toHaveBeenCalledWith({
+      routePlanId: 'route-1',
+      shopDomain: 'dsv-demo.local',
+      source: 'EXPLICIT_REFRESH',
+    });
+    expect(createJob).not.toHaveBeenCalled();
+  });
+
+  test('skips empty and unassigned routes without refreshing geometry or creating jobs', async () => {
+    vi.useFakeTimers();
+    const empty = routeDetail();
+    empty.routePlan.id = 'route-empty';
+    empty.routePlan.stopsCount = 0;
+    empty.stops = [];
+    const unassigned = routeDetail();
+    unassigned.routePlan.driverId = null;
+    unassigned.routePlan.id = 'route-unassigned';
+    const createJob = vi.fn();
+    const refreshRouteGeometryForRoutePlan = vi.fn();
+    const scheduler = new DsvRouteOptimizationScheduler({
+      routeOptimizationJobService: {
+        createJob,
+        findLatestJob: vi.fn(),
+        markApplyingResult: vi.fn(),
+        markRunning: vi.fn(),
+        recordEngineOutcome: vi.fn(),
+      },
+      routeOptimizationService: { optimizeStopOrder: vi.fn() },
+      routePlanService: {
+        getRoutePlanDetail: vi.fn()
+          .mockResolvedValueOnce(empty)
+          .mockResolvedValueOnce(unassigned),
+        refreshRouteGeometryForRoutePlan,
+        updateRoutePlanStops: vi.fn(),
+      },
+    }, { debounceMs: 0 });
+
+    scheduler.schedule({ routePlanIds: ['route-empty', 'route-unassigned'], shopDomain: 'dsv-demo.local' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(refreshRouteGeometryForRoutePlan).not.toHaveBeenCalled();
+    expect(createJob).not.toHaveBeenCalled();
   });
 });
 

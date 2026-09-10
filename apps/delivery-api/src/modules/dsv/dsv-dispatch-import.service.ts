@@ -22,6 +22,10 @@ import {
   type DsvDispatchPreviewRow as DsvDispatchDiffRow,
 } from './dsv-dispatch-preview-diff.js';
 import { dsvDestinationIdentity } from './dsv-destination-identity.js';
+import type {
+  DsvRouteOptimizationLogger,
+  DsvRouteOptimizationSchedulerPort,
+} from './dsv-route-optimization.scheduler.js';
 
 export type DsvDispatchImportSourceRow = {
   address: string;
@@ -210,11 +214,16 @@ type DsvDispatchImportServiceOptions = {
   applyTransactionTimeoutMs?: number;
   delayAfterCanonicalRowsMs?: number;
   failAfterCanonicalRows?: number;
+  logger?: DsvRouteOptimizationLogger;
+  routeOptimizationScheduler?: DsvRouteOptimizationSchedulerPort;
 };
 
 const defaultApplyTransactionMaxWaitMs = 20_000;
 const defaultApplyTransactionTimeoutMs = 120_000;
 const failureEvidenceTransactionOptions = { maxWait: 20_000, timeout: 30_000 } as const;
+const consoleLogger: DsvRouteOptimizationLogger = {
+  warn: (bindings, message) => { console.warn(message, bindings); },
+};
 
 export class DsvDispatchImportValidationError extends Error {
   constructor(readonly preview: DsvDispatchImportPreview) {
@@ -363,7 +372,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     if ('result' in claim) return claim.result;
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const execution = await this.prisma.$transaction(async (tx) => {
         await lockApplyImport(tx, shop.id, input.importId);
         const receipt = await tx.dsvCommandReceipt.findFirst({
           where: {
@@ -464,8 +473,12 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
             vehicleId: row.vehicleId,
           });
         }
-        await invalidateReadyRoutePlansForUpdates(tx, shop.id, resultRows.filter((row) => row.outcome === 'UPDATE_CANDIDATE'));
-        await this.ensureDispatchGrouping(
+        const invalidatedRoutePlanIds = await invalidateReadyRoutePlansForUpdates(
+          tx,
+          shop.id,
+          resultRows.filter((row) => row.outcome === 'UPDATE_CANDIDATE'),
+        );
+        const groupedRoutePlanIds = await this.ensureDispatchGrouping(
           tx,
           shop.id,
           input.importId,
@@ -542,11 +555,20 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           where: { id: receipt.id, payloadHash, shopId: shop.id, status: 'STARTED' },
         });
         if (completedReceipt.count !== 1) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_NOT_READY');
-        return result;
+        return {
+          result,
+          routePlanIds: unique([...invalidatedRoutePlanIds, ...groupedRoutePlanIds]),
+        };
       }, {
         maxWait: this.options.applyTransactionMaxWaitMs ?? defaultApplyTransactionMaxWaitMs,
         timeout: this.options.applyTransactionTimeoutMs ?? defaultApplyTransactionTimeoutMs,
       });
+      this.scheduleOptimization({
+        commandId: input.commandId,
+        routePlanIds: execution.routePlanIds,
+        shopDomain: input.shopDomain,
+      });
+      return execution.result;
     } catch (error) {
       const terminalError = normalizeApplyTransactionError(error);
       await this.recordFailedApplyAttempt(shop.id, input, payloadHash, claim.receiptId, terminalError);
@@ -1190,14 +1212,14 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     shopDomain: string,
     rows: DispatchGroupingRow[],
     isStoreReviewData: boolean,
-  ): Promise<void> {
+  ): Promise<string[]> {
     const orderIds = rows.map((row) => row.sellerOrderId);
     const ownedOrderIds = new Set((await tx.routeGroupingOrder.findMany({
       select: { orderId: true },
       where: { orderId: { in: orderIds }, shopId },
     })).map((row) => row.orderId));
     const unownedRows = rows.filter((row) => !ownedOrderIds.has(row.sellerOrderId));
-    if (unownedRows.length === 0) return;
+    if (unownedRows.length === 0) return [];
 
     const grouping = await findOrCreateUnassignedDispatchGrouping(tx, shopId, importId, fileName, planDate, actor);
     await tx.routeGroupingOrder.createMany({
@@ -1211,7 +1233,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       })),
     });
     const routes = dispatchGroupingRoutes(unownedRows);
-    if (routes.every((route) => route.driverId === null)) return;
+    if (routes.every((route) => route.driverId === null)) return [];
     const saved = await this.routeGroupingService.saveDraftInTransaction(tx, {
       groupingId: grouping.id,
       routes,
@@ -1227,6 +1249,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         supersededAt: null,
       },
     });
+    const routePlanIds: string[] = [];
     for (const route of routes) {
       const child = currentChildren.find((candidate) =>
         candidate.driverId === (route.driverId ?? null)
@@ -1253,6 +1276,34 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           data: { isStoreReviewData },
           where: { id: child.routePlan.id, shopId },
         });
+        if (route.driverId !== null) routePlanIds.push(child.routePlan.id);
+      }
+    }
+    return unique(routePlanIds);
+  }
+
+  private scheduleOptimization(input: {
+    commandId: string;
+    routePlanIds: string[];
+    shopDomain: string;
+  }): void {
+    if (this.options.routeOptimizationScheduler === undefined || input.routePlanIds.length === 0) return;
+    try {
+      this.options.routeOptimizationScheduler.schedule({
+        routePlanIds: input.routePlanIds,
+        shopDomain: input.shopDomain,
+      });
+    } catch (error) {
+      try {
+        (this.options.logger ?? consoleLogger).warn({
+          commandId: input.commandId,
+          errorType: error instanceof Error ? error.name : 'UnknownError',
+          event: 'dsv_dispatch_import_route_optimization_schedule_failed',
+          routePlanIds: input.routePlanIds,
+          shopDomain: input.shopDomain,
+        }, 'DSV dispatch import route optimization scheduling failed');
+      } catch {
+        // Logging must not change the persisted import outcome.
       }
     }
   }
@@ -1867,10 +1918,10 @@ async function invalidateReadyRoutePlansForUpdates(
   tx: Tx,
   shopId: string,
   rows: DsvDispatchImportApplyResult['rows'],
-): Promise<void> {
-  if (rows.length === 0) return;
+): Promise<string[]> {
+  if (rows.length === 0) return [];
   const routePlanStops = await tx.routePlanStop.findMany({
-    select: { routePlanId: true },
+    select: { routePlan: { select: { driverId: true } }, routePlanId: true },
     where: {
       deliveryStopId: { in: rows.map((row) => row.deliveryStopId) },
       routePlan: {
@@ -1893,7 +1944,9 @@ async function invalidateReadyRoutePlansForUpdates(
     },
   });
   const routePlanIds = unique(routePlanStops.map((stop) => stop.routePlanId));
-  if (routePlanIds.length === 0) return;
+  if (routePlanIds.length === 0) return [];
+  const assignedRoutePlanIds = unique(routePlanStops.flatMap((stop) =>
+    stop.routePlan.driverId === null ? [] : [stop.routePlanId]));
 
   await Promise.all([
     tx.routePlanStop.updateMany({
@@ -1914,6 +1967,7 @@ async function invalidateReadyRoutePlansForUpdates(
       where: { routePlanId: { in: routePlanIds } },
     }),
   ]);
+  return assignedRoutePlanIds;
 }
 
 async function findOrCreateUnassignedDispatchGrouping(
