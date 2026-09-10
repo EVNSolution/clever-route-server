@@ -73,6 +73,7 @@ export type BuildAppOptions = {
   dsvDriverAppRelease?: DsvDriverAppReleaseDependencies;
   dsvV1Read?: DsvV1ReadDependencies;
   logger?: FastifyServerOptions['logger'];
+  trustedProxyAddresses?: string[];
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
   wooCommerceWebhook?: WooCommerceWebhookDependencies;
@@ -95,7 +96,15 @@ const dsvDispatchLoadListPaths = new Set([
 const dsvDispatchDiagnosticPath = '/api/dsv/v1/diagnostics/dispatch-load';
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: withSafeRequestLogging(options.logger ?? false) });
+  const app = Fastify({
+    logger: withSafeRequestLogging(options.logger ?? false),
+    trustProxy: (address, hop) => hop === 0
+      && (options.trustedProxyAddresses ?? []).includes(address.replace(/^::ffff:/u, '')),
+  });
+  app.addHook('onRequest', (request, reply, done) => {
+    if (isDsvPasswordResetPath(pathname(request.url))) reply.header('Cache-Control', 'no-store');
+    done();
+  });
   app.addHook('onResponse', (request, reply, done) => {
     logDsvApiSurfaceRequest(request, reply);
     logShopifyAdminApiSurfaceRequest(request, reply);
@@ -339,6 +348,7 @@ function serializeRequestForLog(request: FastifyRequest): {
 export function redactSensitiveUrl(value: string): string {
   const path = pathname(value);
   if (dsvDispatchLoadListPaths.has(path) || path === dsvDispatchDiagnosticPath) return path;
+  if (isDsvPasswordResetPath(path)) return path;
   if (value.startsWith('/driver/route-map-preview/')) {
     try {
       const url = new URL(value, 'https://clever-route.local');
@@ -510,4 +520,10 @@ function pathWithQuery(url: string): string {
   } catch {
     return url;
   }
+}
+
+function isDsvPasswordResetPath(path: string): boolean {
+  return path === '/api/dsv/driver/auth/password-reset/validate'
+    || path === '/api/dsv/driver/auth/password-reset/complete'
+    || /^\/api\/dsv\/drivers\/[^/]+\/password-reset-link$/u.test(path);
 }

@@ -26,6 +26,7 @@ import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-can
 import { DsvCustomerAccountServiceError, type DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
 import type { DsvAdminOperatorInvitationService } from '../src/modules/dsv/dsv-admin-account-invitations.service.js';
 import type { DsvDriverAccountLinkService } from '../src/modules/dsv/dsv-driver-account-link.service.js';
+import { DsvDriverPasswordResetError, type DsvDriverPasswordResetService } from '../src/modules/dsv/dsv-driver-password-reset.service.js';
 import type { DsvStoreReviewAccess } from '../src/modules/dsv/dsv-store-review-access.js';
 
 const stopId = '11111111-1111-4111-8111-111111111111';
@@ -2234,6 +2235,189 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('issues a shop-scoped administrator password reset link without returning driver identity', async () => {
+    const logLines: string[] = [];
+    const driverPasswordResetService = {
+      complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(() => Promise.resolve({
+        expiresAt: new Date('2026-09-10T06:30:00.000Z'),
+        method: 'ADMIN_LINK',
+        setupUrl: 'https://dsv.example/driver/password-reset#token=redacted-token',
+      })),
+      validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
+    };
+    const { app } = await createHarness({ driverPasswordResetService, logLines });
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: {},
+        url: `/api/dsv/drivers/${targetDriverId}/password-reset-link?token=query-token&password=query-password&loginId=query-login&name=query-name&phone=01099998888`,
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({
+        data: {
+          passwordReset: {
+            expiresAt: '2026-09-10T06:30:00.000Z',
+            method: 'ADMIN_LINK',
+            setupUrl: 'https://dsv.example/driver/password-reset#token=redacted-token',
+          },
+        },
+        error: null,
+      });
+      expect(driverPasswordResetService.issueLink).toHaveBeenCalledTimes(1);
+      const issueInput = driverPasswordResetService.issueLink.mock.calls[0]?.[0];
+      expect(issueInput).toMatchObject({
+        actorId: adminAccountId,
+        driverId: targetDriverId,
+        shopId,
+      });
+      expect(issueInput?.requestId).toEqual(expect.any(String));
+      expect(response.body).not.toMatch(/phone|loginId|name/iu);
+      const serializedLogs = logLines.join('\n');
+      for (const privateValue of ['redacted-token', 'query-token', 'query-password', 'query-login', 'query-name', '01099998888']) {
+        expect(serializedLogs).not.toContain(privateValue);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('requires administrator authentication, CSRF, and both reset scopes without accepting a temporary password', async () => {
+    const driverPasswordResetService = {
+      complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
+      validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
+    };
+    const customerAccountService = createCustomerAccountService();
+    const { adminAccounts, app } = await createHarness({ customerAccountService, driverPasswordResetService });
+    const url = `/api/dsv/drivers/${targetDriverId}/password-reset-link`;
+    try {
+      expect((await app.inject({ method: 'POST', payload: {}, url })).statusCode).toBe(401);
+
+      const adminLogin = await loginToDsv(app);
+      expect((await app.inject({ headers: { cookie: adminLogin.cookie }, method: 'POST', payload: {}, url })).statusCode).toBe(403);
+      expect((await app.inject({
+        headers: { cookie: adminLogin.cookie, 'x-csrf-token': adminLogin.csrfToken },
+        method: 'POST',
+        payload: { password: 'test-AdminChosenPassw0rd!' },
+        url,
+      })).statusCode).toBe(400);
+
+      for (const missingScope of ['dsv:accounts:write', 'dsv:resources:read'] as const) {
+        vi.spyOn(adminAccounts, 'resolveSession').mockResolvedValueOnce({
+          accountId: adminAccountId,
+          activeSessionId: adminSessionId,
+          displayName: '운영 관리자',
+          mustChangePassword: false,
+          scopes: dsvAdminScopes.filter((scope) => scope !== missingScope),
+        });
+        const denied = await app.inject({
+          headers: { cookie: adminLogin.cookie, 'x-csrf-token': adminLogin.csrfToken },
+          method: 'POST',
+          payload: {},
+          url,
+        });
+        expect(denied.statusCode).toBe(403);
+        expect(denied.json()).toMatchObject({ error: { code: 'DSV_FORBIDDEN' } });
+      }
+
+      vi.spyOn(adminAccounts, 'resolveSession').mockResolvedValueOnce({
+        accountId: adminAccountId,
+        activeSessionId: adminSessionId,
+        displayName: '운영 관리자',
+        mustChangePassword: false,
+        scopes: dsvOperatorScopes,
+      });
+      expect((await app.inject({
+        headers: { cookie: adminLogin.cookie, 'x-csrf-token': adminLogin.csrfToken },
+        method: 'POST',
+        payload: {},
+        url,
+      })).statusCode).toBe(403);
+
+      const customerLogin = await app.inject({
+        method: 'POST',
+        payload: { id: 'customer-login', password: 'StrongPassw0rd!', shopDomain: 'tomatonofood.com' },
+        url: '/api/dsv/customer/auth/login',
+      });
+      const customerCookie = String(customerLogin.headers['set-cookie']).split(';')[0] ?? '';
+      const customerCsrfToken = customerLogin.json<{ data: { csrfToken: string } }>().data.csrfToken;
+      expect((await app.inject({
+        headers: { cookie: customerCookie, 'x-csrf-token': customerCsrfToken },
+        method: 'POST',
+        payload: {},
+        url,
+      })).statusCode).toBe(401);
+      expect(driverPasswordResetService.issueLink).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps scoped reset misses and account issue throttling without exposing a link', async () => {
+    const driverPasswordResetService = {
+      complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>()
+        .mockResolvedValueOnce(null)
+        .mockRejectedValueOnce(new DsvDriverPasswordResetError('RATE_LIMITED', 'private account issue limit')),
+      validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
+    };
+    const { app } = await createHarness({ driverPasswordResetService });
+    try {
+      const login = await loginToDsv(app);
+      const options = {
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST' as const,
+        payload: {},
+        url: `/api/dsv/drivers/${targetDriverId}/password-reset-link`,
+      };
+      const missing = await app.inject(options);
+      const limited = await app.inject(options);
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toMatchObject({ error: { code: 'DRIVER_ACCOUNT_NOT_FOUND' } });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } });
+      expect(driverPasswordResetService.issueLink.mock.calls.map(([input]) => input.shopId)).toEqual([shopId, shopId]);
+      expect(`${missing.body}\n${limited.body}`).not.toContain('private account issue limit');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rate-limits administrator reset-link issuance by client address', async () => {
+    const driverPasswordResetService = {
+      complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(() => Promise.resolve({
+        expiresAt: new Date('2026-09-10T06:30:00.000Z'),
+        method: 'ADMIN_LINK',
+        setupUrl: 'https://dsv.example/driver/password-reset#token=redacted-token',
+      })),
+      validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
+    };
+    const { app } = await createHarness({ driverPasswordResetService });
+    try {
+      const login = await loginToDsv(app);
+      const injectReset = (remoteAddress: string) => app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: {},
+        remoteAddress,
+        url: `/api/dsv/drivers/${targetDriverId}/password-reset-link`,
+      });
+      const responses = [];
+      for (let attempt = 0; attempt < 11; attempt += 1) responses.push(await injectReset('198.51.100.10'));
+      expect(responses.slice(0, 10).every(({ statusCode }) => statusCode === 201)).toBe(true);
+      expect(responses[10]?.statusCode).toBe(429);
+      expect((await injectReset('198.51.100.11')).statusCode).toBe(201);
+      expect(driverPasswordResetService.issueLink).toHaveBeenCalledTimes(11);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('accepts age zero as an unknown-age driver sentinel', async () => {
     const { app, resourceService } = await createHarness();
     try {
@@ -2310,6 +2494,7 @@ async function createHarness(overrides: {
   addressCanonicalizer?: DsvAddressCanonicalizer;
   customerAccountService?: DsvCustomerAccountService;
   driverAccountLinkService?: DsvDriverAccountLinkService;
+  driverPasswordResetService?: DsvDriverPasswordResetService;
   manualEmailService?: DsvManualEmailService;
   logLines?: string[];
   operatorInvitationService?: DsvAdminOperatorInvitationService;
@@ -2369,6 +2554,7 @@ async function createHarness(overrides: {
     ...(overrides.customerAccountService === undefined ? {} : { customerAccountService: overrides.customerAccountService }),
     dispatchImportService,
     driverAccountLinkService,
+    ...(overrides.driverPasswordResetService === undefined ? {} : { driverPasswordResetService: overrides.driverPasswordResetService }),
     geocodingService,
     manualEmailService: overrides.manualEmailService ?? createManualEmailService(),
     ...(overrides.operatorInvitationService === undefined ? {} : { operatorInvitationService: overrides.operatorInvitationService }),
@@ -2383,7 +2569,7 @@ async function createHarness(overrides: {
     adminAccounts,
     app: await buildApp({
       dsvControl: dependencies,
-      ...(overrides.logLines === undefined ? {} : { logger: { level: 'error', stream: { write: (line: string) => overrides.logLines?.push(line) } } }),
+      ...(overrides.logLines === undefined ? {} : { logger: { level: 'info', stream: { write: (line: string) => overrides.logLines?.push(line) } } }),
     }),
     assignmentCommandService,
     dispatchImportService,

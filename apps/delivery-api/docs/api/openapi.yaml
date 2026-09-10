@@ -1257,6 +1257,112 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/dsv/drivers/{driverId}/password-reset-link:
+    post:
+      tags: [DSV Control]
+      summary: Issue an administrator-approved DriverAccount password reset link
+      description: The selected driver must be linked to an active DriverAccount in the authenticated shop. The raw token is returned only in the URL fragment and stored only as a SHA-256 hash. A newer link revokes older pending links.
+      operationId: issueDsvDriverPasswordResetLink
+      x-clever-audience: dsv-admin-web
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - name: driverId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '201':
+          description: A 30-minute administrator link was issued. Issuance is limited to three links per DriverAccount in 15 minutes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, error]
+                properties:
+                  data:
+                    type: object
+                    required: [passwordReset]
+                    properties:
+                      passwordReset:
+                        type: object
+                        required: [expiresAt, method, setupUrl]
+                        properties:
+                          expiresAt: { type: string, format: date-time }
+                          method: { type: string, enum: [ADMIN_LINK] }
+                          setupUrl: { type: string, format: uri }
+                  error: { type: 'null' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { description: Per-account reset-link issuance limit exceeded. }
+  /api/dsv/driver/auth/password-reset/validate:
+    post:
+      tags: [DSV Driver Auth]
+      summary: Validate a DriverAccount password reset link without exposing account identity
+      operationId: validateDsvDriverPasswordResetLink
+      x-clever-audience: dsv-driver-app-and-public-reset-ui
+      x-side-effect: read
+      x-source-file: src/routes/dsv-driver-auth.routes.ts
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 43, maxLength: 43, writeOnly: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Returns only validity, method, and expiry; no DriverAccount identity fields are exposed.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401':
+          description: Malformed, unknown, expired, revoked, and consumed tokens share the same response.
+        '429': { description: Client request limit exceeded. }
+  /api/dsv/driver/auth/password-reset/complete:
+    post:
+      tags: [DSV Driver Auth]
+      summary: Consume a DriverAccount reset link and replace the password
+      description: Atomically consumes the link once, rotates the password hash and salt, clears password lockout, increments token versions, revokes account and linked-driver sessions, and preserves driver links, route assignments, and vehicle assignments.
+      operationId: completeDsvDriverPasswordReset
+      x-clever-audience: dsv-driver-app-and-public-reset-ui
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/dsv-driver-auth.routes.ts
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, token]
+              properties:
+                password: { type: string, format: password, minLength: 12, maxLength: 128, writeOnly: true }
+                token: { type: string, minLength: 43, maxLength: 43, writeOnly: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Password changed and all existing DriverAccount and linked legacy driver sessions revoked.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: Malformed, unknown, expired, revoked, and consumed tokens share the same response.
+        '409': { description: Current password reuse was rejected. }
+        '429': { description: Client request limit exceeded. }
   /api/dsv/customer/auth/invitations/validate:
     post:
       tags: [DSV Control]

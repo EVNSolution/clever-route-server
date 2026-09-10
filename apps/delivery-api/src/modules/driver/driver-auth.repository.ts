@@ -1,6 +1,8 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
+import { lockDsvDriverAccount } from '../dsv/dsv-driver-account-lock.js';
+
 export type DriverAuthPrismaClient = Pick<
   PrismaClient,
   'driver' | 'driverAccount' | 'driverAccountSession' | 'driverSession' | '$transaction'
@@ -135,40 +137,51 @@ export class PrismaDriverAuthRepository {
   }
 
   async loginWithPin(input: LoginWithPinInput): Promise<DriverAccountSessionInfo> {
-    const now = new Date();
-    const account = await this.prisma.driverAccount.findUnique({ where: { phone: input.phone } });
-    const pinMatches = account === null || account.pinSalt === null || account.pinHash === null
-      ? await verifyPin(input.pin, DUMMY_PIN_SALT, DUMMY_PIN_HASH)
-      : await verifyPin(input.pin, account.pinSalt, account.pinHash);
-    const isLocked = account?.pinLockedUntil instanceof Date && account.pinLockedUntil.getTime() > now.getTime();
-
-    if (
-      account === null ||
-      account.status !== 'ACTIVE' ||
-      isLocked ||
-      !pinMatches
-    ) {
-      if (account !== null && account.status === 'ACTIVE' && !isLocked && !pinMatches) {
-        const failedAttempt = await this.prisma.driverAccount.update({
-          where: { id: account.id },
-          data: { failedPinAttempts: { increment: 1 } },
-          select: { failedPinAttempts: true }
-        });
-        if (failedAttempt.failedPinAttempts >= MAX_FAILED_PIN_ATTEMPTS) {
-          await this.prisma.driverAccount.update({
-            where: { id: account.id },
-            data: { pinLockedUntil: new Date(now.getTime() + PIN_LOCK_MINUTES * 60 * 1000) }
-          });
-        }
-      }
+    const candidate = await this.prisma.driverAccount.findUnique({
+      select: { id: true },
+      where: { phone: input.phone }
+    });
+    if (candidate === null) {
+      await verifyPin(input.pin, DUMMY_PIN_SALT, DUMMY_PIN_HASH);
       throw new Error('Invalid phone or PIN');
     }
 
-    await this.prisma.driverAccount.update({
-      where: { id: account.id },
-      data: { failedPinAttempts: 0, pinLockedUntil: null }
+    const session = await this.prisma.$transaction(async (tx) => {
+      await lockDsvDriverAccount(tx, candidate.id);
+      const now = new Date();
+      const account = await tx.driverAccount.findUnique({ where: { id: candidate.id } });
+      const pinMatches = account === null || account.pinSalt === null || account.pinHash === null
+        ? await verifyPin(input.pin, DUMMY_PIN_SALT, DUMMY_PIN_HASH)
+        : await verifyPin(input.pin, account.pinSalt, account.pinHash);
+      const isLocked = account?.pinLockedUntil instanceof Date && account.pinLockedUntil.getTime() > now.getTime();
+
+      if (account === null || account.status !== 'ACTIVE' || isLocked || !pinMatches) {
+        if (account !== null && account.status === 'ACTIVE' && !isLocked && !pinMatches) {
+          const failedAttempt = await tx.driverAccount.update({
+            where: { id: account.id },
+            data: { failedPinAttempts: { increment: 1 } },
+            select: { failedPinAttempts: true }
+          });
+          if (failedAttempt.failedPinAttempts >= MAX_FAILED_PIN_ATTEMPTS) {
+            await tx.driverAccount.update({
+              where: { id: account.id },
+              data: { pinLockedUntil: new Date(now.getTime() + PIN_LOCK_MINUTES * 60 * 1000) }
+            });
+          }
+        }
+        return null;
+      }
+
+      await tx.driverAccount.update({
+        where: { id: account.id },
+        data: { failedPinAttempts: 0, pinLockedUntil: null }
+      });
+      return this.createAccountSession(account.id, account.tokenVersion, tx);
     });
-    return this.createAccountSession(account.id, account.tokenVersion);
+    if (session === null) {
+      throw new Error('Invalid phone or PIN');
+    }
+    return session;
   }
 
   async verifyInvite(input: VerifyInviteInput): Promise<DriverAccountSessionInfo> {
@@ -214,10 +227,14 @@ export class PrismaDriverAuthRepository {
     return this.createAccountSession(account.id, account.tokenVersion);
   }
 
-  private async createAccountSession(accountId: string, tokenVersion: number): Promise<DriverAccountSessionInfo> {
+  private async createAccountSession(
+    accountId: string,
+    tokenVersion: number,
+    client: Pick<Prisma.TransactionClient, 'driverAccountSession'> = this.prisma
+  ): Promise<DriverAccountSessionInfo> {
     const refreshToken = randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    await this.prisma.driverAccountSession.create({
+    await client.driverAccountSession.create({
       data: {
         accountId,
         expiresAt,

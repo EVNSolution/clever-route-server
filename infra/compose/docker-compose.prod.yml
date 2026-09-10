@@ -47,6 +47,7 @@ services:
       - ../../apps/delivery-api/.env
     environment:
       NODE_ENV: production
+      CLEVER_TRUST_CADDY_PROXY: "true"
       PORT: 3000
     restart: unless-stopped
     logging:

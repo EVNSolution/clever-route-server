@@ -7,6 +7,7 @@ import {
   DsvDriverAuthRefreshError,
   type DsvDriverAuthRepository,
 } from '../src/modules/dsv/dsv-driver-auth.repository.js';
+import type { DsvDriverPasswordResetService } from '../src/modules/dsv/dsv-driver-password-reset.service.js';
 import { verifyDriverAccountToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const session = {
@@ -25,6 +26,139 @@ const session = {
 };
 
 describe('DSV Driver app auth routes', () => {
+  test('validates and completes an account-neutral administrator reset link contract', async () => {
+    const token = 'A'.repeat(43);
+    const password = 'NewStrongPassw0rd!';
+    const privateQueryValues = ['query-token', 'query-password', 'query-login', 'query-name', '01099998888'];
+    const logLines: string[] = [];
+    const passwordResetService = {
+      complete: vi.fn<DsvDriverPasswordResetService['complete']>(() => Promise.resolve()),
+      issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
+      validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(({ token: candidate }) => Promise.resolve(
+        candidate === token
+          ? { expiresAt: new Date('2026-09-10T06:30:00.000Z'), method: 'ADMIN_LINK' }
+          : null,
+      )),
+    };
+    const app = await buildApp({
+      dsvDriverAuth: {
+        jwtSecret: 'test-jwt-secret',
+        passwordResetService,
+        repository: {} as never,
+      },
+      logger: { level: 'info', stream: { write: (line: string) => logLines.push(line) } },
+    });
+
+    try {
+      const malformed = await app.inject({
+        method: 'POST',
+        payload: { token: 'short' },
+        url: '/api/dsv/driver/auth/password-reset/validate',
+      });
+      const malformedJson = await app.inject({
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+        payload: '{"token":',
+        url: `/api/dsv/driver/auth/password-reset/validate?token=${privateQueryValues[0]}&password=${privateQueryValues[1]}&loginId=${privateQueryValues[2]}&name=${privateQueryValues[3]}&phone=${privateQueryValues[4]}`,
+      });
+      const unknown = await app.inject({
+        method: 'POST',
+        payload: { token: 'B'.repeat(43) },
+        url: '/api/dsv/driver/auth/password-reset/validate',
+      });
+      const valid = await app.inject({
+        method: 'POST',
+        payload: { token },
+        url: `/api/dsv/driver/auth/password-reset/validate?token=${privateQueryValues[0]}&password=${privateQueryValues[1]}&loginId=${privateQueryValues[2]}&name=${privateQueryValues[3]}&phone=${privateQueryValues[4]}`,
+      });
+      const completed = await app.inject({
+        method: 'POST',
+        payload: { password, token },
+        url: `/api/dsv/driver/auth/password-reset/complete?token=${privateQueryValues[0]}&password=${privateQueryValues[1]}&loginId=${privateQueryValues[2]}&name=${privateQueryValues[3]}&phone=${privateQueryValues[4]}`,
+      });
+
+      expect(malformed.statusCode).toBe(401);
+      expect(malformedJson.statusCode).toBe(400);
+      expect(malformedJson.json()).toMatchObject({ error: { code: 'INVALID_JSON' } });
+      expect(unknown.statusCode).toBe(401);
+      expect(malformed.json()).toEqual(unknown.json());
+      expect(valid.statusCode).toBe(200);
+      expect(valid.json()).toEqual({
+        data: { expiresAt: '2026-09-10T06:30:00.000Z', method: 'ADMIN_LINK', valid: true },
+        error: null,
+      });
+      expect(valid.body).not.toMatch(/account|login|name|phone/iu);
+      expect(completed.statusCode).toBe(200);
+      expect(passwordResetService.complete).toHaveBeenCalledTimes(1);
+      const completeInput = passwordResetService.complete.mock.calls[0]?.[0];
+      expect(completeInput).toMatchObject({
+        password,
+        token,
+      });
+      expect(completeInput?.requestId).toEqual(expect.any(String));
+      const serializedLogs = logLines.join('\n');
+      for (const privateValue of [token, 'B'.repeat(43), password, ...privateQueryValues]) {
+        expect(serializedLogs).not.toContain(privateValue);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rate-limits public password reset token probes', async () => {
+    const passwordResetService = {
+      complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
+      validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(() => Promise.resolve(null)),
+    };
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', passwordResetService, repository: {} as never },
+    });
+
+    try {
+      const responses = [];
+      for (let attempt = 0; attempt < 21; attempt += 1) {
+        responses.push(await app.inject({
+          method: 'POST',
+          payload: { token: 'B'.repeat(43) },
+          url: '/api/dsv/driver/auth/password-reset/validate',
+        }));
+      }
+      expect(responses.slice(0, 20).every(({ statusCode }) => statusCode === 401)).toBe(true);
+      expect(responses[20]?.statusCode).toBe(429);
+      expect(passwordResetService.validateLink).toHaveBeenCalledTimes(20);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rate-limits public password reset completion attempts', async () => {
+    const passwordResetService = {
+      complete: vi.fn<DsvDriverPasswordResetService['complete']>(() => Promise.resolve()),
+      issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
+      validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
+    };
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', passwordResetService, repository: {} as never },
+    });
+
+    try {
+      const responses = [];
+      for (let attempt = 0; attempt < 11; attempt += 1) {
+        responses.push(await app.inject({
+          method: 'POST',
+          payload: { password: 'NewStrongPassw0rd!', token: 'C'.repeat(43) },
+          url: '/api/dsv/driver/auth/password-reset/complete',
+        }));
+      }
+      expect(responses.slice(0, 10).every(({ statusCode }) => statusCode === 200)).toBe(true);
+      expect(responses[10]?.statusCode).toBe(429);
+      expect(passwordResetService.complete).toHaveBeenCalledTimes(10);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('redacts caught DSV auth errors even when caller serializers request raw errors', async () => {
     const privateMessage = 'password=dsv-secret dsv@example.invalid +82 10 9000 0001 71 DSV Road';
     const logLines: string[] = [];
@@ -56,6 +190,48 @@ describe('DSV Driver app auth routes', () => {
       expect(serialized).not.toContain(privateMessage);
       expect(serialized).not.toContain('dsv-secret');
       expect(serialized).not.toContain('dsv@example.invalid');
+      expect(serialized).not.toContain('stack');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('logs unexpected reset failures through the redacted error serializer', async () => {
+    const privateMessage = `token=${'Z'.repeat(43)} password=PrivatePassw0rd! loginId=driver.reset name=PrivateDriver driver.reset@example.invalid +82 10 9000 0001`;
+    const logLines: string[] = [];
+    const passwordResetService = {
+      complete: vi.fn<DsvDriverPasswordResetService['complete']>(() => Promise.reject(new Error(privateMessage))),
+      issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
+      validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
+    };
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', passwordResetService, repository: {} as never },
+      logger: {
+        level: 'info',
+        serializers: {
+          err: () => ({ message: privateMessage, stack: privateMessage, type: 'RawError' }),
+          error: () => ({ message: privateMessage, stack: privateMessage }),
+        },
+        stream: { write: (line: string) => logLines.push(line) },
+      },
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { password: 'NewStrongPassw0rd!', token: 'Z'.repeat(43) },
+        url: `/api/dsv/driver/auth/password-reset/complete?token=${'Y'.repeat(43)}&password=query-password&loginId=query-login&name=query-name&phone=01099998888`,
+      });
+
+      expect(response.statusCode).toBe(500);
+      const serialized = logLines.join('\n');
+      expect(serialized).toContain('errorCode');
+      expect(serialized).not.toContain(privateMessage);
+      expect(serialized).not.toContain('driver.reset@example.invalid');
+      expect(serialized).not.toContain('query-password');
+      expect(serialized).not.toContain('query-login');
+      expect(serialized).not.toContain('query-name');
+      expect(serialized).not.toContain('01099998888');
       expect(serialized).not.toContain('stack');
     } finally {
       await app.close();

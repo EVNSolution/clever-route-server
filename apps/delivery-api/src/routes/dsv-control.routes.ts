@@ -68,6 +68,10 @@ import {
   DsvDriverAccountLinkCandidateError,
   type DsvDriverAccountLinkService,
 } from '../modules/dsv/dsv-driver-account-link.service.js';
+import {
+  DsvDriverPasswordResetError,
+  type DsvDriverPasswordResetService,
+} from '../modules/dsv/dsv-driver-password-reset.service.js';
 import type { DsvStoreReviewAccess } from '../modules/dsv/dsv-store-review-access.js';
 import {
   DsvForbiddenError,
@@ -178,6 +182,7 @@ export type DsvControlDependencies = {
   customerAccountService?: DsvCustomerAccountService;
   dispatchImportService: DsvDispatchImportService;
   driverAccountLinkService?: DsvDriverAccountLinkService;
+  driverPasswordResetService?: DsvDriverPasswordResetService;
   driverInquiryRepository?: DsvAdminInquiryRepository;
   geocodingService?: Pick<GeocodingService, 'geocode'>;
   manualEmailService: DsvManualEmailService;
@@ -745,6 +750,48 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         throw error;
       }
     }, ['dsv:accounts:write', 'dsv:resources:write']));
+
+  app.post(`${apiRoot}/drivers/:driverId/password-reset-link`, {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-driver-password-reset-issue',
+        max: 10,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal }) => {
+      const driverId = readUuidParam(request, 'driverId');
+      const body = objectBody(request.body);
+      if (driverId === null || body === null || !hasOnlyKeys(body, [])) {
+        return sendError(reply, 400, 'BAD_REQUEST', 'Invalid driver password reset request');
+      }
+      if (dependencies.driverPasswordResetService === undefined) {
+        return sendError(reply, 503, 'DRIVER_PASSWORD_RESET_UNAVAILABLE', '배송원 비밀번호 초기화 기능을 사용할 수 없습니다.');
+      }
+      try {
+        const reset = await dependencies.driverPasswordResetService.issueLink({
+          actorId: actor,
+          driverId,
+          requestId: request.id,
+          shopId: principal.shopId,
+        });
+        return reset === null
+          ? sendError(reply, 404, 'DRIVER_ACCOUNT_NOT_FOUND', '초기화할 배송원 계정을 찾을 수 없습니다.')
+          : sendData(reply, {
+              passwordReset: {
+                expiresAt: reset.expiresAt.toISOString(),
+                method: reset.method,
+                setupUrl: reset.setupUrl,
+              },
+            }, 201);
+      } catch (error) {
+        if (error instanceof DsvDriverPasswordResetError && error.code === 'RATE_LIMITED') {
+          return sendError(reply, 429, 'RATE_LIMITED', '잠시 후 다시 초기화 링크를 발급해 주세요.');
+        }
+        throw error;
+      }
+    }, ['dsv:accounts:write', 'dsv:resources:read']));
 
   app.post(`${apiRoot}/drivers`, async (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {

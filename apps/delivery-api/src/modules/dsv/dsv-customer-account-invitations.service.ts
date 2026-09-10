@@ -5,6 +5,7 @@ import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { AdminStoreSettings } from '../commerce/admin-store-settings.service.js';
 import { normalizeDsvOperationalSettings } from './dsv-operational-settings.js';
 import type { DsvManualEmailService } from './dsv-manual-email.service.js';
+import { loadDsvWebPublicOrigin } from './dsv-web-public-origin.js';
 
 export type DsvCustomerAccountInvitePurpose = 'SIGNUP' | 'PASSWORD_RESET';
 export type DsvCustomerAccountApiStatus = 'INVITED' | 'ACTIVE' | 'DISABLED' | 'EXPIRED';
@@ -528,18 +529,7 @@ export class DsvCustomerAccountServiceError extends Error {
 }
 
 export function loadDsvCustomerAccountWebPublicOrigin(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  if (normalized === undefined || normalized === '') return undefined;
-  let url: URL;
-  try {
-    url = new URL(normalized);
-  } catch {
-    throw new Error('CLEVER_DSV_WEB_PUBLIC_URL must be an http(s) origin');
-  }
-  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username !== '' || url.password !== '' || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
-    throw new Error('CLEVER_DSV_WEB_PUBLIC_URL must be an http(s) origin');
-  }
-  return url.origin;
+  return loadDsvWebPublicOrigin(value);
 }
 
 export function createCustomerSessionSubject(input: { accountId: string; activeSessionId: string }): string {
