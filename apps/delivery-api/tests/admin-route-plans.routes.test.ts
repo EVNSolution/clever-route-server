@@ -4,6 +4,7 @@ import { buildApp } from '../src/app.js';
 import { RouteOptimizationJobActiveError } from '../src/modules/route-plans/route-optimization-job.types.js';
 import {
   RoutePlanBatchInvalidError,
+  RoutePlanDeleteBlockedError,
   RoutePlanGeometryRefreshFailedError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanPublishInvalidError,
@@ -1464,6 +1465,61 @@ describe('Admin route plan routes', () => {
         error: {
           code: 'ROUTE_ORDER_ALREADY_PLANNED',
           message: '이미 다른 Route에 등록된 주문이 포함되어 있어 Route stops를 저장하지 않았습니다. 아직 Route에 없는 주문만 추가해주세요.'
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    'In-progress routes cannot be deleted.',
+    'Route has retained delivery records and cannot be deleted yet.'
+  ])('returns a conflict with the route deletion block reason: %s', async (message) => {
+    const { dependencies, deleteRoutePlan } = createDependencyHarness();
+    deleteRoutePlan.mockRejectedValueOnce(new RoutePlanDeleteBlockedError(message));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'DELETE',
+        url: '/admin/route-plans/route-plan-id'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ROUTE_DELETE_BLOCKED', message }
+      });
+      expect(deleteRoutePlan).toHaveBeenCalledExactlyOnceWith({
+        appId: 'clever',
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('keeps unexpected route deletion failures as internal server errors', async () => {
+    const { dependencies, deleteRoutePlan } = createDependencyHarness();
+    deleteRoutePlan.mockRejectedValueOnce(new Error('Private database failure detail'));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'DELETE',
+        url: '/admin/route-plans/route-plan-id'
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'An internal server error occurred.'
         }
       });
     } finally {
