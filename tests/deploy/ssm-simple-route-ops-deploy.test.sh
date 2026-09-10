@@ -13,7 +13,11 @@ trap cleanup EXIT
 python3 - "$params_path" "$shopify_params_path" "$proof_ready_contract_sha" <<'PY'
 import json
 import pathlib
+import re
+import shlex
+import subprocess
 import sys
+import tempfile
 
 path = pathlib.Path(sys.argv[1])
 shopify_path = pathlib.Path(sys.argv[2])
@@ -21,6 +25,7 @@ proof_ready_contract_sha = sys.argv[3]
 payload = json.loads(path.read_text())
 command = payload['commands'][0]
 shopify_command = json.loads(shopify_path.read_text())['commands'][0]
+host_script = shlex.split(command)[2]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
 workflow = pathlib.Path('.github/workflows/route-ops-operations.yml').read_text()
 ci_workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
@@ -36,6 +41,41 @@ forward_mutation_snippets = [
     'up --no-build --force-recreate route-ops-web-static',
     'up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api',
 ]
+
+def run_rendered_presence_check(variable, env_text):
+    pattern = re.compile(
+        rf'{variable}="\$\(awk -F= \'([^\']+)\' apps/delivery-api/\.env \| tail -n 1\)"'
+    )
+    match = pattern.search(host_script)
+    if match is None:
+        raise SystemExit(f'missing rendered awk presence check for {variable}')
+    with tempfile.TemporaryDirectory() as directory:
+        env_path = pathlib.Path(directory) / 'runtime.env'
+        env_path.write_text(env_text)
+        result = subprocess.run(
+            ['awk', '-F=', match.group(1), str(env_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    return result.stdout.strip()
+
+presence_cases = {
+    'proof_scanner_url_configured': 'DRIVER_PROOF_MEDIA_SCANNER_URL',
+    'proof_scan_monitor_url_configured': 'DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL',
+}
+presence_results = {}
+for rendered_variable, env_key in presence_cases.items():
+    actual = {
+        'url_with_equals': run_rendered_presence_check(rendered_variable, f'{env_key}=https://scanner.example.test/scan?token=a=b\n'),
+        'empty': run_rendered_presence_check(rendered_variable, f'{env_key}=\n'),
+        'missing': run_rendered_presence_check(rendered_variable, 'UNRELATED=value\n'),
+    }
+    expected = {'url_with_equals': 'true', 'empty': 'false', 'missing': ''}
+    if actual != expected:
+        raise SystemExit(f'rendered awk presence check failed for {rendered_variable}: {actual}')
+    presence_results[rendered_variable] = actual
+
 checks = {
     'proof_iam_missing_rollback_manifest_blocks_candidate_fallback': '[ -f .deploy/current-image.env ] ||' in command and command.index('verified rollback manifest is missing') < command.index('base64 -d > "$COMPOSE_FILE"') and command.index('verified rollback manifest is missing') < command.index('cp .deploy/simple-candidate-image.env .deploy/simple-rollback-image.env'),
     'proof_iam_rollback_contract_before_mutation': all(value in command for value in [
@@ -151,5 +191,9 @@ checks = {
 missing = [name for name, ok in checks.items() if not ok]
 if missing:
     raise SystemExit(f'missing expected simple deploy guard(s): {missing}')
-print('{"ok":true,"wrapper":"scripts/ssm-simple-route-ops-deploy.sh"}')
+print(json.dumps({
+    'awkPresenceCases': presence_results,
+    'ok': True,
+    'wrapper': 'scripts/ssm-simple-route-ops-deploy.sh',
+}, sort_keys=True))
 PY
