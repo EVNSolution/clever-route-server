@@ -11,6 +11,9 @@ DSV 전용 Driver 앱은 기존 CLEVER Routes 앱의 Shopify 초대 및 전화�
 | `POST` | `/api/dsv/driver/auth/register` | 계정 생성, 정확히 일치하는 DSV 배송원 연결, 30일 갱신 세션 발급 |
 | `POST` | `/api/dsv/driver/auth/login` | 계정 로그인, 새로 등록된 일치 배송원 재탐색, 세션 발급 |
 | `POST` | `/api/dsv/driver/auth/refresh` | 유효한 refresh token으로 비밀번호 재입력 없이 15분 access token 갱신 |
+| `POST` | `/api/dsv/driver/auth/password-reset/validate` | 관리자 발급형 일회용 링크의 유효기간과 방식 확인 |
+| `POST` | `/api/dsv/driver/auth/password-reset/complete` | 일회용 토큰을 소비하고 새 비밀번호 설정 |
+| `POST` | `/api/dsv/drivers/{driverId}/password-reset-link` | DSV 관리자가 30분짜리 일회용 초기화 링크 발급 |
 
 일반 로그인 ID는 소문자 영문, 숫자, `.`, `_`, `-`만 허용하며 4~40자다. 대신 일반적인
 이메일 주소 형식도 최대 254자까지 로그인 ID로 사용할 수 있다. 이메일 주소는 공백, 다중
@@ -52,10 +55,40 @@ DSV 전용 Driver 앱은 기존 CLEVER Routes 앱의 Shopify 초대 및 전화�
 - 모바일 앱은 비밀번호가 아닌 refresh token과 세션 표시 정보만 OS 보안 저장소에 보관한다.
 - 로그아웃 시 기기의 저장 세션을 삭제하고, 갱신 세션이 폐기·만료되면 다시 로그인한다.
 
+## 비밀번호 초기화
+
+현재 승인된 SMS 발송·전화번호 소유권 인증 수단이 없으므로 이름·전화번호 조회나 OTP로
+비밀번호를 변경하지 않는다. DSV 관리자 세션과 CSRF 토큰, `dsv:accounts:write` 및
+`dsv:resources:read` 권한을 가진 운영자가 해당 사업장의 `driverId`로 링크를 발급한다.
+서버는 계정 존재 여부를 확인하는 공개 요청 API를 제공하지 않는다.
+
+발급 응답의 `setupUrl`은 `/driver/password-reset#token=...` 형식이다. 원문 토큰은 URL
+fragment에만 반환하고 DB에는 SHA-256 해시만 저장한다. 링크 유효시간은 30분이며 같은
+DriverAccount에 새 링크를 발급하면 기존 미사용 링크는 폐기된다. 계정별 발급은 15분에
+3회로 제한한다. 공개 검증 API는 클라이언트별 15분에 20회, 완료 API는 10회로 제한한다.
+
+검증 응답은 `valid`, `method=ADMIN_LINK`, `expiresAt`만 반환한다. 로그인 ID, 이름,
+전화번호, 계정 ID와 배송원 연결 정보는 반환하지 않는다. 잘못된 형식, 존재하지 않는 토큰,
+만료·폐기·사용된 토큰은 모두 같은 `401 INVALID_RESET_LINK` 응답을 사용한다.
+
+완료 요청은 `token`과 `password`만 받는다. 비밀번호는 12자 이상 128자 이하이며
+영문 대문자·소문자·숫자·특수문자를 각각 포함해야 하고 현재 비밀번호 재사용은 거부한다.
+완료 트랜잭션은 토큰을 한 번만 소비하고 비밀번호 hash/salt를 교체하며 로그인 실패 횟수와
+잠금을 해제한다. DriverAccount `tokenVersion`을 증가시키고 모든 DriverAccount refresh
+session을 폐기한다. 연결된 구형 Driver session도 폐기하고 해당 Driver tokenVersion을
+증가시켜 기존 access token을 무효화한다.
+
+이 과정은 `Driver.accountId`, `RoutePlan.driverId`, 차량 배정 행과 DSV 배송원 프로필을
+변경하지 않는다. 발급·완료 감사 이벤트에는 계정 식별 UUID, 요청 ID, 방식만 기록하며 토큰,
+로그인 ID, 이름, 전화번호와 비밀번호는 기록하지 않는다.
+
 ## 운영 활성화
 
 인증 라우트는 `CLEVER_DSV_DRIVER_AUTH_ENABLED=true`일 때만 등록된다. 이 값이 켜진
 환경에서는 `JWT_SECRET`이 누락되거나 32자보다 짧으면 서버가 기동을 거부한다.
+초기화 링크를 사용하려면 `CLEVER_DSV_WEB_PUBLIC_URL`을 경로 없는 HTTPS origin으로
+설정한다. 개발 환경에서만 `http://localhost`, `http://127.0.0.1`, `http://[::1]` origin을
+허용한다. 값이 없으면 로그인·가입은 유지되지만 초기화 API는 `503`을 반환한다.
 
 과거 `DsvDriverAccountSignupInvite` 테이블과 migration은 감사 이력 보존을 위해 유지하지만,
 현행 서버는 토큰을 발급·검증·소비하지 않는다.

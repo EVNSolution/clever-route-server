@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import {
   DsvDriverAuthConflictError,
@@ -14,11 +14,16 @@ import {
 import { signDriverAccountToken } from '../modules/driver/driver-token-verifier.js';
 import { registerDsvDriverInquiryRoutes } from './dsv-driver-inquiries.routes.js';
 import type { DsvDriverInquiryRepository } from '../modules/dsv/dsv-driver-inquiry.repository.js';
+import {
+  DsvDriverPasswordResetError,
+  type DsvDriverPasswordResetService,
+} from '../modules/dsv/dsv-driver-password-reset.service.js';
 
 export type DsvDriverAuthDependencies = {
   jwtSecret: string;
   repository: DsvDriverAuthRepository;
   inquiryRepository?: DsvDriverInquiryRepository;
+  passwordResetService?: DsvDriverPasswordResetService;
 };
 
 const DRIVER_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
@@ -132,6 +137,73 @@ export function registerDsvDriverAuthRoutes(
       });
     }
   });
+
+  app.post<{ Body: unknown }>('/api/dsv/driver/auth/password-reset/validate', {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-driver-password-reset-validate',
+        max: 20,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
+    const input = readPasswordResetTokenInput(request.body);
+    if (input === null) return passwordResetTokenError(reply);
+    if (dependencies.passwordResetService === undefined) {
+      return reply.code(503).send({
+        data: null,
+        error: { code: 'PASSWORD_RESET_UNAVAILABLE', message: 'Password reset is unavailable' },
+      });
+    }
+    const reset = await dependencies.passwordResetService.validateLink(input);
+    return reset === null
+      ? passwordResetTokenError(reply)
+      : reply.code(200).send({
+          data: { expiresAt: reset.expiresAt.toISOString(), method: reset.method, valid: true },
+          error: null,
+        });
+  });
+
+  app.post<{ Body: unknown }>('/api/dsv/driver/auth/password-reset/complete', {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-driver-password-reset-complete',
+        max: 10,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
+    const input = readPasswordResetCompleteInput(request.body);
+    if (input === null) {
+      return reply.code(400).send({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid password reset payload' },
+      });
+    }
+    if (dependencies.passwordResetService === undefined) {
+      return reply.code(503).send({
+        data: null,
+        error: { code: 'PASSWORD_RESET_UNAVAILABLE', message: 'Password reset is unavailable' },
+      });
+    }
+    try {
+      await dependencies.passwordResetService.complete({ ...input, requestId: request.id });
+      return reply.code(200).send({ data: { completed: true }, error: null });
+    } catch (error) {
+      if (error instanceof DsvDriverPasswordResetError) {
+        if (error.code === 'INVALID_TOKEN') return passwordResetTokenError(reply);
+        return reply.code(error.code === 'PASSWORD_REUSED' ? 409 : 400).send({
+          data: null,
+          error: { code: error.code, message: error.message },
+        });
+      }
+      request.log.error({ err: error }, 'DSV driver password reset failed');
+      return reply.code(500).send({
+        data: null,
+        error: { code: 'INTERNAL_SERVER_ERROR', message: 'Password reset could not be completed' },
+      });
+    }
+  });
 }
 
 function buildSessionResponse(session: DsvDriverAuthSession, secret: string) {
@@ -196,6 +268,30 @@ function readRefreshInput(value: unknown) {
   if (object === null || !hasOnlyKeys(object, ['refreshToken'])) return null;
   const refreshToken = typeof object.refreshToken === 'string' ? object.refreshToken.trim() : '';
   return refreshToken.length > 0 ? { refreshToken } : null;
+}
+
+function readPasswordResetTokenInput(value: unknown): { token: string } | null {
+  const object = objectOrNull(value);
+  if (object === null || !hasOnlyKeys(object, ['token'])) return null;
+  const token = typeof object.token === 'string' ? object.token.trim() : '';
+  return token.length === 43 ? { token } : null;
+}
+
+function readPasswordResetCompleteInput(value: unknown): { password: string; token: string } | null {
+  const object = objectOrNull(value);
+  if (object === null || !hasOnlyKeys(object, ['password', 'token'])) return null;
+  const password = typeof object.password === 'string' ? object.password : '';
+  const token = typeof object.token === 'string' ? object.token.trim() : '';
+  return password.length >= 12 && password.length <= 128 && token.length === 43
+    ? { password, token }
+    : null;
+}
+
+function passwordResetTokenError(reply: FastifyReply) {
+  return reply.code(401).send({
+    data: null,
+    error: { code: 'INVALID_RESET_LINK', message: 'Password reset link is invalid or expired' },
+  });
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {

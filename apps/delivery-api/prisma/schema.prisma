@@ -468,6 +468,7 @@ model Shop {
   uvisVehicleTrailMaterializations     UvisVehicleTrailMaterialization[]
   uvisTelemetryPollState               UvisTelemetryPollState?
   dsvDriverAccountSignupInvites        DsvDriverAccountSignupInvite[]
+  driverAccountPasswordResetLinks      DriverAccountPasswordResetLink[]
   dsvCustomerAccountInvites            DsvCustomerAccountInvite[]
   dsvAdminAccountInvites               DsvAdminAccountInvite[]
   customers                            Customer[]
@@ -1716,6 +1717,7 @@ model DriverAccount {
   deletionRequest                DriverAccountDeletionRequest?
   dsvInquiries                   DsvDriverInquiry[]
   pushTokens                     DriverPushToken[]
+  passwordResetLinks             DriverAccountPasswordResetLink[]
 
   @@index([status])
   @@map("driver_accounts")
@@ -1748,6 +1750,24 @@ model DriverAccountSession {
 
   @@index([accountId, expiresAt])
   @@map("driver_account_sessions")
+}
+
+model DriverAccountPasswordResetLink {
+  id         String        @id @default(uuid()) @db.Uuid
+  accountId  String        @db.Uuid
+  account    DriverAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  shopId     String        @db.Uuid
+  shop       Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  tokenHash  String        @unique @db.Text
+  expiresAt  DateTime      @db.Timestamptz(6)
+  consumedAt DateTime?     @db.Timestamptz(6)
+  revokedAt  DateTime?     @db.Timestamptz(6)
+  createdBy  String?       @db.Uuid
+  createdAt  DateTime      @default(now()) @db.Timestamptz(6)
+
+  @@index([accountId, createdAt])
+  @@index([accountId, expiresAt])
+  @@map("driver_account_password_reset_links")
 }
 
 model DriverSession {
