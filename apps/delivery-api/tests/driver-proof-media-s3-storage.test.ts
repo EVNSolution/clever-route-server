@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
-import { createS3DriverProofMediaStorage } from '../src/modules/driver/driver-proof-media-s3-storage.js';
+import {
+  createEc2IamRoleCredentialsProvider,
+  createS3DriverProofMediaStorage
+} from '../src/modules/driver/driver-proof-media-s3-storage.js';
 
 const awsExampleAccessKeyId = 'AKIAIOSFODNN7EXAMPLE';
 const awsExampleSecretAccessKey = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
@@ -9,13 +12,15 @@ const awsExampleSecretAccessKey = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
 describe('createS3DriverProofMediaStorage', () => {
   test('creates AWS-compatible SigV4 presigned GET URLs for proof media read access', async () => {
     const storage = createS3DriverProofMediaStorage({
-      accessKeyId: awsExampleAccessKeyId,
       bucket: 'examplebucket',
+      credentials: {
+        accessKeyId: awsExampleAccessKeyId,
+        secretAccessKey: awsExampleSecretAccessKey
+      },
       endpoint: 'https://s3.amazonaws.com',
       forcePathStyle: false,
       now: () => new Date('2013-05-24T00:00:00.000Z'),
-      region: 'us-east-1',
-      secretAccessKey: awsExampleSecretAccessKey
+      region: 'us-east-1'
     });
 
     const result = await storage.createReadAccess?.({
@@ -36,14 +41,13 @@ describe('createS3DriverProofMediaStorage', () => {
       return Promise.resolve(new Response('', { status: 200 }));
     });
     const storage = createS3DriverProofMediaStorage({
-      accessKeyId: 'AKIA_TEST',
       bucket: 'clever-proof-media',
+      credentials: { accessKeyId: 'AKIA_TEST', secretAccessKey: 'secret-test-key' },
       endpoint: 'https://objects.example.test',
       fetch: fetchMock,
       forcePathStyle: true,
       now: () => new Date('2026-05-12T10:00:00.000Z'),
-      region: 'ap-northeast-2',
-      secretAccessKey: 'secret-test-key'
+      region: 'ap-northeast-2'
     });
     const fileBytes = Buffer.from('synthetic-proof-photo');
 
@@ -76,14 +80,13 @@ describe('createS3DriverProofMediaStorage', () => {
       return Promise.resolve(new Response('', { status: 404 }));
     });
     const storage = createS3DriverProofMediaStorage({
-      accessKeyId: 'AKIA_TEST',
       bucket: 'clever-proof-media',
+      credentials: { accessKeyId: 'AKIA_TEST', secretAccessKey: 'secret-test-key' },
       endpoint: 'https://objects.example.test',
       fetch: fetchMock,
       forcePathStyle: true,
       now: () => new Date('2026-05-12T10:00:00.000Z'),
-      region: 'ap-northeast-2',
-      secretAccessKey: 'secret-test-key'
+      region: 'ap-northeast-2'
     });
 
     await expect(storage.remove(
@@ -91,5 +94,44 @@ describe('createS3DriverProofMediaStorage', () => {
       new AbortController().signal
     )).resolves.toBe('missing');
     expect(methods).toEqual(['DELETE']);
+  });
+
+  test('loads, caches, and refreshes temporary EC2 IAM role credentials through IMDSv2', async () => {
+    let now = new Date('2026-09-10T00:00:00.000Z');
+    let credentialLoad = 0;
+    const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+      const href = String(url);
+      if (href.endsWith('/latest/api/token')) {
+        credentialLoad += 1;
+        expect(init?.method).toBe('PUT');
+        expect(init?.redirect).toBe('error');
+        expect((init?.headers as Record<string, string>)['X-aws-ec2-metadata-token-ttl-seconds']).toBe('21600');
+        return Promise.resolve(new Response(`imds-token-${credentialLoad}`, { status: 200 }));
+      }
+      expect((init?.headers as Record<string, string>)['X-aws-ec2-metadata-token'])
+        .toBe(`imds-token-${credentialLoad}`);
+      if (href.endsWith('/iam/security-credentials/')) {
+        return Promise.resolve(new Response('clever-route-proof-media', { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        AccessKeyId: `role-access-${credentialLoad}`,
+        Code: 'Success',
+        Expiration: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
+        SecretAccessKey: `role-secret-${credentialLoad}`,
+        Token: `role-session-${credentialLoad}`
+      }), { status: 200 }));
+    });
+    const provider = createEc2IamRoleCredentialsProvider({ fetch: fetchMock, now: () => now });
+
+    await expect(provider()).resolves.toMatchObject({
+      accessKeyId: 'role-access-1',
+      sessionToken: 'role-session-1'
+    });
+    await expect(provider()).resolves.toMatchObject({ accessKeyId: 'role-access-1' });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    now = new Date('2026-09-10T00:56:00.000Z');
+    await expect(provider()).resolves.toMatchObject({ accessKeyId: 'role-access-2' });
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 });

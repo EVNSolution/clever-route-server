@@ -812,20 +812,34 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         await new Promise((resolve) => setTimeout(resolve, 75));
         expect(assignmentSettled).toBe(false);
         let draftSettled = false;
-        const save = routeGroupingService.saveDraft({
+        const saveInput = {
           groupingId: priorChild.groupingId,
-          mode: 'MANUAL_ORDER',
+          mode: 'MANUAL_ORDER' as const,
           routes: [
             { branchId: null, orderIds: [assignedOrder.id, addedDraftOrder.id, publicDraftOrder.id], routePlanId },
             { branchId: null, orderIds: [], routePlanId: siblingRoutePlanId }
           ],
           shopDomain: 'g002-evidence.invalid'
-        }).finally(() => { draftSettled = true; });
+        };
+        const save = routeGroupingService.saveDraft(saveInput).then(
+          (value) => ({ status: 'fulfilled' as const, value }),
+          (reason: unknown) => ({ status: 'rejected' as const, reason })
+        ).finally(() => { draftSettled = true; });
         await new Promise((resolve) => setTimeout(resolve, 75));
         expect(draftSettled).toBe(false);
         await assignmentGate.query('COMMIT');
         await expect(driverAssignment).resolves.toMatchObject({ routePlan: { driverId: driverB } });
-        await expect(save).resolves.not.toBeNull();
+        const saved = await save;
+        if (saved.status === 'rejected') {
+          expect(saved.reason).toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+          expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(2);
+          expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+            where: { routePlanId, status: 'CURRENT', supersededAt: null }
+          })).id).toBe(savedDraftChild.id);
+          await expect(routeGroupingService.saveDraft(saveInput)).resolves.not.toBeNull();
+        } else {
+          expect(saved.value).not.toBeNull();
+        }
       } finally {
         await assignmentGate.query('ROLLBACK').catch(() => undefined);
         await assignmentGate.end();

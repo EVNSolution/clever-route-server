@@ -13,9 +13,9 @@ The repository writes, removes, and optionally creates read access through a `Dr
 - unset or `local`: local filesystem write/remove under `DRIVER_PROOF_MEDIA_STORAGE_DIR`; suitable for local/dev smoke only and does not expose file URLs
 - `s3`: S3-compatible object storage with SigV4 header authentication for upload/delete and SigV4 presigned GET URLs for short-lived read access
 
-S3 mode requires `DRIVER_PROOF_MEDIA_S3_BUCKET`, `DRIVER_PROOF_MEDIA_S3_REGION`, `DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID`, and `DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY`. `DRIVER_PROOF_MEDIA_S3_ENDPOINT`, `DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE`, and `DRIVER_PROOF_MEDIA_S3_SESSION_TOKEN` are optional for S3-compatible providers, path-style endpoints, and temporary credentials. Keep these values in the runtime secret store, not git. The implementation follows AWS Signature Version 4 canonical request and presigned URL rules and uses a source-controlled test vector from the AWS S3 API reference.
+S3 mode requires `DRIVER_PROOF_MEDIA_S3_BUCKET` and `DRIVER_PROOF_MEDIA_S3_REGION`. `DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER` defaults to and only accepts `ec2-iam-role`; the server retrieves short-lived instance-profile credentials through IMDSv2 and caches them until five minutes before expiry. Static AWS access-key environment variables are unsupported. `DRIVER_PROOF_MEDIA_S3_ENDPOINT` and `DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE` remain optional for S3-compatible endpoints. The implementation follows AWS Signature Version 4 canonical request and presigned URL rules and uses a source-controlled test vector from the AWS S3 API reference.
 
-`DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS` defines the short-lived signed/read access lifetime and defaults to 300 seconds. In S3 mode, the presigned URL lifetime must be within the SigV4 maximum of seven days. `DRIVER_PROOF_MEDIA_RETENTION_DAYS` defines the default proof-media cleanup window for cleanup jobs and defaults to 180 days when unset. Production object storage ownership/IAM policy approval, scanner integration/deployment evidence, and private evidence storage remain hardening work. Do not treat the local filesystem storage path as the final production object-storage design.
+`DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS` defines the short-lived signed/read access lifetime and defaults to 300 seconds. In S3 mode, the presigned URL lifetime must be within the SigV4 maximum of seven days. `DRIVER_PROOF_MEDIA_RETENTION_DAYS` defines the proof-media cleanup window and defaults to 365 days. Production Compose selects S3, enables upload reservations, and does not mount the legacy EBS proof-media directory. The bucket Lifecycle rule in `infra/aws/driver-proof-media-s3-lifecycle.json` also expires the `driver-proof/` prefix after 365 days. Scanner, IAM, bucket, signed-access, and scheduler deployment evidence must still be completed privately before production approval.
 
 JPEG uploads are sanitized before byte persistence: valid EXIF APP1 segments are removed, and returned/stored `sha256` plus `sizeBytes` describe the sanitized bytes. If a `DriverProofMediaScanner` is configured, the scanner receives the sanitized bytes, content type, storage key, and sanitized SHA-256 before any byte write or metadata create. Runtime scanner wiring is selected by `DRIVER_PROOF_MEDIA_SCANNER_BACKEND`: unset/`none` disables scanning, while `http` posts sanitized bytes to `DRIVER_PROOF_MEDIA_SCANNER_URL` with optional `DRIVER_PROOF_MEDIA_SCANNER_BEARER_TOKEN`. The HTTP scanner must return JSON `status: clean` or `status: rejected` with a private reason. If a `DriverProofMediaScanMonitor` is configured, it receives scanner outcome metadata (`clean` or `rejected`), media id, storage key, sanitized SHA-256, content type, scan timestamp, and private rejection reason when applicable; it never receives proof file bytes. Runtime monitor wiring is selected by `DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND`: unset/`none` disables monitoring, while `http` posts sanitized JSON to `DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL` with optional `DRIVER_PROOF_MEDIA_SCAN_MONITOR_BEARER_TOKEN`. A rejected scan aborts persistence and maps to `422 PROOF_MEDIA_REJECTED`. This reduces accidental location/device metadata retention and provides server-side scanner and monitoring integration points, but it is not proof that a production malware scanner, signed access, monitoring backend, or private object storage control is deployed.
 
@@ -79,7 +79,7 @@ Success, when the storage backend supports short-lived read access:
 }
 ```
 
-The access route verifies the same account/route bearer token as upload, resolves the current Store driver reference from the token route assignment, scopes the media row to that route/reference/Store, requires `deletedAt: null`, and only then asks the storage backend to create a short-lived read URL. It does not expose raw bytes, storage keys, other driver media, deleted media, scanner internals, or object-storage provider credentials.
+The access route verifies the same account/route bearer token as upload, resolves the current Store driver reference from the token route assignment, scopes the media row to that route/reference/Store, requires `deletedAt: null`, and only then asks the storage backend to create a short-lived read URL. It does not expose raw bytes, storage keys, other driver media, deleted media, scanner internals, or object-storage provider credentials. DSV administrators use the separately authenticated `/api/dsv/v1/proof-media/:mediaId/access` contract described below.
 
 Missing or invalid bearer tokens return `401`. Invalid media ids return `400`. A bearer-token driver that is not allowed to read the media receives `403` without route/stop details. If the configured storage backend cannot create read access, the route returns `503`:
 
@@ -93,7 +93,7 @@ Missing or invalid bearer tokens return `401`. Invalid media ids return `400`. A
 }
 ```
 
-The default local filesystem backend intentionally does not create public file URLs. S3 mode implements `createReadAccess()` with presigned URLs and keeps signing credentials outside git through runtime environment variables.
+The default local filesystem backend intentionally does not create public file URLs. S3 mode implements `createReadAccess()` with presigned URLs and uses temporary EC2 instance-role credentials obtained through IMDSv2.
 
 ## POST `/driver/proof-media`
 
@@ -121,6 +121,7 @@ Success:
   "data": {
     "kind": "photo",
     "mediaId": "11111111-1111-4111-8111-111111111111",
+    "deliveryStopIds": ["11111111-1111-4111-8111-111111111112", "11111111-1111-4111-8111-111111111113"],
     "storageKey": "driver-proof/example.myshopify.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg",
     "contentType": "image/jpeg",
     "source": "camera",
@@ -179,12 +180,15 @@ Scanner-rejected proof media returns `422` without route/stop details, scanner i
 - MIME type, original filename, storage key, sanitized byte size, sanitized SHA-256 hash
 - upload timestamp and optional future deletion timestamp
 
+The supplied `deliveryStopId` is the compatibility anchor. The server resolves its order destination and links the single media object to every stop for that destination in the same Store and route plan. Callers cannot supply or expand the linked stop set. When the anchor order has no destination id, only the anchor stop is linked.
+
 The repository checks all of the following before writing bytes or metadata:
 
 - the bearer-token `accountId` still owns the token `routePlanId` through its current Store driver reference
 - Store id, Store domain, and driver-reference id are derived from that route assignment
 - the multipart `routePlanId` equals the token route id and remains in an active/assigned route state
 - `deliveryStopId` is a stop in that route plan
+- every derived linked stop belongs to the same Store, route plan, and destination
 - any configured `DriverProofMediaScanner` returns `status: "clean"` for the sanitized bytes
 
 ## Data minimization and retention notes
@@ -195,13 +199,22 @@ The repository checks all of the following before writing bytes or metadata:
 - JPEG EXIF APP1 metadata is stripped before local byte storage and before `sha256` / `sizeBytes` are recorded.
 - The scan hook runs after EXIF stripping and before storage/metadata writes; scan rejection should not leak scanner rule names or signature details to the driver response.
 - The scan monitor hook records clean/rejected scanner outcome metadata without proof file bytes. Private monitoring backends may receive the scanner rejection reason, but public issue/PR/store evidence should use sanitized references only.
-- `PrismaDriverProofMediaRepository.deleteExpiredProofMedia()` selects undeleted metadata older than the configured cutoff, removes stored bytes through the configured storage backend, and marks rows with `deletedAt`.
+- `PrismaDriverProofMediaRepository.deleteExpiredProofMedia()` selects undeleted metadata older than the configured cutoff, removes stored bytes through the configured storage backend, and hard-deletes the media row and its stop links. The sanitized `RetentionJobRun` aggregate remains as cleanup evidence.
 - Stale upload reconciliation atomically claims `PENDING_UPLOAD` as `CLEANING` with a cleanup token before removing bytes. Finalization can change only `PENDING_UPLOAD` to `READY`; if finalization wins, cleanup never removes the object, and if cleanup wins, finalization fails safely. A failed removal retains the fenced `CLEANING` row for lease-expiry retry.
-- Missing local files are treated idempotently and still result in `deletedAt` metadata so repeated cleanup can converge.
+- Missing objects are treated idempotently and still result in media-row deletion so repeated cleanup can converge.
 - The cleanup monitor hook records cleanup run counts and cutoffs in `RetentionJobRun` without media ids, storage keys, coordinates, customer data, or proof bytes.
-- Storage keys are resolved under the configured storage root before deletion; keys that escape the root are rejected before metadata is updated.
-- `src/scripts/cleanup-driver-proof-media.ts` is the operational entry point for manual or scheduled cleanup. The app runtime defaults are explicit in `apps/delivery-api/.env.example`: storage backend `local`, scanner backend `none`, and scan-monitor backend `none`. Route Ops production uses the same adjacent env contract and bind-mounts `/srv/clever-route-server/data/driver-proof-media`; this is a deliberate bounded production target, not accidental object-storage proof.
-- Production bucket/IAM ownership approval, signed URL credential custody/evidence, production HTTP scanner endpoint deployment evidence, production scanner monitoring/alerting endpoint evidence, deployed cleanup scheduler evidence, and private evidence storage remain follow-up hardening items. Do not switch scanner or monitor backends to `http` until the private endpoint, auth, and alert evidence rows are approved.
+- Storage keys are resolved under the configured storage root before deletion; keys that escape the root are rejected before metadata is deleted.
+- `src/scripts/cleanup-driver-proof-media.ts` is the operational entry point for manual or scheduled cleanup. Local development can still select the non-public filesystem backend. Route Ops production Compose selects private S3 and does not bind-mount an EBS proof-media directory.
+- Production bucket/IAM ownership approval, IMDSv2 instance-profile evidence, signed URL evidence, production HTTP scanner deployment evidence, scanner monitoring/alerting evidence, deployed cleanup scheduler evidence, and private evidence storage remain release gates. Follow `docs/deployment/driver-proof-media-s3.md`.
+
+## GET `/api/dsv/v1/proof-media/:mediaId/access`
+
+This DSV administrator endpoint requires a valid DSV web session with
+`dsv:records:read`. It scopes the `READY`, non-deleted media row to the
+administrator's Store and returns metadata, all linked `deliveryStopIds`, a
+five-minute presigned S3 URL, and `expiresAt`. It never returns `storageKey`, raw
+bytes, or AWS credentials. Customer sessions and other Stores cannot use this
+endpoint. Responses use `Cache-Control: private, no-store`.
 
 ## Adjacent APIs
 

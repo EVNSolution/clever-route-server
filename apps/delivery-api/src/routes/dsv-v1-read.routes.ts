@@ -73,6 +73,10 @@ import type { DsvRouteOptimizationSchedulerPort } from '../modules/dsv/dsv-route
 import type { RouteGeometryProvider } from '../modules/route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanService, RoutePlanSummary } from '../modules/route-plans/route-plan.types.js';
 import {
+  DriverProofMediaAccessUnavailableError,
+  DriverProofMediaScopeError,
+} from '../modules/driver/driver-proof-media.types.js';
+import {
   clearAdminWebSessionCookie,
   verifyAdminWebCsrfToken,
   verifyAdminWebSessionFromRequest,
@@ -93,6 +97,24 @@ export type DsvV1SessionResolver = {
   resolve(subject: string): Promise<DsvPrincipal>;
 };
 
+export type DsvV1AdminProofMediaReadService = {
+  createAdminProofMediaReadAccess(input: {
+    mediaId: string;
+    shopId: string;
+  }): Promise<{
+    contentType: string;
+    deliveryStopIds: string[];
+    expiresAt: string;
+    kind: 'photo';
+    mediaId: string;
+    sha256: string;
+    sizeBytes: number;
+    source: 'camera' | 'library';
+    uploadedAt: string;
+    url: string;
+  }>;
+};
+
 export type DsvV1ReadDependencies = {
   cookieName: string;
   mapProfile?: DsvMapProfile;
@@ -107,6 +129,7 @@ export type DsvV1ReadDependencies = {
   driverNotificationRuntime?: DsvDriverNotificationRuntime;
   orderMessageService?: DsvOrderMessageService;
   operationalNotificationService?: DsvOperationalNotificationService;
+  proofMediaService?: DsvV1AdminProofMediaReadService;
   storeReviewAccess: Pick<DsvStoreReviewAccess, 'assertAccessible'>;
   timeConstraintCommandService?: DsvTimeConstraintCommandService;
 };
@@ -284,6 +307,51 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     parseQuery: parseRecordsQuery,
     requiredScopes: ['dsv:records:read'],
   });
+  app.get(`${apiRoot}/proof-media/:mediaId/access`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:records:read']);
+      if (hasUnsupportedQuery(request, [])) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Unsupported query parameter');
+      }
+      if (hasDeclaredRequestBody(request)) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Unsupported request body');
+      }
+      const mediaId = readUuidParam(request, 'mediaId');
+      if (mediaId === null) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid proof media id');
+      }
+      if (dependencies.proofMediaService === undefined) {
+        return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'Proof media read access is not configured');
+      }
+
+      try {
+        const access = await dependencies.proofMediaService.createAdminProofMediaReadAccess({
+          mediaId,
+          shopId: principal.shopId,
+        });
+        return sendV1Data(reply, request, {
+          contentType: access.contentType,
+          deliveryStopIds: access.deliveryStopIds,
+          expiresAt: access.expiresAt,
+          kind: access.kind,
+          mediaId: access.mediaId,
+          sha256: access.sha256,
+          sizeBytes: access.sizeBytes,
+          source: access.source,
+          uploadedAt: access.uploadedAt,
+          url: access.url,
+        });
+      } catch (error) {
+        if (error instanceof DriverProofMediaScopeError) {
+          return sendV1Error(reply, request, 404, 'NOT_FOUND', 'Proof media not found');
+        }
+        if (error instanceof DriverProofMediaAccessUnavailableError) {
+          return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'Proof media read access is unavailable');
+        }
+        throw error;
+      }
+    }));
   registerReadRoute(app, dependencies, 'drivers', {
     allowedQuery: ['cursor', 'limit'],
     handler: async (principal, query) => {
@@ -1498,6 +1566,13 @@ function queryRecord(request: FastifyRequest): Record<string, unknown> {
 
 function isEmptyObjectBody(value: unknown): boolean {
   return value === undefined || (typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0);
+}
+
+function hasDeclaredRequestBody(request: FastifyRequest): boolean {
+  if (!isEmptyObjectBody(request.body)) return true;
+  if (request.headers['transfer-encoding'] !== undefined) return true;
+  const contentLength = request.headers['content-length'];
+  return typeof contentLength === 'string' && contentLength !== '0';
 }
 
 function requireQueryService(dependencies: DsvV1ReadDependencies): DsvV1ReadQueryService {

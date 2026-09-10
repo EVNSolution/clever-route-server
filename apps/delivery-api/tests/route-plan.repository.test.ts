@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Prisma } from '@prisma/client';
 
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import {
@@ -2099,6 +2100,27 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlan.deleteMany).not.toHaveBeenCalled();
   });
 
+  test('maps retained POD foreign-key protection to a route deletion domain error', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanDeleteError: new Prisma.PrismaClientKnownRequestError('retained proof media', {
+        clientVersion: '6.19.3',
+        code: 'P2003',
+        meta: { field_name: 'driver_proof_media_routePlanId_fkey' }
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toMatchObject({
+      code: 'ROUTE_DELETE_BLOCKED',
+      message: 'Route has retained delivery records and cannot be deleted yet.'
+    });
+  });
+
   test('deletes a route generated from a parent grouping', async () => {
     const { prisma } = createPrismaHarness({ routeGroupingChildVersionCount: 1 });
     const repository = new PrismaRoutePlanRepository(
@@ -2333,6 +2355,7 @@ function createPrismaHarness(input: {
   routeGeometryCacheFindUnique?: Record<string, unknown> | null;
   routePlanFindFirst?: Record<string, unknown> | null;
   routePlanProjection?: Record<string, unknown> | null;
+  routePlanDeleteError?: Error;
   routePlansForList?: Array<Record<string, unknown>>;
   routePlanStopFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string; status?: string } | null;
@@ -2595,7 +2618,9 @@ function createPrismaHarness(input: {
           updatedAt: new Date('2026-05-07T12:30:00.000Z')
         })
       ),
-      deleteMany: vi.fn(() => Promise.resolve({ count: 1 }))
+      deleteMany: vi.fn(() => input.routePlanDeleteError === undefined
+        ? Promise.resolve({ count: 1 })
+        : Promise.reject(input.routePlanDeleteError))
     },
     routePlanGeometryCache: {
       deleteMany: vi.fn(() => Promise.resolve({ count: 1 })),

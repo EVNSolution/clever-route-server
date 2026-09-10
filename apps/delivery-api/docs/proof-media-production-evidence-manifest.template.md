@@ -51,11 +51,17 @@ authentic; owner-controlled review remains required.
 | --- | --- | --- | --- | --- |
 | Object storage backend selected as s3 | pending | pending | pending | sanitized config presence only |
 | Bucket ownership approved | pending | pending | pending | do not paste bucket names |
-| IAM least-privilege policy approved | pending | pending | pending | do not paste policy JSON |
-| Credential custody and rotation owner approved | pending | pending | pending | do not paste access keys |
+| IAM least-privilege object policy approved | pending | pending | pending | instance profile role; do not paste policy JSON |
+| IMDSv2 required and container hop limit 2 | pending | pending | pending | sanitized metadata-options evidence only |
+| Static AWS keys absent from application runtime | pending | pending | pending | temporary role credentials only |
+| S3 Block Public Access and Object Ownership approved | pending | pending | pending | do not paste bucket names |
+| Bucket versioning and Object Lock disabled | pending | pending | pending | required for 365-day physical object deletion |
+| S3 Lifecycle expiration is 365 days | pending | pending | pending | `driver-proof/` prefix summary only |
 | Signed PUT/DELETE smoke with synthetic media | pending | pending | pending | sanitized result only |
 | Signed GET read smoke with synthetic media | pending | pending | pending | sanitized result only |
-| Retention window approved | pending | pending | pending | match cleanup schedule |
+| Multi-stop POD linkage smoke with synthetic media | pending | pending | pending | one object; all destination stop ids |
+| Signed GET expiry after five minutes | pending | pending | pending | never store the signed URL in evidence |
+| Retention window approved | pending | pending | pending | 365-day S3 and DB cleanup match |
 
 ## Scanner and monitoring evidence
 
@@ -75,6 +81,8 @@ authentic; owner-controlled review remains required.
 | Scheduler deployment selected | pending | pending | pending | host scheduler evidence |
 | Cleanup command run recorded | pending | pending | pending | sanitized log reference |
 | RetentionJobRun row persisted | pending | pending | pending | no media ids or storage keys |
+| 365-day cutoff boundary passes | pending | pending | pending | immediately before and after cutoff |
+| Failed object deletion converges on retry | pending | pending | pending | synthetic object and sanitized counts |
 | Cleanup logs contain no proof bytes, coordinates, customer data, phone numbers, or storage keys | pending | pending | pending | reviewed privately |
 
 ## Private evidence storage and approvals

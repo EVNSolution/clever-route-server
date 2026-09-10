@@ -1658,10 +1658,10 @@ function recordStopSelect(shopId: string) {
       select: recordEventSelect,
       where: { eventType: { in: [...recordEventAllowlist] }, shopId },
     },
-    driverProofMedia: {
-      orderBy: [{ uploadedAt: 'desc' }, { id: 'desc' }],
-      select: recordProofMediaSelect,
-      where: { shopId, uploadStatus: 'READY' },
+    driverProofMediaLinks: {
+      orderBy: [{ proofMedia: { uploadedAt: 'desc' } }, { proofMediaId: 'desc' }],
+      select: { proofMedia: { select: recordProofMediaSelect } },
+      where: { proofMedia: { shopId, uploadStatus: 'READY' } },
     },
     id: true,
     order: {
@@ -1955,7 +1955,7 @@ function toRecordRow(stop: RecordStopRow): RecordCursorRow {
     ...etaFields(eta),
     etaStatus: fallbackEtaStatus(stop.order.currentRouteVersionId, eta),
     eventRows: stop.driverEvents.map(toRecordDtoEventRow),
-    proofRows: stop.driverProofMedia.map(toRecordDtoProofRow),
+    proofRows: stop.driverProofMediaLinks.map(({ proofMedia }) => toRecordDtoProofRow(proofMedia)),
     rawNote: constraintState.rawNote,
     reviewStatus: constraintState.reviewStatus,
     routeConstraintStatus: constraintState.routeConstraintStatus,
@@ -2001,7 +2001,7 @@ function toDtoEventRow(row: { eventType: string; id: string; occurredAt: Date })
   };
 }
 
-function toRecordDtoProofRow(row: RecordStopRow['driverProofMedia'][number]): DsvV1ProofRowInput {
+function toRecordDtoProofRow(row: RecordStopRow['driverProofMediaLinks'][number]['proofMedia']): DsvV1ProofRowInput {
   return {
     contentType: row.contentType,
     deletedAt: row.deletedAt,

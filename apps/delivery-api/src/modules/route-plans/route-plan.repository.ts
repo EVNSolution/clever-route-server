@@ -1362,7 +1362,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       return { routePlanId: input.routePlanId, deleted: false };
     }
     const preflightGroupingIds = [...new Set(routePlan.routeGroupingChildVersions.map((child) => child.groupingId))].sort();
-    await this.prisma.$transaction(async (tx) => {
+    try {
+      await this.prisma.$transaction(async (tx) => {
       if (preflightGroupingIds.length > 0) {
         await tx.$queryRaw(Prisma.sql`
           SELECT "id"
@@ -1421,7 +1422,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         deletedChildVersions: currentChildren.map((child) => ({ groupingId: child.groupingId, id: child.id })),
         shopId: shop.id
       });
-    });
+      });
+    } catch (error) {
+      if (isRetainedProofMediaForeignKeyConflict(error)) {
+        throw new RoutePlanDeleteBlockedError('Route has retained delivery records and cannot be deleted yet.');
+      }
+      throw error;
+    }
 
     return { routePlanId: input.routePlanId, deleted: true };
   }
@@ -2772,6 +2779,13 @@ function routePlanInclude() {
 
 function isRouteGeometryCommitConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
+}
+
+function isRetainedProofMediaForeignKeyConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2003') return false;
+  return Object.values(error.meta ?? {}).some(
+    (value) => typeof value === 'string' && value.includes('driver_proof_media')
+  );
 }
 
 function routeLifecycleEventQuery() {

@@ -15,9 +15,9 @@ describe('driver proof media retention cleanup runner', () => {
     expect(
       calculateProofMediaCleanupCutoff({
         now: new Date('2026-05-13T00:00:00.000Z'),
-        retentionDays: 180
+        retentionDays: 365
       }).toISOString()
-    ).toBe('2025-11-14T00:00:00.000Z');
+    ).toBe('2025-05-13T00:00:00.000Z');
   });
 
   test('calls the repository cleanup with cutoff, deletedAt, and batch limit', async () => {
@@ -34,13 +34,13 @@ describe('driver proof media retention cleanup runner', () => {
       limit: 50,
       now: () => now,
       proofMediaRepository: { deleteExpiredProofMedia },
-      retentionPolicy: { retentionDays: 180 }
+      retentionPolicy: { retentionDays: 365 }
     });
 
     expect(deleteExpiredProofMedia).toHaveBeenCalledWith({
       deletedAt: now,
       limit: 50,
-      uploadedBefore: new Date('2025-11-14T00:00:00.000Z')
+      uploadedBefore: new Date('2025-05-13T00:00:00.000Z')
     });
     expect(result).toEqual({
       continuationRequired: false,
@@ -48,7 +48,7 @@ describe('driver proof media retention cleanup runner', () => {
       deletedAt: now,
       missingFiles: 1,
       scanned: 3,
-      uploadedBefore: new Date('2025-11-14T00:00:00.000Z')
+      uploadedBefore: new Date('2025-05-13T00:00:00.000Z')
     });
   });
 
@@ -73,7 +73,7 @@ describe('driver proof media retention cleanup runner', () => {
       limit: 50,
       now: () => now,
       proofMediaRepository: { deleteExpiredProofMedia },
-      retentionPolicy: { retentionDays: 180 }
+      retentionPolicy: { retentionDays: 365 }
     });
 
     expect(cleanupRuns).toEqual([
@@ -83,9 +83,9 @@ describe('driver proof media retention cleanup runner', () => {
         deletedAt: now,
         limit: 50,
         missingFiles: 1,
-        retentionDays: 180,
+        retentionDays: 365,
         scanned: 3,
-        uploadedBefore: new Date('2025-11-14T00:00:00.000Z')
+        uploadedBefore: new Date('2025-05-13T00:00:00.000Z')
       }
     ]);
     expect(cleanupRuns[0]).not.toHaveProperty('storageKey');
@@ -101,7 +101,7 @@ describe('driver proof media retention cleanup runner', () => {
     await expect(runDriverProofMediaRetentionCleanup({
       now: () => new Date('2026-05-13T00:00:00.000Z'),
       proofMediaRepository: { deleteExpiredProofMedia },
-      retentionPolicy: { retentionDays: 180 }
+      retentionPolicy: { retentionDays: 365 }
     })).resolves.toMatchObject({
       continuationRequired: false,
       deleted: 201,

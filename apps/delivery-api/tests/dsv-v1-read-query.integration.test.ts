@@ -638,7 +638,8 @@ async function createFixture(
         shopId: extraShop.id,
       },
     });
-    await createProof(prisma, extraShop.id, extraRoutePlan.id, stopA.id, null, 'storage-key-mismatched-shop', null);
+    await expect(createProof(prisma, extraShop.id, extraRoutePlan.id, stopA.id, null, 'storage-key-mismatched-shop', null))
+      .rejects.toMatchObject({ code: 'P2003' });
     mismatchedShopEventId = mismatchedEvent.id;
   }
   let extraCustomerAOrderId = '';
@@ -925,10 +926,9 @@ async function createSyntheticRecordIsolationFixture(
       shopId: shopB.id,
     },
   });
-  await Promise.all([
-    createProof(prisma, shopA.id, routePlanA.id, stop.id, null, `synthetic-expired-${unique}`, expiredAt),
-    createProof(prisma, shopB.id, routePlanB.id, stop.id, null, `synthetic-cross-shop-active-${unique}`, null),
-  ]);
+  await createProof(prisma, shopA.id, routePlanA.id, stop.id, null, `synthetic-expired-${unique}`, expiredAt);
+  await expect(createProof(prisma, shopB.id, routePlanB.id, stop.id, null, `synthetic-cross-shop-active-${unique}`, null))
+    .rejects.toMatchObject({ code: 'P2003' });
 
   return {
     crossShopId: shopB.id,
@@ -1245,6 +1245,7 @@ async function createProof(
       contentType: 'image/jpeg',
       deletedAt,
       deliveryStopId,
+      deliveryStopLinks: { create: { deliveryStopId } },
       driverId,
       kind: 'PHOTO',
       originalFilename: `${storageKey}.jpg`,

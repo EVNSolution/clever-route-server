@@ -33,6 +33,10 @@ import {
 } from '../src/modules/dsv/dsv-order-message.service.js';
 import type { RoutePlanDetail, RoutePlanSummary } from '../src/modules/route-plans/route-plan.types.js';
 import type { RouteGeometryProvider } from '../src/modules/route-plans/route-plan.service.js';
+import {
+  DriverProofMediaAccessUnavailableError,
+  DriverProofMediaScopeError,
+} from '../src/modules/driver/driver-proof-media.types.js';
 
 const sessionSecret = '12345678901234567890123456789012';
 const cookieName = 'clever_dsv_admin';
@@ -43,8 +47,162 @@ const diagnosticLoadId = '11111111-1111-4111-8111-111111111111';
 const diagnosticAttemptId = '22222222-2222-4222-8222-222222222222';
 const diagnosticRetryAttemptId = '33333333-3333-4333-8333-333333333333';
 const diagnosticAbortedAttemptId = '44444444-4444-4444-8444-444444444444';
+const proofMediaId = '66666666-6666-4666-8666-666666666666';
 
 describe('DSV v1 read routes', () => {
+  test('returns a private short-lived POD access envelope to the scoped DSV records admin without CSRF', async () => {
+    const createAdminProofMediaReadAccess = vi.fn(() => Promise.resolve({
+      contentType: 'image/jpeg',
+      deliveryStopIds: ['stop-1', 'stop-2'],
+      expiresAt: '2026-09-10T10:05:00.000Z',
+      kind: 'photo' as const,
+      mediaId: proofMediaId,
+      sha256: 'a'.repeat(64),
+      sizeBytes: 2048,
+      source: 'camera' as const,
+      storageKey: 'must-not-leak',
+      uploadedAt: '2026-09-10T10:00:00.000Z',
+      url: 'https://private.example.test/signed-pod',
+    }));
+    const { app } = await createHarness({
+      proofMediaService: { createAdminProofMediaReadAccess },
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['cache-control']).toBe('private, no-store');
+      expectDsvV1Envelope(response, {
+        contentType: 'image/jpeg',
+        deliveryStopIds: ['stop-1', 'stop-2'],
+        expiresAt: '2026-09-10T10:05:00.000Z',
+        kind: 'photo',
+        mediaId: proofMediaId,
+        sha256: 'a'.repeat(64),
+        sizeBytes: 2048,
+        source: 'camera',
+        uploadedAt: '2026-09-10T10:00:00.000Z',
+        url: 'https://private.example.test/signed-pod',
+      });
+      expect(response.body).not.toContain('storageKey');
+      expect(createAdminProofMediaReadAccess).toHaveBeenCalledWith({ mediaId: proofMediaId, shopId });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('restricts POD access to DSV admins and rejects unsupported input', async () => {
+    const proofMediaService = {
+      createAdminProofMediaReadAccess: vi.fn(() => Promise.reject(new Error('must not be called'))),
+    };
+    const { app } = await createHarness({ proofMediaService });
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
+    try {
+      const customerResponse = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access`,
+      });
+      expect(customerResponse.statusCode).toBe(403);
+
+      const admin = signedCookie('dsv-shop:tomatonofood.com');
+      const invalidId = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/proof-media/not-a-uuid/access',
+      });
+      expect(invalidId.statusCode).toBe(400);
+      expectDsvV1Error(invalidId, { code: 'BAD_REQUEST', message: 'Invalid proof media id' });
+
+      const unsupportedQuery = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access?storageKey=please`,
+      });
+      expect(unsupportedQuery.statusCode).toBe(400);
+
+      const unsupportedBody = await app.inject({
+        headers: { cookie: admin.cookie, 'content-type': 'application/json' },
+        method: 'GET',
+        payload: { deliveryStopId: 'stop-1' },
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access`,
+      });
+      expect(unsupportedBody.statusCode).toBe(400);
+      expectDsvV1Error(unsupportedBody, { code: 'BAD_REQUEST', message: 'Unsupported request body' });
+      expect(proofMediaService.createAdminProofMediaReadAccess).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('requires the dsv:records:read scope for POD access', async () => {
+    const proofMediaService = {
+      createAdminProofMediaReadAccess: vi.fn(() => Promise.reject(new Error('must not be called'))),
+    };
+    const { app } = await createHarness({
+      adminScopes: ['dsv:session:read'],
+      proofMediaService,
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access`,
+      });
+      expect(response.statusCode).toBe(403);
+      expect(proofMediaService.createAdminProofMediaReadAccess).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    ['shop-scoped media is absent', new DriverProofMediaScopeError('private scope details'), 404, 'NOT_FOUND', 'Proof media not found'],
+    ['signed access is unavailable', new DriverProofMediaAccessUnavailableError(), 503, 'DEPENDENCY_UNAVAILABLE', 'Proof media read access is unavailable'],
+  ] as const)('maps %s without exposing repository details', async (_name, error, statusCode, code, message) => {
+    const { app } = await createHarness({
+      proofMediaService: { createAdminProofMediaReadAccess: vi.fn(() => Promise.reject(error)) },
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access`,
+      });
+      expect(response.statusCode).toBe(statusCode);
+      expectDsvV1Error(response, { code, message });
+      expect(response.body).not.toContain('private scope details');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns a safe dependency error when POD access is not configured', async () => {
+    const { app } = await createHarness();
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access`,
+      });
+      expect(response.statusCode).toBe(503);
+      expectDsvV1Error(response, {
+        code: 'DEPENDENCY_UNAVAILABLE',
+        message: 'Proof media read access is not configured',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('returns exact v1 session envelope for admin and customer browser sessions', async () => {
     const { app, queryService, sessionResolver } = await createHarness();
     try {
@@ -1801,6 +1959,7 @@ async function createHarness(options: {
   logger?: BuildAppOptions['logger'];
   mapProfile?: false;
   orderMessageService?: DsvOrderMessageService;
+  proofMediaService?: DsvV1ReadDependencies['proofMediaService'];
   storeReviewAccess?: DsvV1ReadDependencies['storeReviewAccess'];
   timeConstraintCommandService?: DsvTimeConstraintCommandService;
 } = {}): Promise<{
@@ -1825,6 +1984,7 @@ async function createHarness(options: {
     sessionResolver,
     sessionSecret,
     ...(options.orderMessageService === undefined ? {} : { orderMessageService: options.orderMessageService }),
+    ...(options.proofMediaService === undefined ? {} : { proofMediaService: options.proofMediaService }),
     storeReviewAccess: options.storeReviewAccess ?? createStoreReviewAccess(() => Promise.resolve()),
     ...(options.timeConstraintCommandService === undefined ? {} : { timeConstraintCommandService: options.timeConstraintCommandService }),
   };

@@ -12,6 +12,8 @@ import {
   DriverProofMediaScopeError
 } from './driver-proof-media.types.js';
 import type {
+  CreateAdminDriverProofMediaReadAccessInput,
+  CreateAdminDriverProofMediaReadAccessResult,
   CreateDriverProofMediaReadAccessInput,
   CreateDriverProofMediaReadAccessResult,
   DriverProofMediaScanMonitor,
@@ -143,7 +145,7 @@ export class PrismaDriverProofMediaRepository {
     }
 
     const expiresAt = new Date(this.now().getTime() + this.readAccessTtlSeconds * 1000);
-    const access = await this.storage.createReadAccess({
+    const access = await this.createStorageReadAccess(input.mediaId, {
       contentType: media.contentType,
       expiresAt,
       storageKey: media.storageKey
@@ -154,6 +156,60 @@ export class PrismaDriverProofMediaRepository {
       expiresAt: expiresAt.toISOString(),
       kind: toProofMediaKind(media.kind),
       mediaId: media.id,
+      url: access.url
+    };
+  }
+
+  async createAdminProofMediaReadAccess(
+    input: CreateAdminDriverProofMediaReadAccessInput
+  ): Promise<CreateAdminDriverProofMediaReadAccessResult> {
+    const media = await this.prisma.driverProofMedia.findFirst({
+      select: {
+        contentType: true,
+        deliveryStopLinks: {
+          orderBy: { deliveryStopId: 'asc' },
+          select: { deliveryStopId: true }
+        },
+        id: true,
+        kind: true,
+        sha256: true,
+        sizeBytes: true,
+        source: true,
+        storageKey: true,
+        uploadedAt: true
+      },
+      where: {
+        deletedAt: null,
+        id: input.mediaId,
+        shopId: input.shopId,
+        uploadStatus: 'READY'
+      }
+    });
+    if (media === null) {
+      throw new DriverProofMediaScopeError(`Proof media not found for DSV administrator: ${input.mediaId}`);
+    }
+
+    if (this.storage.createReadAccess === undefined) {
+      throw new DriverProofMediaAccessUnavailableError();
+    }
+
+    const expiresAt = new Date(this.now().getTime() + this.readAccessTtlSeconds * 1000);
+    const access = await this.createStorageReadAccess(input.mediaId, {
+      contentType: media.contentType,
+      expiresAt,
+      storageKey: media.storageKey
+    });
+
+    return {
+      contentType: media.contentType,
+      deliveryStopIds: media.deliveryStopLinks.map((link) => link.deliveryStopId),
+      expiresAt: expiresAt.toISOString(),
+      kind: toProofMediaKind(media.kind),
+      mediaId: media.id,
+      sha256: media.sha256,
+      sizeBytes: media.sizeBytes,
+      source: media.source === 'CAMERA' ? 'camera' : 'library',
+      uploadedAt: media.uploadedAt.toISOString(),
       url: access.url
     };
   }
@@ -176,17 +232,32 @@ export class PrismaDriverProofMediaRepository {
       throw new DriverProofMediaScopeError(`Route plan not assigned to driver: ${input.routePlanId}`);
     }
 
-    const routePlanStop = await this.prisma.routePlanStop.findUnique({
+    const routePlanStops = await this.prisma.routePlanStop.findMany({
+      orderBy: { sequence: 'asc' },
+      select: {
+        deliveryStop: {
+          select: {
+            order: { select: { destinationId: true } }
+          }
+        },
+        deliveryStopId: true
+      },
       where: {
-        routePlanId_deliveryStopId: {
-          deliveryStopId: input.deliveryStopId,
-          routePlanId: input.routePlanId
-        }
+        routePlanId: input.routePlanId,
+        shopId: input.shopId
       }
     });
-    if (routePlanStop === null) {
+    const anchorStop = routePlanStops.find((stop) => stop.deliveryStopId === input.deliveryStopId);
+    if (anchorStop === undefined) {
       throw new DriverProofMediaScopeError(`Delivery stop not found in route plan: ${input.deliveryStopId}`);
     }
+    const destinationId = anchorStop.deliveryStop.order.destinationId;
+    const deliveryStopIds = routePlanStops
+      .filter((stop) => destinationId === null
+        ? stop.deliveryStopId === input.deliveryStopId
+        : stop.deliveryStop.order.destinationId === destinationId)
+      .map((stop) => stop.deliveryStopId)
+      .sort((left, right) => left.localeCompare(right));
 
     const mediaId = this.createMediaId();
     const uploadedAt = this.now();
@@ -232,6 +303,9 @@ export class PrismaDriverProofMediaRepository {
         data: {
         contentType: input.contentType,
         deliveryStopId: input.deliveryStopId,
+        deliveryStopLinks: {
+          create: deliveryStopIds.map((deliveryStopId) => ({ deliveryStopId }))
+        },
         driverId: input.driverId,
         id: mediaId,
         ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
@@ -333,6 +407,7 @@ export class PrismaDriverProofMediaRepository {
 
     return {
       contentType: input.contentType,
+      deliveryStopIds,
       kind: 'photo',
       mediaId,
       sha256,
@@ -389,7 +464,15 @@ export class PrismaDriverProofMediaRepository {
   ): Promise<StoreDriverProofMediaResult> {
     const deadline = Date.now() + this.storageWriteTimeoutMs + 1_000;
     for (;;) {
-      const media = await this.prisma.driverProofMedia.findFirst({ where: { id: mediaId } });
+      const media = await this.prisma.driverProofMedia.findFirst({
+        include: {
+          deliveryStopLinks: {
+            orderBy: { deliveryStopId: 'asc' },
+            select: { deliveryStopId: true }
+          }
+        },
+        where: { id: mediaId }
+      });
       if (media === null) throw new DriverProofMediaIdempotencyPendingError();
       assertIdempotentProofMediaIdentity(media, input, sha256, sizeBytes);
       if (media.uploadStatus === 'READY') return toStoreProofMediaResult(media);
@@ -401,7 +484,6 @@ export class PrismaDriverProofMediaRepository {
   }
 
   async deleteExpiredProofMedia(input: DeleteExpiredProofMediaInput): Promise<DeleteExpiredProofMediaResult> {
-    const deletedAt = input.deletedAt ?? this.now();
     const expiredMedia = await this.prisma.driverProofMedia.findMany({
       orderBy: { uploadedAt: 'asc' },
       take: input.limit ?? 100,
@@ -421,11 +503,14 @@ export class PrismaDriverProofMediaRepository {
         missingFiles += 1;
       }
 
-      await this.prisma.driverProofMedia.update({
-        data: { deletedAt },
-        where: { id: media.id }
+      const deletedRow = await this.prisma.driverProofMedia.deleteMany({
+        where: {
+          deletedAt: null,
+          id: media.id,
+          uploadStatus: 'READY'
+        }
       });
-      deleted += 1;
+      deleted += deletedRow.count;
     }
 
     return {
@@ -512,6 +597,25 @@ export class PrismaDriverProofMediaRepository {
       status: input.scanResult.status,
       storageKey: input.storageKey
     });
+  }
+
+  private async createStorageReadAccess(
+    mediaId: string,
+    input: DriverProofMediaStorageReadAccessInput
+  ): Promise<{ url: string }> {
+    try {
+      return await this.storage.createReadAccess!(input);
+    } catch (error) {
+      this.cleanupLogger.error({
+        errorCode: errorNameCode(error),
+        event: 'driver_proof_media_read_access_failed',
+        mediaId
+      }, 'Failed to create proof media read access');
+      throw new DriverProofMediaAccessUnavailableError(
+        'Proof media read access is temporarily unavailable',
+        { cause: error }
+      );
+    }
   }
 
   private async removeStorageObject(storageKey: string): Promise<'missing' | 'removed'> {
@@ -728,6 +832,7 @@ function toProofMediaKind(kind: string): 'photo' {
 
 function toStoreProofMediaResult(media: {
   contentType: string;
+  deliveryStopLinks: { deliveryStopId: string }[];
   id: string;
   kind: string;
   sha256: string;
@@ -738,6 +843,7 @@ function toStoreProofMediaResult(media: {
 }): StoreDriverProofMediaResult {
   return {
     contentType: media.contentType,
+    deliveryStopIds: media.deliveryStopLinks.map((link) => link.deliveryStopId),
     kind: toProofMediaKind(media.kind),
     mediaId: media.id,
     sha256: media.sha256,

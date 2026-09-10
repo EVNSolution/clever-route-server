@@ -8,14 +8,12 @@ describe('driver proof media production evidence seed', () => {
       env: {
         DRIVER_PROOF_MEDIA_STORAGE_BACKEND: 's3',
         DRIVER_PROOF_MEDIA_S3_BUCKET: 'prod-driver-proof-private-bucket',
+        DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER: 'ec2-iam-role',
         DRIVER_PROOF_MEDIA_S3_REGION: 'us-east-1',
-        DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID: 'AKIA_TEST_VALUE',
-        DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY: 'super-secret-access-key',
         DRIVER_PROOF_MEDIA_S3_ENDPOINT: 'https://s3.private.example',
         DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE: 'true',
-        DRIVER_PROOF_MEDIA_S3_SESSION_TOKEN: 'session-token-value',
         DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS: '300',
-        DRIVER_PROOF_MEDIA_RETENTION_DAYS: '180',
+        DRIVER_PROOF_MEDIA_RETENTION_DAYS: '365',
         DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'http',
         DRIVER_PROOF_MEDIA_SCANNER_URL: 'https://scanner.private.example/scan',
         DRIVER_PROOF_MEDIA_SCANNER_BEARER_TOKEN: 'scanner-bearer-secret',
@@ -33,16 +31,15 @@ describe('driver proof media production evidence seed', () => {
     expect(markdown).toContain('| Source ref | `cc-202-proof-media-evidence-seed` |');
     expect(markdown).toContain('| Storage backend | `s3` |');
     expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_S3_BUCKET` | present |');
+    expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER` | `ec2-iam-role` |');
     expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_SCANNER_BACKEND` | `http` |');
     expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND` | `http` |');
     expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_CLEANUP_EVIDENCE_REF` | present |');
-    expect(markdown).toContain('Bucket ownership and IAM least-privilege approval');
+    expect(markdown).toContain('Bucket ownership, Block Public Access, disabled versioning/Object Lock, and IAM least-privilege approval');
     expect(markdown).toContain('EVNSolution/clever-route-server#71');
     expect(markdown).toContain('EVNSolution/clever-routes-app#73');
 
     expect(markdown).not.toContain('prod-driver-proof-private-bucket');
-    expect(markdown).not.toContain('AKIA_TEST_VALUE');
-    expect(markdown).not.toContain('super-secret-access-key');
     expect(markdown).not.toContain('https://s3.private.example');
     expect(markdown).not.toContain('https://scanner.private.example');
     expect(markdown).not.toContain('scanner-bearer-secret');

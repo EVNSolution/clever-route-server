@@ -294,6 +294,7 @@ describe('API documentation routes', () => {
         { method: 'get', path: '/api/dsv/v1/drivers' },
         { method: 'get', path: '/api/dsv/v1/map/profile' },
         { method: 'get', path: '/api/dsv/v1/operational-notifications' },
+        { method: 'get', path: '/api/dsv/v1/proof-media/:mediaId/access' },
         { method: 'get', path: '/api/dsv/v1/records' },
         { method: 'post', path: '/api/dsv/v1/seller-order-assignments/reassign' },
         { method: 'post', path: '/api/dsv/v1/seller-order-assignments/unassign' },

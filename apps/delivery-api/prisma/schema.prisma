@@ -1226,6 +1226,7 @@ model DeliveryStop {
   routePlanStops                RoutePlanStop[]
   driverEvents                  DriverEvent[]
   driverProofMedia              DriverProofMedia[]
+  driverProofMediaLinks         DriverProofMediaDeliveryStop[]
   routeGroupingOrders           RouteGroupingOrder[]
   routeGroupingBranchOrderLocks RouteGroupingBranchOrderLock[]
   sourcedDestinationTips        DestinationTip[]
@@ -1815,9 +1816,9 @@ model DriverProofMedia {
   driverId         String?                @db.Uuid
   driver           Driver?                @relation(fields: [driverId], references: [id], onDelete: SetNull)
   routePlanId      String                 @db.Uuid
-  routePlan        RoutePlan              @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  routePlan        RoutePlan              @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)
   deliveryStopId   String                 @db.Uuid
-  deliveryStop     DeliveryStop           @relation(fields: [deliveryStopId], references: [id], onDelete: Cascade)
+  deliveryStop     DeliveryStop           @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction)
   kind             DriverProofMediaKind   @default(PHOTO)
   source           DriverProofMediaSource
   uploadStatus     DriverProofMediaUploadStatus @default(READY)
@@ -1832,13 +1833,28 @@ model DriverProofMedia {
   uploadedAt       DateTime               @db.Timestamptz(6)
   deletedAt        DateTime?              @db.Timestamptz(6)
   createdAt        DateTime               @default(now()) @db.Timestamptz(6)
+  deliveryStopLinks DriverProofMediaDeliveryStop[]
 
   @@unique([shopId, storageKey])
+  @@unique([id, shopId])
   @@unique([shopId, driverId, routePlanId, deliveryStopId, idempotencyKey], map: "driver_proof_media_idempotency_scope_key")
   @@index([shopId, routePlanId, deliveryStopId, uploadedAt])
   @@index([driverId, uploadedAt])
   @@index([uploadStatus, cleanupClaimedAt, createdAt])
   @@map("driver_proof_media")
+}
+
+model DriverProofMediaDeliveryStop {
+  proofMediaId   String           @db.Uuid
+  shopId         String           @db.Uuid
+  proofMedia     DriverProofMedia @relation(fields: [proofMediaId, shopId], references: [id, shopId], onDelete: Cascade)
+  deliveryStopId String           @db.Uuid
+  deliveryStop   DeliveryStop     @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction)
+  createdAt      DateTime         @default(now()) @db.Timestamptz(6)
+
+  @@id([proofMediaId, deliveryStopId])
+  @@index([deliveryStopId, proofMediaId])
+  @@map("driver_proof_media_delivery_stops")
 }
 
 model DriverRouteFeedback {
