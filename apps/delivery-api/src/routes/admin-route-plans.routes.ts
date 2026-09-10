@@ -14,10 +14,12 @@ import {
   RoutePlanConflictError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
+  RoutePlanPublishInvalidError,
   RoutePlanRefreshNotAllowedError,
   RoutePlanStopOverrideInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../modules/route-plans/route-plan.types.js';
+import type { RouteGroupingService } from '../modules/route-grouping/route-grouping.types.js';
 import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
 import { RouteOptimizationJobActiveError } from '../modules/route-plans/route-optimization-job.types.js';
 import type {
@@ -52,6 +54,7 @@ import type { PrismaRouteOperationalStateService, RouteOperationalStateV1 } from
 
 export type AdminRoutePlanDependencies = {
   operationalStateService?: Pick<PrismaRouteOperationalStateService, 'get' | 'getMany'>;
+  routeGroupingService?: Pick<RouteGroupingService, 'recordChildRoutePublished'>;
   routePlanService: RoutePlanService;
   routeTrackingService?: RouteTrackingService;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
@@ -179,6 +182,57 @@ export function registerAdminRoutePlanRoutes(
         data: detail,
         error: null
       });
+    }
+  );
+
+  app.post<{ Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/publish',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.routePlanService.publishRoutePlan === undefined) {
+        return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route publishing is unavailable'));
+      }
+
+      try {
+        const detail = await dependencies.routePlanService.publishRoutePlan({
+          appId: authenticated.appId,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain
+        });
+        if (detail === null) {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+        }
+        const notification = dependencies.routeGroupingService === undefined
+          ? { errorCode: 'NOTIFICATION_SERVICE_UNAVAILABLE', publishedAt: null, status: 'SKIPPED' as const }
+          : await dependencies.routeGroupingService.recordChildRoutePublished({
+              routePlanId: request.params.routePlanId,
+              shopDomain: authenticated.shopDomain
+            });
+        return reply.code(200).send({
+          data: {
+            dispatch: {
+              ...(notification.errorCode === undefined ? {} : { notificationErrorCode: notification.errorCode }),
+              ...(notification.providerMessageId === undefined ? {} : { providerMessageId: notification.providerMessageId }),
+              notificationStatus: notification.status,
+              publishedAt: notification.publishedAt,
+              routePlanId: detail.routePlan.id
+            },
+            routePlan: detail.routePlan
+          },
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof RoutePlanPublishInvalidError) {
+          return reply.code(400).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
     }
   );
 

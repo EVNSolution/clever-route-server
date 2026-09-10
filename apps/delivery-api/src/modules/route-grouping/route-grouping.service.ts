@@ -57,6 +57,7 @@ import {
   type RouteGroupingNotificationStatus,
   type RouteGroupingPolygonDto,
   type RouteGroupingService,
+  type RoutePublicationResult,
   type RouteGroupingSummaryDto,
   type RouteGroupingWarningDto,
   type SaveRouteGroupingDraftInput,
@@ -2270,7 +2271,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     }
   }
 
-  async recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void> {
+  async recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<RoutePublicationResult> {
     const child = await this.prisma.routeGroupingChildVersion.findFirst({
       include: {
         grouping: { include: { shop: { select: { shopDomain: true } } } },
@@ -2285,29 +2286,33 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       where: { routePlanId: input.routePlanId, status: 'CURRENT', supersededAt: null }
     });
     if (child === null) {
-      await this.recordStandaloneRoutePublished(input).catch((error: unknown) => {
+      return this.recordStandaloneRoutePublished(input).catch((error: unknown) => {
         console.warn('[route-grouping] standalone driver route notification failed after publish commit', {
           errorName: error instanceof Error ? error.name : typeof error,
           routePlanId: input.routePlanId
         });
+        return { errorCode: 'NOTIFICATION_PROCESSING_FAILED', publishedAt: null, status: 'FAILED' as const };
       });
-      return;
     }
-    if (child.grouping.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) return;
+    if (child.grouping.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) {
+      return { errorCode: 'ROUTE_NOT_FOUND_OR_OUT_OF_SCOPE', publishedAt: null, status: 'SKIPPED' };
+    }
     const publishedAt = new Date();
     await this.prisma.$transaction([
       this.prisma.routeGroupingChildVersion.update({ data: { publishedAt }, where: { id: child.id } }),
       this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } } })
     ]);
-    await this.recordPublishedRouteNotification(child, input.routePlanId).catch((error: unknown) => {
+    const notification = await this.recordPublishedRouteNotification(child, input.routePlanId).catch((error: unknown) => {
       console.warn('[route-grouping] driver route notification failed after publish commit', {
         errorName: error instanceof Error ? error.name : typeof error,
         routePlanId: input.routePlanId
       });
+      return { errorCode: 'NOTIFICATION_PROCESSING_FAILED', status: 'FAILED' as const };
     });
+    return { ...notification, publishedAt: publishedAt.toISOString() };
   }
 
-  private async recordStandaloneRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void> {
+  private async recordStandaloneRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<RoutePublicationResult> {
     const routePlan = await this.prisma.routePlan.findFirst({
       select: {
         assignmentGeneration: true,
@@ -2363,13 +2368,14 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       },
       where: { id: input.routePlanId }
     });
+    if (routePlan === null || routePlan.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) {
+      return { errorCode: 'ROUTE_NOT_FOUND_OR_OUT_OF_SCOPE', publishedAt: null, status: 'SKIPPED' };
+    }
     if (
-      routePlan === null
-      || routePlan.shop.shopDomain !== normalizeShopDomain(input.shopDomain)
-      || routePlan.driverId === null
+      routePlan.driverId === null
       || routePlan.driver?.accountId === null
       || routePlan.driver?.accountId === undefined
-    ) return;
+    ) return { errorCode: 'NO_ASSIGNED_DRIVER', publishedAt: null, status: 'SKIPPED' };
 
     const publicationVersion = standaloneRoutePublicationVersion(routePlan);
     const keyPrefix = `${routePlan.shop.id}:${input.routePlanId}:${routePlan.driverId}:${publicationVersion}`;
@@ -2379,7 +2385,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       orderBy: { createdAt: 'asc' },
       where: { idempotencyKey: { in: [assignedKey, changedKey] } }
     });
-    if (currentAttempt?.status === 'SENT') return;
+    if (currentAttempt?.status === 'SENT') {
+      return {
+        ...(currentAttempt.providerMessageId === null ? {} : { providerMessageId: currentAttempt.providerMessageId }),
+        publishedAt: currentAttempt.createdAt.toISOString(),
+        status: 'SENT'
+      };
+    }
 
     const action = currentAttempt?.action
       ?? (await this.prisma.driverRouteNotificationAttempt.count({
@@ -2420,22 +2432,33 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       },
       where: { id: pending.id }
     });
+    return { ...result, publishedAt: pending.createdAt.toISOString() };
   }
 
   private async recordPublishedRouteNotification(
     child: PublishedRouteChild,
     routePlanId: string
-  ): Promise<void> {
+  ): Promise<DriverRoutePushResult> {
     if (
       child.routePlan?.driverId === null
       || child.routePlan?.driverId === undefined
       || child.routePlan.driver?.accountId === null
       || child.routePlan.driver?.accountId === undefined
-    ) return;
-    const action = await this.hasPriorSentAttempt(child.groupingId, child.routePlan.driverId) ? 'CHANGED' : 'ASSIGNED';
-    const idempotencyKey = `${child.shopId}:${child.groupingId}:${child.version}:${child.id}:${child.routePlan.driverId}:${action}`;
-    const existing = await this.prisma.driverRouteNotificationAttempt.findUnique({ where: { idempotencyKey } });
-    if (existing?.status === 'SENT') return;
+    ) return { errorCode: 'NO_ASSIGNED_DRIVER', status: 'SKIPPED' };
+    const keyPrefix = `${child.shopId}:${child.groupingId}:${child.version}:${child.id}:${child.routePlan.driverId}`;
+    const existing = await this.prisma.driverRouteNotificationAttempt.findFirst({
+      orderBy: { createdAt: 'asc' },
+      where: { idempotencyKey: { in: [`${keyPrefix}:ASSIGNED`, `${keyPrefix}:CHANGED`] } }
+    });
+    if (existing?.status === 'SENT') {
+      return {
+        ...(existing.providerMessageId === null ? {} : { providerMessageId: existing.providerMessageId }),
+        status: 'SENT'
+      };
+    }
+    const action = existing?.action
+      ?? (await this.hasPriorSentAttempt(child.groupingId, child.routePlan.driverId) ? 'CHANGED' : 'ASSIGNED');
+    const idempotencyKey = `${keyPrefix}:${action}`;
     const pending = await this.prisma.driverRouteNotificationAttempt.upsert({
       create: {
         action,
@@ -2470,6 +2493,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       where: { id: pending.id }
     });
     await this.prisma.routeGroupingChildVersion.update({ data: { notificationStatus: result.status }, where: { id: child.id } });
+    return result;
   }
 
   private async hasPriorSentAttempt(groupingId: string, driverId: string): Promise<boolean> {

@@ -6,6 +6,7 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanGeometryRefreshFailedError,
   RoutePlanOrderAlreadyPlannedError,
+  RoutePlanPublishInvalidError,
   RoutePlanRefreshNotAllowedError,
   RoutePlanStopOverrideInvalidError,
   RoutePlanStopUpdateInvalidError
@@ -37,6 +38,119 @@ const routePlanSummary = {
 type SaveRoutePlan = NonNullable<AdminRoutePlanDependencies['routePlanService']['saveRoutePlan']>;
 
 describe('Admin route plan routes', () => {
+  test('publishes a tenant-scoped route and reports accepted driver notification', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: {
+          authorization: 'Bearer session-token',
+          'x-clever-app-id': 'clever'
+        },
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/publish'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          dispatch: {
+            notificationStatus: 'SENT',
+            providerMessageId: 'push-message-1',
+            publishedAt: '2026-09-10T09:00:00.000Z',
+            routePlanId: 'route-plan-id'
+          },
+          routePlan: { id: 'route-plan-id', status: 'ASSIGNED' }
+        },
+        error: null
+      });
+      expect(publishRoutePlan).toHaveBeenCalledWith({
+        appId: 'clever',
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+      expect(recordChildRoutePublished).toHaveBeenCalledWith({
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('reports driver notification failure without disguising it as sent', async () => {
+    const { dependencies, recordChildRoutePublished } = createDependencyHarness();
+    recordChildRoutePublished.mockResolvedValueOnce({ errorCode: 'NO_ACTIVE_TOKEN', publishedAt: '2026-09-10T09:00:00.000Z', status: 'SKIPPED' });
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/publish'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          dispatch: {
+            notificationErrorCode: 'NO_ACTIVE_TOKEN',
+            notificationStatus: 'SKIPPED',
+            routePlanId: 'route-plan-id'
+          }
+        },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects route publish without a Shopify session token', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/publish'
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'UNAUTHORIZED', message: 'Missing bearer session token' }
+      });
+      expect(publishRoutePlan).not.toHaveBeenCalled();
+      expect(recordChildRoutePublished).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not notify for a missing or foreign tenant route', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    publishRoutePlan.mockResolvedValueOnce(null);
+    const app = await buildApp({ adminRoutePlans: dependencies });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/admin/route-plans/foreign-route/publish', headers: { authorization: 'Bearer session-token' } });
+      expect(response.statusCode).toBe(404);
+      expect(recordChildRoutePublished).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  test('keeps publication rejection distinct from a push failure', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    publishRoutePlan.mockRejectedValueOnce(new RoutePlanPublishInvalidError('Cancelled routes cannot be published.'));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/admin/route-plans/route-plan-id/publish', headers: { authorization: 'Bearer session-token' } });
+      expect(response.statusCode).toBe(400);
+      expect(recordChildRoutePublished).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   test('refreshes route geometry and ETA from the latest canonical order data', async () => {
     const { dependencies, refreshRouteGeometryForRoutePlan } = createDependencyHarness();
     const app = await buildApp({ adminRoutePlans: dependencies });
@@ -1410,6 +1524,9 @@ function createDependencyHarness(): {
   publishRoutePlan: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['publishRoutePlan']>
   >;
+  recordChildRoutePublished: ReturnType<
+    typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routeGroupingService']>['recordChildRoutePublished']>
+  >;
   refreshRouteGeometryForRoutePlan: ReturnType<
     typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routePlanService']['refreshRouteGeometryForRoutePlan']>>
   >;
@@ -1493,6 +1610,9 @@ function createDependencyHarness(): {
       ]
     })
   );
+  const recordChildRoutePublished = vi.fn<
+    NonNullable<AdminRoutePlanDependencies['routeGroupingService']>['recordChildRoutePublished']
+  >(() => Promise.resolve({ providerMessageId: 'push-message-1', publishedAt: '2026-09-10T09:00:00.000Z', status: 'SENT' }));
   const refreshRouteGeometryForRoutePlan = vi.fn<
     NonNullable<AdminRoutePlanDependencies['routePlanService']['refreshRouteGeometryForRoutePlan']>
   >(() =>
@@ -1600,6 +1720,7 @@ function createDependencyHarness(): {
     createRoutePlan,
     createRoutePlanFromOrderIds,
     dependencies: {
+      routeGroupingService: { recordChildRoutePublished },
       routePlanService: {
         assignRoutePlanDriver,
         createRoutePlan,
@@ -1623,6 +1744,7 @@ function createDependencyHarness(): {
     deleteRoutePlan,
     listRoutePlans,
     publishRoutePlan,
+    recordChildRoutePublished,
     refreshRouteGeometryForRoutePlan,
     saveRoutePlan,
     transitionAdminRouteStop,

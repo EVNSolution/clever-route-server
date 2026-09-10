@@ -60,7 +60,7 @@ const adminCustomerEmail = loadAdminCustomerEmailDependencies({ env: process.env
 const routeGroupingService = createRouteGroupingService({ env: process.env, prisma });
 const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma, routeGroupingService });
 const routeTrackingStreamHub = new RouteTrackingStreamHub();
-const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, operationalAlertRepository, prisma, routeTrackingStreamHub });
+const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, operationalAlertRepository, prisma, routeGroupingService, routeTrackingStreamHub });
 const adminNotificationRuntime = createAdminNotificationRuntime({
   ...(process.env.DATABASE_URL === undefined
     ? {}

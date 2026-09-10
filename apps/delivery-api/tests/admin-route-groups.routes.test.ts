@@ -969,7 +969,7 @@ function createDependencyHarness(): {
   const saveDraft = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['saveDraft']>(() => Promise.resolve(routeGroup));
   const deleteGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteGrouping']>(() => Promise.resolve({ deleted: true, deletedChildRoutePlanCount: 0, groupingId: 'route-group-id' }));
   const rollback = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['rollback']>(() => Promise.resolve(routeGroup));
-  const recordChildRoutePublished = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['recordChildRoutePublished']>(() => Promise.resolve());
+  const recordChildRoutePublished = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['recordChildRoutePublished']>(() => Promise.resolve({ publishedAt: '2026-09-10T09:00:00.000Z', status: 'SENT' }));
 
   return {
     createBranch,

@@ -1424,7 +1424,9 @@ describe('route grouping contracts', () => {
     };
     const service = new PrismaRouteGroupingService(prisma as never, provider);
 
-    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    const receipt = await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    expect(receipt.status).toBe('SENT');
+    expect(receipt.publishedAt).toEqual(expect.any(String));
     await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
 
     expect(provider.sentMessages).toHaveLength(1);
@@ -1448,6 +1450,51 @@ describe('route grouping contracts', () => {
     expect('driverEvent' in prisma).toBe(false);
   });
 
+  test('publishes a child once per version and reports the persisted publication and push receipt', async () => {
+    const provider = new FakeDriverPushProvider();
+    const child = {
+      grouping: { shop: { shopDomain: 'tenant.example' } },
+      groupingId: 'group-1', id: 'child-1', shopId: 'shop-1', version: 1,
+      routePlan: { driverId: 'driver-1', driver: { accountId: 'account-1' } }
+    };
+    const attempts = new Map<string, { action: string; id: string; status: string; providerMessageId?: string }>();
+    const prisma = {
+      $transaction: vi.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
+      routeGrouping: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      routeGroupingChildVersion: {
+        findFirst: vi.fn().mockResolvedValue(child),
+        update: vi.fn((input: { data: { publishedAt?: Date; notificationStatus?: string }; where: { id: string } }) => Promise.resolve({ ...child, ...input.data }))
+      },
+      driverPushToken: { findMany: vi.fn().mockResolvedValue([{ devicePushToken: 'token-1', id: 'token-1' }]) },
+      driverRouteNotificationAttempt: {
+        count: vi.fn(() => Promise.resolve([...attempts.values()].filter((attempt) => attempt.status === 'SENT').length)),
+        findFirst: vi.fn(({ where }: { where: { idempotencyKey: { in: string[] } } }) =>
+          Promise.resolve(where.idempotencyKey.in.map((key) => attempts.get(key)).find(Boolean) ?? null)),
+        upsert: vi.fn(({ create }: { create: { action: string; idempotencyKey: string } }) => {
+          const attempt = { action: create.action, id: create.idempotencyKey, status: 'PENDING' };
+          attempts.set(attempt.id, attempt);
+          return Promise.resolve(attempt);
+        }),
+        update: vi.fn(({ data, where }: { data: { status: string; providerMessageId?: string }; where: { id: string } }) => {
+          Object.assign(attempts.get(where.id)!, data);
+          return Promise.resolve(attempts.get(where.id));
+        })
+      }
+    };
+    const service = new PrismaRouteGroupingService(prisma as never, provider);
+    const receipt = await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    const publishedWrite = prisma.routeGroupingChildVersion.update.mock.calls[0]?.[0] as unknown as { data: { publishedAt: Date } };
+    expect(receipt.publishedAt).toBe(publishedWrite.data.publishedAt.toISOString());
+    expect(receipt.status).toBe('SENT');
+    const repeat = await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    expect(repeat.providerMessageId).toBe(receipt.providerMessageId);
+    expect(provider.sentMessages).toHaveLength(1);
+    child.version = 2;
+    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
+    expect(provider.sentMessages.map((message) => message.action)).toEqual(['assigned', 'changed']);
+  });
+
   test('uses a changed notification for a new ordinary-route publication version', async () => {
     const provider = new FakeDriverPushProvider();
     const prisma = {
@@ -1459,7 +1506,7 @@ describe('route grouping contracts', () => {
         count: vi.fn().mockResolvedValue(1),
         findFirst: vi.fn().mockResolvedValue(null),
         update: vi.fn().mockResolvedValue({ id: 'attempt-2' }),
-        upsert: vi.fn().mockResolvedValue({ id: 'attempt-2' })
+        upsert: vi.fn().mockResolvedValue({ createdAt: new Date('2026-09-10T09:00:00.000Z'), id: 'attempt-2' })
       },
       routeGroupingChildVersion: { findFirst: vi.fn().mockResolvedValue(null) },
       routePlan: { findFirst: vi.fn().mockResolvedValue({
