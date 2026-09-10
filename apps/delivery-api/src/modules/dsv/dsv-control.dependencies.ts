@@ -116,7 +116,10 @@ export function loadDsvControlDependencies(input: {
       settingsService,
       ...(webPublicOrigin === undefined ? {} : { webPublicOrigin }),
     }),
-    dispatchImportService: new PrismaDsvDispatchImportService(input.prisma, { addressCanonicalizer }),
+    dispatchImportService: new PrismaDsvDispatchImportService(input.prisma, {
+      addressCanonicalizer,
+      ...(routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler }),
+    }),
     driverAccountLinkService: new PrismaDsvDriverAccountLinkService(input.prisma),
     driverInquiryRepository: new PrismaDsvDriverInquiryRepository(input.prisma),
     geocodingService,

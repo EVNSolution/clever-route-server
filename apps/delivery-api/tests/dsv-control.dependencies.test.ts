@@ -5,6 +5,7 @@ import { buildApp } from '../src/app.js';
 import { DsvAssignmentCommandService } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import { loadDsvControlDependencies } from '../src/modules/dsv/dsv-control.dependencies.js';
 import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
+import { DsvRouteOptimizationScheduler } from '../src/modules/dsv/dsv-route-optimization.scheduler.js';
 import type { RouteGroupingService } from '../src/modules/route-grouping/route-grouping.types.js';
 
 const sessionSecret = '0123456789abcdef0123456789abcdef';
@@ -104,6 +105,25 @@ describe('loadDsvControlDependencies', () => {
     });
 
     expect(dependencies?.addressCanonicalizer).toBeDefined();
+  });
+
+  test('forwards the configured route optimization scheduler to dispatch imports', () => {
+    const dependencies = loadDsvControlDependencies({
+      env: {
+        CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
+        CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret,
+        OSRM_KOREA_BASE_URL: 'http://osrm-korea:5000',
+      },
+      nodeEnv: 'test',
+      prisma: {} as PrismaClient,
+      routeGroupingService: {} as RouteGroupingService,
+    });
+    const dispatchImportService = dependencies?.dispatchImportService as unknown as {
+      options: { routeOptimizationScheduler?: unknown };
+    };
+
+    expect(dispatchImportService.options.routeOptimizationScheduler)
+      .toBeInstanceOf(DsvRouteOptimizationScheduler);
   });
 
   test('wires assignment command service so unassign route is not service unavailable', async () => {
