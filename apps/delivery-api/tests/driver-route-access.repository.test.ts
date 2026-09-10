@@ -37,7 +37,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true },
+          select: { id: true, publishedAt: true },
           take: 1,
           where: { status: 'CURRENT', supersededAt: null }
         },
@@ -124,7 +124,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true },
+          select: { id: true, publishedAt: true },
           take: 1,
           where: { status: 'CURRENT', supersededAt: null }
         },
@@ -188,6 +188,52 @@ describe('PrismaDriverRouteAccessRepository', () => {
         status: 'ROUTES_FOUND',
         routes: [{ routeAccess: { routePlanId: routePlanId } }]
       });
+  });
+
+  test('hides ready routes until Dispatch publishes their current version', async () => {
+    const unpublishedReady = routePlanRecord({ publishedAt: null });
+    const exactRepository = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ routePlan: unpublishedReady }).prisma as never
+    );
+
+    await expect(exactRepository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: routePlanId,
+    })).resolves.toEqual({ status: 'NOT_FOUND' });
+
+    const activeRouteId = '33333333-3333-4333-8333-333333333333';
+    const { prisma } = createPrismaHarness({
+      phoneRoutePlans: [
+        unpublishedReady,
+        routePlanRecord({ id: activeRouteId, publishedAt: null, status: 'IN_PROGRESS' }),
+      ],
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({
+        status: 'ROUTES_FOUND',
+        routes: [{ routeAccess: { routePlanId: activeRouteId } }],
+      });
+  });
+
+  test('excludes unpublished ready routes before resolving a shared-scope ambiguity', async () => {
+    const publishedRouteId = '33333333-3333-4333-8333-333333333333';
+    const { prisma } = createPrismaHarness({
+      sharedRoutePlans: [
+        routePlanRecord({ publishedAt: null }),
+        routePlanRecord({ id: publishedRouteId }),
+      ],
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: 'toronto-shared-route-scope',
+    })).resolves.toMatchObject({
+      status: 'INVITED',
+      routeAccess: { routePlanId: publishedRouteId },
+    });
   });
 
   test('does not issue route access for active drivers that have not verified an invite code', async () => {
@@ -491,7 +537,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true },
+          select: { id: true, publishedAt: true },
           take: 1,
           where: { status: 'CURRENT', supersededAt: null }
         },
@@ -500,6 +546,14 @@ describe('PrismaDriverRouteAccessRepository', () => {
       },
       take: 3,
       where: {
+        OR: [
+          { status: 'IN_PROGRESS' },
+          {
+            routeGroupingChildVersions: {
+              some: { publishedAt: { not: null }, status: 'CURRENT', supersededAt: null }
+            }
+          }
+        ],
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: 'toronto-shared-route-scope' },
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
@@ -655,6 +709,7 @@ function routePlanRecord(
     legacyContract?: boolean;
     name?: string;
     planDate?: string;
+    publishedAt?: Date | null;
     routeVersionId?: string;
     shopDomain?: string;
     status?: string;
@@ -690,7 +745,14 @@ function routePlanRecord(
     planDate: new Date(`${overrides.planDate ?? '2026-05-12'}T00:00:00.000Z`),
     ...(overrides.legacyContract === true
       ? {}
-      : { routeGroupingChildVersions: [{ id: overrides.routeVersionId ?? '22222222-2222-4222-8222-222222222222' }] }),
+      : {
+          routeGroupingChildVersions: [{
+            id: overrides.routeVersionId ?? '22222222-2222-4222-8222-222222222222',
+            publishedAt: overrides.publishedAt === undefined
+              ? new Date('2026-05-11T12:00:00.000Z')
+              : overrides.publishedAt,
+          }],
+        }),
     shop: {
       shopDomain
     },

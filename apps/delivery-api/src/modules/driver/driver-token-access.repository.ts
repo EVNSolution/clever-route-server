@@ -2,7 +2,8 @@ import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import {
   ROUTE_DRIVER_OPERATIONAL_STATUSES,
-  ROUTE_DRIVER_VISIBLE_STATUSES
+  ROUTE_DRIVER_VISIBLE_STATUSES,
+  toRouteExecutionStatus
 } from '../route-plans/route-plan-lifecycle.js';
 
 export type DriverTokenAccessPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount' | 'routePlan'>;
@@ -77,7 +78,14 @@ export class PrismaDriverTokenAccessRepository {
         },
         id: true,
         isStoreReviewData: true,
-        shop: { select: { id: true, shopDomain: true } }
+        routeGroupingChildVersions: {
+          orderBy: { updatedAt: 'desc' as const },
+          select: { publishedAt: true },
+          take: 1,
+          where: { status: 'CURRENT' as const, supersededAt: null }
+        },
+        shop: { select: { id: true, shopDomain: true } },
+        status: true
       },
       where: {
         id: input.routePlanId,
@@ -102,6 +110,13 @@ export class PrismaDriverTokenAccessRepository {
 
     if ((routePlan.isStoreReviewData === true) !== (routePlan.driver.isStoreReviewData === true)
       || (routePlan.driver.isStoreReviewData === true) !== (routePlan.driver.account?.isStoreReviewAccount === true)) {
+      return null;
+    }
+
+    if (
+      toRouteExecutionStatus(routePlan.status) === 'READY'
+      && routePlan.routeGroupingChildVersions?.[0]?.publishedAt == null
+    ) {
       return null;
     }
 
