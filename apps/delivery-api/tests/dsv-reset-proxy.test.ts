@@ -8,7 +8,7 @@ describe('password reset proxy boundary', () => {
       dsvDriverAuth: {
         jwtSecret: 'test-secret', repository: {} as never,
         passwordResetService: {
-          complete: async () => undefined, issueLink: async () => null, validateLink: async () => null,
+          complete: () => Promise.resolve(), issueLink: () => Promise.resolve(null), validateLink: () => Promise.resolve(null),
         },
       },
     });

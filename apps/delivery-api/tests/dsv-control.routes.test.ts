@@ -2307,7 +2307,7 @@ describe('DSV control routes', () => {
       })).statusCode).toBe(400);
 
       for (const missingScope of ['dsv:accounts:write', 'dsv:resources:read'] as const) {
-        vi.mocked(adminAccounts.resolveSession).mockResolvedValueOnce({
+        vi.spyOn(adminAccounts, 'resolveSession').mockResolvedValueOnce({
           accountId: adminAccountId,
           activeSessionId: adminSessionId,
           displayName: '운영 관리자',
@@ -2324,7 +2324,7 @@ describe('DSV control routes', () => {
         expect(denied.json()).toMatchObject({ error: { code: 'DSV_FORBIDDEN' } });
       }
 
-      vi.mocked(adminAccounts.resolveSession).mockResolvedValueOnce({
+      vi.spyOn(adminAccounts, 'resolveSession').mockResolvedValueOnce({
         accountId: adminAccountId,
         activeSessionId: adminSessionId,
         displayName: '운영 관리자',
