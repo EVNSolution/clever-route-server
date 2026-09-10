@@ -362,9 +362,9 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     const transaction = prisma.$transaction.bind(prisma);
     const transactionAwarePrisma = new Proxy(prisma, {
       get(target, property) {
-        if (property !== '$transaction') return Reflect.get(target, property, target);
+        if (property !== '$transaction') return Reflect.get(target, property, target) as unknown;
         return async (...args: unknown[]) => {
-          const result = await Reflect.apply(transaction, target, args);
+          const result: unknown = await Reflect.apply(transaction, target, args);
           completedTransactions += 1;
           return result;
         };
