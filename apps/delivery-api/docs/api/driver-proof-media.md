@@ -42,7 +42,7 @@ The seed prints current source commit/ref, proof-media runtime config presence,
 remaining private evidence gates, and tracking issues without printing bucket
 names, endpoints, access keys, bearer tokens, storage keys, proof bytes, or
 completed evidence references. Copy the seed into the approved private evidence
-workspace and fill real bucket/IAM, signed URL, scanner, alerting, cleanup
+workspace and fill real bucket/IAM, signed URL, upload-safety policy, cleanup
 scheduler, and private evidence-store references there. Copy
 `docs/proof-media-production-evidence-manifest.template.md` into that private
 workspace for the release candidate. After filling it, validate a local working
@@ -112,7 +112,7 @@ Multipart fields:
 | `deliveryStopId` | Yes | Stop id from the authenticated driver's assigned route. |
 | `routePlanId` | Yes | Route plan id from route access/assigned route context. |
 | `source` | Yes | `camera` or `library`. |
-| `file` | Yes | Image file part. Current route accepts image MIME types and enforces a 10 MiB file limit. |
+| `file` | Yes | One JPEG, PNG, WebP, HEIC, or HEIF image up to 10 MiB. The declared MIME type must match the file signature. |
 
 Success:
 
@@ -205,7 +205,7 @@ The repository checks all of the following before writing bytes or metadata:
 - The cleanup monitor hook records cleanup run counts and cutoffs in `RetentionJobRun` without media ids, storage keys, coordinates, customer data, or proof bytes.
 - Storage keys are resolved under the configured storage root before deletion; keys that escape the root are rejected before metadata is deleted.
 - `src/scripts/cleanup-driver-proof-media.ts` is the operational entry point for manual or scheduled cleanup. Local development can still select the non-public filesystem backend. Route Ops production Compose selects private S3 and does not bind-mount an EBS proof-media directory.
-- Production bucket/IAM ownership approval, IMDSv2 instance-profile evidence, signed URL evidence, production HTTP scanner deployment evidence, scanner monitoring/alerting evidence, deployed cleanup scheduler evidence, and private evidence storage remain release gates. Follow `docs/deployment/driver-proof-media-s3.md`.
+- Production bucket/IAM ownership approval, IMDSv2 instance-profile evidence, signed URL evidence, an explicit scanner-free or HTTP-scanner policy decision, deployed cleanup scheduler evidence, and private evidence storage remain release gates. Scanner-free operation retains authenticated route scope, the image MIME allowlist, byte-signature checks, the ten MiB/single-file limits, and JPEG EXIF stripping. Follow `docs/deployment/driver-proof-media-s3.md`.
 
 ## GET `/api/dsv/v1/proof-media/:mediaId/access`
 

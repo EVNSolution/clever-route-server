@@ -53,4 +53,17 @@ describe('Driver POD production contract', () => {
       Resource: '${DRIVER_PROOF_MEDIA_BUCKET_ARN}/driver-proof/*'
     });
   });
+
+  test('documents the scanner-free upload validation contract in API references', () => {
+    const expected = 'One JPEG, PNG, WebP, HEIC, or HEIF image up to 10 MiB. The declared MIME type must match the file signature.';
+    const evidenceTemplate = repoFile('apps/delivery-api/docs/proof-media-production-evidence-manifest.template.md');
+
+    expect(repoFile('apps/delivery-api/docs/api/driver-proof-media.md')).toContain(expected);
+    expect(repoFile('apps/delivery-api/docs/api/openapi.yaml')).toContain(expected);
+    expect(evidenceTemplate).toContain('| Scanner backend selection: none |');
+    expect(evidenceTemplate).toContain('| Scanner-free operation approved |');
+    expect(evidenceTemplate).toContain('`HTTP scanner deployment approved`');
+    expect(evidenceTemplate).toContain('`HTTP scanner clean and rejected fixtures pass`');
+    expect(evidenceTemplate).toContain('`HTTP scan monitor handling verified`');
+  });
 });

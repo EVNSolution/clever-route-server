@@ -299,10 +299,20 @@ proof_scanner_backend="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCANNER_BACKEND" {pr
 proof_scanner_url_configured="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCANNER_URL" {value=substr($0, index($0, "=") + 1); print length(value) > 0 ? "true" : "false"}' apps/delivery-api/.env | tail -n 1)"
 proof_scan_monitor_backend="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND" {print tolower(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
 proof_scan_monitor_url_configured="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL" {value=substr($0, index($0, "=") + 1); print length(value) > 0 ? "true" : "false"}' apps/delivery-api/.env | tail -n 1)"
-[ "$proof_scanner_backend" = "http" ] && [ "$proof_scanner_url_configured" = "true" ] \
-  || { echo 'proof media S3 rollout blocked: approved HTTP scanner is not configured' >&2; exit 1; }
-[ "$proof_scan_monitor_backend" = "http" ] && [ "$proof_scan_monitor_url_configured" = "true" ] \
-  || { echo 'proof media S3 rollout blocked: approved scan monitor is not configured' >&2; exit 1; }
+case "${proof_scanner_backend:-none}" in
+  none) ;;
+  http) [ "$proof_scanner_url_configured" = "true" ] \
+    || { echo 'proof media S3 rollout blocked: HTTP scanner URL is not configured' >&2; exit 1; } ;;
+  *) echo 'proof media S3 rollout blocked: scanner backend must be none or http' >&2; exit 1 ;;
+esac
+case "${proof_scan_monitor_backend:-none}" in
+  none) ;;
+  http) [ "$proof_scan_monitor_url_configured" = "true" ] \
+    || { echo 'proof media S3 rollout blocked: HTTP scan monitor URL is not configured' >&2; exit 1; } ;;
+  *) echo 'proof media S3 rollout blocked: scan monitor backend must be none or http' >&2; exit 1 ;;
+esac
+[ "${proof_scanner_backend:-none}" = "http" ] || [ "${proof_scan_monitor_backend:-none}" = "none" ] \
+  || { echo 'proof media S3 rollout blocked: scan monitor must be none when scanner is none' >&2; exit 1; }
 rollback_ready_filter_compatible="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE" {print tolower(substr($0, index($0, "=") + 1))}' .deploy/simple-rollback-image.env | tail -n 1)"
 if [ "$rollback_ready_filter_compatible" != "true" ]; then
   echo 'proof media reservation rollout blocked: rollback image does not advertise READY-only reads' >&2

@@ -11,7 +11,7 @@ import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifie
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-12T10:00:00.000Z');
-const uploadBytes = Buffer.from('synthetic-proof-photo');
+const uploadBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 
 describe('Driver proof media route', () => {
   test('returns short-lived proof media read access for the authenticated driver', async () => {
@@ -223,6 +223,45 @@ describe('Driver proof media route', () => {
         data: null,
         error: { code: 'BAD_REQUEST', message: 'Invalid proof media upload payload' }
       });
+      expect(storeProofMedia).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects an image MIME claim whose bytes do not have a matching signature', async () => {
+    const { app, storeProofMedia } = await createAppHarness();
+    const request = multipartUploadRequest({ fileBytes: Buffer.from('not-a-jpeg') });
+
+    try {
+      const response = await app.inject({
+        ...request,
+        headers: { ...request.headers, authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        url: '/driver/proof-media'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(storeProofMedia).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects a HEIF sequence brand from the single-photo upload contract', async () => {
+    const { app, storeProofMedia } = await createAppHarness();
+    const sequenceBytes = Buffer.from([0, 0, 0, 16, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x73, 0x66, 0x31]);
+    const request = multipartUploadRequest({ contentType: 'image/heif', fileBytes: sequenceBytes });
+
+    try {
+      const response = await app.inject({
+        ...request,
+        headers: { ...request.headers, authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        url: '/driver/proof-media'
+      });
+
+      expect(response.statusCode).toBe(400);
       expect(storeProofMedia).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -482,7 +521,7 @@ async function createAppHarness(input: {
   return { app, createProofMediaReadAccess, storeProofMedia };
 }
 
-function multipartUploadRequest(input: { contentType?: string; routePlanId?: string; source?: string } = {}): {
+function multipartUploadRequest(input: { contentType?: string; fileBytes?: Buffer; routePlanId?: string; source?: string } = {}): {
   headers: Record<string, string>;
   payload: Buffer;
 } {
@@ -499,7 +538,7 @@ function multipartUploadRequest(input: { contentType?: string; routePlanId?: str
         `Content-Type: ${contentType}\r\n\r\n`,
       'utf8'
     ),
-    uploadBytes,
+    input.fileBytes ?? uploadBytes,
     Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8')
   ];
 

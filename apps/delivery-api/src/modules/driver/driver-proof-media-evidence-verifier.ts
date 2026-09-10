@@ -42,7 +42,7 @@ export function verifyDriverProofMediaEvidenceManifest(markdown: string): Driver
 
   verifyRequiredSourceFields(markdown, failures);
   verifyGateRows(markdown, 'Storage and signed access evidence', 'storage/signed access row', failures);
-  verifyGateRows(markdown, 'Scanner and monitoring evidence', 'scanner/monitor row', failures);
+  verifyUploadSafetyPolicy(markdown, failures);
   verifyGateRows(markdown, 'Cleanup scheduler evidence', 'cleanup scheduler row', failures);
   verifyGateRows(markdown, 'Private evidence storage and approvals', 'private evidence storage row', failures);
   verifyCompletionDecision(markdown, failures);
@@ -52,6 +52,49 @@ export function verifyDriverProofMediaEvidenceManifest(markdown: string): Driver
     failures,
     warnings
   };
+}
+
+function verifyUploadSafetyPolicy(markdown: string, failures: string[]): void {
+  const section = getSection(markdown, 'Upload safety policy evidence');
+  const rows = getDataRows(section);
+  verifyGateRows(markdown, 'Upload safety policy evidence', 'upload safety policy row', failures);
+
+  const requiredGates = [
+    'Authenticated driver and assigned-route scope enforced',
+    'Image MIME allowlist and matching byte signature enforced',
+    'Ten MiB file and single-file limits enforced',
+    'JPEG EXIF metadata stripping verified'
+  ];
+  for (const gate of requiredGates) {
+    if (!hasGate(rows, gate)) {
+      failures.push(`upload safety policy required gate "${gate}" is missing.`);
+    }
+  }
+
+  const selection = rows.find((row) => normalized(row.cells[0]).startsWith('scanner backend selection:'));
+  const backend = selection?.cells[0]?.split(':', 2)[1]?.trim().toLowerCase();
+  if (backend !== 'none' && backend !== 'http') {
+    failures.push('scanner backend selection must explicitly record none or http.');
+    return;
+  }
+
+  const backendGates = backend === 'none'
+    ? ['Scanner-free operation approved']
+    : [
+        'HTTP scanner deployment approved',
+        'HTTP scanner clean and rejected fixtures pass',
+        'HTTP scan monitor handling verified'
+      ];
+  for (const gate of backendGates) {
+    if (!hasGate(rows, gate)) {
+      failures.push(`upload safety policy required gate "${gate}" is missing for scanner backend ${backend}.`);
+    }
+  }
+}
+
+function hasGate(rows: MarkdownRow[], gate: string): boolean {
+  const expected = normalized(gate);
+  return rows.some((row) => normalized(row.cells[0]) === expected);
 }
 
 function verifyRequiredSourceFields(markdown: string, failures: string[]): void {

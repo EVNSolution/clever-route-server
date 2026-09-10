@@ -394,19 +394,17 @@ export function loadDriverProofMediaRepositoryStorageOptions(env: DriverApiRunti
 }
 
 function loadDriverProofMediaRepositorySafetyOptions(env: DriverApiRuntimeEnv): DriverProofMediaRepositorySafetyOptions {
-  const options = {
+  const scannerBackend = readOptional(env.DRIVER_PROOF_MEDIA_SCANNER_BACKEND)?.toLowerCase()
+    ?? DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND;
+  const scanMonitorBackend = readOptional(env.DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND)?.toLowerCase()
+    ?? DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND;
+  if (scannerBackend === 'none' && scanMonitorBackend !== 'none') {
+    throw new Error('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND must be none when scanner backend is none');
+  }
+  return {
     ...loadDriverProofMediaScannerOption(env),
     ...loadDriverProofMediaScanMonitorOption(env)
   };
-  const productionS3 = readOptional(env.NODE_ENV)?.toLowerCase() === 'production'
-    && readOptional(env.DRIVER_PROOF_MEDIA_STORAGE_BACKEND)?.toLowerCase() === 's3';
-  if (productionS3 && options.scanner === undefined) {
-    throw new Error('DRIVER_PROOF_MEDIA_SCANNER_BACKEND=http is required for production S3 proof media');
-  }
-  if (productionS3 && options.scanMonitor === undefined) {
-    throw new Error('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND=http is required for production S3 proof media');
-  }
-  return options;
 }
 
 function loadDriverProofMediaScannerOption(env: DriverApiRuntimeEnv): Pick<DriverProofMediaRepositorySafetyOptions, 'scanner'> {

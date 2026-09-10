@@ -166,7 +166,7 @@ describe('loadDriverApiDependencies', () => {
     })).toThrow('DRIVER_PROOF_MEDIA_S3_ENDPOINT is not allowed with ec2-iam-role credentials');
   });
 
-  test('requires scanner and monitor before production S3 proof uploads are enabled', () => {
+  test('allows scanner-free production S3 proof uploads while retaining optional HTTP adapters', () => {
     const productionS3 = {
       DRIVER_PROOF_MEDIA_S3_BUCKET: 'clever-proof-media',
       DRIVER_PROOF_MEDIA_S3_REGION: 'ap-northeast-2',
@@ -175,16 +175,16 @@ describe('loadDriverApiDependencies', () => {
       NODE_ENV: 'production'
     } as const;
 
-    expect(() => loadDriverApiDependencies({ env: productionS3, prisma: {} as PrismaClient }))
-      .toThrow('DRIVER_PROOF_MEDIA_SCANNER_BACKEND=http is required for production S3 proof media');
-    expect(() => loadDriverApiDependencies({
+    expect(loadDriverApiDependencies({ env: productionS3, prisma: {} as PrismaClient })?.proofMediaService)
+      .toBeDefined();
+    expect(loadDriverApiDependencies({
       env: {
         ...productionS3,
         DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'http',
         DRIVER_PROOF_MEDIA_SCANNER_URL: 'https://scanner.internal.example/scan'
       },
       prisma: {} as PrismaClient
-    })).toThrow('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND=http is required for production S3 proof media');
+    })?.proofMediaService).toBeDefined();
     expect(loadDriverApiDependencies({
       env: {
         ...productionS3,
@@ -256,10 +256,24 @@ describe('loadDriverApiDependencies', () => {
     expect(() => loadDriverApiDependencies({
       env: {
         DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND: 'http',
+        DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'http',
+        DRIVER_PROOF_MEDIA_SCANNER_URL: 'https://scanner.internal.example/scan',
         JWT_SECRET: 'test-driver-jwt-secret-32-characters'
       },
       prisma: {} as PrismaClient
     })).toThrow('DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL is required when DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND=http');
+  });
+
+  test('rejects an inert HTTP scan monitor when scanning is disabled', () => {
+    expect(() => loadDriverApiDependencies({
+      env: {
+        DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND: 'http',
+        DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL: 'https://alerts.internal.example/proof-media-scan',
+        DRIVER_PROOF_MEDIA_SCANNER_BACKEND: 'none',
+        JWT_SECRET: 'test-driver-jwt-secret-32-characters'
+      },
+      prisma: {} as PrismaClient
+    })).toThrow('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND must be none when scanner backend is none');
   });
 
   test('loads proof media retention policy from runtime env with a default', () => {
