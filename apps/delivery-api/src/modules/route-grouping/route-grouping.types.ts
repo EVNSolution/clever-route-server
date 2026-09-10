@@ -1,4 +1,7 @@
 import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint, RoutePlanSummary } from '../route-plans/route-plan.types.js';
+import type { DriverRoutePushResult } from './driver-push.provider.js';
+
+export type RoutePublicationResult = DriverRoutePushResult & { publishedAt: string | null };
 
 export type RouteGroupingDisplayStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
 export type RouteGroupingChildDisplayStatus = RouteGroupingDisplayStatus;
@@ -388,7 +391,7 @@ export type RouteGroupingService = {
   generateChildRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null>;
   reOptimizeRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null>;
   rollback(input: RollbackRouteGroupingInput): Promise<RouteGroupingDetailDto | null>;
-  recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void>;
+  recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<RoutePublicationResult>;
 };
 
 export class RouteGroupingConflictError extends Error {

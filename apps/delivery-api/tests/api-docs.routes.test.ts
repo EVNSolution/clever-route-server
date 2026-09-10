@@ -696,6 +696,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'patch', path: '/admin/route-plans/:routePlanId/driver' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/operational-state' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/options' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/publish' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/refresh-order-data' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/start-time' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/stops' },

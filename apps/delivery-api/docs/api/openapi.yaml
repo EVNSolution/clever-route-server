@@ -3950,6 +3950,35 @@ paths:
                 $ref: '#/components/schemas/GenericDataEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /admin/route-plans/{routePlanId}/publish:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Publish a route and notify its assigned driver
+      operationId: publishAdminRoutePlan
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db-and-driver-push
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      description: >-
+        Uses Shopify session authentication and optional x-clever-app-id tenant selection.
+        Does not start the route or send customer email. Repeating a sent child-version
+        publication reuses its notification receipt. SENT means provider acceptance,
+        not confirmed device receipt. A null publishedAt means publication was not confirmed.
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route publication and separate driver notification result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanPublicationEnvelope'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501':
+          description: Route publication is unavailable in this runtime.
   /admin/route-plans/{routePlanId}/refresh-order-data:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -8299,6 +8328,27 @@ components:
           properties:
             routePlan:
               $ref: '#/components/schemas/RoutePlanSummary'
+        error:
+          type: 'null'
+    RoutePlanPublicationEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [routePlan, dispatch]
+          properties:
+            routePlan:
+              $ref: '#/components/schemas/RoutePlanSummary'
+            dispatch:
+              type: object
+              required: [routePlanId, publishedAt, notificationStatus]
+              properties:
+                routePlanId: { type: string, format: uuid }
+                publishedAt: { type: [string, 'null'], format: date-time }
+                notificationStatus: { type: string, enum: [SENT, FAILED, SKIPPED] }
+                notificationErrorCode: { type: string }
+                providerMessageId: { type: string }
         error:
           type: 'null'
     RoutePlansListEnvelope:
