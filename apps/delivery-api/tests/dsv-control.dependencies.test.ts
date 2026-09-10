@@ -14,6 +14,21 @@ const adminAccountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const activeSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 describe('loadDsvControlDependencies', () => {
+  test.each([undefined, 'false', 'true'])('gates reset issuance on public auth activation: %s', (enabled) => {
+    const dependencies = loadDsvControlDependencies({
+      env: {
+        CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
+        CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret,
+        CLEVER_DSV_ENABLED: 'true',
+        CLEVER_DSV_WEB_PUBLIC_URL: 'https://dsv.example.com',
+        ...(enabled === undefined ? {} : { CLEVER_DSV_DRIVER_AUTH_ENABLED: enabled }),
+      },
+      nodeEnv: 'production',
+      prisma: {} as PrismaClient,
+    });
+    expect(dependencies?.driverPasswordResetService !== undefined).toBe(enabled === 'true');
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });

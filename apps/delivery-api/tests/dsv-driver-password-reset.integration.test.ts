@@ -20,10 +20,238 @@ const vehicleId = '94000000-0000-4000-8000-000000000001';
 const assignmentId = '95000000-0000-4000-8000-000000000001';
 const routePlanId = '96000000-0000-4000-8000-000000000001';
 const actorId = '97000000-0000-4000-8000-000000000001';
+const eligibilityShopId = '91000000-0000-4000-8000-000000000002';
+const movedShopId = '91000000-0000-4000-8000-000000000003';
+const eligibilityAccountId = '92000000-0000-4000-8000-000000000002';
+const eligibilityDriverId = '93000000-0000-4000-8000-000000000002';
 const oldPassword = 'CurrentStrongPassw0rd!';
 const newPassword = 'NewStrongPassw0rd!';
 
 describe('DSV DriverAccount password reset PostgreSQL contract', () => {
+  live('revalidates the active same-shop DSV driver relationship without consuming a rejected link', async () => {
+    assertDisposableDatabase();
+    const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    const token = 'Z'.repeat(43);
+    const service = new PrismaDsvDriverPasswordResetService(prisma, {
+      now: () => new Date('2026-09-10T05:00:00.000Z'),
+      token: () => token,
+      webPublicOrigin: 'https://dsv.example',
+    });
+
+    try {
+      const oldPasswordHash = await passwordHash(oldPassword, 'eligibility-password-salt');
+      await prisma.shop.createMany({
+        data: [
+          { id: eligibilityShopId, shopDomain: 'reset-eligibility.test' },
+          { id: movedShopId, shopDomain: 'reset-moved.test' },
+        ],
+      });
+      await prisma.driverAccount.create({
+        data: {
+          id: eligibilityAccountId,
+          loginId: 'driver.reset.eligibility',
+          name: 'Eligibility Driver',
+          passwordHash: oldPasswordHash,
+          passwordSalt: 'eligibility-password-salt',
+          phone: '01090000002',
+        },
+      });
+      await prisma.driver.create({
+        data: {
+          accountId: eligibilityAccountId,
+          authSubject: 'driver-password-reset-eligibility-fixture',
+          displayName: 'Eligibility Driver',
+          dsvProfile: { create: { lookupName: 'Eligibility Driver' } },
+          id: eligibilityDriverId,
+          phone: '01090000002',
+          shopId: eligibilityShopId,
+          tokenVersion: 4,
+        },
+      });
+
+      let releaseConcurrentDeactivation = (): void => undefined;
+      let reportConcurrentDeactivation = (): void => undefined;
+      const concurrentDeactivationAllowed = new Promise<void>((resolve) => { releaseConcurrentDeactivation = resolve; });
+      const concurrentDeactivationHeld = new Promise<void>((resolve) => { reportConcurrentDeactivation = resolve; });
+      const concurrentDeactivation = prisma.$transaction(async (tx) => {
+        await tx.driver.update({ data: { status: 'INACTIVE' }, where: { id: eligibilityDriverId } });
+        reportConcurrentDeactivation();
+        await concurrentDeactivationAllowed;
+      });
+      await concurrentDeactivationHeld;
+      let concurrentIssueSettled = false;
+      const concurrentIssue = service.issueLink({
+        actorId,
+        driverId: eligibilityDriverId,
+        requestId: 'issue-concurrent-inactive',
+        shopId: eligibilityShopId,
+      }).finally(() => { concurrentIssueSettled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(concurrentIssueSettled).toBe(false);
+      releaseConcurrentDeactivation();
+      await concurrentDeactivation;
+      await expect(concurrentIssue).resolves.toBeNull();
+      await prisma.driver.update({ data: { status: 'ACTIVE' }, where: { id: eligibilityDriverId } });
+
+      await expect(service.issueLink({
+        actorId,
+        driverId: eligibilityDriverId,
+        requestId: 'issue-wrong-shop',
+        shopId: movedShopId,
+      })).resolves.toBeNull();
+      await expect(service.issueLink({
+        actorId,
+        driverId: '93000000-0000-4000-8000-000000000099',
+        requestId: 'issue-unknown-driver',
+        shopId: eligibilityShopId,
+      })).resolves.toBeNull();
+      await expect(service.issueLink({
+        actorId,
+        driverId: eligibilityDriverId,
+        requestId: 'issue-eligibility',
+        shopId: eligibilityShopId,
+      })).resolves.toMatchObject({
+        expiresAt: new Date('2026-09-10T05:30:00.000Z'),
+        method: 'ADMIN_LINK',
+      });
+
+      let releaseConcurrentUnlink = (): void => undefined;
+      let reportConcurrentUnlink = (): void => undefined;
+      const concurrentUnlinkAllowed = new Promise<void>((resolve) => { releaseConcurrentUnlink = resolve; });
+      const concurrentUnlinkHeld = new Promise<void>((resolve) => { reportConcurrentUnlink = resolve; });
+      const concurrentUnlink = prisma.$transaction(async (tx) => {
+        await tx.driver.update({ data: { accountId: null }, where: { id: eligibilityDriverId } });
+        reportConcurrentUnlink();
+        await concurrentUnlinkAllowed;
+      });
+      await concurrentUnlinkHeld;
+      let concurrentCompleteSettled = false;
+      const concurrentComplete = service.complete({
+        password: newPassword,
+        requestId: 'complete-concurrent-unlink',
+        token,
+      }).then(
+        () => {
+          concurrentCompleteSettled = true;
+          return null;
+        },
+        (error: unknown) => {
+          concurrentCompleteSettled = true;
+          return error;
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(concurrentCompleteSettled).toBe(false);
+      releaseConcurrentUnlink();
+      await concurrentUnlink;
+      await expect(concurrentComplete).resolves.toMatchObject({ code: 'INVALID_TOKEN' });
+      await expect(prisma.driverAccountPasswordResetLink.findUniqueOrThrow({
+        select: { consumedAt: true },
+        where: { tokenHash: createHash('sha256').update(token).digest('hex') },
+      })).resolves.toMatchObject({ consumedAt: null });
+      await prisma.driver.update({ data: { accountId: eligibilityAccountId }, where: { id: eligibilityDriverId } });
+
+      const expectRejectedButUnconsumed = async (): Promise<void> => {
+        await expect(service.issueLink({
+          actorId,
+          driverId: eligibilityDriverId,
+          requestId: 'issue-ineligible',
+          shopId: eligibilityShopId,
+        })).resolves.toBeNull();
+        await expect(service.validateLink({ token })).resolves.toBeNull();
+        await expect(service.complete({ password: newPassword, requestId: 'ineligible', token }))
+          .rejects.toMatchObject({ code: 'INVALID_TOKEN' });
+        await expect(prisma.driverAccountPasswordResetLink.findUniqueOrThrow({
+          select: { consumedAt: true },
+          where: { tokenHash: createHash('sha256').update(token).digest('hex') },
+        })).resolves.toMatchObject({ consumedAt: null });
+      };
+      const expectRestored = async (): Promise<void> => {
+        await expect(service.validateLink({ token })).resolves.toMatchObject({ method: 'ADMIN_LINK' });
+      };
+
+      await prisma.driverAccount.update({ data: { status: 'INACTIVE' }, where: { id: eligibilityAccountId } });
+      await expectRejectedButUnconsumed();
+      await prisma.driverAccount.update({ data: { status: 'ACTIVE' }, where: { id: eligibilityAccountId } });
+      await expectRestored();
+
+      await prisma.driverAccount.update({ data: { loginId: null }, where: { id: eligibilityAccountId } });
+      await expectRejectedButUnconsumed();
+      await prisma.driverAccount.update({
+        data: { loginId: 'driver.reset.eligibility' },
+        where: { id: eligibilityAccountId },
+      });
+      await expectRestored();
+
+      await prisma.driver.update({ data: { status: 'INACTIVE' }, where: { id: eligibilityDriverId } });
+      await expectRejectedButUnconsumed();
+      await prisma.driver.update({ data: { status: 'ACTIVE' }, where: { id: eligibilityDriverId } });
+      await expectRestored();
+
+      await prisma.driver.update({ data: { accountId: null }, where: { id: eligibilityDriverId } });
+      await expectRejectedButUnconsumed();
+      await prisma.driver.update({ data: { accountId: eligibilityAccountId }, where: { id: eligibilityDriverId } });
+      await expectRestored();
+
+      await prisma.dsvDriverProfile.delete({ where: { driverId: eligibilityDriverId } });
+      await expectRejectedButUnconsumed();
+      await prisma.dsvDriverProfile.create({
+        data: { driverId: eligibilityDriverId, lookupName: 'Eligibility Driver', shopId: eligibilityShopId },
+      });
+      await expectRestored();
+
+      await prisma.dsvDriverProfile.delete({ where: { driverId: eligibilityDriverId } });
+      await prisma.driver.update({ data: { shopId: movedShopId }, where: { id: eligibilityDriverId } });
+      await prisma.dsvDriverProfile.create({
+        data: { driverId: eligibilityDriverId, lookupName: 'Eligibility Driver', shopId: movedShopId },
+      });
+      await expectRejectedButUnconsumed();
+      await prisma.dsvDriverProfile.delete({ where: { driverId: eligibilityDriverId } });
+      await prisma.driver.update({ data: { shopId: eligibilityShopId }, where: { id: eligibilityDriverId } });
+      await prisma.dsvDriverProfile.create({
+        data: { driverId: eligibilityDriverId, lookupName: 'Eligibility Driver', shopId: eligibilityShopId },
+      });
+      await expectRestored();
+
+      await expect(service.complete({ password: 'weak', requestId: 'weak-password', token }))
+        .rejects.toMatchObject({ code: 'WEAK_PASSWORD' });
+      await expectRestored();
+      await expect(service.complete({ password: oldPassword, requestId: 'reused-password', token }))
+        .rejects.toMatchObject({ code: 'PASSWORD_REUSED' });
+      await expectRestored();
+
+      const [driverBefore, profileBefore] = await Promise.all([
+        prisma.driver.findUniqueOrThrow({
+          select: { accountId: true, authSubject: true, displayName: true, id: true, phone: true, shopId: true, status: true },
+          where: { id: eligibilityDriverId },
+        }),
+        prisma.dsvDriverProfile.findUniqueOrThrow({
+          select: { age: true, career: true, driverId: true, gender: true, lookupName: true, shopId: true, traits: true, zone: true },
+          where: { driverId: eligibilityDriverId },
+        }),
+      ]);
+      await service.complete({ password: newPassword, requestId: 'eligible-complete', token });
+      await expect(prisma.driver.findUniqueOrThrow({
+        select: { accountId: true, authSubject: true, displayName: true, id: true, phone: true, shopId: true, status: true },
+        where: { id: eligibilityDriverId },
+      })).resolves.toEqual(driverBefore);
+      await expect(prisma.dsvDriverProfile.findUniqueOrThrow({
+        select: { age: true, career: true, driverId: true, gender: true, lookupName: true, shopId: true, traits: true, zone: true },
+        where: { driverId: eligibilityDriverId },
+      })).resolves.toEqual(profileBefore);
+      const serializedAudits = JSON.stringify(await prisma.dsvAuditEvent.findMany({
+        where: { entityId: eligibilityAccountId, entityType: 'DRIVER_ACCOUNT' },
+      }));
+      expect(serializedAudits).not.toContain(oldPassword);
+      expect(serializedAudits).not.toContain(newPassword);
+      expect(serializedAudits).not.toContain('Eligibility Driver');
+      expect(serializedAudits).not.toContain('driver.reset.eligibility');
+      expect(serializedAudits).not.toContain('01090000002');
+    } finally {
+      await prisma.$disconnect();
+    }
+  }, 30_000);
+
   live('enforces expiry, one-time concurrency, session revocation, and relationship preservation', async () => {
     assertDisposableDatabase();
     const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
@@ -61,7 +289,7 @@ describe('DSV DriverAccount password reset PostgreSQL contract', () => {
       releaseCredentialChange();
       await replaceCredentials;
       await expect(concurrentOldPasswordLogin).rejects.toThrow('Invalid login ID or password');
-      expect(await prisma.driverAccountSession.count({ where: { accountId } })).toBe(1);
+      expect(await prisma.driverAccountSession.count({ where: { accountId } })).toBe(2);
       await prisma.driverAccount.update({
         data: {
           failedPasswordAttempts: 0,
@@ -137,6 +365,8 @@ describe('DSV DriverAccount password reset PostgreSQL contract', () => {
         prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } }),
         prisma.dsvVehicleDriverAssignment.findUniqueOrThrow({ where: { id: assignmentId } }),
       ]);
+      expect(accountSessions).toHaveLength(2);
+      expect(driverSessions).toHaveLength(2);
       expect(accountSessions.every(({ revokedAt }) => revokedAt !== null)).toBe(true);
       expect(driverSessions.every(({ revokedAt }) => revokedAt !== null)).toBe(true);
       expect(driver.accountId).toBe(accountId);
@@ -233,11 +463,25 @@ async function seed(prisma: PrismaClient): Promise<void> {
       refreshTokenHash: createHash('sha256').update('account-refresh').digest('hex'),
     },
   });
+  await prisma.driverAccountSession.create({
+    data: {
+      accountId,
+      expiresAt: new Date('2026-10-10T00:00:00.000Z'),
+      refreshTokenHash: createHash('sha256').update('account-refresh-2').digest('hex'),
+    },
+  });
   await prisma.driverSession.create({
     data: {
       driverId,
       expiresAt: new Date('2026-10-10T00:00:00.000Z'),
       refreshTokenHash: createHash('sha256').update('driver-refresh').digest('hex'),
+    },
+  });
+  await prisma.driverSession.create({
+    data: {
+      driverId,
+      expiresAt: new Date('2026-10-10T00:00:00.000Z'),
+      refreshTokenHash: createHash('sha256').update('driver-refresh-2').digest('hex'),
     },
   });
 }

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { lockDsvDriverAccount } from './dsv-driver-account-lock.js';
 
@@ -50,22 +50,10 @@ export class PrismaDsvDriverPasswordResetService implements DsvDriverPasswordRes
     const expiresAt = new Date(now.getTime() + linkTtlMs);
     const issued = await this.prisma.$transaction(async (tx) => {
       await lockDsvDriverAccount(tx, accountId);
-      const account = await tx.driverAccount.findFirst({
-        select: { id: true },
-        where: {
-          id: accountId,
-          passwordHash: { not: null },
-          passwordSalt: { not: null },
-          status: 'ACTIVE',
-          drivers: {
-            some: {
-              dsvProfile: { isNot: null },
-              id: input.driverId,
-              shopId: input.shopId,
-              status: 'ACTIVE',
-            },
-          },
-        },
+      const account = await lockEligibleDsvDriverAccount(tx, {
+        accountId,
+        driverId: input.driverId,
+        shopId: input.shopId,
       });
       if (account === null) return false;
 
@@ -114,19 +102,30 @@ export class PrismaDsvDriverPasswordResetService implements DsvDriverPasswordRes
     const token = normalizeToken(input.token);
     if (token === null) return null;
     const link = await this.prisma.driverAccountPasswordResetLink.findUnique({
-      include: { account: { select: { passwordHash: true, passwordSalt: true, status: true } } },
+      include: { account: { select: { loginId: true, passwordHash: true, passwordSalt: true, status: true } } },
       where: { tokenHash: hashToken(token) },
     });
     const now = this.now();
-    return link !== null
-      && link.consumedAt === null
-      && link.revokedAt === null
-      && link.expiresAt.getTime() > now.getTime()
-      && link.account.status === 'ACTIVE'
-      && link.account.passwordHash !== null
-      && link.account.passwordSalt !== null
-      ? { expiresAt: link.expiresAt, method: 'ADMIN_LINK' }
-      : null;
+    if (
+      link === null
+      || link.consumedAt !== null
+      || link.revokedAt !== null
+      || link.expiresAt.getTime() <= now.getTime()
+      || link.account.status !== 'ACTIVE'
+      || link.account.loginId === null
+      || link.account.passwordHash === null
+      || link.account.passwordSalt === null
+    ) return null;
+    const eligibleDriver = await this.prisma.driver.findFirst({
+      select: { id: true },
+      where: {
+        accountId: link.accountId,
+        dsvProfile: { isNot: null },
+        shopId: link.shopId,
+        status: 'ACTIVE',
+      },
+    });
+    return eligibleDriver === null ? null : { expiresAt: link.expiresAt, method: 'ADMIN_LINK' };
   }
 
   async complete(input: { password: string; requestId: string; token: string }): Promise<void> {
@@ -147,6 +146,16 @@ export class PrismaDsvDriverPasswordResetService implements DsvDriverPasswordRes
     await this.prisma.$transaction(async (tx) => {
       await lockDsvDriverAccount(tx, candidate.accountId);
       const now = this.now();
+      const linkIdentity = await tx.driverAccountPasswordResetLink.findUnique({
+        select: { accountId: true, shopId: true },
+        where: { tokenHash },
+      });
+      if (linkIdentity === null || linkIdentity.accountId !== candidate.accountId) throw invalidTokenError();
+      const eligibleAccount = await lockEligibleDsvDriverAccount(tx, {
+        accountId: candidate.accountId,
+        shopId: linkIdentity.shopId,
+      });
+      if (eligibleAccount === null) throw invalidTokenError();
       const link = await tx.driverAccountPasswordResetLink.findUnique({
         include: { account: true },
         where: { tokenHash },
@@ -158,6 +167,7 @@ export class PrismaDsvDriverPasswordResetService implements DsvDriverPasswordRes
         || link.revokedAt !== null
         || link.expiresAt.getTime() <= now.getTime()
         || link.account.status !== 'ACTIVE'
+        || link.account.loginId === null
         || link.account.passwordHash === null
         || link.account.passwordSalt === null
       ) {
@@ -221,6 +231,32 @@ export class PrismaDsvDriverPasswordResetService implements DsvDriverPasswordRes
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
+}
+
+async function lockEligibleDsvDriverAccount(
+  tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
+  input: { accountId: string; driverId?: string; shopId: string },
+): Promise<{ id: string } | null> {
+  const driverPredicate = input.driverId === undefined
+    ? Prisma.empty
+    : Prisma.sql`AND d.id = ${input.driverId}::uuid`;
+  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT a.id::text AS "id"
+    FROM "driver_accounts" AS a
+    JOIN "drivers" AS d ON d."accountId" = a.id
+    JOIN "dsv_driver_profiles" AS p ON p."driverId" = d.id AND p."shopId" = d."shopId"
+    WHERE a.id = ${input.accountId}::uuid
+      AND a.status = 'ACTIVE'
+      AND a."loginId" IS NOT NULL
+      AND a."passwordHash" IS NOT NULL
+      AND a."passwordSalt" IS NOT NULL
+      AND d."shopId" = ${input.shopId}::uuid
+      AND d.status = 'ACTIVE'
+      ${driverPredicate}
+    LIMIT 1
+    FOR UPDATE OF a, d, p
+  `);
+  return rows[0] ?? null;
 }
 
 export class DsvDriverPasswordResetError extends Error {

@@ -751,7 +751,15 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
     }, ['dsv:accounts:write', 'dsv:resources:write']));
 
-  app.post(`${apiRoot}/drivers/:driverId/password-reset-link`, async (request, reply) =>
+  app.post(`${apiRoot}/drivers/:driverId/password-reset-link`, {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-driver-password-reset-issue',
+        max: 10,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ actor, principal }) => {
       const driverId = readUuidParam(request, 'driverId');
       const body = objectBody(request.body);

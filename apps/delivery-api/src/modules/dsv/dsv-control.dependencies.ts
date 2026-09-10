@@ -50,6 +50,7 @@ export type DsvControlRuntimeEnv = AdminRouteGroupRuntimeEnv
   | 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS'
   | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
   | 'CLEVER_DSV_ENABLED'
+  | 'CLEVER_DSV_DRIVER_AUTH_ENABLED'
   | 'CLEVER_DSV_ROUTE_OPTIMIZATION_DEBOUNCE_MS'
   | 'CLEVER_DSV_ROUTE_OPTIMIZATION_ENABLED'
   | 'CLEVER_DSV_WEB_COOKIE_NAME'
@@ -120,7 +121,7 @@ export function loadDsvControlDependencies(input: {
       ...(routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler }),
     }),
     driverAccountLinkService: new PrismaDsvDriverAccountLinkService(input.prisma),
-    ...(webPublicOrigin === undefined ? {} : {
+    ...(webPublicOrigin === undefined || readBoolean(input.env.CLEVER_DSV_DRIVER_AUTH_ENABLED, 'CLEVER_DSV_DRIVER_AUTH_ENABLED') !== true ? {} : {
       driverPasswordResetService: new PrismaDsvDriverPasswordResetService(input.prisma, { webPublicOrigin }),
     }),
     driverInquiryRepository: new PrismaDsvDriverInquiryRepository(input.prisma),

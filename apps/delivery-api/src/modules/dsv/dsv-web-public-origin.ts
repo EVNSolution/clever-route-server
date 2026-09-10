@@ -9,7 +9,7 @@ export function loadDsvWebPublicOrigin(value: string | undefined, nodeEnv = 'dev
   }
   const isLocalHttp = nodeEnv !== 'production'
     && url.protocol === 'http:'
-    && ['127.0.0.1', '::1', 'localhost'].includes(url.hostname);
+    && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname);
   if (
     (url.protocol !== 'https:' && !isLocalHttp)
     || url.username !== ''

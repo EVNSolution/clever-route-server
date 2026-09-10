@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises';
 import { PrismaClient } from '@prisma/client';
 
 import { buildApp } from './app.js';
@@ -123,8 +124,12 @@ const wordPressPlugin = loadWordPressPluginDependencies({
   prisma
 });
 const logger = env.nodeEnv === 'test' ? false : { level: env.logLevel };
-const app = await buildApp(
-  createBuildAppOptions({
+const trustedProxyAddresses = process.env.CLEVER_TRUST_CADDY_PROXY === 'true'
+  ? (await lookup('caddy', { all: true })).map(({ address }) => address)
+  : [];
+const app = await buildApp({
+  trustedProxyAddresses,
+  ...createBuildAppOptions({
     adminCommerceConnections,
     adminCommerceConnectionsUi,
     adminCustomerEmail,
@@ -146,7 +151,7 @@ const app = await buildApp(
     wooCommerceWebhook,
     wordPressPlugin
   })
-);
+});
 shopifyWebhookRuntime?.worker?.attachLogger(app.log);
 const customerDeliveryNotificationRuntime = createCustomerDeliveryNotificationRuntime({
   env: process.env,
