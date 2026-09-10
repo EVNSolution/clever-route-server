@@ -65,6 +65,7 @@ import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from '../shopify/shopify-api-versio
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 import {
   archiveDeletedRouteGroupingChildMembership,
+  releaseRouteVersionOrderOwnership,
   replaceCurrentRouteGroupingChildVersion
 } from '../route-grouping/route-grouping.service.js';
 import { RouteGroupingValidationError } from '../route-grouping/route-grouping.types.js';
@@ -2595,10 +2596,21 @@ function readDeletionPredecessorId(snapshot: Prisma.JsonValue): string | null {
 }
 
 async function clearRouteGroupingChildVersionRoutePlanRefs(
-  tx: Pick<PrismaClient, 'routeGroupingChildVersion'>,
+  tx: Pick<PrismaClient, 'order' | 'routeGroupingChildVersion'>,
   input: { routePlanIds: string[]; shopId: string }
 ): Promise<void> {
   if (input.routePlanIds.length === 0) return;
+  const discardedVersions = await tx.routeGroupingChildVersion.findMany({
+    select: { id: true },
+    where: {
+      routePlanId: { in: input.routePlanIds },
+      shopId: input.shopId
+    }
+  });
+  await releaseRouteVersionOrderOwnership(tx, {
+    routeVersionIds: discardedVersions.map(({ id }) => id),
+    shopId: input.shopId
+  });
   await tx.routeGroupingChildVersion.updateMany({
     data: { routePlanId: null },
     where: {
@@ -2609,7 +2621,7 @@ async function clearRouteGroupingChildVersionRoutePlanRefs(
 }
 
 async function collapseRouteGroupingSplitAfterChildDelete(
-  tx: Pick<PrismaClient, 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanStop'>,
+  tx: Pick<PrismaClient, 'order' | 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanStop'>,
   input: { deletedChildVersions: Array<{ groupingId: string; id: string }>; shopId: string }
 ): Promise<void> {
   const groupingIds = [...new Set(input.deletedChildVersions.map((child) => child.groupingId))];
@@ -2617,17 +2629,32 @@ async function collapseRouteGroupingSplitAfterChildDelete(
 
   await tx.routeGroupingChildVersion.updateMany({
     data: { status: 'ARCHIVED', supersededAt: new Date() },
-    where: { id: { in: input.deletedChildVersions.map((child) => child.id) }, shopId: input.shopId, status: 'CURRENT' }
+    where: {
+      id: { in: input.deletedChildVersions.map((child) => child.id) },
+      shopId: input.shopId,
+      status: 'CURRENT',
+      supersededAt: null
+    }
   });
 
   for (const groupingId of groupingIds) {
     const currentChildren = await tx.routeGroupingChildVersion.findMany({
-      select: { routePlanId: true },
-      where: { groupingId, shopId: input.shopId, status: 'CURRENT' }
+      select: { id: true, routePlanId: true },
+      where: { groupingId, shopId: input.shopId, status: 'CURRENT', supersededAt: null }
     });
     const remainingRoutePlanIds = [...new Set(currentChildren.map((child) => child.routePlanId).filter((id): id is string => id !== null))];
     if (remainingRoutePlanIds.length > 1) continue;
 
+    const discardedSiblingVersions = remainingRoutePlanIds.length === 0
+      ? []
+      : await tx.routeGroupingChildVersion.findMany({
+          select: { id: true },
+          where: {
+            groupingId,
+            routePlanId: { in: remainingRoutePlanIds },
+            shopId: input.shopId
+          }
+        });
     if (remainingRoutePlanIds.length > 0) {
       const remainingRoutes = await tx.routePlan.findMany({
         select: { id: true, status: true },
@@ -2645,9 +2672,16 @@ async function collapseRouteGroupingSplitAfterChildDelete(
       }
       await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: remainingRoutePlanIds } } });
     }
+    await releaseRouteVersionOrderOwnership(tx, {
+      routeVersionIds: [
+        ...currentChildren.map(({ id }) => id),
+        ...discardedSiblingVersions.map(({ id }) => id)
+      ],
+      shopId: input.shopId
+    });
     await tx.routeGroupingChildVersion.updateMany({
       data: { status: 'ARCHIVED', supersededAt: new Date() },
-      where: { groupingId, shopId: input.shopId, status: 'CURRENT' }
+      where: { groupingId, shopId: input.shopId, status: 'CURRENT', supersededAt: null }
     });
     await tx.routeGroupingBranchOrderLock.deleteMany({ where: { groupingId, shopId: input.shopId } });
     await tx.routeGroupingBranch.deleteMany({ where: { groupingId, shopId: input.shopId } });

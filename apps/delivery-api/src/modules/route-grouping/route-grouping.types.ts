@@ -320,7 +320,9 @@ export type SaveRouteGroupingDraftInput = {
   expectedUpdatedAt?: string;
   groupingId: string;
   mode?: 'MANUAL_ORDER';
+  /** Explicitly removes group/inventory membership; omitted Unassigned orders are retained. */
   removedOrderIds?: string[];
+  /** Partition current child orders; existing orders outside current children may be omitted. */
   routes: RouteGroupingDraftRouteInput[];
   shopDomain: string;
 };

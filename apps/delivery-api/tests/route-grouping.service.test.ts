@@ -20,6 +20,44 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('route grouping contracts', () => {
+  test('rejects a cancelled order in an otherwise ready group before creating membership', async () => {
+    const facts = Array.from({ length: 41 }, (_, index) => ({
+      deliveryDate: new Date('2026-09-10T00:00:00.000Z'),
+      deliverySession: 'Thursday',
+      order: {
+        cancelledAt: index === 40 ? new Date('2026-09-09T00:00:00.000Z') : null,
+        deliveryStops: [{ id: `stop-${index}`, latitude: 43.7, longitude: -79.4, routePlanStops: [] }]
+      },
+      orderId: `order-${index}`,
+      readiness: 'READY_TO_PLAN',
+      routeScopeKey: 'Thursday-Delivery',
+      serviceType: 'DELIVERY'
+    }));
+    const tx = {
+      orderDeliveryFact: { findMany: vi.fn().mockResolvedValue(facts) },
+      routeGrouping: { create: vi.fn() },
+      routeGroupingOrder: { createMany: vi.fn() },
+      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+    };
+    const service = new PrismaRouteGroupingService({
+      $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx))
+    } as never, new FakeDriverPushProvider());
+
+    await expect(service.createGrouping({
+      appId: 'clever-route-kfood',
+      createdBy: 'admin',
+      name: 'Thursday delivery',
+      orderIds: facts.map((fact) => fact.orderId),
+      planDate: '2026-09-10',
+      shopDomain: 'tenant.example'
+    })).rejects.toMatchObject({
+      blockers: ['cancelled orders cannot be added to a route grouping'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+    expect(tx.routeGrouping.create).not.toHaveBeenCalled();
+    expect(tx.routeGroupingOrder.createMany).not.toHaveBeenCalled();
+  });
+
   test('turns one Ready standalone route into the first child and materializes unassigned sibling routes in one transaction', async () => {
     const tx = standaloneSplitTransactionHarness();
     const prisma = { $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) };
@@ -1981,6 +2019,7 @@ function standaloneSplitTransactionHarness(lockedOverrides: Partial<{
         deliveryDate: new Date('2026-09-09T00:00:00.000Z'),
         deliverySession: null,
         order: {
+          cancelledAt: null,
           deliveryStops: [{ id: assignment.deliveryStopId, latitude: 43.7, longitude: -79.4, routePlanStops: [{ id: `route-stop-${assignment.orderId}` }] }]
         },
         orderId: assignment.orderId,

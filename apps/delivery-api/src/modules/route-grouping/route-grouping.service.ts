@@ -2785,18 +2785,28 @@ function normalizeExplicitDraftIds(values: string[], field: string): string[] {
 
 function assertDraftOrderPartition(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[], removedOrderIds: string[]): void {
   const currentOrderIds = group.orders.map((order) => order.orderId);
+  const currentOrderIdSet = new Set(currentOrderIds);
   const submittedOrderIds = routes.flatMap((route) => route.orderIds);
   const submittedOrderIdSet = new Set(submittedOrderIds);
   const removedOrderIdSet = new Set(removedOrderIds);
   if (submittedOrderIds.some((orderId) => removedOrderIdSet.has(orderId))) {
     throw new RouteGroupingValidationError(['route draft orders cannot be both routed and removed']);
   }
-  if (removedOrderIds.some((orderId) => !currentOrderIds.includes(orderId))) {
+  if (removedOrderIds.some((orderId) => !currentOrderIdSet.has(orderId))) {
     throw new RouteGroupingValidationError(['route draft removed orders must belong to the current route grouping']);
   }
+  if (submittedOrderIds.some((orderId) => !currentOrderIdSet.has(orderId))) {
+    throw new RouteGroupingValidationError(['route draft orders must belong to the current route grouping']);
+  }
+  const currentChildOrderIds = new Set(group.childVersions
+    .filter(isOperationalCurrentChild)
+    .flatMap((child) => readCurrentChildAssignments(group, child).map((assignment) => assignment.orderId)));
+  // Older clients omit the Unassigned pool. Only explicit removedOrderIds delete group membership.
+  const retainedUnassignedOrderIds = currentOrderIds.filter((orderId) => !currentChildOrderIds.has(orderId));
   const partition = new Set([...submittedOrderIds, ...removedOrderIds]);
+  for (const orderId of retainedUnassignedOrderIds) partition.add(orderId);
   if (partition.size !== currentOrderIds.length || currentOrderIds.some((orderId) => !partition.has(orderId))) {
-    throw new RouteGroupingValidationError(['route draft must include every current route group order exactly once across routes and removedOrderIds']);
+    throw new RouteGroupingValidationError(['route draft must include every current child route order exactly once across routes and removedOrderIds']);
   }
   if (submittedOrderIdSet.size !== submittedOrderIds.length) {
     throw new RouteGroupingValidationError(['route draft order ids must be unique']);
@@ -3720,10 +3730,21 @@ async function deleteBranchOrderLocks(
 }
 
 async function clearRouteGroupingChildVersionRoutePlanRefs(
-  tx: Pick<Tx, 'routeGroupingChildVersion'>,
+  tx: Pick<Tx, 'order' | 'routeGroupingChildVersion'>,
   input: { routePlanIds: string[]; shopId: string }
 ): Promise<void> {
   if (input.routePlanIds.length === 0) return;
+  const discardedVersions = await tx.routeGroupingChildVersion.findMany({
+    select: { id: true },
+    where: {
+      routePlanId: { in: input.routePlanIds },
+      shopId: input.shopId
+    }
+  });
+  await releaseRouteVersionOrderOwnership(tx, {
+    routeVersionIds: discardedVersions.map(({ id }) => id),
+    shopId: input.shopId
+  });
   await tx.routeGroupingChildVersion.updateMany({
     data: { routePlanId: null },
     where: {
@@ -3738,7 +3759,7 @@ type GroupingDateRange = { end: Date; endText: string; planDate: Date; start: Da
 type DeliveryFactForGrouping = {
   deliveryDate: Date | null;
   deliverySession: string | null;
-  order: { deliveryStops: Array<{ latitude: unknown; longitude: unknown; routePlanStops: Array<{ id: string }> }> };
+  order: { cancelledAt: Date | null; deliveryStops: Array<{ latitude: unknown; longitude: unknown; routePlanStops: Array<{ id: string }> }> };
   orderId: string;
   routeScopeKey: string | null;
   serviceType: string | null;
@@ -3804,6 +3825,7 @@ function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: Deliv
   for (const orderId of input.orderIds) {
     const fact = input.facts.find((candidate) => candidate.orderId === orderId);
     if (fact === undefined) continue;
+    if (fact.order.cancelledAt !== null) blockers.push('cancelled orders cannot be added to a route grouping');
     const deliveryDate = formatDateOnly(fact.deliveryDate);
     if (deliveryDate !== null && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
       blockers.push('selected orders must fall within grouping date range');
@@ -4830,7 +4852,7 @@ function withChildSnapshotPredecessor(
 }
 
 export async function archiveDeletedRouteGroupingChildMembership(
-  tx: Pick<Tx, 'routeGroupingChildVersion'>,
+  tx: Pick<Tx, 'order' | 'routeGroupingChildVersion'>,
   child: Pick<LoadedChild,
     'driverId' | 'groupingId' | 'groupingVersionId' | 'id' | 'notificationStatus' |
     'publishedAt' | 'shopId' | 'snapshot' | 'version'>
@@ -4844,6 +4866,10 @@ export async function archiveDeletedRouteGroupingChildMembership(
   await tx.routeGroupingChildVersion.update({
     data: { status: 'ARCHIVED', supersededAt: archivedAt },
     where: { id: child.id }
+  });
+  await releaseRouteVersionOrderOwnership(tx, {
+    routeVersionIds: [child.id],
+    shopId: child.shopId
   });
   await tx.routeGroupingChildVersion.create({
     data: {
@@ -4867,6 +4893,22 @@ export async function archiveDeletedRouteGroupingChildMembership(
       version: child.version
     }
   });
+}
+
+export async function releaseRouteVersionOrderOwnership(
+  tx: Pick<Tx, 'order'>,
+  input: { routeVersionIds: string[]; shopId: string }
+): Promise<number> {
+  const routeVersionIds = [...new Set(input.routeVersionIds)];
+  if (routeVersionIds.length === 0) return 0;
+  const released = await tx.order.updateMany({
+    data: { currentRouteVersionId: null },
+    where: {
+      currentRouteVersionId: { in: routeVersionIds },
+      shopId: input.shopId
+    }
+  });
+  return released.count;
 }
 
 function readOptimizedBranchSnapshot(value: unknown): RouteGroupingBranchDto['optimized'] {

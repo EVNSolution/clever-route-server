@@ -328,7 +328,7 @@ export class PrismaOrderQueryRepository {
     const exclusions = new Set(input.excludeOrderIds ?? []);
     const result = await this.prisma.$transaction(async (tx) => {
       const members = await tx.order.findMany({
-        select: { id: true },
+        select: { cancelledAt: true, id: true },
         where: { AND: [
           toCanonicalOrderWhere(shop.id, filters, now),
           { createdAt: { lte: now }, displayOrderSequence: { not: null } }
@@ -336,13 +336,15 @@ export class PrismaOrderQueryRepository {
       });
       const memberIds = new Set(members.map(({ id }) => id));
       if ([...exclusions].some((id) => !memberIds.has(id))) throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
+      const effectiveExclusions = new Set([...exclusions, ...members.filter(({ cancelledAt }) => cancelledAt !== null).map(({ id }) => id)]);
+      const selectedCount = members.filter(({ cancelledAt, id }) => cancelledAt === null && !exclusions.has(id)).length;
       const snapshot = await tx.orderSelectionSnapshot.create({
         data: {
           actorSubjectHash,
           appId,
           expiresAt,
           filterHash,
-          selectedCount: members.length - exclusions.size,
+          selectedCount,
           shopId: shop.id,
           snapshotWatermark: now,
           sort: ORDERS_SORT,
@@ -350,7 +352,7 @@ export class PrismaOrderQueryRepository {
         }
       });
       if (members.length > 0) await tx.orderSelectionSnapshotOrder.createMany({
-        data: members.map(({ id }) => ({ excludedAt: exclusions.has(id) ? now : null, orderId: id, snapshotId: snapshot.id }))
+        data: members.map(({ id }) => ({ excludedAt: effectiveExclusions.has(id) ? now : null, orderId: id, snapshotId: snapshot.id }))
       });
       return snapshot;
     });
@@ -371,17 +373,24 @@ export class PrismaOrderQueryRepository {
     selectionToken: string;
     shopDomain: string;
   }) {
-    const snapshot = await this.boundSnapshot(input);
-    const exclusions = new Set(input.excludeOrderIds);
-    const members = new Set(snapshot.orders.map(({ orderId }) => orderId));
-    if ([...exclusions].some((id) => !members.has(id))) throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
-    const now = new Date();
-    await this.prisma.$transaction([
-      this.prisma.orderSelectionSnapshotOrder.updateMany({ data: { excludedAt: null }, where: { snapshotId: snapshot.id } }),
-      this.prisma.orderSelectionSnapshotOrder.updateMany({ data: { excludedAt: now }, where: { orderId: { in: [...exclusions] }, snapshotId: snapshot.id } }),
-      this.prisma.orderSelectionSnapshot.update({ data: { selectedCount: members.size - exclusions.size }, where: { id: snapshot.id } })
-    ]);
-    return { expiresAt: snapshot.expiresAt.toISOString(), selectedCount: members.size - exclusions.size };
+    return this.prisma.$transaction(async (tx) => {
+      const snapshot = await this.boundSnapshot(input, tx);
+      const exclusions = new Set(input.excludeOrderIds);
+      const memberIds = snapshot.orders.map(({ orderId }) => orderId);
+      const members = new Set(memberIds);
+      if ([...exclusions].some((id) => !members.has(id))) throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
+      const eligibleIds = new Set((await tx.order.findMany({
+        select: { id: true },
+        where: { cancelledAt: null, id: { in: memberIds }, shopId: snapshot.shopId }
+      })).map(({ id }) => id));
+      const effectiveExclusions = new Set([...exclusions, ...memberIds.filter((id) => !eligibleIds.has(id))]);
+      const selectedCount = [...eligibleIds].filter((id) => !exclusions.has(id)).length;
+      const now = this.now();
+      await tx.orderSelectionSnapshotOrder.updateMany({ data: { excludedAt: null }, where: { snapshotId: snapshot.id } });
+      await tx.orderSelectionSnapshotOrder.updateMany({ data: { excludedAt: now }, where: { orderId: { in: [...effectiveExclusions] }, snapshotId: snapshot.id } });
+      await tx.orderSelectionSnapshot.update({ data: { selectedCount }, where: { id: snapshot.id } });
+      return { expiresAt: snapshot.expiresAt.toISOString(), selectedCount };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   async consumeSelectionSnapshot(input: { actor: string; appId?: string; selectionToken: string; shopDomain: string }) {

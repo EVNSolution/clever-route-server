@@ -2143,8 +2143,15 @@ describe('PrismaRoutePlanRepository', () => {
       where: { id: 'route-plan-id', shopId: 'shop-id', status: { not: 'IN_PROGRESS' } }
     });
     expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: { in: ['child-version-1'] }, shopId: 'shop-id', status: 'CURRENT' }
+      where: { id: { in: ['child-version-1'] }, shopId: 'shop-id', status: 'CURRENT', supersededAt: null }
     }));
+    expect(prisma.order.updateMany).toHaveBeenCalledWith({
+      data: { currentRouteVersionId: null },
+      where: {
+        currentRouteVersionId: { in: ['child-version-1'] },
+        shopId: 'shop-id'
+      }
+    });
     expect(prisma.routeGroupingBranchOrderLock.deleteMany).toHaveBeenCalledWith({
       where: { groupingId: 'grouping-id', shopId: 'shop-id' }
     });
@@ -2156,7 +2163,11 @@ describe('PrismaRoutePlanRepository', () => {
   test('collapses a parent grouping split when deleting a child leaves only one child route', async () => {
     const { prisma } = createPrismaHarness({
       routeGroupingChildVersionCount: 1,
-      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'remaining-route-plan-id' }]
+      routeGroupingCurrentChildrenAfterDelete: [{ id: 'remaining-child-version-id', routePlanId: 'remaining-route-plan-id' }],
+      routeGroupingVersionsForCollapse: [
+        { id: 'remaining-child-version-id' },
+        { id: 'historical-sibling-version-id' }
+      ]
     });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
@@ -2175,8 +2186,15 @@ describe('PrismaRoutePlanRepository', () => {
       where: { id: { in: ['remaining-route-plan-id'] }, shopId: 'shop-id', status: { not: 'IN_PROGRESS' } }
     });
     expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { groupingId: 'grouping-id', shopId: 'shop-id', status: 'CURRENT' }
+      where: { groupingId: 'grouping-id', shopId: 'shop-id', status: 'CURRENT', supersededAt: null }
     }));
+    expect(prisma.order.updateMany).toHaveBeenCalledWith({
+      data: { currentRouteVersionId: null },
+      where: {
+        currentRouteVersionId: { in: ['remaining-child-version-id', 'historical-sibling-version-id'] },
+        shopId: 'shop-id'
+      }
+    });
     expect(prisma.routeGroupingBranchOrderLock.deleteMany).toHaveBeenCalledWith({
       where: { groupingId: 'grouping-id', shopId: 'shop-id' }
     });
@@ -2362,7 +2380,8 @@ function createPrismaHarness(input: {
   routePlansForCollapse?: Array<{ id: string; status: string }>;
   routePlanUpdateManyCount?: number;
   routeGroupingChildVersionCount?: number;
-  routeGroupingCurrentChildrenAfterDelete?: Array<{ routePlanId: string | null }>;
+  routeGroupingCurrentChildrenAfterDelete?: Array<{ id?: string; routePlanId: string | null }>;
+  routeGroupingVersionsForCollapse?: Array<{ id: string }>;
   routeGroupingOwnerChildren?: Array<{ groupingId: string }>;
   shop?: Record<string, unknown> | null;
 } = {}): {
@@ -2391,6 +2410,7 @@ function createPrismaHarness(input: {
     };
     order: {
       findMany: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
     };
     orderDeliveryFact: {
@@ -2492,6 +2512,7 @@ function createPrismaHarness(input: {
         orderRecord({ id: 'order-1', gid: 'gid://shopify/Order/123', stopId: 'stop-1', deliveryDate: input.orderDeliveryDate ?? '2026-05-08' }),
         orderRecord({ id: 'order-2', gid: 'gid://shopify/Order/124', stopId: 'stop-2', deliveryDate: input.orderDeliveryDate ?? '2026-05-08' })
       ])),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
       upsert: vi
         .fn()
         .mockResolvedValueOnce({ id: 'order-1' })
@@ -2516,8 +2537,8 @@ function createPrismaHarness(input: {
     routeGroupingChildVersion: {
       count: vi.fn(() => Promise.resolve(input.routeGroupingChildVersionCount ?? 0)),
       create: vi.fn(() => Promise.resolve({ id: 'deletion-tombstone-id' })),
-      findMany: vi.fn((args?: { where?: { groupingId?: string; routePlanId?: string } }) => {
-        if (args?.where?.routePlanId !== undefined) {
+      findMany: vi.fn((args?: { where?: { groupingId?: string; routePlanId?: string | { in?: string[] } } }) => {
+        if (typeof args?.where?.routePlanId === 'string') {
           return Promise.resolve(input.routeGroupingOwnerChildren ?? Array.from(
             { length: input.routeGroupingChildVersionCount ?? 0 },
             (_, index) => ({
@@ -2535,7 +2556,13 @@ function createPrismaHarness(input: {
             })
           ));
         }
-        return Promise.resolve(input.routeGroupingCurrentChildrenAfterDelete ?? []);
+        if (args?.where?.routePlanId !== undefined) {
+          return Promise.resolve(input.routeGroupingVersionsForCollapse ?? []);
+        }
+        return Promise.resolve((input.routeGroupingCurrentChildrenAfterDelete ?? []).map((child, index) => ({
+          id: child.id ?? `remaining-child-version-${index + 1}`,
+          ...child
+        })));
       }),
       update: vi.fn(() => Promise.resolve({ id: 'child-version-1' })),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))

@@ -35,7 +35,7 @@ const reviewedMutationInventory = [
 const reviewedAssignmentPointerInventory = [
   'modules/dsv/dsv-assignment-command.service.ts:order.updateMany:3',
   'modules/dsv/dsv-dispatch-import.service.ts:order.updateMany:1',
-  'modules/route-grouping/route-grouping.service.ts:order.updateMany:1'
+  'modules/route-grouping/route-grouping.service.ts:order.updateMany:2'
 ];
 
 describe('route membership mutation authority', () => {
@@ -155,7 +155,10 @@ describe('route membership mutation authority', () => {
     expect(bindingAuthority).toContain('boundOrderIds.length === 0');
     expect(bindingAuthority).toContain('order.currentRouteVersionId === null');
     expect(bindingAuthority).toContain("return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH'");
-    expect(source.match(/readCurrentChildAssignments\(/gu)).toHaveLength(3);
+    // Draft partition discovery also reads membership; actual child mutations still require CURRENT authority.
+    expect(source.match(/readCurrentChildAssignments\(/gu)).toHaveLength(4);
+    const partition = source.slice(source.indexOf('function assertDraftOrderPartition('), source.indexOf('function assertDraftRoutePlanEnvelope('));
+    expect(partition).toContain('readCurrentChildAssignments(group, child)');
     const childDto = source.slice(source.indexOf('function toChildDto('), source.indexOf('function readChildRouteGeometry('));
     const childGeometry = source.slice(source.indexOf('function readChildRouteGeometry('), source.indexOf('function readExactChildRouteMetricsFromRoutePlan('));
     expect(childDto).toContain('const assignments = readCurrentChildAssignments(group, child)');
