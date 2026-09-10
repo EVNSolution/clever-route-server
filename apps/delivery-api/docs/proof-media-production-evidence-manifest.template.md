@@ -28,7 +28,7 @@ npm run driver:proof-media:evidence:verify -- /path/to/private/proof-media-produ
 ```
 
 The verifier should pass only after all `pending` placeholders are removed,
-storage/signed-access, scanner/monitoring, cleanup scheduler, and private
+storage/signed-access, upload safety policy, cleanup scheduler, and private
 evidence storage rows are approved or passing, and the production proof-media
 decision is `approved`. The verifier does not prove the private evidence is
 authentic; owner-controlled review remains required.
@@ -63,16 +63,26 @@ authentic; owner-controlled review remains required.
 | Signed GET expiry after five minutes | pending | pending | pending | never store the signed URL in evidence |
 | Retention window approved | pending | pending | pending | 365-day S3 and DB cleanup match |
 
-## Scanner and monitoring evidence
+## Upload safety policy evidence
 
 | Gate | Status | Evidence reference | Owner | Notes |
 | --- | --- | --- | --- | --- |
-| HTTP scanner deployment selected | pending | pending | pending | keep endpoint private |
-| Scanner endpoint auth/secret custody approved | pending | pending | pending | keep token private |
-| Clean scan smoke passes with synthetic media | pending | pending | pending | sanitized result only |
-| Rejected scan smoke blocks storage metadata | pending | pending | pending | no rule names in public evidence |
-| Scan monitor or alert route deployed | pending | pending | pending | sanitized alert evidence |
-| Incident response owner approved | pending | pending | pending | on-call owner recorded privately |
+| Scanner backend selection: none | pending | pending | pending | replace none with http when the optional adapter is selected |
+| Scanner-free operation approved | pending | pending | pending | do not claim clean/rejected scanning when backend is none |
+| Authenticated driver and assigned-route scope enforced | pending | pending | pending | unauthorized and cross-route requests fail |
+| Image MIME allowlist and matching byte signature enforced | pending | pending | pending | JPEG, PNG, WebP, HEIC, or HEIF only |
+| Ten MiB file and single-file limits enforced | pending | pending | pending | multipart limits remain active |
+| JPEG EXIF metadata stripping verified | pending | pending | pending | hash and size describe sanitized bytes |
+
+When `http` is selected, replace the two scanner-free rows with passing rows
+using these exact gate labels:
+
+- `Scanner backend selection: http`
+- `HTTP scanner deployment approved`
+- `HTTP scanner clean and rejected fixtures pass`
+- `HTTP scan monitor handling verified`
+
+Do not add those rows or claim scan results when `none` is selected.
 
 ## Cleanup scheduler evidence
 
@@ -98,7 +108,7 @@ authentic; owner-controlled review remains required.
 | Gate | Status | Notes |
 | --- | --- | --- |
 | Storage and signed access evidence complete | pending | pending |
-| Scanner and monitoring evidence complete | pending | pending |
+| Upload safety policy evidence complete | pending | pending |
 | Cleanup scheduler evidence complete | pending | pending |
 | Private evidence storage approved | pending | pending |
 | Sensitive evidence kept outside git | pending | pending |

@@ -2229,6 +2229,9 @@ async function readDriverProofMediaUpload(
   }
 
   const contentType = readProofMediaContentType(file.mimetype);
+  if (!hasMatchingProofMediaSignature(contentType, fileBytes)) {
+    throw new Error('Proof media file signature does not match its content type');
+  }
 
   return {
     contentType,
@@ -2261,11 +2264,30 @@ function readMultipartFieldValue(field: MultipartValue): string {
 
 function readProofMediaContentType(value: unknown): string {
   const contentType = readRequiredString(value).toLowerCase();
-  if (!contentType.startsWith('image/')) {
-    throw new Error('Proof media file must be an image');
+  if (!['image/heic', 'image/heif', 'image/jpeg', 'image/png', 'image/webp'].includes(contentType)) {
+    throw new Error('Proof media file type is unsupported');
   }
 
   return contentType;
+}
+
+function hasMatchingProofMediaSignature(contentType: string, fileBytes: Buffer): boolean {
+  if (contentType === 'image/jpeg') {
+    return fileBytes.length >= 3 && fileBytes[0] === 0xff && fileBytes[1] === 0xd8 && fileBytes[2] === 0xff;
+  }
+  if (contentType === 'image/png') {
+    return fileBytes.length >= 8 && fileBytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  if (contentType === 'image/webp') {
+    return fileBytes.length >= 12
+      && fileBytes.subarray(0, 4).equals(Buffer.from('RIFF'))
+      && fileBytes.subarray(8, 12).equals(Buffer.from('WEBP'));
+  }
+
+  const brand = fileBytes.length >= 12 ? fileBytes.subarray(8, 12).toString('ascii') : '';
+  return fileBytes.length >= 12
+    && fileBytes.subarray(4, 8).equals(Buffer.from('ftyp'))
+    && ['heic', 'heix', 'mif1'].includes(brand);
 }
 
 function readProofMediaSource(value: string): DriverProofMediaSource {

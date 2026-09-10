@@ -64,9 +64,11 @@ scanner endpoints, account ids, addresses, and screenshots out of git.
    DRIVER_PROOF_MEDIA_RETENTION_DAYS=365
    ```
 
-7. Configure and privately verify the approved HTTP scanner and scan monitor
-   before calling the rollout complete. Keep their bearer tokens in the approved
-   secret store.
+7. Set `DRIVER_PROOF_MEDIA_SCANNER_BACKEND=none` and
+   `DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND=none` for an approved scanner-free
+   policy. Record that decision privately without claiming scan results. HTTP
+   scanner and monitor adapters remain available; when selected, configure their
+   URLs and keep bearer tokens in the approved secret store.
 8. Verify `clever-driver-event-attempt-retention.timer` is enabled and that its
    runner includes `driver:proof-media:cleanup`.
 
@@ -91,8 +93,11 @@ After deploying an approved exact SHA, capture sanitized results for this sequen
 4. Verify the signed URL succeeds before expiry and fails after expiry. Verify a
    customer session, another Store, missing session, non-READY media, and deleted
    media cannot obtain access.
-5. Run the scanner clean and rejected fixtures. Verify rejected bytes never create
-   a media row or S3 object and the scan monitor receives a sanitized outcome.
+5. Verify authentication, assigned-route scope, the image MIME allowlist,
+   matching byte signatures, the ten MiB/single-file limits, and JPEG EXIF
+   stripping. When the optional HTTP scanner is selected, also run its clean and
+   rejected fixtures and verify rejected bytes never create a media row or S3
+   object.
 6. Seed one synthetic `READY` row immediately before the 365-day cutoff and one
    immediately older. Run cleanup and verify only the older object, media row,
    and stop links are removed while the sanitized cleanup aggregate remains.
@@ -104,7 +109,7 @@ After deploying an approved exact SHA, capture sanitized results for this sequen
 
 Record the deployed image digest, migration ids, effective non-secret settings,
 bucket public-access and lifecycle summaries, instance-profile and IMDSv2 checks,
-scanner/monitor smoke references, signed-access expiry result, multi-stop link
+upload-safety policy references, signed-access expiry result, multi-stop link
 counts, cleanup retry result, timer status, and sanitized `RetentionJobRun` id in
 the private evidence manifest. Run:
 

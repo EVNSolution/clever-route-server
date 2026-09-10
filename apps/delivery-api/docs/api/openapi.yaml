@@ -9424,6 +9424,7 @@ components:
           enum: [camera, library]
           type: string
         file:
+          description: One JPEG, PNG, WebP, HEIC, or HEIF image up to 10 MiB. The declared MIME type must match the file signature.
           format: binary
           type: string
     DriverProofMediaEnvelope:

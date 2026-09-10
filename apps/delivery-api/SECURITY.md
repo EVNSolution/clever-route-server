@@ -30,7 +30,7 @@ Security review for this server includes:
 - `.env*` files, production secrets, database dumps, local proof-media files, build outputs, and logs must remain ignored unless a sanitized example is explicitly intended for git.
 - Public API responses must not leak Shopify Admin tokens, driver JWT secrets, unrelated tenant data, raw proof-media paths, or internal storage roots.
 - Driver data access must remain scoped by shop/company, assigned driver, route plan, and stop membership before disclosing route details or accepting proof evidence.
-- Proof-media production hardening must address object-storage bucket/IAM ownership, S3 signing credential custody, signed retrieval/access evidence, HTTP scanner endpoint custody, deployed malware scanner evidence, scan alert evidence, deletion, and retention before release use.
+- Proof-media production hardening must address object-storage bucket/IAM ownership, S3 signing credential custody, signed retrieval/access evidence, an explicit scanner-free or HTTP-scanner policy decision, upload validation, deletion, and retention before release use.
 - Proof-media cleanup evidence in `RetentionJobRun` must stay sanitized: counts, timestamps, retention policy, and private evidence references only; do not store media ids, storage keys, proof bytes, coordinates, phone numbers, or customer data there.
 
 ## Evidence handling

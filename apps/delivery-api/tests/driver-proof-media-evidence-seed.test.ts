@@ -58,6 +58,7 @@ describe('driver proof media production evidence seed', () => {
     expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_SCANNER_BACKEND` | `none` |');
     expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND` | `none` |');
     expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_CLEANUP_EVIDENCE_REF` | missing |');
-    expect(markdown).toContain('This seed is not proof that production storage, scanner, monitoring, or cleanup scheduler is deployed.');
+    expect(markdown).toContain('scanner deliberately disabled; record approval privately');
+    expect(markdown).toContain('This seed is not proof that production storage or cleanup is deployed.');
   });
 });
