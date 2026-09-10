@@ -8,6 +8,7 @@ import {
 
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import {
+  RoutePlanDeleteBlockedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanGeometryRefreshFailedError,
   RoutePlanBatchInvalidError,
@@ -815,16 +816,23 @@ export function registerAdminRoutePlanRoutes(
         return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
       }
 
-      const result = await dependencies.routePlanService.deleteRoutePlan({
-        appId: authenticated.appId,
-        routePlanId: request.params.routePlanId,
-        shopDomain: authenticated.shopDomain
-      });
+      try {
+        const result = await dependencies.routePlanService.deleteRoutePlan({
+          appId: authenticated.appId,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain
+        });
 
-      return reply.code(200).send({
-        data: result,
-        error: null
-      });
+        return reply.code(200).send({
+          data: result,
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof RoutePlanDeleteBlockedError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
     }
   );
 }
