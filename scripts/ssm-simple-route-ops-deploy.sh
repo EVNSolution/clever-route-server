@@ -296,9 +296,9 @@ else
   CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE=''
 fi
 proof_scanner_backend="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCANNER_BACKEND" {print tolower(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
-proof_scanner_url_configured="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCANNER_URL" {value=substr($0, index($0, "=") + 1); print length(value) > 0 ? "true" : "false"}' apps/delivery-api/.env | tail -n 1)"
+proof_scanner_url_configured="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCANNER_URL" {value=substr($0, index($0, "=") + 1); print (length(value) > 0 ? "true" : "false")}' apps/delivery-api/.env | tail -n 1)"
 proof_scan_monitor_backend="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND" {print tolower(substr($0, index($0, "=") + 1))}' apps/delivery-api/.env | tail -n 1)"
-proof_scan_monitor_url_configured="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL" {value=substr($0, index($0, "=") + 1); print length(value) > 0 ? "true" : "false"}' apps/delivery-api/.env | tail -n 1)"
+proof_scan_monitor_url_configured="$(awk -F= '$1 == "DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL" {value=substr($0, index($0, "=") + 1); print (length(value) > 0 ? "true" : "false")}' apps/delivery-api/.env | tail -n 1)"
 case "${proof_scanner_backend:-none}" in
   none) ;;
   http) [ "$proof_scanner_url_configured" = "true" ] \
