@@ -17,6 +17,8 @@ import {
 } from './route-tracking.road-match.js';
 import type {
   RouteTrackingPositionEventV1,
+  RouteExecutionEvidenceV1,
+  RouteExecutionLifecycleEvidenceV1,
   RouteTrackingProgressEventType,
   RouteTrackingProgressEventV1,
   RouteTrackingProgressSnapshotV1,
@@ -26,7 +28,9 @@ import type {
   RouteTrackingStatus
 } from './route-tracking.types.js';
 
-type RouteTrackingPrismaClient = Pick<PrismaClient, 'driverEvent' | 'routePlanStop' | 'routeTrackingGeometry'>;
+type RouteTrackingPrismaClient = Pick<PrismaClient, 'driverEvent' | 'routePlan' | 'routePlanStop' | 'routeTrackingGeometry'>;
+
+const DEPOT_RETURN_THRESHOLD_METERS = 150;
 
 const ROUTE_TRACKING_PROGRESS_EVENT_TYPES: RouteTrackingProgressEventType[] = [
   'ROUTE_STARTED',
@@ -66,6 +70,15 @@ type DriverProgressEventRow = {
 type DriverArrivalEventRow = DriverProgressEventRow & {
   latitude: unknown;
   longitude: unknown;
+};
+
+type DriverLifecycleEventRow = {
+  createdAt: Date;
+  eventType: string;
+  id: string;
+  latitude: unknown;
+  longitude: unknown;
+  occurredAt: Date;
 };
 
 export class PrismaRouteTrackingService implements RouteTrackingService {
@@ -221,9 +234,11 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       .map((row) => toPositionEvent(row))
       .filter((position): position is RouteTrackingPositionEventV1 => position !== null);
     const progress = buildProgressSnapshot(latestProgressRow, latestDriverStageRow, routeStops);
+    const executionEvidence = await this.getExecutionEvidence(input.routePlanId, recentPositions);
     this.refreshRoadMatchedPath(recordedGeometry);
 
     return {
+      executionEvidence,
       latestPosition,
       policy: ROUTE_TRACKING_V1_POLICY,
       progress,
@@ -235,6 +250,60 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       serverTime: serverTime.toISOString(),
       status: getTrackingStatus(latestPosition, serverTime),
       stopArrivals: buildStopArrivals(arrivalRows, routeStops, [...recentPositions, ...arrivalPositions])
+    };
+  }
+
+  private async getExecutionEvidence(
+    routePlanId: string,
+    positions: RouteTrackingPositionEventV1[]
+  ): Promise<RouteExecutionEvidenceV1> {
+    const lifecycleSelect = {
+      createdAt: true,
+      eventType: true,
+      id: true,
+      latitude: true,
+      longitude: true,
+      occurredAt: true
+    } as const;
+    const [startRow, completionRow] = await Promise.all([
+      this.prisma.driverEvent.findFirst({
+        orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
+        select: lifecycleSelect,
+        where: { eventType: 'ROUTE_STARTED', routePlanId }
+      }),
+      this.prisma.driverEvent.findFirst({
+        orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
+        select: lifecycleSelect,
+        where: { eventType: 'ROUTE_COMPLETED', routePlanId }
+      })
+    ]);
+    const start = toLifecycleEvidence(startRow, 'ROUTE_STARTED');
+    const completion = toLifecycleEvidence(completionRow, 'ROUTE_COMPLETED');
+    const firstPosition = positions[0] ?? null;
+    const lastPosition = positions.at(-1) ?? null;
+    if (start === null && completion === null) {
+      return emptyExecutionEvidence(firstPosition, lastPosition);
+    }
+
+    const routePlan = await this.prisma.routePlan.findUnique({
+      select: { constraints: true, depotLatitude: true, depotLongitude: true },
+      where: { id: routePlanId }
+    });
+    const routeEndMode = readRouteEndMode(routePlan?.constraints);
+    return {
+      completion,
+      firstPosition,
+      lastPosition,
+      returnToDepot: buildReturnEvidence({
+        completion,
+        depot: readCoordinate(routePlan?.depotLatitude, routePlan?.depotLongitude),
+        lastPosition,
+        routeEndMode
+      }),
+      routeEndMode,
+      schemaVersion: 'route_execution_evidence.v1',
+      start,
+      timeSemantics: 'EVENT_TIMESTAMPS_ONLY'
     };
   }
 
@@ -272,6 +341,116 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       }
     })();
   }
+}
+
+function emptyExecutionEvidence(
+  firstPosition: RouteTrackingPositionEventV1 | null,
+  lastPosition: RouteTrackingPositionEventV1 | null
+): RouteExecutionEvidenceV1 {
+  return {
+    completion: null,
+    firstPosition,
+    lastPosition,
+    returnToDepot: {
+      distanceToDepotMeters: null,
+      evidenceEventId: null,
+      observedAt: null,
+      source: 'NONE',
+      status: 'UNAVAILABLE',
+      thresholdMeters: DEPOT_RETURN_THRESHOLD_METERS
+    },
+    routeEndMode: null,
+    schemaVersion: 'route_execution_evidence.v1',
+    start: null,
+    timeSemantics: 'EVENT_TIMESTAMPS_ONLY'
+  };
+}
+
+function toLifecycleEvidence(
+  row: DriverLifecycleEventRow | null,
+  expectedType: 'ROUTE_COMPLETED' | 'ROUTE_STARTED'
+): RouteExecutionLifecycleEvidenceV1 | null {
+  if (row === null || row.eventType !== expectedType) return null;
+  const coordinates = readCoordinate(row.latitude, row.longitude);
+  return {
+    eventId: row.id,
+    latitude: coordinates?.latitude ?? null,
+    longitude: coordinates?.longitude ?? null,
+    occurredAt: row.occurredAt.toISOString(),
+    receivedAt: row.createdAt.toISOString()
+  };
+}
+
+function buildReturnEvidence(input: {
+  completion: RouteExecutionLifecycleEvidenceV1 | null;
+  depot: { latitude: number; longitude: number } | null;
+  lastPosition: RouteTrackingPositionEventV1 | null;
+  routeEndMode: 'END_AT_LAST_STOP' | 'RETURN_TO_DEPOT';
+}): RouteExecutionEvidenceV1['returnToDepot'] {
+  if (input.routeEndMode === 'END_AT_LAST_STOP') {
+    return {
+      distanceToDepotMeters: null,
+      evidenceEventId: null,
+      observedAt: null,
+      source: 'NONE',
+      status: 'NOT_REQUIRED',
+      thresholdMeters: DEPOT_RETURN_THRESHOLD_METERS
+    };
+  }
+  if (input.completion === null || input.depot === null) {
+    return unavailableReturnEvidence();
+  }
+  const completionCoordinates = input.completion.latitude === null || input.completion.longitude === null
+    ? null
+    : { latitude: input.completion.latitude, longitude: input.completion.longitude };
+  const lastPositionAgeMs = input.lastPosition === null
+    ? Number.POSITIVE_INFINITY
+    : Math.abs(Date.parse(input.completion.occurredAt) - Date.parse(input.lastPosition.occurredAt));
+  const positionCoordinates = input.lastPosition === null || lastPositionAgeMs > ROUTE_TRACKING_V1_POLICY.delayedThresholdMs
+    ? null
+    : { latitude: input.lastPosition.latitude, longitude: input.lastPosition.longitude };
+  const coordinates = completionCoordinates ?? positionCoordinates;
+  if (coordinates === null) return unavailableReturnEvidence();
+  const distanceToDepotMeters = Math.round(haversineMeters(input.depot, coordinates) * 10) / 10;
+  const usesCompletion = completionCoordinates !== null;
+  return {
+    distanceToDepotMeters,
+    evidenceEventId: usesCompletion ? input.completion.eventId : input.lastPosition!.eventId,
+    observedAt: usesCompletion ? input.completion.occurredAt : input.lastPosition!.occurredAt,
+    source: usesCompletion ? 'ROUTE_COMPLETED' : 'LOCATION_UPDATED',
+    status: distanceToDepotMeters <= DEPOT_RETURN_THRESHOLD_METERS ? 'CONFIRMED' : 'UNCONFIRMED',
+    thresholdMeters: DEPOT_RETURN_THRESHOLD_METERS
+  };
+}
+
+function unavailableReturnEvidence(): RouteExecutionEvidenceV1['returnToDepot'] {
+  return {
+    distanceToDepotMeters: null,
+    evidenceEventId: null,
+    observedAt: null,
+    source: 'NONE',
+    status: 'UNAVAILABLE',
+    thresholdMeters: DEPOT_RETURN_THRESHOLD_METERS
+  };
+}
+
+function readRouteEndMode(value: unknown): 'END_AT_LAST_STOP' | 'RETURN_TO_DEPOT' {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'END_AT_LAST_STOP';
+  return (value as Record<string, unknown>).routeEndMode === 'RETURN_TO_DEPOT'
+    ? 'RETURN_TO_DEPOT'
+    : 'END_AT_LAST_STOP';
+}
+
+function haversineMeters(
+  left: { latitude: number; longitude: number },
+  right: { latitude: number; longitude: number }
+): number {
+  const radians = (degrees: number): number => degrees * Math.PI / 180;
+  const latitudeDelta = radians(right.latitude - left.latitude);
+  const longitudeDelta = radians(right.longitude - left.longitude);
+  const a = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(radians(left.latitude)) * Math.cos(radians(right.latitude)) * Math.sin(longitudeDelta / 2) ** 2;
+  return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 export function createRouteTrackingProgressEvent(input: {
