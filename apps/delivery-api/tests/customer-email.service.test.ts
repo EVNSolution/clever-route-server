@@ -499,6 +499,73 @@ describe('CustomerEmailService', () => {
     expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({ body: renderedBody }));
   });
 
+  test.each([
+    ['OUT_FOR_DELIVERY', new Date('2026-08-04T10:00:00.000Z'), 'Aug 4, 2026, 6:00 AM EDT'],
+    ['DRIVER_NEARBY', new Date('2026-01-01T04:15:00.000Z'), 'Dec 31, 2025, 11:15 PM EST'],
+  ] as const)('renders %s ETA in the authoritative local timezone for preview and delivery', async (signal, eta, renderedEta) => {
+    const { prisma, service, transport } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      constraints: { timezone: 'America/Toronto' },
+      customerEmailSettings: {
+        ...defaults,
+        automatic: { ...defaults.automatic, enabled: true },
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...defaults.templates,
+          [signal]: {
+            body: 'ETA {{eta}} on {{deliveryDate}}',
+            enabled: true,
+            subject: '{{eta}}',
+            version: 2,
+          },
+        },
+      },
+      routeOpsUiSettings: { nearbyStopsThreshold: 1, version: 1 },
+      stops: [stopRow({ estimatedArrivalAt: eta, id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    prisma.customerEmailManualDispatch.create.mockResolvedValue({ id: 'dispatch-id' });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+
+    const preview = await service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal,
+    });
+    const renderedBody = `ETA ${renderedEta} on 2026-08-04`;
+    expect(preview).toMatchObject({
+      recipients: [{ rendered: { body: renderedBody, subject: renderedEta } }],
+    });
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: `manual:${signal}:stop-1`,
+      confirmed: true,
+      deliveryStopIds: ['stop-1'],
+      previewToken: preview?.previewToken,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal,
+    })).resolves.toMatchObject({ counts: { sent: 1 } });
+    expect(transport.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: renderedBody,
+      subject: renderedEta,
+    }));
+
+    await expect(service.sendAutomatic({
+      deliveryStopIds: ['stop-1'],
+      idempotencyKey: `${signal}:stop-1`,
+      recipientEmail: 'customer@example.com',
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal,
+    })).resolves.toMatchObject({ status: 'SENT' });
+    expect(transport.send).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: renderedBody,
+      subject: renderedEta,
+    }));
+  });
+
   test('handles DST boundaries and reports a missing ETA window when timezone authority is ambiguous', async () => {
     const { prisma, service } = createHarness();
     const defaults = defaultCustomerEmailSettings();
@@ -508,7 +575,7 @@ describe('CustomerEmailService', () => {
       templates: {
         ...defaults.templates,
         DELIVERY_SCHEDULED: {
-          body: 'Window {{etaWindow}}',
+          body: 'ETA {{eta}}\nWindow {{etaWindow}}',
           enabled: true,
           subject: 'Scheduled',
           version: 2,
@@ -533,7 +600,7 @@ describe('CustomerEmailService', () => {
     })).resolves.toMatchObject({
       recipients: [{
         diagnostics: { body: [] },
-        rendered: { body: 'Window Nov 1, 2026, 1:30 AM EDT - Nov 1, 2026, 1:30 AM EST' },
+        rendered: { body: 'ETA Nov 1, 2026, 1:00 AM EST\nWindow Nov 1, 2026, 1:30 AM EDT - Nov 1, 2026, 1:30 AM EST' },
       }],
     });
 
@@ -549,8 +616,11 @@ describe('CustomerEmailService', () => {
       signal: 'DELIVERY_SCHEDULED',
     })).resolves.toMatchObject({
       recipients: [{
-        diagnostics: { body: [{ code: 'MISSING_TEMPLATE_VALUE', key: 'etaWindow' }] },
-        rendered: { body: 'Window ' },
+        diagnostics: { body: [
+          { code: 'MISSING_TEMPLATE_VALUE', key: 'eta' },
+          { code: 'MISSING_TEMPLATE_VALUE', key: 'etaWindow' },
+        ] },
+        rendered: { body: 'ETA \nWindow ' },
       }],
     });
   });
