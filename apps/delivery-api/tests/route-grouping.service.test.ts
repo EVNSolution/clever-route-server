@@ -4,6 +4,7 @@ import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/rout
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import { computeRouteShapeSignatureFromParts } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import {
+  assertDraftSchedulePlanDates,
   currentRouteBindingAuthorityState,
   PrismaRouteGroupingService,
   newChildRouteName,
@@ -25,6 +26,24 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 describe('route grouping contracts', () => {
+  test('requires a scheduled departure to fall on the route plan date in its local timezone', () => {
+    const route = {
+      branchId: null,
+      orderIds: [],
+      routePlanId: 'route-1',
+      scheduledStartTimeZone: 'America/Toronto'
+    };
+
+    expect(() => assertDraftSchedulePlanDates(new Date('2026-09-11T00:00:00.000Z'), [{
+      ...route,
+      scheduledStartAt: '2026-09-11T13:00:00.000Z'
+    }])).not.toThrow();
+    expect(() => assertDraftSchedulePlanDates(new Date('2026-09-11T00:00:00.000Z'), [{
+      ...route,
+      scheduledStartAt: '2026-10-11T13:00:00.000Z'
+    }])).toThrow('route draft scheduledStartAt must use the route group plan date in scheduledStartTimeZone');
+  });
+
   test('rejects a cancelled order in an otherwise ready group before creating membership', async () => {
     const facts = Array.from({ length: 41 }, (_, index) => ({
       deliveryDate: new Date('2026-09-10T00:00:00.000Z'),
