@@ -1297,7 +1297,9 @@ function renderContext(routePlan: CustomerEmailRoutePlanRow, stop: CustomerEmail
     deliveryAddress: formatAddress(stop.deliveryStop),
     deliveryDate: formatDate(stop.deliveryStop.deliveryDate ?? routePlan.planDate),
     deliveryWeekday: stop.deliveryStop.order.deliveryFacts[0]?.deliveryWeekday ?? '',
-    eta: stop.estimatedArrivalAt === null ? '' : stop.estimatedArrivalAt.toISOString(),
+    eta: stop.estimatedArrivalAt === null || timezone === null
+      ? ''
+      : formatEta(stop.estimatedArrivalAt, timezone),
     etaWindow: stop.estimatedArrivalAt === null || timezone === null
       ? ''
       : formatEtaWindow(stop.estimatedArrivalAt, timezone),
@@ -1342,7 +1344,12 @@ function resolveCustomerEmailTimezone(routePlan: CustomerEmailRoutePlanRow): str
 }
 
 function formatEtaWindow(eta: Date, timezone: string): string {
-  const formatter = new Intl.DateTimeFormat('en-US', {
+  const halfWindowMs = 30 * 60 * 1000;
+  return `${formatEta(new Date(eta.getTime() - halfWindowMs), timezone)} - ${formatEta(new Date(eta.getTime() + halfWindowMs), timezone)}`;
+}
+
+function formatEta(eta: Date, timezone: string): string {
+  return new Intl.DateTimeFormat('en-US', {
     day: 'numeric',
     hour: 'numeric',
     hour12: true,
@@ -1351,9 +1358,7 @@ function formatEtaWindow(eta: Date, timezone: string): string {
     timeZone: timezone,
     timeZoneName: 'short',
     year: 'numeric',
-  });
-  const halfWindowMs = 30 * 60 * 1000;
-  return `${formatter.format(new Date(eta.getTime() - halfWindowMs))} - ${formatter.format(new Date(eta.getTime() + halfWindowMs))}`;
+  }).format(eta);
 }
 
 function readNonEmptyString(value: unknown): string | null {
