@@ -3077,6 +3077,7 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
   const rawPayload = objectOrNull(order.rawPayload);
   const shippingAddress = readShippingAddress(order.shippingAddress, deliveryStop);
   const attributes = readAttributes(rawPayload);
+  const totalShippingPrice = readTotalShippingPrice(rawPayload);
 
   return {
     address: shippingAddress,
@@ -3115,6 +3116,8 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     phone: deliveryStop.phone ?? order.phone ?? null,
     serviceMinutes: deliveryStop.serviceMinutes,
     shippingPriceAmount: readShippingPriceAmount(rawPayload),
+    totalShippingPriceAmount: totalShippingPrice.amount,
+    totalShippingPriceCurrencyCode: totalShippingPrice.currencyCode,
     totalPriceAmount: stringOrNull(order.totalPriceAmount),
     orderId: order.id,
     locationDiagnostic: diagnoseRouteStopLocation({
@@ -3137,6 +3140,18 @@ function readShippingPriceAmount(rawPayload: Record<string, unknown> | null): st
   const shippingPriceSet = objectOrNull(rawPayload?.currentShippingPriceSet);
   const shopMoney = objectOrNull(shippingPriceSet?.shopMoney);
   return readString(shopMoney?.amount);
+}
+
+function readTotalShippingPrice(rawPayload: Record<string, unknown> | null): {
+  amount: string | null;
+  currencyCode: string | null;
+} {
+  const shippingPriceSet = objectOrNull(rawPayload?.totalShippingPriceSet);
+  const shopMoney = objectOrNull(shippingPriceSet?.shopMoney);
+  return {
+    amount: readString(shopMoney?.amount),
+    currencyCode: readString(shopMoney?.currencyCode)
+  };
 }
 
 function createMetrics(orders: RoutePlanOrderInput[]): Prisma.InputJsonObject {

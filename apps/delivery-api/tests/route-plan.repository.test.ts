@@ -282,7 +282,7 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
   });
 
-  test('projects Shopify shipping price from raw payload onto route detail stops', async () => {
+  test('keeps current and original Shopify shipping prices distinct on route detail stops', async () => {
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: routePlanRecord({
         routeStops: [
@@ -299,7 +299,13 @@ describe('PrismaRoutePlanRepository', () => {
               rawPayload: {
                 currentShippingPriceSet: {
                   shopMoney: {
-                    amount: '12.34',
+                    amount: '0.00',
+                    currencyCode: 'CAD'
+                  }
+                },
+                totalShippingPriceSet: {
+                  shopMoney: {
+                    amount: '5.00',
                     currencyCode: 'CAD'
                   }
                 }
@@ -307,6 +313,29 @@ describe('PrismaRoutePlanRepository', () => {
               stopId: 'stop-1'
             }),
             sequence: 1,
+            serviceMinutes: null
+          }),
+          routePlanStopRecord({
+            deliveryStopId: 'stop-2',
+            estimatedArrivalAt: null,
+            distanceFromPreviousMeters: null,
+            durationFromPreviousSeconds: null,
+            order: orderRecord({
+              currencyCode: 'CAD',
+              deliveryDate: '2026-05-08',
+              gid: 'gid://shopify/Order/456',
+              id: 'order-2',
+              rawPayload: {
+                currentShippingPriceSet: {
+                  shopMoney: {
+                    amount: '0.00',
+                    currencyCode: 'CAD'
+                  }
+                }
+              },
+              stopId: 'stop-2'
+            }),
+            sequence: 2,
             serviceMinutes: null
           })
         ]
@@ -323,7 +352,14 @@ describe('PrismaRoutePlanRepository', () => {
 
     expect(result?.stops[0]).toEqual(expect.objectContaining({
       currencyCode: 'CAD',
-      shippingPriceAmount: '12.34'
+      shippingPriceAmount: '0.00',
+      totalShippingPriceAmount: '5.00',
+      totalShippingPriceCurrencyCode: 'CAD'
+    }));
+    expect(result?.stops[1]).toEqual(expect.objectContaining({
+      shippingPriceAmount: '0.00',
+      totalShippingPriceAmount: null,
+      totalShippingPriceCurrencyCode: null
     }));
   });
 

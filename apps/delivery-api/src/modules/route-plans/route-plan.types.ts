@@ -176,6 +176,8 @@ export type RoutePlanDetailStop = {
   phone?: string | null;
   serviceMinutes?: number | null;
   shippingPriceAmount?: string | null;
+  totalShippingPriceAmount?: string | null;
+  totalShippingPriceCurrencyCode?: string | null;
   totalPriceAmount?: string | null;
   orderId: string;
   items?: OrderItemDto[];
