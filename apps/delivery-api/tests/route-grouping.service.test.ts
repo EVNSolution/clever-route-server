@@ -1,6 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
+import { buildApp } from '../src/app.js';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { computeRouteShapeSignatureFromParts } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import {
   currentRouteBindingAuthorityState,
   PrismaRouteGroupingService,
@@ -13,11 +15,14 @@ import {
 } from '../src/modules/route-grouping/route-grouping.service.js';
 import {
   RouteGroupingConflictError,
+  type RouteGroupingRoutesListDto,
+  type RouteGroupingSummaryDto,
   RouteGroupingStopMembershipConflictError,
   RouteGroupingValidationError
 } from '../src/modules/route-grouping/route-grouping.types.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 describe('route grouping contracts', () => {
   test('rejects a cancelled order in an otherwise ready group before creating membership', async () => {
@@ -1633,6 +1638,150 @@ describe('route grouping contracts', () => {
     expect(summary).toContain('totalAmount: normalizeRouteTotalAmount');
   });
 
+  test('returns a compact Routes-list projection with equivalent table identity, lifecycle, and totals', async () => {
+    const loaded = routesListGroupingFixture();
+    const grouped = routesListMultiChildGroupingFixture();
+    const empty = { ...loaded, childVersions: [], id: 'group-empty', inventory: null, name: 'Empty group', orders: [] };
+    const findMany = vi.fn().mockResolvedValue([loaded, grouped, empty]);
+    const service = new PrismaRouteGroupingService({
+      routeGrouping: { findMany },
+      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+    } as never, new FakeDriverPushProvider());
+
+    const fullList = await service.listGroupings({ shopDomain: 'tenant.example' }) as RouteGroupingSummaryDto[];
+    const compactList = await service.listGroupings({ shopDomain: 'tenant.example', view: 'routes-list' }) as RouteGroupingRoutesListDto[];
+    const full = fullList[0]!;
+    const compact = compactList[0]!;
+
+    expect(compact).toMatchObject({
+      currentVersion: full.currentVersion,
+      dateRangeEnd: full.dateRangeEnd,
+      dateRangeStart: full.dateRangeStart,
+      displayStatus: full.displayStatus,
+      id: full.id,
+      linkedInventoryId: full.linkedInventoryId,
+      name: full.name,
+      planDate: full.planDate,
+      status: full.status,
+      totalOrders: full.totalOrders,
+      unresolvedOrders: full.unresolvedOrders,
+      updatedAt: full.updatedAt
+    });
+    expect(compact.children).toHaveLength(1);
+    expect(compact.children[0]).toMatchObject({
+      color: full.children[0]?.color,
+      displayStatus: full.children[0]?.displayStatus,
+      driverId: full.children[0]?.driverId,
+      driverName: full.children[0]?.driverName,
+      routeMetrics: full.children[0]?.routeMetrics,
+      routePlanId: full.children[0]?.routePlanId,
+      routeIdx: full.children[0]?.routeIdx,
+      stopsCount: full.children[0]?.stopsCount
+    });
+    expect(compact.children[0]?.routePlan).toMatchObject({
+      deliveredCount: full.children[0]?.routePlan?.deliveredCount,
+      etaRange: full.children[0]?.routePlan?.etaRange,
+      id: full.children[0]?.routePlan?.id,
+      itemSummary: { totalQuantity: full.children[0]?.routePlan?.itemSummary?.totalQuantity },
+      routeMetrics: full.children[0]?.routePlan?.routeMetrics,
+      status: full.children[0]?.routePlan?.status,
+      stopsCount: full.children[0]?.routePlan?.stopsCount,
+      totalAmount: full.children[0]?.routePlan?.totalAmount
+    });
+    const fullGrouped = fullList[1]!;
+    const compactGrouped = compactList[1]!;
+    expect(compactGrouped.children).toHaveLength(2);
+    expect(compactGrouped.children.map(({ routePlanId }) => routePlanId)).toEqual(fullGrouped.children.map(({ routePlanId }) => routePlanId));
+    expect(compactGrouped.children.map(({ routePlan }) => routePlan?.totalAmount)).toEqual(fullGrouped.children.map(({ routePlan }) => routePlan?.totalAmount));
+    expect(compactGrouped.displayStatus).toBe(fullGrouped.displayStatus);
+    const compactEmpty = compactList[2]!;
+    expect(compactEmpty).toMatchObject({ children: [], id: 'group-empty', linkedInventoryId: null, totalOrders: 0, unresolvedOrders: 0 });
+    expect(JSON.stringify(compact)).not.toMatch(/recipient|address|phone|geometry|stopPoints|Kimchi/iu);
+
+    const compactQuery: unknown = findMany.mock.calls[1]?.[0];
+    expect(compactQuery).toMatchObject({
+      select: {
+        childVersions: {
+          select: { routePlan: { select: { routeGeometryCaches: { select: { metrics: true, shapeSignature: true } } } } },
+          where: { status: 'CURRENT', supersededAt: null }
+        },
+        orders: {
+          select: {
+            deliveryStop: { select: { latitude: true, longitude: true, status: true } },
+            order: { select: { orderItems: { select: { quantity: true } } } }
+          }
+        }
+      }
+    });
+    expect(JSON.stringify(compactQuery)).not.toMatch(/"(?:address1|customerRouteNotifications|email|geometry|phone|stopPoints)":/u);
+  });
+
+  test('materially reduces serialized Routes-list bytes on representative grouped rows', async () => {
+    const loaded = Array.from({ length: 35 }, (_, index) => expandedRoutesListGroupingFixture(index + 1, 15));
+    const service = new PrismaRouteGroupingService({
+      routeGrouping: { findMany: vi.fn().mockResolvedValue(loaded) },
+      shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
+    } as never, new FakeDriverPushProvider());
+
+    const fullStartedAt = performance.now();
+    const full = await service.listGroupings({ shopDomain: 'tenant.example' });
+    const fullProjectedAt = performance.now();
+    const fullJson = JSON.stringify(full);
+    const fullBytes = Buffer.byteLength(fullJson);
+    const fullGzipBytes = gzipSync(fullJson).byteLength;
+    const fullFinishedAt = performance.now();
+    const compactStartedAt = performance.now();
+    const compact = await service.listGroupings({ shopDomain: 'tenant.example', view: 'routes-list' });
+    const compactProjectedAt = performance.now();
+    const compactJson = JSON.stringify(compact);
+    const compactBytes = Buffer.byteLength(compactJson);
+    const compactGzipBytes = gzipSync(compactJson).byteLength;
+    const compactFinishedAt = performance.now();
+
+    const app = await buildApp({
+      adminRouteGroups: {
+        geocodingService: { geocode: vi.fn() },
+        routeGroupingService: service,
+        sessionTokenVerifier: {
+          verify: vi.fn(() => ({ appId: 'clever', shopDomain: 'tenant.example', subject: 'admin' }))
+        }
+      }
+    });
+    const apiMedianMs = async (url: string) => {
+      const samples: number[] = [];
+      for (let index = 0; index < 12; index += 1) {
+        const startedAt = performance.now();
+        const response = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET', url });
+        expect(response.statusCode).toBe(200);
+        if (index >= 2) samples.push(performance.now() - startedAt);
+      }
+      return [...samples].sort((left, right) => left - right)[Math.floor(samples.length / 2)] ?? 0;
+    };
+    try {
+      const fullApiMedianMs = await apiMedianMs('/admin/route-groups');
+      const compactApiMedianMs = await apiMedianMs('/admin/route-groups?view=routes-list');
+      console.info(JSON.stringify({
+        compactApiMedianMs: Number(compactApiMedianMs.toFixed(2)),
+        compactBytes,
+        compactGzipBytes,
+        compactProjectionMs: Number((compactProjectedAt - compactStartedAt).toFixed(2)),
+        compactSerializationMs: Number((compactFinishedAt - compactProjectedAt).toFixed(2)),
+        event: 'route_grouping_routes_list_benchmark',
+        fullApiMedianMs: Number(fullApiMedianMs.toFixed(2)),
+        fullBytes,
+        fullGzipBytes,
+        fullProjectionMs: Number((fullProjectedAt - fullStartedAt).toFixed(2)),
+        fullSerializationMs: Number((fullFinishedAt - fullProjectedAt).toFixed(2)),
+        groups: 35,
+        stopsPerGroup: 15
+      }));
+    } finally {
+      await app.close();
+    }
+    expect(compactBytes).toBeLessThan(fullBytes * 0.35);
+    expect(compactGzipBytes).toBeLessThan(fullGzipBytes * 0.6);
+  });
+
   test('fake FCM provider records string-safe route payload fields', async () => {
     const provider = new FakeDriverPushProvider();
     const result = await provider.sendRouteNotification({
@@ -1649,6 +1798,249 @@ describe('route grouping contracts', () => {
     expect(provider.sentMessages[0]?.metadata).toEqual({ changeRequestId: 'change-request-id', orderMessageId: 'message-id' });
   });
 });
+
+function routesListGroupingFixture() {
+  const routePlanId = 'route-1';
+  const childId = 'child-1';
+  const deliveryStopId = 'stop-1';
+  const orderId = 'order-1';
+  const depot = { latitude: 43.7, longitude: -79.4 };
+  const coordinates = { latitude: 43.65, longitude: -79.38 };
+  const shapeSignature = computeRouteShapeSignatureFromParts({
+    depot,
+    routeEndMode: 'RETURN_TO_DEPOT',
+    stops: [{ coordinates, deliveryStopId, orderId, sequence: 1 }]
+  });
+  const snapshot = {
+    color: '#2563eb',
+    driverId: 'driver-1',
+    groupingId: 'group-1',
+    groupingVersion: 3,
+    membershipDeleted: false,
+    membershipFormat: 'MODERN',
+    membershipSchemaVersion: 1,
+    name: 'Toronto route',
+    planDate: '2026-09-11',
+    predecessorChildVersionId: null,
+    routeIdx: 7,
+    routeScope: { deliverySession: null, routeScopeKey: null, serviceType: null },
+    sortOrder: 2,
+    stops: [{ deliveryStopId, orderId, sequence: 1, sourceOrderId: '1001' }]
+  };
+  const routePlan = {
+    constraints: {
+      scheduledStartAt: '2026-09-11T12:00:00.000Z',
+      scheduledStartTimeZone: 'America/Toronto'
+    },
+    createdAt: new Date('2026-09-11T10:00:00.000Z'),
+    depotLatitude: depot.latitude,
+    depotLongitude: depot.longitude,
+    driver: { displayName: 'Driver One' },
+    driverEvents: [{ eventType: 'ROUTE_COMPLETED' }],
+    driverId: 'driver-1',
+    id: routePlanId,
+    name: 'Toronto route',
+    planDate: new Date('2026-09-11T00:00:00.000Z'),
+    routeGeometryCaches: [{
+      generatedAt: new Date('2026-09-11T10:05:00.000Z'),
+      geometry: { coordinates: [[depot.longitude, depot.latitude], [coordinates.longitude, coordinates.latitude]], type: 'LineString' },
+      metrics: { distanceMeters: 1234, durationSeconds: 567 },
+      provider: 'osrm',
+      providerVersion: null,
+      shapeSignature,
+      source: 'SNAPSHOT',
+      stopPoints: []
+    }],
+    routeStops: [{ deliveryStopId, estimatedArrivalAt: new Date('2026-09-11T12:30:00.000Z'), sequence: 1 }],
+    status: 'READY',
+    updatedAt: new Date('2026-09-11T10:10:00.000Z')
+  };
+  return {
+    childVersions: [{
+      driver: { displayName: 'Driver One' },
+      driverId: 'driver-1',
+      id: childId,
+      notificationAttempts: [],
+      notificationStatus: 'SENT',
+      routePlan,
+      routePlanId,
+      snapshot,
+      status: 'CURRENT',
+      supersededAt: null,
+      updatedAt: new Date('2026-09-11T10:10:00.000Z'),
+      version: 3
+    }, {
+      driver: null,
+      driverId: null,
+      id: 'child-archived',
+      notificationAttempts: [],
+      notificationStatus: 'SKIPPED',
+      routePlan: null,
+      routePlanId: null,
+      snapshot: { ...snapshot, membershipDeleted: true, predecessorChildVersionId: childId, stops: [] },
+      status: 'ARCHIVED',
+      supersededAt: new Date('2026-09-11T09:00:00.000Z'),
+      updatedAt: new Date('2026-09-11T09:00:00.000Z'),
+      version: 2
+    }],
+    currentVersion: 3,
+    dateRangeEnd: new Date('2026-09-11T00:00:00.000Z'),
+    dateRangeStart: new Date('2026-09-11T00:00:00.000Z'),
+    id: 'group-1',
+    inventory: { id: 'inventory-1' },
+    name: 'Toronto group',
+    orders: [{
+      assignedDriverId: 'driver-1',
+      assignedPolygonId: null,
+      assignmentStatus: 'ASSIGNED',
+      deliveryStop: {
+        address1: '100 King St',
+        address2: null,
+        city: 'Toronto',
+        countryCode: 'CA',
+        instructions: null,
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude,
+        phone: '+14165550100',
+        postalCode: 'M5H 1J9',
+        priority: 0,
+        province: 'ON',
+        recipientName: 'Recipient',
+        serviceMinutes: 5,
+        status: 'DELIVERED',
+        timeWindowEnd: null,
+        timeWindowStart: null
+      },
+      deliveryStopId,
+      order: {
+        currencyCode: 'CAD',
+        currentRouteVersionId: childId,
+        customerRouteNotifications: [],
+        email: 'recipient@example.test',
+        id: orderId,
+        name: '#1001',
+        orderItems: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: 'KIMCHI', variationId: 0 }],
+        phone: '+14165550100',
+        shopifyOrderGid: 'gid://shopify/Order/1001',
+        sourceOrderId: '1001',
+        sourcePlatform: 'SHOPIFY',
+        totalPriceAmount: '25.50'
+      },
+      orderId,
+      sourceSequence: 1
+    }],
+    planDate: new Date('2026-09-11T00:00:00.000Z'),
+    shop: { defaultDepotAddress: 'Depot', defaultDepotLatitude: depot.latitude, defaultDepotLongitude: depot.longitude },
+    status: 'READY',
+    updatedAt: new Date('2026-09-11T10:10:00.000Z')
+  };
+}
+
+function routesListMultiChildGroupingFixture() {
+  const fixture = routesListGroupingFixture();
+  const firstChild = fixture.childVersions[0]!;
+  const firstOrder = fixture.orders[0]!;
+  const secondChildId = 'child-2';
+  const secondRoutePlanId = 'route-2';
+  const secondDeliveryStopId = 'stop-2';
+  const secondOrderId = 'order-2';
+  const secondOrder = {
+    ...firstOrder,
+    deliveryStopId: secondDeliveryStopId,
+    order: {
+      ...firstOrder.order,
+      currentRouteVersionId: secondChildId,
+      id: secondOrderId,
+      sourceOrderId: '1002'
+    },
+    orderId: secondOrderId,
+    sourceSequence: 2
+  };
+  const secondChild = {
+    ...firstChild,
+    driver: null,
+    driverId: null,
+    id: secondChildId,
+    routePlan: {
+      ...firstChild.routePlan!,
+      driver: null,
+      driverId: null,
+      id: secondRoutePlanId,
+      routeGeometryCaches: [],
+      routeStops: [{ deliveryStopId: secondDeliveryStopId, estimatedArrivalAt: null, sequence: 1 }]
+    },
+    routePlanId: secondRoutePlanId,
+    snapshot: {
+      ...firstChild.snapshot,
+      driverId: null,
+      groupingId: 'group-multi',
+      routeIdx: 8,
+      sortOrder: 3,
+      stops: [{ deliveryStopId: secondDeliveryStopId, orderId: secondOrderId, sequence: 1, sourceOrderId: '1002' }]
+    }
+  };
+  return {
+    ...fixture,
+    childVersions: [
+      { ...firstChild, snapshot: { ...firstChild.snapshot, groupingId: 'group-multi' } },
+      secondChild
+    ],
+    id: 'group-multi',
+    name: 'Toronto multi-route group',
+    orders: [firstOrder, secondOrder]
+  };
+}
+
+function expandedRoutesListGroupingFixture(groupIndex: number, stopsCount: number) {
+  const fixture = routesListGroupingFixture();
+  const baseChild = fixture.childVersions[0]!;
+  const baseOrder = fixture.orders[0]!;
+  const childId = `child-${groupIndex}`;
+  const routePlanId = `route-${groupIndex}`;
+  const orders = Array.from({ length: stopsCount }, (_, stopIndex) => {
+    const suffix = `${groupIndex}-${stopIndex + 1}`;
+    return {
+      ...baseOrder,
+      deliveryStop: { ...baseOrder.deliveryStop, address1: `${stopIndex + 1} King St` },
+      deliveryStopId: `stop-${suffix}`,
+      order: {
+        ...baseOrder.order,
+        currentRouteVersionId: childId,
+        email: `recipient-${suffix}@example.test`,
+        id: `order-${suffix}`,
+        name: `#${suffix}`,
+        shopifyOrderGid: `gid://shopify/Order/${suffix}`,
+        sourceOrderId: suffix
+      },
+      orderId: `order-${suffix}`,
+      sourceSequence: stopIndex + 1
+    };
+  });
+  const snapshotStops = orders.map((assignment, index) => ({
+    deliveryStopId: assignment.deliveryStopId,
+    orderId: assignment.orderId,
+    sequence: index + 1,
+    sourceOrderId: assignment.order.sourceOrderId
+  }));
+  return {
+    ...fixture,
+    childVersions: [{
+      ...baseChild,
+      id: childId,
+      routePlan: {
+        ...baseChild.routePlan!,
+        id: routePlanId,
+        routeGeometryCaches: [],
+        routeStops: snapshotStops.map((stop) => ({ ...stop, estimatedArrivalAt: null }))
+      },
+      routePlanId,
+      snapshot: { ...baseChild.snapshot, groupingId: `group-${groupIndex}`, stops: snapshotStops }
+    }],
+    id: `group-${groupIndex}`,
+    name: `Toronto group ${groupIndex}`,
+    orders
+  };
+}
 
 function customStopUpdateHarness() {
   const tx = {

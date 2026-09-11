@@ -591,12 +591,13 @@ function extractBearerToken(authorization: string | undefined): string | null {
   return match[1].trim();
 }
 
-function readListQuery(value: unknown): { dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string } {
+function readListQuery(value: unknown): { dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; view?: 'routes-list' } {
   const query = objectOrEmpty(value);
   return {
     ...optionalDateField(query, 'deliveryDate'),
     ...optionalDateField(query, 'dateRangeStart'),
-    ...optionalDateField(query, 'dateRangeEnd')
+    ...optionalDateField(query, 'dateRangeEnd'),
+    ...(query.view === 'routes-list' ? { view: 'routes-list' as const } : {})
   };
 }
 
