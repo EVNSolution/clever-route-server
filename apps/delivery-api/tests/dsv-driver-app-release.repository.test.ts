@@ -61,8 +61,25 @@ describe('DSV Driver app release repository', () => {
     expect(update).toHaveBeenCalledOnce();
     const updateInput = update.mock.calls[0]?.[0] as {
       data: { minimumSupportedVersionCode: number };
+      where: unknown;
     };
     expect(updateInput.data.minimumSupportedVersionCode).toBe(2);
+    expect(updateInput.where).toEqual({ platform: 'android', latestVersionCode: 2, updatedAt: current.updatedAt });
+  });
+
+  test('rejects a stale concurrent writer instead of replacing a newer release or minimum policy', async () => {
+    const update = vi.fn().mockRejectedValue({ code: 'P2025' });
+    const repository = new PrismaDsvDriverAppReleaseRepository({
+      dsvDriverAppRelease: { findUnique: vi.fn().mockResolvedValue(current), update },
+    } as never);
+    await expect(repository.publishAndroidRelease({
+      apkSha256: 'b'.repeat(64), installUrl: 'https://play.google.com/store/apps/details?id=com.evnsolution.clever.driver',
+      latestVersionCode: 21, latestVersionName: '0.1.13',
+    })).rejects.toBeInstanceOf(DsvDriverAppReleaseConflictError);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { platform: 'android', latestVersionCode: current.latestVersionCode, updatedAt: current.updatedAt },
+      data: expect.objectContaining({ minimumSupportedVersionCode: current.minimumSupportedVersionCode }) as unknown,
+    }));
   });
 
   test('rejects rollback injection', async () => {
