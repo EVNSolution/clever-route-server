@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import type { InventoryDto } from '../src/modules/inventory/inventory.types.js';
+import { InventoryValidationError, type InventoryDto } from '../src/modules/inventory/inventory.types.js';
 import type { AdminInventoryDependencies } from '../src/routes/admin-inventories.routes.js';
 
 const inventory: InventoryDto = {
@@ -114,6 +114,56 @@ describe('Admin inventory routes', () => {
         appId: 'clever',
         inventoryId: 'inventory-id',
         shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('passes an explicit route plan selection to the inventory projection', async () => {
+    const { dependencies, getInventoryOrderView } = createDependencyHarness();
+    const app = await buildApp({ adminInventories: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/inventories/inventory-id/order-view?routePlanId=route-barrie'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(getInventoryOrderView).toHaveBeenCalledWith({
+        appId: 'clever',
+        inventoryId: 'inventory-id',
+        routePlanId: 'route-barrie',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects a route plan outside the inventory route group', async () => {
+    const { dependencies, getInventoryOrderView } = createDependencyHarness();
+    getInventoryOrderView.mockRejectedValueOnce(new InventoryValidationError([
+      'route plan does not belong to the inventory route group'
+    ]));
+    const app = await buildApp({ adminInventories: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/inventories/inventory-id/order-view?routePlanId=route-other-group'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'INVENTORY_INVALID',
+          message: 'route plan does not belong to the inventory route group'
+        }
       });
     } finally {
       await app.close();

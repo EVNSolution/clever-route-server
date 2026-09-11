@@ -87,7 +87,7 @@ export type InventoryService = {
   createInventory(input: CreateInventoryInput): Promise<InventoryDto>;
   deleteInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<{ deleted: boolean; inventoryId: string }>;
   getInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null>;
-  getInventoryOrderView(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null>;
+  getInventoryOrderView(input: { appId?: string | undefined; inventoryId: string; routePlanId?: string; shopDomain: string }): Promise<InventoryDto | null>;
   listInventories(input: { appId?: string | undefined; shopDomain: string }): Promise<InventoryDto[]>;
   updateInventoryOrders(input: UpdateInventoryOrdersInput): Promise<InventoryDto | null>;
 };
