@@ -117,6 +117,53 @@ export type RouteGroupingSummaryDto = {
   warningState: RouteGroupingWarningDto[];
 };
 
+export type RouteGroupingRoutesListChildDto = {
+  color: string | null;
+  displayStatus: RouteGroupingChildDisplayStatus;
+  driverId: string | null;
+  driverName: string | null;
+  routeMetrics: RoutePlanRouteMetrics | null;
+  routePlan: {
+    createdAt: string;
+    deliveredCount: number;
+    driverId: string | null;
+    etaRange: { endAt: string; startAt: string } | null;
+    id: string;
+    itemSummary: { totalQuantity: number };
+    missingCoordinates: number;
+    name: string;
+    planDate: string;
+    routeMetrics: RoutePlanRouteMetrics | null;
+    scheduledStartAt: string | null;
+    scheduledStartTimeZone: string | null;
+    status: string;
+    stopsCount: number;
+    totalAmount: { amount: string; currencyCode: string } | null;
+    updatedAt: string;
+  } | null;
+  routePlanId: string | null;
+  routeIdx: number | null;
+  sortOrder: number | null;
+  stopsCount: number;
+  updatedAt: string;
+};
+
+export type RouteGroupingRoutesListDto = {
+  children: RouteGroupingRoutesListChildDto[];
+  currentVersion: number;
+  dateRangeEnd: string;
+  dateRangeStart: string;
+  displayStatus: RouteGroupingDisplayStatus;
+  id: string;
+  linkedInventoryId: string | null;
+  name: string;
+  planDate: string;
+  status: string;
+  totalOrders: number;
+  unresolvedOrders: number;
+  updatedAt: string;
+};
+
 export type RouteGroupingDetailDto = RouteGroupingSummaryDto & {
   assignments: RouteGroupingAssignmentDto[];
   branches: RouteGroupingBranchDto[];
@@ -380,7 +427,7 @@ export type RouteGroupingService = {
   deleteCustomStop(input: { appId?: string | undefined; deliveryStopId: string; expectedUpdatedAt?: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;
   getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
-  listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]>;
+  listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string; view?: 'routes-list' }): Promise<RouteGroupingRoutesListDto[] | RouteGroupingSummaryDto[]>;
   nextRouteIdx(input: NextRouteGroupingRouteIdxInput): Promise<number | null>;
   updateBranch(input: UpdateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null>;

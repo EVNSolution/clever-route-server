@@ -533,6 +533,28 @@ describe('Admin route group routes', () => {
     }
   });
 
+  test('opts into the compact Routes-list representation without changing the default list contract', async () => {
+    const { dependencies, listGroupings } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/route-groups?view=routes-list'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(listGroupings).toHaveBeenCalledWith({
+        appId: 'clever',
+        shopDomain: 'example.myshopify.com',
+        view: 'routes-list'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('returns next shop-global route index for a route group', async () => {
     const { dependencies, nextRouteIdx } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
