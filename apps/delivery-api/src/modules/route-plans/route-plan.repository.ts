@@ -109,6 +109,7 @@ type RoutePlanRecord = {
   driver?: RoutePlanDriverRecord | null;
   driverEvents?: Array<{ eventType: string }>;
   driverId?: string | null;
+  driverRouteNotificationAttempts?: Array<{ createdAt: Date }>;
   id: string;
   metrics: unknown;
   name: string;
@@ -122,6 +123,7 @@ type RoutePlanRecord = {
 
 type RouteGroupingChildVersionRecord = {
   groupingId: string;
+  publishedAt?: Date | null;
   status: string;
   version: number;
 };
@@ -2768,6 +2770,12 @@ function routePlanListSelect() {
 function routePlanInclude() {
   return {
     driverEvents: routeLifecycleEventQuery(),
+    driverRouteNotificationAttempts: {
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+      take: 1,
+      where: { groupingId: null }
+    },
     driver: {
       include: {
         _count: {
@@ -2781,10 +2789,12 @@ function routePlanInclude() {
       orderBy: { createdAt: 'desc' },
       select: {
         groupingId: true,
+        publishedAt: true,
         status: true,
         version: true
       },
-      take: 1
+      take: 1,
+      where: { status: 'CURRENT', supersededAt: null }
     },
     routeStops: {
       include: {
@@ -3009,6 +3019,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     missingCoordinates: metrics.missingCoordinates,
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate),
+    publishedAt: readRoutePublishedAt(routePlan),
     routeEndMode: readRouteEndMode(routePlan.constraints),
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
@@ -3049,6 +3060,12 @@ function toRouteGroupingChildSummary(childVersions: RouteGroupingChildVersionRec
     status: child.status,
     version: child.version
   };
+}
+
+function readRoutePublishedAt(routePlan: RoutePlanRecord): string | null {
+  const currentChild = routePlan.routeGroupingChildVersions?.[0];
+  if (currentChild !== undefined) return currentChild.publishedAt?.toISOString() ?? null;
+  return routePlan.driverRouteNotificationAttempts?.[0]?.createdAt.toISOString() ?? null;
 }
 
 function toRoutePlanDriverSummary(driver: RoutePlanDriverRecord | null): RoutePlanDriverSummary | null {

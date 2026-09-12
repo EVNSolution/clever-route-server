@@ -244,6 +244,7 @@ describe('route grouping contracts', () => {
     expect(orderData?.deliveryStops.create).toMatchObject({ address1: '100 King St', recipientName: 'Receiving', status: 'PENDING' });
     const routePlanCreateCalls = tx.routePlan.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>;
     expect(routePlanCreateCalls[0]?.[0].data).toMatchObject({ driverId: null, name: 'Morning route Copy', status: 'READY', vehicleId: null });
+    expect(routePlanCreateCalls[0]?.[0].data).not.toHaveProperty('publishedAt');
     expect(tx.routePlanStop.createMany).toHaveBeenCalledWith({
       data: [expect.objectContaining({ deliveryStopId: 'stop-copy', routePlanId: 'route-copy', sequence: 1 })]
     });

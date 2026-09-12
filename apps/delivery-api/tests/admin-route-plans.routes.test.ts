@@ -900,6 +900,34 @@ describe('Admin route plan routes', () => {
     }
   });
 
+  test('returns persisted publication evidence on a fresh route detail request', async () => {
+    const { dependencies, getRoutePlanDetail } = createDependencyHarness();
+    getRoutePlanDetail.mockResolvedValueOnce({
+      routePlan: { ...routePlanSummary, publishedAt: '2026-09-11T13:00:00.000Z', status: 'COMPLETED' },
+      routeGeometry: null,
+      routeMetrics: null,
+      routeStopPoints: [],
+      stops: []
+    });
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/route-plans/route-plan-id'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: { routePlan: { publishedAt: '2026-09-11T13:00:00.000Z', status: 'COMPLETED' } },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('does not expose another shop route plan detail', async () => {
     const { dependencies, getRoutePlanDetail } = createDependencyHarness();
     getRoutePlanDetail.mockResolvedValueOnce(null);

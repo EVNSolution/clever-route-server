@@ -103,6 +103,71 @@ describe('PrismaRoutePlanRepository', () => {
     expect(typeof cacheFindArgs?.where?.routePlanId_shapeSignature?.shapeSignature).toBe('string');
   });
 
+  test.each([
+    ['published', 'PUBLISHED', [], 'READY'],
+    ['started', 'READY', [{ eventType: 'ROUTE_STARTED' }], 'IN_PROGRESS'],
+    ['completed', 'READY', [{ eventType: 'ROUTE_COMPLETED' }], 'COMPLETED']
+  ])('keeps grouped publication evidence after the route is %s', async (_label, status, driverEvents, expectedStatus) => {
+    const publishedAt = new Date('2026-09-11T13:00:00.000Z');
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        driverEvents,
+        routeGroupingChildVersions: [{ groupingId: 'group-1', publishedAt, status: 'CURRENT', version: 3 }],
+        status
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const detail = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(detail?.routePlan).toMatchObject({
+      publishedAt: publishedAt.toISOString(),
+      status: expectedStatus
+    });
+  });
+
+  test('projects standalone publication attempts but does not inherit them into an unpublished grouped version', async () => {
+    const publishedAt = new Date('2026-09-11T13:00:00.000Z');
+    const standaloneHarness = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({ driverRouteNotificationAttempts: [{ createdAt: publishedAt }] })
+    });
+    const groupedHarness = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        driverRouteNotificationAttempts: [{ createdAt: publishedAt }],
+        routeGroupingChildVersions: [{ groupingId: 'group-1', publishedAt: null, status: 'CURRENT', version: 1 }]
+      })
+    });
+
+    const standalone = await new PrismaRoutePlanRepository(standaloneHarness.prisma as never).findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+    const grouped = await new PrismaRoutePlanRepository(groupedHarness.prisma as never).findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(standalone?.routePlan.publishedAt).toBe(publishedAt.toISOString());
+    expect(grouped?.routePlan.publishedAt).toBeNull();
+  });
+
+  test('returns null publication evidence for a never-dispatched route or fresh copy', async () => {
+    const { prisma } = createPrismaHarness({ routePlanFindFirst: routePlanRecord() });
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const detail = await repository.findRoutePlanDetail({
+      routePlanId: 'route-copy',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(detail?.routePlan.publishedAt).toBeNull();
+  });
+
   test('maps stop service and leg fields but clears stale ETA until a route start is set', async () => {
     const firstStop = routePlanStopRecord({
       deliveryStopId: 'stop-1',
@@ -486,6 +551,7 @@ describe('PrismaRoutePlanRepository', () => {
     expect(query.include).toBeUndefined();
     expect(query.select).toBeDefined();
     expect(JSON.stringify(query.select)).not.toContain('deliveryCustomerProfileLinks');
+    expect(JSON.stringify(query.select)).not.toContain('driverRouteNotificationAttempts');
     expect(JSON.stringify(query.select)).not.toContain('rawPayload');
     expect(JSON.stringify(query.select)).not.toContain('shippingAddress');
     expect(query.select?.routeGeometryCaches).toMatchObject({ take: 1 });
@@ -2735,7 +2801,9 @@ function routePlanRecord(input: {
   constraints?: Record<string, unknown>;
   driverId?: string | null;
   driverEvents?: Array<{ eventType: string }>;
+  driverRouteNotificationAttempts?: Array<{ createdAt: Date }>;
   metrics?: Record<string, unknown>;
+  routeGroupingChildVersions?: Array<{ groupingId: string; publishedAt: Date | null; status: string; version: number }>;
   routeStops?: Array<Record<string, unknown>>;
   status?: string;
   updatedAt?: Date;
@@ -2747,6 +2815,7 @@ function routePlanRecord(input: {
     depotLongitude: '-79.3832',
     driverId: input.driverId ?? null,
     driverEvents: input.driverEvents,
+    driverRouteNotificationAttempts: input.driverRouteNotificationAttempts,
     id: 'route-plan-id',
     metrics: input.metrics ?? {
       deliveryAreas: ['Mississauga'],
@@ -2756,6 +2825,7 @@ function routePlanRecord(input: {
     },
     name: 'CLEVER route draft',
     planDate: new Date('2026-05-08T00:00:00.000Z'),
+    routeGroupingChildVersions: input.routeGroupingChildVersions,
     routeStops: input.routeStops ?? [],
     status: input.status ?? 'READY',
     updatedAt: input.updatedAt ?? new Date('2026-05-07T12:30:00.000Z')

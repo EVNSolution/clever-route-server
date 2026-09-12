@@ -112,6 +112,7 @@ export type RoutePlanSummary = {
   missingCoordinates: number;
   name: string;
   planDate: string;
+  publishedAt?: string | null;
   routeEndMode: RoutePlanEndMode;
   scheduledStartAt?: string | null;
   scheduledStartTimeZone?: string | null;
