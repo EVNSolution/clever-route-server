@@ -1356,6 +1356,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
     });
     if (baseline === null) return null;
+    assertDraftSchedulePlanDates(baseline.planDate, routes);
     assertDraftOrderPartition(baseline, routes, removedOrderIds);
     assertDraftRoutePlanEnvelope(baseline, routes, deletedRoutePlanIds);
     assertDraftRestrictedChildStopMembershipChanges(baseline, routes, removedOrderIds);
@@ -1501,7 +1502,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
                   constraints: updateRouteConstraintsSchedule(
                     lockedRoutePlan.constraints,
                     route.scheduledStartAt,
-                    route.scheduledStartTimeZone
+                    route.scheduledStartTimeZone,
+                    group.planDate
                   )
                 }),
                 metrics: routeMetrics(assignments),
@@ -1586,6 +1588,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     await lockRouteGroupingDraftSave(tx, group.id);
     const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
     if (loaded === null) return null;
+    assertDraftSchedulePlanDates(loaded.planDate, routes);
     assertDraftOrderPartition(loaded, routes, removedOrderIds);
     assertDraftRoutePlanEnvelope(loaded, routes, deletedRoutePlanIds);
     assertDraftRestrictedChildStopMembershipChanges(loaded, routes, removedOrderIds);
@@ -1709,7 +1712,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
                 constraints: updateRouteConstraintsSchedule(
                   lockedRoutePlan?.constraints ?? targetChild.routePlan?.constraints,
                   route.scheduledStartAt,
-                  route.scheduledStartTimeZone
+                  route.scheduledStartTimeZone,
+                  group.planDate
                 )
               }),
               metrics: routeMetrics(assignments),
@@ -2779,6 +2783,31 @@ function normalizeDraftScheduledStartAt(value: string | null): string | null {
   const instant = new Date(value);
   if (Number.isNaN(instant.getTime())) throw new RouteGroupingValidationError(['route draft scheduledStartAt must be a valid instant']);
   return instant.toISOString();
+}
+
+export function assertDraftSchedulePlanDates(planDate: Date, routes: RouteGroupingDraftRouteInput[]): void {
+  for (const route of routes) {
+    assertSchedulePlanDate(planDate, route.scheduledStartAt, route.scheduledStartTimeZone);
+  }
+}
+
+function assertSchedulePlanDate(
+  planDate: Date,
+  scheduledStartAt: string | null | undefined,
+  scheduledStartTimeZone: string | null | undefined
+): void {
+  if (scheduledStartAt === undefined || scheduledStartAt === null
+    || scheduledStartTimeZone === undefined || scheduledStartTimeZone === null) return;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: scheduledStartTimeZone,
+    year: 'numeric'
+  }).formatToParts(new Date(scheduledStartAt));
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value ?? '';
+  if (`${part('year')}-${part('month')}-${part('day')}` !== formatDateOnly(planDate)) {
+    throw new RouteGroupingValidationError(['route draft scheduledStartAt must use the route group plan date in scheduledStartTimeZone']);
+  }
 }
 
 function assertChildOnlyDraftRouteEnvelope(routes: RouteGroupingDraftRouteInput[]): void {
@@ -4569,7 +4598,7 @@ async function createDraftChildRoutePlan(
     data: {
       constraints: input.scheduledStartAt === undefined && input.scheduledStartTimeZone === undefined
         ? routeConstraints(group, depot)
-        : updateRouteConstraintsSchedule(routeConstraints(group, depot), input.scheduledStartAt, input.scheduledStartTimeZone),
+        : updateRouteConstraintsSchedule(routeConstraints(group, depot), input.scheduledStartAt, input.scheduledStartTimeZone, group.planDate),
       createdBy: ROUTE_GROUPING_DRAFT_SAVE_ACTOR,
       ...(depot === null ? {} : { depotLatitude: decimalString(depot.latitude), depotLongitude: decimalString(depot.longitude) }),
       driverId: input.driverId,
@@ -4848,17 +4877,24 @@ function routeMetrics(assignments: LoadedAssignment[]): Prisma.InputJsonObject {
 function updateRouteConstraintsSchedule(
   value: unknown,
   scheduledStartAt: string | null | undefined,
-  scheduledStartTimeZone: string | null | undefined
+  scheduledStartTimeZone: string | null | undefined,
+  planDate: Date
 ): Prisma.InputJsonObject {
   const constraints = value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-  return toJson({
+  const updated = {
     ...constraints,
     departureTime: null,
     ...(scheduledStartAt === undefined ? {} : { scheduledStartAt }),
     ...(scheduledStartTimeZone === undefined ? {} : { scheduledStartTimeZone })
-  }) as Prisma.InputJsonObject;
+  };
+  assertSchedulePlanDate(
+    planDate,
+    typeof updated.scheduledStartAt === 'string' ? updated.scheduledStartAt : null,
+    typeof updated.scheduledStartTimeZone === 'string' ? updated.scheduledStartTimeZone : null
+  );
+  return toJson(updated) as Prisma.InputJsonObject;
 }
 
 function toGroupingDetailDto(group: LoadedGrouping): RouteGroupingDetailDto {

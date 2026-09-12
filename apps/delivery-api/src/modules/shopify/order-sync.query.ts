@@ -66,6 +66,12 @@ const ORDER_FIELDS = `#graphql
             currencyCode
           }
         }
+        totalShippingPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
         shippingAddress {
           name
           phone

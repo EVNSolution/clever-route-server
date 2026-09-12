@@ -22,6 +22,7 @@ describe('buildOrdersUpdatedSinceQuery', () => {
     expect(payload.query).toContain('coordinatesValidated');
     expect(payload.query).toContain('validationResultSummary');
     expect(payload.query).toContain('currentShippingPriceSet');
+    expect(payload.query).toContain('totalShippingPriceSet');
     expect(payload.query).toContain('paymentGatewayNames');
     expect(payload.query).toContain('tags');
   });
@@ -35,7 +36,7 @@ describe('buildOrdersUpdatedSinceQuery', () => {
       'id', 'legacyResourceId', 'name', 'email', 'phone', 'displayFinancialStatus',
       'paymentGatewayNames', 'displayFulfillmentStatus', 'createdAt', 'processedAt',
       'updatedAt', 'cancelledAt', 'note', 'tags', 'customAttributes', 'lineItems',
-      'currentTotalPriceSet', 'currentShippingPriceSet', 'shippingAddress', 'address1',
+      'currentTotalPriceSet', 'currentShippingPriceSet', 'totalShippingPriceSet', 'shippingAddress', 'address1',
       'address2', 'city', 'province', 'provinceCode', 'zip', 'countryCodeV2', 'latitude',
       'longitude', 'coordinatesValidated', 'validationResultSummary',
     ];
@@ -58,6 +59,12 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       currentShippingPriceSet: {
         shopMoney: {
           amount: '12.34',
+          currencyCode: 'USD'
+        }
+      },
+      totalShippingPriceSet: {
+        shopMoney: {
+          amount: '15.00',
           currencyCode: 'USD'
         }
       },
@@ -92,6 +99,12 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
     expect(mapped.order.rawPayload.currentShippingPriceSet).toEqual({
       shopMoney: {
         amount: '12.34',
+        currencyCode: 'USD'
+      }
+    });
+    expect(mapped.order.rawPayload.totalShippingPriceSet).toEqual({
+      shopMoney: {
+        amount: '15.00',
         currencyCode: 'USD'
       }
     });

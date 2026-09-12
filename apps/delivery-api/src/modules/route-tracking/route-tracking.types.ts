@@ -57,6 +57,32 @@ export type RouteTrackingStopArrivalV1 = {
 
 export type RouteTrackingStatus = 'DELAYED' | 'LIVE' | 'NO_POSITION' | 'STALE';
 
+export type RouteExecutionLifecycleEvidenceV1 = {
+  eventId: string;
+  latitude: number | null;
+  longitude: number | null;
+  occurredAt: string;
+  receivedAt: string;
+};
+
+export type RouteExecutionEvidenceV1 = {
+  completion: RouteExecutionLifecycleEvidenceV1 | null;
+  firstPosition: RouteTrackingPositionEventV1 | null;
+  lastPosition: RouteTrackingPositionEventV1 | null;
+  returnToDepot: {
+    distanceToDepotMeters: number | null;
+    evidenceEventId: string | null;
+    observedAt: string | null;
+    source: 'LOCATION_UPDATED' | 'ROUTE_COMPLETED' | 'NONE';
+    status: 'CONFIRMED' | 'NOT_REQUIRED' | 'UNAVAILABLE' | 'UNCONFIRMED';
+    thresholdMeters: number;
+  };
+  routeEndMode: 'END_AT_LAST_STOP' | 'RETURN_TO_DEPOT' | null;
+  schemaVersion: 'route_execution_evidence.v1';
+  start: RouteExecutionLifecycleEvidenceV1 | null;
+  timeSemantics: 'EVENT_TIMESTAMPS_ONLY';
+};
+
 export type RouteTrackingRecordedPathV1 = {
   firstOccurredAt: string;
   geometry: {
@@ -103,6 +129,7 @@ export type RouteTrackingRoadMatchedPathV1 = {
 };
 
 export type RouteTrackingSnapshotV1 = {
+  executionEvidence: RouteExecutionEvidenceV1;
   latestPosition: RouteTrackingPositionEventV1 | null;
   policy: RouteTrackingPolicy;
   progress: RouteTrackingProgressSnapshotV1;

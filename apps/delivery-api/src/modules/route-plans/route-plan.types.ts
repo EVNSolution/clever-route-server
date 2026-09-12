@@ -112,6 +112,7 @@ export type RoutePlanSummary = {
   missingCoordinates: number;
   name: string;
   planDate: string;
+  publishedAt?: string | null;
   routeEndMode: RoutePlanEndMode;
   scheduledStartAt?: string | null;
   scheduledStartTimeZone?: string | null;
@@ -176,6 +177,8 @@ export type RoutePlanDetailStop = {
   phone?: string | null;
   serviceMinutes?: number | null;
   shippingPriceAmount?: string | null;
+  totalShippingPriceAmount?: string | null;
+  totalShippingPriceCurrencyCode?: string | null;
   totalPriceAmount?: string | null;
   orderId: string;
   items?: OrderItemDto[];
