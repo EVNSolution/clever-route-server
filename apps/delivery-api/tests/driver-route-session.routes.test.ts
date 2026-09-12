@@ -27,6 +27,7 @@ const activeSession = {
     routeGeometry: null,
     routeMapPreview: null,
     routeMetrics: null,
+    routeEndMode: 'RETURN_TO_DEPOT' as const,
     routeVersionId: 'route-version-id',
     routeStopPoints: [],
     scheduledStartAt: '2026-06-15T12:00:00.000Z',

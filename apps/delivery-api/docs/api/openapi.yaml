@@ -8923,7 +8923,7 @@ components:
         error: { type: 'null' }
     DriverAssignedRoute:
       type: object
-      required: [deliveryDate, depot, etaSnapshot, id, name, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]
+      required: [deliveryDate, depot, etaSnapshot, id, name, routeEndMode, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]
       properties:
         id:
           type: string
@@ -8946,6 +8946,10 @@ components:
               type: [number, 'null']
         etaSnapshot:
           $ref: '#/components/schemas/DriverRouteEtaSnapshot'
+        routeEndMode:
+          description: Persisted plan policy that tells the driver whether the route ends at the last stop or returns to the depot.
+          enum: [END_AT_LAST_STOP, RETURN_TO_DEPOT]
+          type: string
         scheduledStartAt:
           description: Canonical scheduled route start instant used for the pre-pickup departure countdown.
           format: date-time

@@ -366,6 +366,7 @@ function toAssignedRouteResult(
       routeGeometry: routeResult.routeGeometry,
       routeMapPreview: null,
       routeMetrics: routeResult.routeMetrics,
+      routeEndMode: readRouteEndMode(routePlan.constraints),
       routeVersionId,
       routeStopPoints: routeResult.routeStopPoints.map(toAssignedRouteStopPoint),
       scheduledStartAt: readScheduledStartAt(routePlan.constraints),
