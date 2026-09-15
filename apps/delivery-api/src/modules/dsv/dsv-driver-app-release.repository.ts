@@ -88,16 +88,27 @@ export class PrismaDsvDriverAppReleaseRepository implements DsvDriverAppReleaseR
       );
     }
 
-    const updated = await this.prisma.dsvDriverAppRelease.update({
-      data: {
-        ...normalized,
-        minimumSupportedVersionCode,
-        packageId: DSV_DRIVER_ANDROID_PACKAGE_ID,
-        publishedAt: new Date(),
-      },
-      where: { platform: ANDROID_PLATFORM },
-    });
-    return toRelease(updated);
+    try {
+      const updated = await this.prisma.dsvDriverAppRelease.update({
+        data: {
+          ...normalized,
+          minimumSupportedVersionCode,
+          packageId: DSV_DRIVER_ANDROID_PACKAGE_ID,
+          publishedAt: new Date(),
+        },
+        where: {
+          platform: ANDROID_PLATFORM,
+          latestVersionCode: current.latestVersionCode,
+          updatedAt: current.updatedAt,
+        },
+      });
+      return toRelease(updated);
+    } catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2025') {
+        throw new DsvDriverAppReleaseConflictError('Release changed concurrently; verify the current release before retrying');
+      }
+      throw error;
+    }
   }
 }
 
