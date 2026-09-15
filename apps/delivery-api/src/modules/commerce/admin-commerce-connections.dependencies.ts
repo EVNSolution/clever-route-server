@@ -544,7 +544,7 @@ function readRoutesAppAndroidReleaseConfig(
   );
 
   if (
-    distributionChannel !== 'direct' ||
+    (distributionChannel !== 'direct' && distributionChannel !== 'google_play') ||
     latestVersionName === undefined ||
     latestVersionCode === undefined ||
     minimumSupportedVersionCode === undefined ||
