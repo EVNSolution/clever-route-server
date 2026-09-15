@@ -36,6 +36,11 @@ ROUTES_APP_ANDROID_LATEST_VERSION_NAME=1.0.1
 ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE=1
 ```
 
+For a Google Play release, set `ROUTES_APP_DISTRIBUTION_CHANNEL=google_play`
+and use the public Play listing as `ROUTES_APP_DOWNLOAD_URL`. This explicit
+store configuration takes precedence over a historical direct-release registry
+entry; do not create a synthetic APK artifact or checksum for a Play release.
+
 During the identity cutover, the runtime accepts the legacy `DRIVER_APP_*`
 values as a fallback so a server image deploy cannot silently remove update
 discovery. Prefer `ROUTES_APP_*` and remove the legacy namespace after deployed
@@ -44,9 +49,11 @@ while `GET /routes-app/download` redirects to the configured package. Legacy
 `/driver-app` returns the explicit name/package migration guide, and
 `/driver-app/release/android` remains a compatibility alias.
 The manifest is unavailable when release values are absent or inconsistent.
-Advance the latest version only after the stable APK has been replaced and
-verified. The JSON response returns the stable server URL and never exposes
-`ROUTES_APP_DOWNLOAD_URL`.
+Advance the latest version only after the corresponding direct artifact or
+store release has been verified. Direct responses keep the stable server URL;
+Google Play responses expose the configured public store listing through both
+`installUrl` and the authoritative `distribution` object. The legacy
+`distributionChannel=direct` discriminator remains for released 1.3.0 clients.
 
 After the release registry migration is deployed, the database current pointer
 is authoritative when seeded and these env values remain a bootstrap fallback
@@ -74,7 +81,8 @@ curl -sS https://clever-route-api.cleversystem.ai/driver-app/release/android
 ```
 
 The install page and both release endpoints must be `200`. The manifest must
-use the stable `/routes-app` install URL, identify
+use either the stable `/routes-app` install URL for direct distribution or the
+configured store listing for Google Play, identify
 `com.evnsolution.clever.routes` as the target package, list
 `com.evns.cleverdriverapp` as the replaced package, and report the intended
 Android version values.

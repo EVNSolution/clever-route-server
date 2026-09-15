@@ -538,7 +538,7 @@ export type AdminCommerceConnectionsUiDependencies = {
 };
 
 export type RoutesAppAndroidReleaseConfig = {
-  distributionChannel: "direct";
+  distributionChannel: "direct" | "google_play";
   latestVersionCode: number;
   latestVersionName: string;
   minimumSupportedVersionCode: number;
@@ -614,20 +614,31 @@ export function registerAdminCommerceConnectionsUiRoutes(
       });
     }
     const release = releaseState.release;
+    const googlePlayDistribution = release.distributionChannel === "google_play"
+      ? {
+        distribution: {
+          channel: "google_play" as const,
+          url: releaseState.downloadUrl,
+        },
+      }
+      : {};
 
     return sendPublicApiEnvelope(reply, 200, {
-      distributionChannel: release.distributionChannel,
+      distributionChannel: "direct",
+      ...googlePlayDistribution,
       installation: {
         guideUrl: `${resolveBaseUrl(request, dependencies)}${LEGACY_DRIVER_APP_INSTALL_PATH}`,
         mode: "package_migration",
         replacesPackageIds: [LEGACY_DRIVER_APP_PACKAGE_ID],
         targetPackageId: release.packageId,
       },
-      installUrl: `${resolveBaseUrl(request, dependencies)}${
-        request.url.startsWith(LEGACY_DRIVER_APP_INSTALL_PATH)
-          ? LEGACY_DRIVER_APP_INSTALL_PATH
-          : ROUTES_APP_INSTALL_PATH
-      }`,
+      installUrl: release.distributionChannel === "google_play"
+        ? releaseState.downloadUrl
+        : `${resolveBaseUrl(request, dependencies)}${
+          request.url.startsWith(LEGACY_DRIVER_APP_INSTALL_PATH)
+            ? LEGACY_DRIVER_APP_INSTALL_PATH
+            : ROUTES_APP_INSTALL_PATH
+        }`,
       latestVersionCode: release.latestVersionCode,
       latestVersionName: release.latestVersionName,
       minimumSupportedVersionCode: release.minimumSupportedVersionCode,
@@ -3389,6 +3400,9 @@ function registerRouteOpsAppRoutes(
 async function readRoutesAppDownloadUrl(
   dependencies: AdminCommerceConnectionsUiDependencies,
 ): Promise<string | undefined> {
+  if (dependencies.routesAppAndroidRelease?.distributionChannel === "google_play") {
+    return dependencies.routesAppDownloadUrl;
+  }
   const release = await dependencies.routesAppReleaseRepository?.getAndroidRelease();
   return release?.downloadUrl ?? dependencies.routesAppDownloadUrl;
 }
@@ -3396,6 +3410,19 @@ async function readRoutesAppDownloadUrl(
 async function readRoutesAppReleaseState(
   dependencies: AdminCommerceConnectionsUiDependencies,
 ): Promise<RoutesAppReleaseState | null> {
+  if (
+    dependencies.routesAppAndroidRelease?.distributionChannel === "google_play"
+    && dependencies.routesAppDownloadUrl !== undefined
+  ) {
+    return {
+      downloadUrl: dependencies.routesAppDownloadUrl,
+      release: {
+        ...dependencies.routesAppAndroidRelease,
+        packageId: dependencies.routesAppAndroidRelease.packageId ?? ROUTES_APP_PACKAGE_ID,
+      },
+    };
+  }
+
   const release = await dependencies.routesAppReleaseRepository?.getAndroidRelease();
   if (release !== undefined && release !== null) {
     return {

@@ -333,6 +333,33 @@ describe("Admin WooCommerce connection UI routes", () => {
     );
   });
 
+  test("loads an explicit Google Play release without inventing APK metadata", () => {
+    const base = createBaseAdminCommerceDependencies();
+
+    const dependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
+        ROUTES_APP_ANDROID_LATEST_VERSION_CODE: "36",
+        ROUTES_APP_ANDROID_LATEST_VERSION_NAME: "1.3.0",
+        ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "26",
+        ROUTES_APP_DISTRIBUTION_CHANNEL: "google_play",
+        ROUTES_APP_DOWNLOAD_URL:
+          "https://play.google.com/store/apps/details?id=com.evnsolution.clever.routes",
+      },
+      nodeEnv: "production",
+    });
+
+    expect(dependencies?.routesAppAndroidRelease).toEqual({
+      distributionChannel: "google_play",
+      latestVersionCode: 36,
+      latestVersionName: "1.3.0",
+      minimumSupportedVersionCode: 26,
+    });
+  });
+
   test("accepts the legacy driver app release environment during the identity cutover", () => {
     const base = createBaseAdminCommerceDependencies();
 
@@ -1096,6 +1123,86 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(manifest.body).not.toContain("downloads.example.test");
       expect(manifest.body).not.toContain("drive.example.test");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("prefers an explicit Google Play release over the historical direct registry", async () => {
+    const playUrl = "https://play.google.com/store/apps/details?id=com.evnsolution.clever.routes";
+    const getAndroidRelease = vi.fn().mockResolvedValue({
+      distributionChannel: "direct",
+      downloadUrl: "https://downloads.example.test/clever-routes-33.apk",
+      latestVersionCode: 33,
+      latestVersionName: "1.2.15",
+      minimumSupportedVersionCode: 26,
+      packageId: "com.evnsolution.clever.routes",
+      platform: "android",
+      publishedAt: new Date("2026-08-06T01:00:00.000Z"),
+      sha256: "b".repeat(64),
+    });
+    const routesAppReleaseRepository: RoutesAppReleaseRepository = {
+      getAndroidRelease,
+      publishAndroidRelease: vi.fn(),
+    };
+    const { app } = await createUiHarness({
+      routesAppAndroidRelease: {
+        distributionChannel: "google_play",
+        latestVersionCode: 36,
+        latestVersionName: "1.3.0",
+        minimumSupportedVersionCode: 26,
+      },
+      routesAppDownloadUrl: playUrl,
+      routesAppReleaseRepository,
+    });
+
+    try {
+      const download = await app.inject({ method: "GET", url: "/routes-app/download" });
+      expect(download.statusCode).toBe(302);
+      expect(download.headers.location).toBe(playUrl);
+
+      const manifest = await app.inject({
+        method: "GET",
+        url: "/routes-app/release/android",
+      });
+      expect(manifest.statusCode).toBe(200);
+      expect(readApiData(manifest)).toEqual({
+        distribution: {
+          channel: "google_play",
+          url: playUrl,
+        },
+        distributionChannel: "direct",
+        installation: {
+          guideUrl: "https://clever-route-api.cleversystem.ai/driver-app",
+          mode: "package_migration",
+          replacesPackageIds: ["com.evns.cleverdriverapp"],
+          targetPackageId: "com.evnsolution.clever.routes",
+        },
+        installUrl: playUrl,
+        latestVersionCode: 36,
+        latestVersionName: "1.3.0",
+        minimumSupportedVersionCode: 26,
+        platform: "android",
+      });
+      expect(getAndroidRelease).not.toHaveBeenCalled();
+
+      const currentClientContract = readApiData<{
+        distributionChannel: string;
+        installUrl: string;
+        latestVersionCode: number;
+        latestVersionName: string;
+      }>(manifest);
+      expect(currentClientContract).toMatchObject({
+        distributionChannel: "direct",
+        installUrl: playUrl,
+        latestVersionCode: 36,
+        latestVersionName: "1.3.0",
+      });
+
+      const legacyGuide = await app.inject({ method: "GET", url: "/driver-app" });
+      expect(legacyGuide.statusCode).toBe(200);
+      expect(legacyGuide.body).toContain("CLEVER Driver is now CLEVER Routes");
+      expect(legacyGuide.body).toContain("com.evns.cleverdriverapp");
     } finally {
       await app.close();
     }
