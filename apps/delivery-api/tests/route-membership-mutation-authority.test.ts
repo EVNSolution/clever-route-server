@@ -25,11 +25,11 @@ const reviewedMutationInventory = [
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.create:1',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.createMany:5',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.deleteMany:4',
-  'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:2',
+  'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:4',
   'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.updateMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.createMany:4',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.deleteMany:4',
-  'modules/route-plans/route-plan.repository.ts:routePlanStop.updateMany:2'
+  'modules/route-plans/route-plan.repository.ts:routePlanStop.updateMany:3'
 ];
 
 const reviewedAssignmentPointerInventory = [

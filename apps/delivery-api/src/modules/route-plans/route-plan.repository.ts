@@ -66,7 +66,8 @@ import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-r
 import {
   archiveDeletedRouteGroupingChildMembership,
   releaseRouteVersionOrderOwnership,
-  replaceCurrentRouteGroupingChildVersion
+  replaceCurrentRouteGroupingChildVersion,
+  syncRoutePlanStopsPreservingRows
 } from '../route-grouping/route-grouping.service.js';
 import { RouteGroupingValidationError } from '../route-grouping/route-grouping.types.js';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
@@ -101,6 +102,7 @@ type RoutePlanListRecord = Prisma.RoutePlanGetPayload<{
 }>;
 
 type RoutePlanRecord = {
+  assignmentGeneration: bigint;
   createdAt: Date;
   constraints?: unknown;
   deliveryDate?: Date | null;
@@ -747,8 +749,11 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         hasDepartureTimeChange ||
         hasScheduledStartChange;
 
-      if (routePlan.status === 'IN_PROGRESS' && hasStopSequenceChange) {
-        throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
+      const inProgressStops = hasStopSequenceChange && normalizedStops !== undefined
+        ? await inProgressStopOrder(tx, shop.id, routePlan, normalizedStops)
+        : null;
+      if (inProgressStops !== null && (hasDriverChange || hasRouteEndModeChange || hasDepartureTimeChange || hasScheduledStartChange)) {
+        throw new RoutePlanStopUpdateInvalidError('In-progress stop reordering cannot change the driver or route options.');
       }
       if (hasStopSequenceChange && await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
         throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
@@ -843,6 +848,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (input.payload.stops !== undefined && normalizedStops !== undefined) {
         if (!hasStopSequenceChange) {
           operations.push({ name: 'stops', reason: 'unchanged', status: 'skipped' });
+        } else if (inProgressStops !== null) {
+          await reorderInProgressStops(tx, shop.id, routePlan.id, inProgressStops);
+          operations.push({ name: 'stops', reason: 'sequence_changed', status: 'applied' });
         } else {
           const routeDate = deriveRouteDate(routePlan);
           const orderGids = normalizedStops.map((stop) => stop.shopifyOrderGid);
@@ -1531,13 +1539,18 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (routePlan === null) {
         return false;
       }
-      if (routePlan.status === 'IN_PROGRESS') {
-        throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
-      }
+      const inProgressStops = await inProgressStopOrder(tx, shop.id, routePlan, normalizedStops);
 
       const currentGroupingChild = await readCurrentRouteGroupingChild(tx, routePlan.id);
       if (currentGroupingChild !== null && input.mutationContext?.source !== 'route_optimization_job') {
         throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
+      }
+      if (inProgressStops !== null) {
+        if (input.mutationContext?.source === 'route_optimization_job') {
+          throw new RoutePlanStopUpdateInvalidError('Automatic optimization cannot replace an in-progress route.');
+        }
+        await reorderInProgressStops(tx, shop.id, routePlan.id, inProgressStops);
+        return true;
       }
 
       const optimizationJobId =
@@ -2270,6 +2283,66 @@ function assertNoDuplicateStopUpdateInputs(stops: UpdateRoutePlanStopsInput['pay
   }
 }
 
+async function inProgressStopOrder(
+  tx: Prisma.TransactionClient,
+  shopId: string,
+  routePlan: RoutePlanRecord,
+  stops: ReturnType<typeof normalizeStopUpdateInputs>
+): Promise<RoutePlanStopRecord[] | null> {
+  let lifecycleEvents: Array<{ eventType: string }> = [];
+  if (!['IN_PROGRESS', 'COMPLETED', 'CANCELLED'].includes(routePlan.status)
+    && routePlan.driverId != null && (routePlan.driverEvents?.length ?? 0) > 0) {
+    const latestEvent = await tx.driverEvent.findFirst({
+      orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
+      select: { eventType: true },
+      where: {
+        driverId: routePlan.driverId,
+        eventType: { in: ['ROUTE_STARTED', 'ROUTE_PAUSED', 'ROUTE_COMPLETED'] },
+        OR: [{ assignmentGeneration: null }, { assignmentGeneration: routePlan.assignmentGeneration }],
+        routePlanId: routePlan.id,
+        shopId
+      }
+    });
+    if (latestEvent !== null) lifecycleEvents = [latestEvent];
+  }
+  const status = toRouteExecutionStatus(routePlan.status, lifecycleEvents);
+  if (status === 'COMPLETED' || status === 'CANCELLED') {
+    throw new RoutePlanStopUpdateInvalidError('Completed or cancelled route stops cannot be changed.');
+  }
+  if (status !== 'IN_PROGRESS') return null;
+
+  const currentStops = routePlan.routeStops ?? [];
+  const byOrder = new Map(currentStops.map((stop) => [stop.deliveryStop.order.shopifyOrderGid, stop]));
+  if (stops.length !== currentStops.length || stops.some((stop) => {
+    const current = byOrder.get(stop.shopifyOrderGid);
+    return current === undefined || (stop.deliveryStopId !== null && stop.deliveryStopId !== current.deliveryStopId);
+  })) {
+    throw new RoutePlanStopUpdateInvalidError('In-progress routes can only reorder their existing stops.');
+  }
+  return stops.map((stop) => byOrder.get(stop.shopifyOrderGid)!);
+}
+
+async function reorderInProgressStops(
+  tx: Prisma.TransactionClient,
+  shopId: string,
+  routePlanId: string,
+  stops: RoutePlanStopRecord[]
+): Promise<void> {
+  await syncRoutePlanStopsPreservingRows(tx, shopId, routePlanId, stops);
+  await tx.routePlanStop.updateMany({
+    data: {
+      estimatedArrivalAt: null,
+      etaCalculatedAt: null,
+      etaFailureCode: null,
+      etaFailureMessage: null,
+      etaSource: null,
+      etaStatus: 'PENDING'
+    },
+    where: { routePlanId, shopId, deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } }
+  });
+  await tx.routePlan.update({ data: { updatedAt: new Date() }, where: { id: routePlanId } });
+}
+
 function toDeliveryStopStatus(status: AdminRouteStopTransitionInput['payload']['status']): 'DELIVERED' | 'EN_ROUTE' | 'PENDING' {
   if (status === 'COMPLETED') return 'DELIVERED';
   if (status === 'IN_PROGRESS') return 'EN_ROUTE';
@@ -2837,7 +2910,7 @@ function routeLifecycleEventQuery() {
     orderBy: { occurredAt: 'desc' as const },
     select: { eventType: true },
     take: 1,
-    where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_COMPLETED] } }
+    where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] } }
   };
 }
 
