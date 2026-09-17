@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 import { PrismaClient } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
 import {
@@ -12,6 +13,9 @@ import {
 import { sha256CanonicalJson } from '../src/modules/dsv/dsv-dispatch-preview-diff.js';
 import { createDsvAdminPrincipal, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
 import { PrismaDsvV1ReadQueryService } from '../src/modules/dsv/dsv-v1-read-query.service.js';
+import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
+import { DisabledDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
 
 const safeTargetClass = 'safe-local-g003-temp-cluster';
 const databaseUrl = process.env.DATABASE_URL ?? '';
@@ -443,6 +447,372 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     } satisfies Partial<DsvDispatchImportApplyError>);
     expect(schedule).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledOnce();
+  });
+
+  test('publishes assigned DSV routes for real driver access without notifications or unassigned exposure', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'apply-publishes');
+    const firstAccountId = await linkDriverAccount(prisma, fixture.driverId, 'apply-publishes-first');
+    const second = await createAssignedDriverResource(prisma, fixture.shopId, 'Driver Two', '34B5678');
+    const foreign = await createFixture(prisma, createdShopIds, 'apply-publishes-foreign');
+    const foreignAccountId = await linkDriverAccount(prisma, foreign.driverId, 'apply-publishes-foreign');
+    const source = fixture.input.rows[0];
+    if (source === undefined) throw new Error('Missing fixture row');
+    const secondKey = `${fixture.sellerOrderKey}-SECOND`;
+    const unassignedKey = `${fixture.sellerOrderKey}-UNASSIGNED`;
+    const input: DsvDispatchImportInput = {
+      ...fixture.input,
+      rows: [
+        { ...source, driverName: 'Driver One', vehiclePlate: '12A3456' },
+        {
+          ...source,
+          address: '456 Integration Test Road',
+          customerCode: 'CUST-G003-SECOND',
+          destinationName: 'Integration Destination Two',
+          driverName: 'Driver Two',
+          rowNumber: 3,
+          sellerOrderKey: secondKey,
+          vehiclePlate: second.vehiclePlate,
+        },
+        {
+          ...source,
+          address: '789 Integration Test Road',
+          customerCode: 'CUST-G003-UNASSIGNED',
+          destinationName: 'Integration Destination Unassigned',
+          driverName: '',
+          rowNumber: 4,
+          sellerOrderKey: unassignedKey,
+          vehiclePlate: '',
+        },
+      ],
+    };
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const staged = await service.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const command = applyInput(fixture.shopDomain, staged.id, staged.sourceHash ?? '', 'cmd-apply-publishes');
+
+    const applied = await service.apply(command);
+    const appliedOrders = await prisma.order.findMany({
+      include: {
+        currentRouteVersion: {
+          include: { grouping: true, groupingVersion: true, routePlan: true },
+        },
+      },
+      where: { id: { in: applied.rows.map((row) => row.sellerOrderId) }, shopId: fixture.shopId },
+    });
+    const ordersByKey = new Map(appliedOrders.map((order) => [order.sellerOrderKey, order]));
+    const firstOrder = ordersByKey.get(fixture.sellerOrderKey);
+    const secondOrder = ordersByKey.get(secondKey);
+    const unassignedOrder = ordersByKey.get(unassignedKey);
+    if (firstOrder?.currentRouteVersion?.routePlan === null || firstOrder?.currentRouteVersion?.routePlan === undefined) {
+      throw new Error('Missing first assigned route');
+    }
+    if (secondOrder?.currentRouteVersion?.routePlan === null || secondOrder?.currentRouteVersion?.routePlan === undefined) {
+      throw new Error('Missing second assigned route');
+    }
+
+    for (const order of [firstOrder, secondOrder]) {
+      expect(order?.currentRouteVersion).toMatchObject({
+        notificationStatus: 'SKIPPED',
+        status: 'CURRENT',
+        supersededAt: null,
+      });
+      expect(order?.currentRouteVersion?.publishedAt).toBeInstanceOf(Date);
+      expect(order?.currentRouteVersion?.grouping).toMatchObject({
+        routeScopeKey: `dsv-import:${staged.id}`,
+        serviceType: 'DSV_DISPATCH',
+        status: 'READY',
+      });
+      expect(order?.currentRouteVersion?.groupingVersion.status).toBe('CURRENT');
+      expect(order?.currentRouteVersion?.driverId).toBe(order?.currentRouteVersion?.routePlan?.driverId);
+    }
+    expect(unassignedOrder?.currentRouteVersion).toMatchObject({
+      driverId: null,
+      publishedAt: null,
+      routePlanId: null,
+    });
+    await expect(prisma.driverRouteNotificationAttempt.count({ where: { shopId: fixture.shopId } })).resolves.toBe(0);
+
+    const driverAccess = new PrismaDriverRouteAccessRepository(prisma);
+    await expect(driverAccess.lookupRouteAccess({
+      accountId: firstAccountId,
+      routeContext: firstOrder.currentRouteVersion.routePlan.id,
+    })).resolves.toMatchObject({ status: 'INVITED' });
+    await expect(driverAccess.lookupRouteAccess({
+      accountId: foreignAccountId,
+      routeContext: firstOrder.currentRouteVersion.routePlan.id,
+    })).resolves.toEqual({ status: 'NOT_FOUND' });
+    await expect(driverAccess.lookupRouteAccess({
+      accountId: randomUUID(),
+      routeContext: secondOrder.currentRouteVersion.routePlan.id,
+    })).resolves.toEqual({ status: 'NOT_FOUND' });
+
+    const publishedAtByChild = new Map([
+      [firstOrder.currentRouteVersion.id, firstOrder.currentRouteVersion.publishedAt?.toISOString()],
+      [secondOrder.currentRouteVersion.id, secondOrder.currentRouteVersion.publishedAt?.toISOString()],
+    ]);
+    await expect(service.apply(command)).resolves.toEqual(applied);
+    const replayedChildren = await prisma.routeGroupingChildVersion.findMany({
+      where: { id: { in: [...publishedAtByChild.keys()] } },
+    });
+    expect(replayedChildren.map((child) => [child.id, child.publishedAt?.toISOString()]))
+      .toEqual(expect.arrayContaining([...publishedAtByChild.entries()]));
+    await prisma.routeGroupingChildVersion.updateMany({
+      data: { publishedAt: null },
+      where: { id: { in: [...publishedAtByChild.keys()] } },
+    });
+    await expect(service.apply(command)).resolves.toEqual(applied);
+    await expect(prisma.routeGroupingChildVersion.count({
+      where: { id: { in: [...publishedAtByChild.keys()] }, publishedAt: null },
+    })).resolves.toBe(2);
+
+    const repeatedStage = await service.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const repeated = await service.apply(applyInput(
+      fixture.shopDomain,
+      repeatedStage.id,
+      repeatedStage.sourceHash ?? '',
+      'cmd-apply-publishes-no-op',
+    ));
+    expect(repeated.summary).toEqual({ appliedRows: 3, newRows: 0, noOpRows: 3, updatedRows: 0 });
+    const repeatedChildren = await prisma.routeGroupingChildVersion.findMany({
+      where: { id: { in: [...publishedAtByChild.keys()] } },
+    });
+    expect(repeatedChildren.every((child) => child.publishedAt instanceof Date)).toBe(true);
+    await expect(prisma.driverRouteNotificationAttempt.count({ where: { shopId: fixture.shopId } })).resolves.toBe(0);
+  });
+
+  test('rolls back canonical writes and publication together when publication fails, then permits a fresh retry', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'publication-rollback');
+    const second = await createAssignedDriverResource(prisma, fixture.shopId, 'Driver Two', '34B5678');
+    const source = fixture.input.rows[0];
+    if (source === undefined) throw new Error('Missing fixture row');
+    const input: DsvDispatchImportInput = {
+      ...fixture.input,
+      rows: [
+        { ...source, driverName: 'Driver One', vehiclePlate: '12A3456' },
+        {
+          ...source,
+          address: '456 Integration Test Road',
+          customerCode: 'CUST-G003-SECOND',
+          destinationName: 'Integration Destination Two',
+          driverName: 'Driver Two',
+          rowNumber: 3,
+          sellerOrderKey: `${fixture.sellerOrderKey}-SECOND`,
+          vehiclePlate: second.vehiclePlate,
+        },
+      ],
+    };
+    const failingService = new PrismaDsvDispatchImportService(prismaWithPublicationFailure(prisma));
+    const staged = await failingService.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+
+    await expect(failingService.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-publication-rollback',
+    ))).rejects.toMatchObject({
+      code: 'DISPATCH_IMPORT_CANONICAL_CONFLICT',
+    } satisfies Partial<DsvDispatchImportApplyError>);
+    await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toMatchObject({
+      customers: 0,
+      deliveryStops: 0,
+      orders: 0,
+      routeGroupingOrders: 0,
+      routePlanStops: 0,
+      routePlans: 0,
+    });
+    await expect(prisma.routeGroupingChildVersion.count({ where: { shopId: fixture.shopId } })).resolves.toBe(0);
+
+    const retryService = new PrismaDsvDispatchImportService(prisma);
+    const retryStage = await retryService.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const retried = await retryService.apply(applyInput(
+      fixture.shopDomain,
+      retryStage.id,
+      retryStage.sourceHash ?? '',
+      'cmd-publication-rollback-retry',
+    ));
+    const retriedOrder = await prisma.order.findUniqueOrThrow({
+      include: { currentRouteVersion: true },
+      where: { id: retried.rows[0]?.sellerOrderId ?? '' },
+    });
+    expect(retriedOrder.currentRouteVersion).toMatchObject({ notificationStatus: 'SKIPPED' });
+    expect(retriedOrder.currentRouteVersion?.publishedAt).toBeInstanceOf(Date);
+    await expect(prisma.routeGroupingChildVersion.count({
+      where: { publishedAt: { not: null }, shopId: fixture.shopId },
+    })).resolves.toBe(2);
+  });
+
+  test('does not rewrite in-progress or completed DSV routes and their driver events on a later no-op apply', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'publication-preserves-terminal-state');
+    const second = await createAssignedDriverResource(prisma, fixture.shopId, 'Driver Two', '34B5678');
+    const source = fixture.input.rows[0];
+    if (source === undefined) throw new Error('Missing fixture row');
+    const secondKey = `${fixture.sellerOrderKey}-SECOND`;
+    const input: DsvDispatchImportInput = {
+      ...fixture.input,
+      rows: [
+        { ...source, driverName: 'Driver One', vehiclePlate: '12A3456' },
+        {
+          ...source,
+          address: '456 Integration Test Road',
+          customerCode: 'CUST-G003-SECOND',
+          destinationName: 'Integration Destination Two',
+          driverName: 'Driver Two',
+          rowNumber: 3,
+          sellerOrderKey: secondKey,
+          vehiclePlate: second.vehiclePlate,
+        },
+      ],
+    };
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const staged = await service.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const applied = await service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-publication-preserves-terminal-state',
+    ));
+    const routes = await prisma.order.findMany({
+      include: { currentRouteVersion: { include: { routePlan: true } }, deliveryStops: true },
+      where: { id: { in: applied.rows.map((row) => row.sellerOrderId) }, shopId: fixture.shopId },
+    });
+    const first = routes.find((order) => order.sellerOrderKey === fixture.sellerOrderKey);
+    const completed = routes.find((order) => order.sellerOrderKey === secondKey);
+    if (first?.currentRouteVersion?.routePlan === null || first?.currentRouteVersion?.routePlan === undefined) {
+      throw new Error('Missing in-progress route');
+    }
+    if (completed?.currentRouteVersion?.routePlan === null || completed?.currentRouteVersion?.routePlan === undefined) {
+      throw new Error('Missing completed route');
+    }
+    const firstStop = first.deliveryStops[0];
+    const completedStop = completed.deliveryStops[0];
+    if (firstStop === undefined || completedStop === undefined) throw new Error('Missing delivery stop');
+    await prisma.$transaction([
+      prisma.routePlan.update({ data: { status: 'IN_PROGRESS' }, where: { id: first.currentRouteVersion.routePlan.id } }),
+      prisma.deliveryStop.update({ data: { status: 'EN_ROUTE' }, where: { id: firstStop.id } }),
+      prisma.driverEvent.create({
+        data: {
+          driverId: fixture.driverId,
+          eventType: 'STOP_DELIVERED',
+          occurredAt: new Date('2026-07-22T01:00:00.000Z'),
+          payload: { source: 'g003-test' },
+          routePlanId: first.currentRouteVersion.routePlan.id,
+          routeVersionId: first.currentRouteVersion.id,
+          shopId: fixture.shopId,
+        },
+      }),
+      prisma.routePlan.update({ data: { status: 'COMPLETED' }, where: { id: completed.currentRouteVersion.routePlan.id } }),
+      prisma.deliveryStop.update({ data: { status: 'DELIVERED' }, where: { id: completedStop.id } }),
+      prisma.routeGroupingChildVersion.updateMany({
+        data: { publishedAt: null },
+        where: { id: { in: [first.currentRouteVersion.id, completed.currentRouteVersion.id] } },
+      }),
+      prisma.driverEvent.create({
+        data: {
+          driverId: second.driverId,
+          eventType: 'ROUTE_COMPLETED',
+          occurredAt: new Date('2026-07-22T02:00:00.000Z'),
+          payload: { source: 'g003-test' },
+          routePlanId: completed.currentRouteVersion.routePlan.id,
+          routeVersionId: completed.currentRouteVersion.id,
+          shopId: fixture.shopId,
+        },
+      }),
+    ]);
+    const driverEventsBefore = await prisma.driverEvent.findMany({
+      orderBy: { id: 'asc' },
+      where: { routePlanId: { in: [first.currentRouteVersion.routePlan.id, completed.currentRouteVersion.routePlan.id] } },
+    });
+
+    const repeatedStage = await service.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const repeated = await service.apply(applyInput(
+      fixture.shopDomain,
+      repeatedStage.id,
+      repeatedStage.sourceHash ?? '',
+      'cmd-publication-preserves-terminal-state-no-op',
+    ));
+
+    expect(repeated.summary).toEqual({ appliedRows: 2, newRows: 0, noOpRows: 2, updatedRows: 0 });
+    await expect(prisma.routePlan.findMany({
+      orderBy: { id: 'asc' },
+      select: { id: true, status: true },
+      where: { id: { in: [first.currentRouteVersion.routePlan.id, completed.currentRouteVersion.routePlan.id] } },
+    })).resolves.toEqual([
+      { id: first.currentRouteVersion.routePlan.id, status: 'IN_PROGRESS' },
+      { id: completed.currentRouteVersion.routePlan.id, status: 'COMPLETED' },
+    ].sort((left, right) => left.id.localeCompare(right.id)));
+    await expect(prisma.deliveryStop.findMany({
+      orderBy: { id: 'asc' },
+      select: { id: true, status: true },
+      where: { id: { in: [firstStop.id, completedStop.id] } },
+    })).resolves.toEqual([
+      { id: firstStop.id, status: 'EN_ROUTE' },
+      { id: completedStop.id, status: 'DELIVERED' },
+    ].sort((left, right) => left.id.localeCompare(right.id)));
+    await expect(prisma.driverEvent.findMany({
+      orderBy: { id: 'asc' },
+      where: { routePlanId: { in: [first.currentRouteVersion.routePlan.id, completed.currentRouteVersion.routePlan.id] } },
+    })).resolves.toEqual(driverEventsBefore);
+    await expect(prisma.routeGroupingChildVersion.count({
+      where: {
+        id: { in: [first.currentRouteVersion.id, completed.currentRouteVersion.id] },
+        publishedAt: null,
+      },
+    })).resolves.toBe(2);
+  });
+
+  test('keeps a generic saved draft hidden from driver access until explicit dispatch', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'generic-draft-hidden');
+    const accountId = await linkDriverAccount(prisma, fixture.driverId, 'generic-draft-hidden');
+    const importService = new PrismaDsvDispatchImportService(prisma);
+    const staged = await importService.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const applied = await importService.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-generic-draft-hidden',
+    ));
+    const groupingOrder = await prisma.routeGroupingOrder.findFirstOrThrow({
+      where: { orderId: applied.rows[0]?.sellerOrderId ?? '', shopId: fixture.shopId },
+    });
+    await prisma.shop.update({
+      data: { defaultDepotLatitude: 37.5665, defaultDepotLongitude: 126.978 },
+      where: { id: fixture.shopId },
+    });
+    const groupingService = new PrismaRouteGroupingService(
+      prisma,
+      new DisabledDriverPushProvider(),
+      undefined,
+      undefined,
+      {
+        buildRoute: () => Promise.resolve({
+          routeGeometry: { coordinates: [[126.978, 37.5665]], type: 'LineString' },
+          routeMetrics: { distanceMeters: 0, durationSeconds: 0 },
+          routeStopPoints: [],
+        }),
+      },
+    );
+    const saved = await groupingService.saveDraft({
+      groupingId: groupingOrder.groupingId,
+      mode: 'MANUAL_ORDER',
+      routes: [{
+        branchId: null,
+        driverId: fixture.driverId,
+        orderIds: [groupingOrder.orderId],
+        routePlanId: null,
+        tempId: 'generic-save-draft',
+        vehicleId: fixture.vehicleId,
+      }],
+      shopDomain: fixture.shopDomain,
+    });
+    const routePlanId = saved?.children[0]?.routePlanId;
+    if (routePlanId === null || routePlanId === undefined) throw new Error('Missing generic draft route plan');
+
+    await expect(prisma.routeGroupingChildVersion.findFirstOrThrow({
+      where: { routePlanId, status: 'CURRENT', supersededAt: null },
+    })).resolves.toMatchObject({ notificationStatus: 'SKIPPED', publishedAt: null });
+    await expect(new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({
+      accountId,
+      routeContext: routePlanId,
+    })).resolves.toEqual({ status: 'NOT_FOUND' });
   });
 
   test('applies geocoded rows after coordinates are normalized to database precision', async () => {
@@ -967,7 +1337,11 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
   test('serializes concurrent same-command success into one result or an in-progress response', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'same-command-concurrent');
     const service = new PrismaDsvDispatchImportService(prisma);
-    const staged = await service.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const staged = await service.commit({
+      ...withAssignedFixtureResources(fixture.input),
+      actor: 'g003-test',
+      shopDomain: fixture.shopDomain,
+    });
     const input = applyInput(fixture.shopDomain, staged.id, staged.sourceHash ?? '', 'cmd-same-command-concurrent');
 
     const outcomes = await Promise.allSettled([service.apply(input), service.apply(input)]);
@@ -1009,9 +1383,13 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       destinations: 1,
       orders: 1,
       routeGroupingOrders: 1,
-      routePlanStops: 0,
-      routePlans: 0,
+      routePlanStops: 1,
+      routePlans: 1,
     });
+    await expect(prisma.routeGroupingChildVersion.count({
+      where: { publishedAt: { not: null }, shopId: fixture.shopId, status: 'CURRENT', supersededAt: null },
+    })).resolves.toBe(1);
+    await expect(prisma.driverRouteNotificationAttempt.count({ where: { shopId: fixture.shopId } })).resolves.toBe(0);
   }, 30_000);
 
   test('durably claims a concurrent same-command forced failure before terminal compensation', async () => {
@@ -1612,6 +1990,91 @@ async function createFixture(prisma: PrismaClient, createdShopIds: string[], nam
     shopId: shop.id,
     vehicleId: vehicle.id,
   };
+}
+
+async function linkDriverAccount(prisma: PrismaClient, driverId: string, name: string): Promise<string> {
+  const unique = `${name}-${randomUUID()}`;
+  const account = await prisma.driverAccount.create({
+    data: {
+      loginId: `login-${unique}`,
+      name,
+      phone: `phone-${unique}`,
+      status: 'ACTIVE',
+    },
+  });
+  await prisma.driver.update({
+    data: { accountId: account.id, authSubject: `auth-${unique}` },
+    where: { id: driverId },
+  });
+  return account.id;
+}
+
+async function createAssignedDriverResource(
+  prisma: PrismaClient,
+  shopId: string,
+  displayName: string,
+  vehiclePlate: string,
+) {
+  const driver = await prisma.driver.create({
+    data: {
+      displayName,
+      shopId,
+      status: 'ACTIVE',
+      dsvProfile: {
+        create: {
+          age: 39,
+          career: '4y',
+          gender: 'N/A',
+          lookupName: displayName,
+          score: 'A',
+          zone: 'SEOUL',
+        },
+      },
+    },
+  });
+  const vehicle = await prisma.vehicle.create({
+    data: { label: `${displayName} Truck`, licensePlate: vehiclePlate, shopId, status: 'ACTIVE' },
+  });
+  await prisma.dsvVehicleDriverAssignment.create({
+    data: { createdBy: 'g003-test', driverId: driver.id, shopId, vehicleId: vehicle.id },
+  });
+  return { driverId: driver.id, vehicleId: vehicle.id, vehiclePlate };
+}
+
+function prismaWithPublicationFailure(prisma: PrismaClient): PrismaClient {
+  const transaction = prisma.$transaction.bind(prisma) as unknown as (
+    operation: (tx: Prisma.TransactionClient) => Promise<unknown>,
+    options?: { maxWait?: number; timeout?: number },
+  ) => Promise<unknown>;
+  return new Proxy(prisma, {
+    get(target, property) {
+      if (property !== '$transaction') return Reflect.get(target, property, target) as unknown;
+      return (operation: (tx: Prisma.TransactionClient) => Promise<unknown>, options?: { maxWait?: number; timeout?: number }) =>
+        transaction(async (tx) => operation(new Proxy(tx, {
+          get(txTarget, txProperty) {
+            if (txProperty !== 'routeGroupingChildVersion') {
+              return Reflect.get(txTarget, txProperty, txTarget) as unknown;
+            }
+            const delegate = txTarget.routeGroupingChildVersion;
+            return new Proxy(delegate, {
+              get(delegateTarget, delegateProperty) {
+                if (delegateProperty !== 'updateMany') {
+                  const value = Reflect.get(delegateTarget, delegateProperty, delegateTarget) as unknown;
+                  return value;
+                }
+                return async (args: Prisma.RouteGroupingChildVersionUpdateManyArgs) => {
+                  const result = await delegate.updateMany(args);
+                  if (typeof args.data === 'object' && args.data !== null && 'publishedAt' in args.data) {
+                    throw new Error('forced publication failure');
+                  }
+                  return result;
+                };
+              },
+            });
+          },
+        })), options);
+    },
+  });
 }
 
 async function createGroupingAssignment(prisma: PrismaClient, input: {
