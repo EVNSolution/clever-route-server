@@ -1268,7 +1268,7 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
     'deliverySession', 'deliveryState', 'deliveryWeekday', 'geocodeStatus', 'operateDeliveryStatus',
     'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'planned', 'planningGroupKey', 'q',
     'readiness', 'routeOpsScope', 'routeOpsTab', 'routeOpsToday', 'routeScopeKey', 'scope', 'search',
-    'serviceType', 'tab'
+    'serviceCategory', 'serviceType', 'tab'
   ]);
   if (Object.keys(query).some((key) => !knownKeys.has(key))) throw new Error('unknown order filter');
   const filters: ListCanonicalOrdersFilters = {};
@@ -1298,6 +1298,13 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
       throw new Error('invalid deliveryWeekday');
     }
     filters.deliveryWeekday = deliveryWeekday;
+  }
+  const serviceCategory = readSingleQuery(query.serviceCategory);
+  if (serviceCategory !== null) {
+    if (serviceCategory !== 'DELIVERY' && serviceCategory !== 'PICKUP') {
+      throw new Error('invalid serviceCategory');
+    }
+    filters.serviceCategory = serviceCategory;
   }
   const serviceType = readSingleQuery(query.serviceType);
   if (serviceType !== null) {

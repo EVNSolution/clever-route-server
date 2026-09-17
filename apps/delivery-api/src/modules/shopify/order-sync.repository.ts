@@ -93,8 +93,14 @@ export type ListCanonicalOrdersFilters = {
   routeOpsToday?: string;
   scope?: "history" | "planning";
   search?: string;
+  serviceCategory?: "DELIVERY" | "PICKUP";
   serviceType?: string;
   tab?: "all" | "needs_review" | "planned" | "unplanned";
+};
+
+const ORDER_SERVICE_CATEGORIES = {
+  DELIVERY: ["DELIVERY", "EVENING_DELIVERY"],
+  PICKUP: ["PICKUP"],
 };
 
 export type ListCanonicalOrdersInput = {
@@ -1622,6 +1628,9 @@ export function toCanonicalOrderWhere(
   if (filters.readiness !== undefined) fact.readiness = filters.readiness;
   if (filters.routeScopeKey !== undefined) fact.routeScopeKey = filters.routeScopeKey;
   if (filters.serviceType !== undefined) fact.serviceType = filters.serviceType;
+  if (filters.serviceCategory !== undefined) {
+    fact.AND = [{ serviceType: { in: ORDER_SERVICE_CATEGORIES[filters.serviceCategory] } }];
+  }
   if (Object.keys(fact).length > 0) AND.push({ deliveryFacts: { some: fact } });
 
   if (filters.planned !== undefined) {
@@ -1788,6 +1797,11 @@ function matchesDerivedFilters(
   if (
     filters.serviceType !== undefined &&
     row.serviceType !== filters.serviceType
+  )
+    return false;
+  if (
+    filters.serviceCategory !== undefined &&
+    !ORDER_SERVICE_CATEGORIES[filters.serviceCategory].includes(row.serviceType ?? "")
   )
     return false;
   if (
