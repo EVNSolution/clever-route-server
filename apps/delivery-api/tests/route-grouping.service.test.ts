@@ -5,11 +5,13 @@ import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-pus
 import { computeRouteShapeSignatureFromParts } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import {
   assertDraftSchedulePlanDates,
+  assertLockedRoutePlanSuccessorPolicy,
   currentRouteBindingAuthorityState,
   PrismaRouteGroupingService,
   newChildRouteName,
   rebindCurrentOrdersToRouteVersion,
   replaceCurrentRouteGroupingChildVersion,
+  resetReorderedActiveRouteEta,
   resolveNewChildRouteIdx,
   resolveNextGlobalRouteIdx,
   syncRoutePlanStopsPreservingRows
@@ -828,6 +830,73 @@ describe('route grouping contracts', () => {
     expect(tx.routePlanStop.create).not.toHaveBeenCalled();
   });
 
+  test('allows only exact-membership reorders or tail appends for an in-progress grouped route', () => {
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2', 'order-3'],
+      nextOrderIds: ['order-3', 'order-1', 'order-2'],
+      routeDetailsChanged: false,
+      status: 'IN_PROGRESS'
+    })).not.toThrow();
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2'],
+      nextOrderIds: ['order-1', 'order-2', 'order-3'],
+      routeDetailsChanged: false,
+      status: 'IN_PROGRESS'
+    })).not.toThrow();
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2'],
+      nextOrderIds: ['order-2'],
+      routeDetailsChanged: false,
+      status: 'IN_PROGRESS'
+    })).toThrow('in-progress route drafts may only reorder existing orders or append orders');
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2'],
+      nextOrderIds: ['order-2', 'order-1'],
+      routeDetailsChanged: true,
+      status: 'IN_PROGRESS'
+    })).toThrow(RouteGroupingValidationError);
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2'],
+      nextOrderIds: ['order-2', 'order-1'],
+      routeDetailsChanged: false,
+      status: 'COMPLETED'
+    })).toThrow('route membership cannot change after route completion');
+  });
+
+  test('invalidates ETA only for unfinished stops against the reordered successor version', async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+
+    await resetReorderedActiveRouteEta({ routePlanStop: { updateMany } } as never, 'shop-1', 'route-1', 'child-next');
+
+    expect(updateMany).toHaveBeenNthCalledWith(1, {
+      data: { etaInputRouteVersionId: 'child-next' },
+      where: {
+        routePlanId: 'route-1',
+        shopId: 'shop-1',
+        deliveryStop: { status: { in: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }
+      }
+    });
+    expect(updateMany).toHaveBeenNthCalledWith(2, {
+      data: {
+        distanceFromPreviousMeters: null,
+        durationFromPreviousSeconds: null,
+        estimatedArrivalAt: null,
+        etaCalculatedAt: null,
+        etaFailureCode: null,
+        etaFailureMessage: null,
+        etaInputRouteVersionId: 'child-next',
+        etaSource: null,
+        etaStatus: 'PENDING'
+      },
+      where: {
+        routePlanId: 'route-1',
+        shopId: 'shop-1',
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } }
+      }
+    });
+    expect(updateMany).toHaveBeenCalledTimes(2);
+  });
+
   test('creates route plans and groups immediately in Ready state', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
     const routePlanModel = /model RoutePlan \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
@@ -1449,7 +1518,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
   });
 
-  test('publishes an ordinary route once, ignores Start-only lifecycle changes, then sends one changed refresh', async () => {
+  test('publishes an ordinary route once, ignores Start-only lifecycle changes, then sends a reordered refresh', async () => {
     const provider = new FakeDriverPushProvider();
     const routePlan = {
       assignmentGeneration: 3n,
@@ -1459,7 +1528,10 @@ describe('route grouping contracts', () => {
       driver: { accountId: 'account-1' },
       driverId: 'driver-1',
       name: 'Route 1',
-      routeStops: [],
+      routeStops: [
+        { deliveryStopId: 'stop-1', sequence: 1 },
+        { deliveryStopId: 'stop-2', sequence: 2 }
+      ],
       shop: { id: 'shop-1', shopDomain: 'tenant.example' },
       status: 'READY',
     };
@@ -1504,11 +1576,15 @@ describe('route grouping contracts', () => {
     await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
     expect(provider.sentMessages).toHaveLength(1);
 
-    routePlan.constraints = { scheduledStartAt: '2026-09-09T13:00:00.000Z' };
+    routePlan.routeStops = [
+      { deliveryStopId: 'stop-2', sequence: 1 },
+      { deliveryStopId: 'stop-1', sequence: 2 }
+    ];
     await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
     await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
     expect(provider.sentMessages).toHaveLength(2);
     expect(provider.sentMessages[1]).toMatchObject({ action: 'changed', routePlanId: 'route-1' });
+    expect(provider.sentMessages[1]?.publicationVersion).not.toBe(provider.sentMessages[0]?.publicationVersion);
     expect(prisma.driverRouteNotificationAttempt.upsert).toHaveBeenCalledTimes(2);
     expect('driverEvent' in prisma).toBe(false);
   });

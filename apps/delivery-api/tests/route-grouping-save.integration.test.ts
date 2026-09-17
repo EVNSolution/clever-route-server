@@ -3,6 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
+import {
+  DriverEventAssignmentChangedError,
+  DriverEventRouteVersionMismatchError,
+  PrismaDriverEventRepository
+} from '../src/modules/driver/driver-event.repository.js';
+import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
@@ -60,6 +66,7 @@ describeDatabase('route grouping save database regressions', () => {
   );
   let shopId = '';
   let orderSequence = 0;
+  const driverAccountIds: string[] = [];
 
   beforeAll(async () => {
     const shop = await prisma.shop.create({
@@ -76,6 +83,7 @@ describeDatabase('route grouping save database regressions', () => {
 
   afterAll(async () => {
     if (shopId !== '') await prisma.shop.deleteMany({ where: { id: shopId } });
+    if (driverAccountIds.length > 0) await prisma.driverAccount.deleteMany({ where: { id: { in: driverAccountIds } } });
     await prisma.$disconnect();
   });
 
@@ -209,6 +217,386 @@ describeDatabase('route grouping save database regressions', () => {
 
     expect(secondSave?.children[0]?.stopsCount).toBe(2);
     await expect(prisma.routeGroupingOrder.count({ where: { groupingId: grouping.id } })).resolves.toBe(2);
+  });
+
+  test('reorders a started child route without replacing execution rows and rejects a completed successor change', async () => {
+    const orders = await seedOrders(2);
+    const driverAccount = await prisma.driverAccount.create({ data: { phone: `started-reorder-${randomUUID()}` } });
+    driverAccountIds.push(driverAccount.id);
+    const driver = await prisma.driver.create({
+      data: {
+        accountId: driverAccount.id,
+        authSubject: `started-reorder-${randomUUID()}`,
+        displayName: 'Started reorder driver',
+        shopId
+      }
+    });
+    const grouping = await createGrouping('started route reorder', orders.map(({ id }) => id));
+    const firstSave = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [{ ...draftRoute('started-child', orders.map(({ id }) => id)), driverId: driver.id }],
+      shopDomain
+    });
+    const routePlanId = firstSave!.children[0]!.routePlanId!;
+    const firstChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+      where: { routePlanId, status: 'CURRENT', supersededAt: null }
+    });
+    const originalStops = await prisma.routePlanStop.findMany({
+      orderBy: { sequence: 'asc' },
+      where: { routePlanId }
+    });
+    const terminalEta = new Date('2026-09-10T13:00:00.000Z');
+    const activeEta = new Date('2026-09-10T13:30:00.000Z');
+    await prisma.deliveryStop.update({ data: { status: 'DELIVERED' }, where: { id: orders[0]!.deliveryStopId } });
+    await prisma.deliveryStop.update({ data: { status: 'EN_ROUTE' }, where: { id: orders[1]!.deliveryStopId } });
+    await prisma.routePlanStop.update({
+      data: {
+        distanceFromPreviousMeters: 100,
+        durationFromPreviousSeconds: 60,
+        estimatedArrivalAt: terminalEta,
+        etaCalculatedAt: new Date('2026-09-10T12:00:00.000Z'),
+        etaInputRouteVersionId: firstChild.id,
+        etaSource: 'INTEGRATION',
+        etaStatus: 'READY'
+      },
+      where: { id: originalStops[0]!.id }
+    });
+    await prisma.routePlanStop.update({
+      data: {
+        distanceFromPreviousMeters: 200,
+        durationFromPreviousSeconds: 120,
+        estimatedArrivalAt: activeEta,
+        etaCalculatedAt: new Date('2026-09-10T12:00:00.000Z'),
+        etaInputRouteVersionId: firstChild.id,
+        etaSource: 'INTEGRATION',
+        etaStatus: 'READY'
+      },
+      where: { id: originalStops[1]!.id }
+    });
+    const assignedRoute = await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } });
+    const eventRepository = new PrismaDriverEventRepository(prisma);
+    const startedEvent = await eventRepository.recordDriverEvent({
+      assignmentGeneration: assignedRoute.assignmentGeneration.toString(),
+      attemptId: null,
+      clientEventId: randomUUID(),
+      deliveryStopId: null,
+      driverContractVersion: 2,
+      driverId: driver.id,
+      eventType: 'ROUTE_STARTED',
+      expectedRouteVersionId: firstChild.id,
+      latitude: null,
+      longitude: null,
+      occurredAt: new Date('2026-09-10T12:15:00.000Z'),
+      payload: { source: 'route-grouping-save-integration' },
+      routePlanId,
+      shopDomain,
+      shopId
+    });
+    const lockedRoute = await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } });
+    await eventRepository.recordDriverEvent({
+      assignmentGeneration: lockedRoute.assignmentGeneration.toString(),
+      attemptId: null,
+      clientEventId: randomUUID(),
+      deliveryStopId: null,
+      driverContractVersion: 2,
+      driverId: driver.id,
+      eventType: 'PICKUP_COMPLETED',
+      expectedRouteVersionId: firstChild.id,
+      latitude: null,
+      longitude: null,
+      occurredAt: new Date('2026-09-10T12:20:00.000Z'),
+      payload: { source: 'route-grouping-save-integration' },
+      routePlanId,
+      shopDomain,
+      shopId
+    });
+    await eventRepository.recordDriverEvent({
+      assignmentGeneration: lockedRoute.assignmentGeneration.toString(),
+      attemptId: null,
+      clientEventId: randomUUID(),
+      deliveryStopId: orders[1]!.deliveryStopId,
+      driverContractVersion: 2,
+      driverId: driver.id,
+      eventType: 'STOP_ARRIVED',
+      expectedRouteVersionId: firstChild.id,
+      latitude: null,
+      longitude: null,
+      occurredAt: new Date('2026-09-10T12:25:00.000Z'),
+      payload: { source: 'route-grouping-save-integration' },
+      routePlanId,
+      shopDomain,
+      shopId
+    });
+    const terminalBeforeReorder = await prisma.routePlanStop.findUniqueOrThrow({
+      where: { id: originalStops[0]!.id }
+    });
+
+    const reordered = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [{
+        branchId: null,
+        expectedRoutePlanUpdatedAt: lockedRoute.updatedAt.toISOString(),
+        label: lockedRoute.name,
+        orderIds: [orders[1]!.id, orders[0]!.id],
+        routeKey: `routePlan:${routePlanId}`,
+        routePlanId,
+        scheduledStartAt: null,
+        scheduledStartTimeZone: null,
+        vehicleId: null
+      }],
+      shopDomain
+    });
+
+    expect(reordered?.children[0]?.routePlanId).toBe(routePlanId);
+    const nextChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+      where: { routePlanId, status: 'CURRENT', supersededAt: null }
+    });
+    expect(nextChild.id).not.toBe(firstChild.id);
+    expect(nextChild.snapshot).toMatchObject({ predecessorChildVersionId: firstChild.id });
+    expect(nextChild.snapshot).toMatchObject({
+      reorderCompatibility: {
+        assignmentGeneration: lockedRoute.assignmentGeneration.toString()
+      }
+    });
+    const routeAccess = await new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({
+      accountId: driverAccount.id,
+      routeContext: routePlanId
+    });
+    expect(routeAccess).toMatchObject({
+      routeAccess: {
+        assignmentGeneration: lockedRoute.assignmentGeneration.toString(),
+        expectedRouteVersionId: nextChild.id,
+        routePlanId
+      },
+      status: 'INVITED'
+    });
+    const archivedFirstChild = await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: firstChild.id } });
+    expect(archivedFirstChild.status).toBe('ARCHIVED');
+    expect(archivedFirstChild.supersededAt).toBeInstanceOf(Date);
+    const reorderedStops = await prisma.routePlanStop.findMany({
+      include: { deliveryStop: { select: { status: true } } },
+      orderBy: { sequence: 'asc' },
+      where: { routePlanId }
+    });
+    expect(reorderedStops.map(({ deliveryStopId, id, sequence }) => ({ deliveryStopId, id, sequence }))).toEqual([
+      { deliveryStopId: orders[1]!.deliveryStopId, id: originalStops[1]!.id, sequence: 1 },
+      { deliveryStopId: orders[0]!.deliveryStopId, id: originalStops[0]!.id, sequence: 2 }
+    ]);
+    expect(reorderedStops[0]).toMatchObject({
+      deliveryStop: { status: 'ARRIVED' },
+      distanceFromPreviousMeters: null,
+      durationFromPreviousSeconds: null,
+      estimatedArrivalAt: null,
+      etaCalculatedAt: null,
+      etaInputRouteVersionId: nextChild.id,
+      etaStatus: 'PENDING'
+    });
+    expect(reorderedStops[1]).toMatchObject({
+      deliveryStop: { status: 'DELIVERED' },
+      distanceFromPreviousMeters: 100,
+      durationFromPreviousSeconds: 60,
+      estimatedArrivalAt: terminalBeforeReorder.estimatedArrivalAt,
+      etaInputRouteVersionId: nextChild.id,
+      etaStatus: 'READY'
+    });
+    await expect(prisma.order.findMany({
+      orderBy: { id: 'asc' },
+      select: { currentRouteVersionId: true },
+      where: { id: { in: orders.map(({ id }) => id) } }
+    })).resolves.toEqual([{ currentRouteVersionId: nextChild.id }, { currentRouteVersionId: nextChild.id }]);
+    await expect(prisma.driverEvent.findUniqueOrThrow({ where: { id: startedEvent.eventId } }))
+      .resolves.toMatchObject({ routePlanId, routeVersionId: firstChild.id });
+
+    const offlineDelivery = await eventRepository.recordDriverEvent({
+      assignmentGeneration: lockedRoute.assignmentGeneration.toString(),
+      attemptId: null,
+      clientEventId: randomUUID(),
+      deliveryStopId: orders[1]!.deliveryStopId,
+      driverContractVersion: 2,
+      driverId: driver.id,
+      eventType: 'STOP_DELIVERED',
+      expectedRouteVersionId: firstChild.id,
+      latitude: null,
+      longitude: null,
+      occurredAt: new Date('2026-09-10T12:30:00.000Z'),
+      payload: { source: 'route-grouping-save-integration' },
+      routePlanId,
+      shopDomain,
+      shopId
+    });
+    await expect(prisma.driverEvent.findUniqueOrThrow({ where: { id: offlineDelivery.eventId } }))
+      .resolves.toMatchObject({
+        expectedRouteVersionId: firstChild.id,
+        routePlanId,
+        routeVersionId: nextChild.id
+      });
+    await expect(prisma.deliveryStop.findUniqueOrThrow({ where: { id: orders[1]!.deliveryStopId } }))
+      .resolves.toMatchObject({ status: 'DELIVERED' });
+    await expect(eventRepository.recordDriverEvent({
+      assignmentGeneration: lockedRoute.assignmentGeneration.toString(),
+      attemptId: null,
+      clientEventId: randomUUID(),
+      deliveryStopId: orders[1]!.deliveryStopId,
+      driverContractVersion: 2,
+      driverId: driver.id,
+      eventType: 'STOP_DELIVERED',
+      expectedRouteVersionId: randomUUID(),
+      latitude: null,
+      longitude: null,
+      occurredAt: new Date('2026-09-10T12:31:00.000Z'),
+      payload: { source: 'route-grouping-save-integration' },
+      routePlanId,
+      shopDomain,
+      shopId
+    })).rejects.toBeInstanceOf(DriverEventRouteVersionMismatchError);
+
+    const repeatedRoute = await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } });
+    await expect(service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [{
+        branchId: null,
+        expectedRoutePlanUpdatedAt: repeatedRoute.updatedAt.toISOString(),
+        label: repeatedRoute.name,
+        orderIds: orders.map(({ id }) => id),
+        routeKey: `routePlan:${routePlanId}`,
+        routePlanId,
+        scheduledStartAt: null,
+        scheduledStartTimeZone: null,
+        vehicleId: null
+      }],
+      shopDomain
+    })).resolves.toMatchObject({ id: grouping.id });
+    const repeatedChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+      where: { routePlanId, status: 'CURRENT', supersededAt: null }
+    });
+    expect(repeatedChild.snapshot).toMatchObject({
+      predecessorChildVersionId: nextChild.id,
+      reorderCompatibility: {
+        assignmentGeneration: repeatedRoute.assignmentGeneration.toString()
+      }
+    });
+
+    const changedGenerationRoute = await prisma.routePlan.update({
+      data: { assignmentGeneration: { increment: 1 } },
+      where: { id: routePlanId }
+    });
+    await expect(eventRepository.recordDriverEvent({
+      assignmentGeneration: repeatedRoute.assignmentGeneration.toString(),
+      attemptId: null,
+      clientEventId: randomUUID(),
+      deliveryStopId: orders[1]!.deliveryStopId,
+      driverContractVersion: 2,
+      driverId: driver.id,
+      eventType: 'STOP_FAILED',
+      expectedRouteVersionId: repeatedChild.id,
+      latitude: null,
+      longitude: null,
+      occurredAt: new Date('2026-09-10T12:35:00.000Z'),
+      payload: { source: 'route-grouping-save-integration' },
+      routePlanId,
+      shopDomain,
+      shopId
+    })).rejects.toBeInstanceOf(DriverEventAssignmentChangedError);
+    await expect(service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [{
+        branchId: null,
+        expectedRoutePlanUpdatedAt: changedGenerationRoute.updatedAt.toISOString(),
+        label: changedGenerationRoute.name,
+        orderIds: [orders[1]!.id, orders[0]!.id],
+        routeKey: `routePlan:${routePlanId}`,
+        routePlanId,
+        scheduledStartAt: null,
+        scheduledStartTimeZone: null,
+        vehicleId: null
+      }],
+      shopDomain
+    })).resolves.toMatchObject({ id: grouping.id });
+    const changedGenerationChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+      where: { routePlanId, status: 'CURRENT', supersededAt: null }
+    });
+    expect(changedGenerationChild.snapshot).toMatchObject({
+      predecessorChildVersionId: repeatedChild.id,
+      reorderCompatibility: {
+        assignmentGeneration: changedGenerationRoute.assignmentGeneration.toString()
+      }
+    });
+
+    const pausedEvent = await prisma.driverEvent.create({
+      data: {
+        eventType: 'ROUTE_PAUSED',
+        occurredAt: new Date('2026-09-10T12:45:00.000Z'),
+        payload: { source: 'route-grouping-save-integration' },
+        routePlanId,
+        routeVersionId: changedGenerationChild.id,
+        shopId
+      }
+    });
+    const pausedRoute = await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } });
+    await expect(service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [{
+        branchId: null,
+        expectedRoutePlanUpdatedAt: pausedRoute.updatedAt.toISOString(),
+        label: pausedRoute.name,
+        orderIds: [orders[1]!.id, orders[0]!.id],
+        routeKey: `routePlan:${routePlanId}`,
+        routePlanId,
+        scheduledStartAt: '2026-09-10T13:00:00.000Z',
+        scheduledStartTimeZone: 'UTC',
+        vehicleId: null
+      }],
+      shopDomain
+    })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_INVALID' });
+    await expect(prisma.driverEvent.findUniqueOrThrow({ where: { id: pausedEvent.id } }))
+      .resolves.toMatchObject({ routePlanId, routeVersionId: changedGenerationChild.id });
+
+    await prisma.driverEvent.update({
+      data: {
+        eventType: 'ROUTE_COMPLETED',
+        occurredAt: new Date('2026-09-10T14:00:00.000Z'),
+        payload: { source: 'route-grouping-save-integration' },
+        routePlanId,
+        routeVersionId: changedGenerationChild.id,
+        shopId
+      },
+      where: { id: pausedEvent.id }
+    });
+    await prisma.routePlan.update({ data: { status: 'COMPLETED' }, where: { id: routePlanId } });
+    const completedRoute = await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } });
+    await expect(service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [{
+        branchId: null,
+        expectedRoutePlanUpdatedAt: completedRoute.updatedAt.toISOString(),
+        label: completedRoute.name,
+        orderIds: orders.map(({ id }) => id),
+        routeKey: `routePlan:${routePlanId}`,
+        routePlanId,
+        scheduledStartAt: null,
+        scheduledStartTimeZone: null,
+        vehicleId: null
+      }],
+      shopDomain
+    })).rejects.toMatchObject({
+      blockers: ['route membership cannot change after route completion'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+    await expect(prisma.routeGroupingChildVersion.findFirstOrThrow({
+      where: { routePlanId, status: 'CURRENT', supersededAt: null }
+    })).resolves.toMatchObject({ id: changedGenerationChild.id });
   });
 
   test('removes an omitted Unassigned order only when removedOrderIds explicitly names it', async () => {

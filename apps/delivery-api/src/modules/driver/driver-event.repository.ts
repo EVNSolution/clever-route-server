@@ -674,8 +674,84 @@ async function validateVersionedOrderedContract(
     input.shopId
   );
   if (currentRouteVersionId !== requireExpectedRouteVersionId(input)) {
-    throw new DriverEventRouteVersionMismatchError();
+    const acceptsPreviousOrder = ['PICKUP_COMPLETED', 'STOP_ARRIVED', 'STOP_DELIVERED', 'STOP_FAILED', 'ROUTE_PAUSED', 'ROUTE_COMPLETED'].includes(input.eventType)
+      && currentRouteVersionId != null
+      && (await loadCompatibleReorderVersions(prisma, input.driverId, routePlanId, input.shopId, currentRouteVersionId))
+        .includes(requireExpectedRouteVersionId(input));
+    if (!acceptsPreviousOrder) throw new DriverEventRouteVersionMismatchError();
   }
+}
+
+async function loadCompatibleReorderVersions(
+  prisma: Pick<DriverEventPrismaClient, 'routeGroupingChildVersion'>,
+  driverId: string,
+  routePlanId: string,
+  shopId: string,
+  currentRouteVersionId: string | null | undefined
+): Promise<string[]> {
+  if (currentRouteVersionId == null) return [];
+  const current = await prisma.routeGroupingChildVersion.findFirst({
+    select: { groupingId: true, snapshot: true, routePlan: { select: { assignmentGeneration: true } } },
+    where: {
+      id: currentRouteVersionId, driverId, routePlanId, shopId, status: 'CURRENT', supersededAt: null,
+      routePlan: { driverId, status: 'IN_PROGRESS' }
+    }
+  });
+  const snapshot = current?.snapshot;
+  if (snapshot == null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return [];
+  const generation = current?.routePlan?.assignmentGeneration.toString();
+  if (generation === undefined || !isOrderOnlyReorderSnapshot(snapshot, generation)) return [];
+  const membership = reorderSnapshotMembership(snapshot);
+  if (membership === null) return [];
+  // Bound legacy-event recovery while keeping immutable snapshot storage constant per edit.
+  const predecessors = await prisma.routeGroupingChildVersion.findMany({
+    select: { id: true, snapshot: true },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: 128,
+    where: {
+      driverId, routePlanId, shopId, groupingId: current!.groupingId,
+      status: 'ARCHIVED', supersededAt: { not: null }
+    }
+  });
+  const byId = new Map(predecessors.map((row) => [row.id, row.snapshot]));
+  const seen = new Set([currentRouteVersionId]);
+  const ids: string[] = [];
+  let cursor: Prisma.JsonValue = snapshot;
+  while (isOrderOnlyReorderSnapshot(cursor, generation)) {
+    if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return [];
+    const predecessorId = cursor.predecessorChildVersionId;
+    if (typeof predecessorId !== 'string' || seen.has(predecessorId)
+      || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(predecessorId)) return [];
+    const predecessor = byId.get(predecessorId);
+    if (predecessor === undefined || reorderSnapshotMembership(predecessor) !== membership) return [];
+    seen.add(predecessorId);
+    ids.push(predecessorId);
+    cursor = predecessor;
+  }
+  return ids;
+}
+
+function isOrderOnlyReorderSnapshot(snapshot: Prisma.JsonValue, generation: string): boolean {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return false;
+  const marker = snapshot.reorderCompatibility;
+  return marker !== null && typeof marker === 'object' && !Array.isArray(marker)
+    && marker.assignmentGeneration === generation;
+}
+
+function reorderSnapshotMembership(snapshot: Prisma.JsonValue): string | null {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot) || !Array.isArray(snapshot.stops)) return null;
+  const tuples: string[] = [];
+  const stopIds = new Set<string>();
+  const orderIds = new Set<string>();
+  for (const stop of snapshot.stops) {
+    if (stop === null || typeof stop !== 'object' || Array.isArray(stop)
+      || typeof stop.deliveryStopId !== 'string' || typeof stop.orderId !== 'string' || typeof stop.sourceOrderId !== 'string'
+      || stopIds.has(stop.deliveryStopId) || orderIds.has(stop.orderId)) return null;
+    stopIds.add(stop.deliveryStopId);
+    orderIds.add(stop.orderId);
+    tuples.push(JSON.stringify([stop.deliveryStopId, stop.orderId, stop.sourceOrderId]));
+  }
+  return tuples.length === 0 ? null : JSON.stringify(tuples.sort());
 }
 
 function attemptFailureFor(error: unknown): {
@@ -1390,13 +1466,16 @@ async function buildCurrentEtaSnapshotForDuplicate(
 }
 
 async function loadPickupCompletedAt(
-  prisma: Pick<DriverEventPrismaClient, 'driverEvent'>,
+  prisma: Pick<DriverEventPrismaClient, 'driverEvent' | 'routeGroupingChildVersion'>,
   schemaCapabilities: DriverEventSchemaCapabilities,
   driverId: string,
   routePlanId: string,
   shopId: string,
   eventRouteVersionId: string | null | undefined
 ): Promise<Date | null> {
+  const predecessors = schemaCapabilities.driverEventRouteVersionColumnExists
+    ? await loadCompatibleReorderVersions(prisma, driverId, routePlanId, shopId, eventRouteVersionId)
+    : [];
   const event = await prisma.driverEvent.findFirst({
     orderBy: { createdAt: 'asc' },
     select: { createdAt: true, occurredAt: true },
@@ -1406,7 +1485,7 @@ async function loadPickupCompletedAt(
       routePlanId,
       shopId,
       ...(schemaCapabilities.driverEventRouteVersionColumnExists
-        ? { routeVersionId: eventRouteVersionId ?? null }
+        ? { routeVersionId: predecessors.length === 0 ? eventRouteVersionId ?? null : { in: [eventRouteVersionId!, ...predecessors] } }
         : {})
     }
   });
@@ -1414,7 +1493,7 @@ async function loadPickupCompletedAt(
 }
 
 async function loadStopArrivalAt(
-  prisma: Pick<DriverEventPrismaClient, 'driverEvent'>,
+  prisma: Pick<DriverEventPrismaClient, 'driverEvent' | 'routeGroupingChildVersion'>,
   driverId: string,
   routePlanId: string,
   deliveryStopId: string,
@@ -1422,6 +1501,9 @@ async function loadStopArrivalAt(
   schemaCapabilities: DriverEventSchemaCapabilities,
   eventRouteVersionId: string | null | undefined
 ): Promise<Date | null> {
+  const predecessors = schemaCapabilities.driverEventRouteVersionColumnExists
+    ? await loadCompatibleReorderVersions(prisma, driverId, routePlanId, shopId, eventRouteVersionId)
+    : [];
   const event = await prisma.driverEvent.findFirst({
     orderBy: { occurredAt: 'asc' },
     select: { createdAt: true, occurredAt: true },
@@ -1432,7 +1514,7 @@ async function loadStopArrivalAt(
       routePlanId,
       shopId,
       ...(schemaCapabilities.driverEventRouteVersionColumnExists
-        ? { routeVersionId: eventRouteVersionId ?? null }
+        ? { routeVersionId: predecessors.length === 0 ? eventRouteVersionId ?? null : { in: [eventRouteVersionId!, ...predecessors] } }
         : {})
     }
   });
@@ -1440,18 +1522,21 @@ async function loadStopArrivalAt(
 }
 
 async function isCurrentEtaProgressEvent(
-  prisma: Pick<DriverEventPrismaClient, '$queryRaw'>,
+  prisma: Pick<DriverEventPrismaClient, '$queryRaw' | 'routeGroupingChildVersion'>,
   schemaCapabilities: DriverEventSchemaCapabilities,
   input: RecordDriverEventInput,
   eventRouteVersionId: string | null | undefined,
   eventId: string
 ): Promise<boolean> {
   const routePlanId = requireRoutePlanId(input);
+  const predecessors = schemaCapabilities.driverEventRouteVersionColumnExists
+    ? await loadCompatibleReorderVersions(prisma, input.driverId, routePlanId, input.shopId, eventRouteVersionId)
+    : [];
   const routeVersionPredicate = !schemaCapabilities.driverEventRouteVersionColumnExists
     ? Prisma.empty
     : eventRouteVersionId === null || eventRouteVersionId === undefined
       ? Prisma.sql`AND "routeVersionId" IS NULL`
-      : Prisma.sql`AND "routeVersionId" = ${eventRouteVersionId}::uuid`;
+      : Prisma.sql`AND "routeVersionId" IN (${Prisma.join([eventRouteVersionId, ...predecessors].map((id) => Prisma.sql`${id}::uuid`))})`;
   const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT id
     FROM driver_events

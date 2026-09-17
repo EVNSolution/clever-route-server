@@ -215,6 +215,38 @@ describe('ordered driver event contract v2', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  test.each(['valid', 'unmarked', 'different_generation', 'different_membership', 'cycle', 'unrelated', 'restart'] as const)(
+    'accepts only proven order-only predecessor delivery events: %s', async (scenario) => {
+      const previousId = '22222222-2222-4222-8222-222222222222';
+      const currentId = '33333333-3333-4333-8333-333333333333';
+      const stops = [{ deliveryStopId: 'stop-id', orderId: 'order-id', sourceOrderId: 'source-order-id' }];
+      const snapshot = {
+        predecessorChildVersionId: scenario === 'unrelated' ? '44444444-4444-4444-8444-444444444444' : previousId,
+        ...(scenario === 'unmarked' ? {} : { reorderCompatibility: { assignmentGeneration: scenario === 'different_generation' ? '6' : '7' } }),
+        stops
+      };
+      const previousSnapshot = {
+        ...(scenario === 'cycle' ? { predecessorChildVersionId: currentId, reorderCompatibility: { assignmentGeneration: '7' } } : {}),
+        stops: scenario === 'different_membership' ? [{ ...stops[0], deliveryStopId: 'another-stop' }] : stops
+      };
+      const prisma = repositoryHarness({
+        attemptCreate: vi.fn(() => Promise.resolve({ id: 'attempt-id' })),
+        attemptUpdate: vi.fn(() => Promise.resolve({ id: 'attempt-id' })),
+        currentRouteVersionId: currentId,
+        operations: [],
+        reorderSnapshot: snapshot,
+        predecessors: [{ id: previousId, snapshot: previousSnapshot }]
+      });
+      const repository = new PrismaDriverEventRepository(prisma as never, { now: () => now });
+      const result = repository.recordDriverEvent({ ...repositoryInput(), eventType: scenario === 'restart' ? 'ROUTE_STARTED' : 'ROUTE_PAUSED' });
+      if (scenario === 'valid') {
+        await expect(result).resolves.toMatchObject({ duplicate: false, eventId: 'event-id' });
+      } else {
+        await expect(result).rejects.toBeInstanceOf(DriverEventRouteVersionMismatchError);
+      }
+    }
+  );
+
   test('emits a flat redacted contract log suitable for stdout-to-CloudWatch', async () => {
     const logLines: string[] = [];
     const app = await buildApp({
@@ -377,6 +409,8 @@ function repositoryHarness(input: {
   attemptUpdate: ReturnType<typeof vi.fn>;
   currentRouteVersionId?: string;
   operations: string[];
+  reorderSnapshot?: object;
+  predecessors?: Array<{ id: string; snapshot: object }>;
 }) {
   const currentVersion = input.currentRouteVersionId ?? '22222222-2222-4222-8222-222222222222';
   const prisma: object = {};
@@ -413,7 +447,11 @@ function repositoryHarness(input: {
     dsvDispatchChangeRequest: {},
     order: {},
     routeGroupingChildVersion: {
-      findFirst: vi.fn(() => Promise.resolve({ id: currentVersion, snapshot: { stops: [] } }))
+      findFirst: vi.fn(() => Promise.resolve({
+        groupingId: 'group-id', id: currentVersion, routePlan: { assignmentGeneration: 7n },
+        snapshot: input.reorderSnapshot ?? { stops: [] }
+      })),
+      findMany: vi.fn(() => Promise.resolve(input.predecessors ?? []))
     },
     routePlan: {
       findFirst: vi.fn(() => Promise.resolve({ id: 'route-plan-id', status: 'IN_PROGRESS' })),
