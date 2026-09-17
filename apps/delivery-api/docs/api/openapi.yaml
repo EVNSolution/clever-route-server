@@ -2361,6 +2361,12 @@ paths:
           schema:
             enum: [SUNDAY, MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY]
             type: string
+        - name: serviceCategory
+          in: query
+          description: DELIVERY includes day and evening deliveries; PICKUP includes pickups only. Omit for all categories. Combines with other filters using AND.
+          schema:
+            enum: [DELIVERY, PICKUP]
+            type: string
         - name: serviceType
           in: query
           schema:

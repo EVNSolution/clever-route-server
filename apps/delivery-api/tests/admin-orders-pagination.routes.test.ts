@@ -18,7 +18,7 @@ describe('admin orders pagination resources', () => {
       const response = await app.inject({
         headers: { authorization: 'Bearer session-token' },
         method: 'GET',
-        url: '/admin/orders/page?pageSize=50&sort=id_desc&deliveryState=planned&orderedDateFrom=2026-05-01&orderedDateTo=2026-05-31&scope=planning&tab=unplanned&routeOpsToday=2026-08-04'
+        url: '/admin/orders/page?pageSize=50&sort=id_desc&deliveryState=planned&orderedDateFrom=2026-05-01&orderedDateTo=2026-05-31&scope=planning&tab=unplanned&routeOpsToday=2026-08-04&deliveryWeekday=THURSDAY&serviceCategory=DELIVERY'
       });
       expect(response.statusCode).toBe(200);
       expect(JSON.parse(response.body)).toEqual({
@@ -50,6 +50,8 @@ describe('admin orders pagination resources', () => {
         appId: 'clever',
         filters: {
           deliveryState: 'planned',
+          deliveryWeekday: 'THURSDAY',
+          serviceCategory: 'DELIVERY',
           orderedDateFrom: '2026-05-01',
           orderedDateTo: '2026-05-31',
           routeOpsToday: '2026-08-04',
@@ -159,14 +161,25 @@ describe('admin orders pagination resources', () => {
     } finally { await app.close(); }
   });
 
+  test.each(['EVENING_DELIVERY', 'ALL', 'delivery', 'DELIVERY&serviceCategory=PICKUP'])('rejects invalid or repeated service categories %s', async (serviceCategory) => {
+    const listCanonicalOrdersPage = vi.fn();
+    const app = await buildApp({ adminOrders: dependencies({ listCanonicalOrdersPage }) });
+    try {
+      const response = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET', url: `/admin/orders/page?serviceCategory=${serviceCategory}` });
+      expect(response.statusCode).toBe(400);
+      expect(listCanonicalOrdersPage).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   test('accepts snapshot exclusions only in request bodies', async () => {
     const createOrderSelectionSnapshot = vi.fn(() => Promise.resolve({ selectionToken: 'opaque', selectedCount: 2 }));
     const replaceOrderSelectionExclusions = vi.fn(() => Promise.resolve({ selectedCount: 1 }));
     const app = await buildApp({ adminOrders: dependencies({ createOrderSelectionSnapshot, replaceOrderSelectionExclusions }) });
     try {
-      const create = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { filters: { routeOpsToday: '2026-08-04', scope: 'planning' }, sort: 'id_desc' }, url: '/admin/orders/selection-snapshots' });
+      const create = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { filters: { routeOpsToday: '2026-08-04', scope: 'planning', deliveryWeekday: 'THURSDAY', serviceCategory: 'PICKUP' }, sort: 'id_desc' }, url: '/admin/orders/selection-snapshots' });
       const patch = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'PATCH', payload: { excludeOrderIds: ['order-1'], selectionToken: 'opaque' }, url: '/admin/orders/selection-snapshots' });
       expect(create.statusCode).toBe(201);
+      expect(createOrderSelectionSnapshot).toHaveBeenCalledWith(expect.objectContaining({ filters: { routeOpsToday: '2026-08-04', scope: 'planning', deliveryWeekday: 'THURSDAY', serviceCategory: 'PICKUP' } }));
       expect(patch.statusCode).toBe(200);
       expect(replaceOrderSelectionExclusions).toHaveBeenCalledWith(expect.objectContaining({ actor: 'shopify-user-id', excludeOrderIds: ['order-1'], selectionToken: 'opaque' }));
     } finally { await app.close(); }

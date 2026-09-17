@@ -8,11 +8,54 @@ import {
   OrderSyncRouteLockedError,
   PrismaOrderSyncRepository,
   toCanonicalOrderWhere,
+  type ListCanonicalOrdersFilters,
   type OrderSyncNotificationLogger
 } from '../src/modules/shopify/order-sync.repository.js';
 import type { CanonicalOrderRow, SyncedOrderWithDeliveryStopInput } from '../src/modules/shopify/order-sync.mapper.js';
 
 describe('PrismaOrderSyncRepository canonical orders', () => {
+  test.each([
+    { filters: {}, expected: ['DELIVERY', 'EVENING_DELIVERY', 'PICKUP', null] },
+    { filters: { serviceCategory: 'DELIVERY' }, expected: ['DELIVERY', 'EVENING_DELIVERY'] },
+    { filters: { serviceCategory: 'PICKUP' }, expected: ['PICKUP'] },
+    { filters: { serviceType: 'DELIVERY' }, expected: ['DELIVERY'] },
+    { filters: { serviceCategory: 'DELIVERY', serviceType: 'EVENING_DELIVERY' }, expected: ['EVENING_DELIVERY'] },
+    { filters: { serviceCategory: 'DELIVERY', serviceType: 'PICKUP' }, expected: [] },
+  ] satisfies Array<{ filters: ListCanonicalOrdersFilters; expected: Array<string | null> }>)('combines Thursday with service filters $filters', async ({ filters, expected }) => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const order = canonicalOrderRecord(0);
+    prisma.order.findMany.mockResolvedValueOnce(
+      ['THURSDAY', 'FRIDAY'].flatMap((deliveryWeekday) =>
+        ['DELIVERY', 'EVENING_DELIVERY', 'PICKUP', null].map((serviceType) => ({
+          ...order,
+          id: `${deliveryWeekday}-${serviceType ?? 'unknown'}`,
+          rawPayload: { ...(order.rawPayload as Record<string, unknown>), deliveryWeekday, serviceType },
+        })),
+      ),
+    );
+    const rows = await createOrderSyncRepository(prisma).listCanonicalOrders({
+      filters: { ...filters, deliveryWeekday: 'THURSDAY' },
+      shopDomain: 'example.myshopify.com',
+    });
+    expect(rows.map((row) => row.serviceType)).toEqual(expected);
+    expect(rows.every((row) => row.deliveryWeekday === 'THURSDAY')).toBe(true);
+  });
+
+  test.each([
+    { serviceCategory: 'DELIVERY', serviceTypes: ['DELIVERY', 'EVENING_DELIVERY'] },
+    { serviceCategory: 'PICKUP', serviceTypes: ['PICKUP'] },
+  ] as const)('applies $serviceCategory and exact filters to the same database fact before pagination', ({ serviceCategory, serviceTypes }) => {
+    expect(toCanonicalOrderWhere('shop-id', {
+      deliveryWeekday: 'THURSDAY', serviceCategory, serviceType: 'DELIVERY',
+    })).toEqual(expect.objectContaining({
+      AND: expect.arrayContaining([{ deliveryFacts: { some: {
+        deliveryWeekday: 'THURSDAY',
+        serviceType: 'DELIVERY',
+        AND: [{ serviceType: { in: serviceTypes } }],
+      } } }]) as unknown,
+    }));
+  });
+
   test('pushes every user-visible search surface into the canonical database query', () => {
     const customerSearch = JSON.stringify(toCanonicalOrderWhere('shop-id', { search: 'Hannah' }));
     expect(customerSearch).toContain('recipientName');

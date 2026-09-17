@@ -230,11 +230,14 @@ Lists canonical orders for the authenticated shop. Supported query filters:
 - `readiness`: `READY_TO_PLAN`, `NEEDS_REVIEW`, `SKIPPED`
 - `planned`: `true`, `false`
 - `deliveryWeekday`: `THURSDAY`, `FRIDAY`, `SATURDAY`
-- `serviceType`: `DELIVERY`, `EVENING_DELIVERY`, `PICKUP`
+- `serviceCategory`: `DELIVERY` (includes `DELIVERY` and `EVENING_DELIVERY`), `PICKUP` (pickup only); omit for all categories
+- `serviceType`: exact `DELIVERY`, `EVENING_DELIVERY`, `PICKUP` (existing meaning unchanged)
 - `geocodeStatus`: `PENDING`, `RESOLVED`, `FAILED`, `NOT_REQUIRED`
 - `deliveryDate`, `deliveryBatchStartDate`, `deliveryBatchEndDate`: `YYYY-MM-DD`
 - `deliverySession`: `DAY`, `EVENING`, `PICKUP`
 - `routeScopeKey`, `planningGroupKey`, `search`: strings
+
+`serviceCategory` combines with weekday and all other filters using AND, including an optional exact `serviceType`. Unknown service types are excluded when a category is selected. The same filter applies to paged orders, counts, facets, map points, and selection snapshots. For example, `deliveryWeekday=THURSDAY&serviceCategory=DELIVERY` selects Thursday day and evening deliveries, excluding pickups.
 
 Success `200` returns:
 
