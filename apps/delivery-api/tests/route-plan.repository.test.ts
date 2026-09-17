@@ -2463,7 +2463,8 @@ describe('PrismaRoutePlanRepository', () => {
       { status: 'READY', driverEvents: [{ eventType: 'ROUTE_COMPLETED' }] },
       { status: 'READY', driverEvents: [{ eventType: 'ROUTE_STARTED' }] }
     ])('rejects replacement for persisted or recovered execution state $status $driverEvents', async (execution) => {
-      const { prisma } = createPrismaHarness({ routePlanFindFirst: routePlanRecord(execution) });
+      const { prisma } = createPrismaHarness({ routePlanFindFirst: routePlanRecord({ ...execution, driverId: 'driver-id' }) });
+      prisma.driverEvent.findFirst.mockResolvedValue(execution.driverEvents[0] ?? null);
       const repository = new PrismaRoutePlanRepository(prisma as never);
       await expect(repository[method]({
         routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com',
@@ -2536,6 +2537,7 @@ function createPrismaHarness(input: {
     };
     driverEvent: {
       create: ReturnType<typeof vi.fn>;
+      findFirst: ReturnType<typeof vi.fn>;
     };
     order: {
       findMany: ReturnType<typeof vi.fn>;
@@ -2629,6 +2631,7 @@ function createPrismaHarness(input: {
       findFirst: vi.fn(() => Promise.resolve(input.driverForAssignment === undefined ? { id: 'driver-id' } : input.driverForAssignment))
     },
     driverEvent: {
+      findFirst: vi.fn(() => Promise.resolve(null)),
       create: vi.fn(() => Promise.resolve({
         createdAt: new Date('2026-05-07T12:30:00.100Z'),
         id: 'driver-event-id',
@@ -2825,6 +2828,7 @@ function expectRoutePlanVersionClaim(
 }
 
 function routePlanRecord(input: {
+  assignmentGeneration?: bigint;
   constraints?: Record<string, unknown>;
   driverId?: string | null;
   driverEvents?: Array<{ eventType: string }>;
@@ -2836,6 +2840,7 @@ function routePlanRecord(input: {
   updatedAt?: Date;
 } = {}): Record<string, unknown> {
   return {
+    assignmentGeneration: input.assignmentGeneration ?? 1n,
     createdAt: new Date('2026-05-07T12:30:00.000Z'),
     constraints: input.constraints ?? {},
     depotLatitude: '43.6532',

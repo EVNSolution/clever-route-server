@@ -2740,6 +2740,8 @@ async function lockRoutePlanMembership(tx: Tx, routePlanId: string, shopId: stri
       FROM "driver_events" event
       WHERE event."routePlanId" = route_plan."id"
         AND event."shopId" = route_plan."shopId"
+        AND event."driverId" = route_plan."driverId"
+        AND (event."assignmentGeneration" IS NULL OR event."assignmentGeneration" = route_plan."assignmentGeneration")
         AND event."eventType" IN ('ROUTE_STARTED', 'ROUTE_PAUSED', 'ROUTE_COMPLETED')
       ORDER BY event."occurredAt" DESC, event."createdAt" DESC
       LIMIT 1

@@ -102,6 +102,7 @@ type RoutePlanListRecord = Prisma.RoutePlanGetPayload<{
 }>;
 
 type RoutePlanRecord = {
+  assignmentGeneration: bigint;
   createdAt: Date;
   constraints?: unknown;
   deliveryDate?: Date | null;
@@ -749,7 +750,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         hasScheduledStartChange;
 
       const inProgressStops = hasStopSequenceChange && normalizedStops !== undefined
-        ? inProgressStopOrder(routePlan, normalizedStops)
+        ? await inProgressStopOrder(tx, shop.id, routePlan, normalizedStops)
         : null;
       if (inProgressStops !== null && (hasDriverChange || hasRouteEndModeChange || hasDepartureTimeChange || hasScheduledStartChange)) {
         throw new RoutePlanStopUpdateInvalidError('In-progress stop reordering cannot change the driver or route options.');
@@ -1538,7 +1539,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (routePlan === null) {
         return false;
       }
-      const inProgressStops = inProgressStopOrder(routePlan, normalizedStops);
+      const inProgressStops = await inProgressStopOrder(tx, shop.id, routePlan, normalizedStops);
 
       const currentGroupingChild = await readCurrentRouteGroupingChild(tx, routePlan.id);
       if (currentGroupingChild !== null && input.mutationContext?.source !== 'route_optimization_job') {
@@ -2282,11 +2283,29 @@ function assertNoDuplicateStopUpdateInputs(stops: UpdateRoutePlanStopsInput['pay
   }
 }
 
-function inProgressStopOrder(
+async function inProgressStopOrder(
+  tx: Prisma.TransactionClient,
+  shopId: string,
   routePlan: RoutePlanRecord,
   stops: ReturnType<typeof normalizeStopUpdateInputs>
-): RoutePlanStopRecord[] | null {
-  const status = toRouteExecutionStatus(routePlan.status, routePlan.driverEvents);
+): Promise<RoutePlanStopRecord[] | null> {
+  let lifecycleEvents: Array<{ eventType: string }> = [];
+  if (!['IN_PROGRESS', 'COMPLETED', 'CANCELLED'].includes(routePlan.status)
+    && routePlan.driverId != null && (routePlan.driverEvents?.length ?? 0) > 0) {
+    const latestEvent = await tx.driverEvent.findFirst({
+      orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
+      select: { eventType: true },
+      where: {
+        driverId: routePlan.driverId,
+        eventType: { in: ['ROUTE_STARTED', 'ROUTE_PAUSED', 'ROUTE_COMPLETED'] },
+        OR: [{ assignmentGeneration: null }, { assignmentGeneration: routePlan.assignmentGeneration }],
+        routePlanId: routePlan.id,
+        shopId
+      }
+    });
+    if (latestEvent !== null) lifecycleEvents = [latestEvent];
+  }
+  const status = toRouteExecutionStatus(routePlan.status, lifecycleEvents);
   if (status === 'COMPLETED' || status === 'CANCELLED') {
     throw new RoutePlanStopUpdateInvalidError('Completed or cancelled route stops cannot be changed.');
   }
