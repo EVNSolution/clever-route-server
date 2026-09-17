@@ -17,12 +17,14 @@ describe('disposable DB integration runner', () => {
     expect(script).toContain('safe-local-g010-disposable');
     expect(script).toContain('safe-local-g005-temp-cluster');
     expect(script).toContain('safe-local-driver-route-order-temp-cluster');
+    expect(script).toContain('safe-local-route-grouping-save-disposable');
     expect(script).toContain('safe-local-g006-disposable');
     expect(script).toContain('dsv-dispatch-import-g003-integration.test.ts');
     expect(script).toContain('dsv-assignment-command.integration.test.ts');
     expect(script).toContain('dsv-g009-tenant-composite-fks.integration.test.ts');
     expect(script).toContain('dsv-v1-read-query.integration.test.ts');
     expect(script).toContain('driver-route-order.integration.test.ts');
+    expect(script).toContain('route-grouping-save.integration.test.ts admin-active-route-reorder.integration.test.ts');
     expect(script).toContain('shopify-webhook-durability.integration.test.ts');
     expect(script).toContain('customer-email-reconciliation.integration.test.ts');
     expect(script).toContain('driver-account-deletion.integration.test.ts');

@@ -335,6 +335,11 @@ DRIVER_ROUTE_ORDER_DATABASE_TARGET_CLASS='safe-local-driver-route-order-temp-clu
 DATABASE_URL="$driver_route_order_url" \
 npm test -- driver-route-order.integration.test.ts
 
+ROUTE_GROUPING_SAVE_DATABASE_TARGET_CLASS='safe-local-route-grouping-save-disposable' \
+ROUTE_GROUPING_SAVE_DATABASE_URL="$driver_route_order_url" \
+DATABASE_URL="$driver_route_order_url" \
+npm test -- route-grouping-save.integration.test.ts admin-active-route-reorder.integration.test.ts
+
 G006_DATABASE_TARGET_CLASS='safe-local-g006-disposable' \
 SHOP_PRIVACY_INVARIANT_DATABASE_TARGET_CLASS='safe-local-disposable' \
 DATABASE_URL="$g006_url" \
