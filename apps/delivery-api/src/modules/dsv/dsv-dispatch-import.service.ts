@@ -490,6 +490,8 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           lockedImport.isStoreReviewData,
         );
 
+        await publishAppliedDispatchRoutes(tx, shop.id, resultRows.map((row) => row.sellerOrderId));
+
         const result: DsvDispatchImportApplyResult = {
           commandId: input.commandId,
           importId: input.importId,
@@ -1912,6 +1914,51 @@ function dispatchGroupingRoutes(rows: DispatchGroupingRow[]): RouteGroupingDraft
     });
   }
   return routes;
+}
+
+async function publishAppliedDispatchRoutes(tx: Tx, shopId: string, orderIds: string[]): Promise<void> {
+  const where = {
+    currentOrders: { some: { id: { in: orderIds }, shopId } },
+    driverId: { not: null },
+    grouping: { routeScopeKey: { startsWith: 'dsv-import:' }, serviceType: 'DSV_DISPATCH', shopId },
+    groupingVersion: { status: 'CURRENT' },
+    publishedAt: null,
+    routePlan: {
+      driverId: { not: null },
+      driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+      shopId,
+      status: 'READY',
+    },
+    shopId,
+    status: 'CURRENT',
+    supersededAt: null,
+  } satisfies Prisma.RouteGroupingChildVersionWhereInput;
+  const children = await tx.routeGroupingChildVersion.findMany({
+    orderBy: { routePlanId: 'asc' },
+    select: { driverId: true, id: true, routePlan: { select: { driverId: true, id: true } } },
+    where,
+  });
+  const publishedAt = new Date();
+  for (const child of children) {
+    if (child.driverId === null || child.routePlan?.driverId !== child.driverId) {
+      throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+    }
+    // Serialize with driver start/completion and assignment changes, then recheck below.
+    await tx.$queryRaw`SELECT id FROM route_plans
+      WHERE id = ${child.routePlan.id}::uuid AND "shopId" = ${shopId}::uuid FOR UPDATE`;
+    // DSV apply is publication, not dispatch notification or delivery start.
+    // Keep the existing silent-import policy and commit publication with APPLIED.
+    const published = await tx.routeGroupingChildVersion.updateMany({
+      data: { publishedAt },
+      where: {
+        ...where,
+        driverId: child.driverId,
+        id: child.id,
+        routePlan: { ...where.routePlan, driverId: child.driverId, id: child.routePlan.id },
+      },
+    });
+    if (published.count !== 1) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+  }
 }
 
 async function invalidateReadyRoutePlansForUpdates(
