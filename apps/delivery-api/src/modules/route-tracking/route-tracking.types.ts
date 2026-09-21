@@ -1,14 +1,17 @@
 import type { RouteTrackingPolicy } from './route-tracking.policy.js';
 
 export type RouteTrackingPositionEventV1 = {
+  accuracyMeters?: number | null;
   driverId: string;
   eventId: string;
+  gapBefore?: boolean;
   latitude: number;
   longitude: number;
   occurredAt: string;
   receivedAt: string;
   routePlanId: string;
   schemaVersion: 'route_tracking.v1';
+  sourceIndex?: number;
 };
 
 export type RouteTrackingProgressEventType =
@@ -93,10 +96,13 @@ export type RouteTrackingRecordedPathV1 = {
   lastOccurredAt: string;
   lastReceivedAt: string;
   samples: Array<{
+    accuracyMeters?: number | null;
     driverId: string | null;
     eventId: string;
+    gapBefore?: boolean;
     occurredAt: string;
     receivedAt: string;
+    sourceIndex?: number;
   }>;
   schemaVersion: 'route_tracking_geometry.v1';
   sourcePointCount: number;
@@ -109,7 +115,19 @@ export type RouteTrackingRoadMatchedGeometryV1 = {
     coordinateIndex: number;
   }>;
   coordinates: Array<Array<[number, number]>>;
+  sourceRanges?: RouteTrackingSourceRangeV1[];
   type: 'MultiLineString';
+  unmatchedRanges?: RouteTrackingSourceRangeV1[];
+};
+
+export type RouteTrackingSourceRangeV1 = {
+  endEventId: string;
+  endOccurredAt: string;
+  endSourceIndex: number;
+  reason?: 'GPS_GAP' | 'IMPLAUSIBLE_JUMP' | 'LOW_ACCURACY' | 'NO_MATCH' | 'OUT_OF_COVERAGE';
+  startEventId: string;
+  startOccurredAt: string;
+  startSourceIndex: number;
 };
 
 export type RouteTrackingRoadMatchedPathV1 = {
@@ -122,9 +140,13 @@ export type RouteTrackingRoadMatchedPathV1 = {
     occurredAt: string;
   } | null;
   matchedGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
+  matchedRanges?: RouteTrackingSourceRangeV1[];
   matchedPointCount: number;
+  qualityVersion?: 'gps_quality.v2';
   schemaVersion: 'route_tracking_road_match.v1';
   uncertainGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
+  uncertainRanges?: RouteTrackingSourceRangeV1[];
+  unmatchedRanges?: RouteTrackingSourceRangeV1[];
   watermark: string;
 };
 

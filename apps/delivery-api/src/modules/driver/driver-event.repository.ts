@@ -906,6 +906,7 @@ function toRouteTrackingGeometryPosition(
   const longitude = input.longitude === null ? Number.NaN : Number(input.longitude);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
   return {
+    accuracyMeters: readTrackingAccuracyMeters(input.payload),
     driverId: input.driverId,
     eventId,
     latitude,
@@ -914,6 +915,18 @@ function toRouteTrackingGeometryPosition(
     receivedAt: receivedAt.toISOString(),
     routePlanId: input.routePlanId
   };
+}
+
+function readTrackingAccuracyMeters(payload: unknown): number | null {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const nested = record.location !== null && typeof record.location === 'object' && !Array.isArray(record.location)
+    ? (record.location as Record<string, unknown>).accuracyMeters
+    : undefined;
+  const candidate = record.accuracyMeters ?? record.accuracy ?? nested;
+  if (candidate === null || candidate === undefined || candidate === '') return null;
+  const value = Number(candidate);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null;
 }
 
 async function findMatchingDriverEvent(

@@ -528,7 +528,7 @@ describe('PrismaRouteTrackingService', () => {
       roadMatchedLastInputOccurredAt: new Date('2026-07-20T04:01:00.000Z'),
       roadMatchedLastPosition: { latitude: 37.505, longitude: 126.905, occurredAt: '2026-07-20T04:01:00.000Z' },
       roadMatchedPointCount: 2,
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v1',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v2',
       roadMatchedSourcePointCount: 1,
       roadMatchedUncertainGeometry: null,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:1:2:2026-07-20T04:01:00.000Z:old',
