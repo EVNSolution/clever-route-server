@@ -1221,6 +1221,8 @@ model DeliveryStop {
   priority                      Int                            @default(0)
   instructions                  String?                        @db.Text
   status                        DeliveryStopStatus             @default(PENDING)
+  completionAssistanceCandidateId String? @db.Text
+  completionAssistanceRevision Int?
   createdAt                     DateTime                       @default(now()) @db.Timestamptz(6)
   updatedAt                     DateTime                       @updatedAt @db.Timestamptz(6)
   routePlanStops                RoutePlanStop[]
@@ -3099,4 +3101,101 @@ model DriverRouteCompletionGateHistory {
   @@index([createdAt, outcome])
   @@index([retainedUntil])
   @@map("driver_route_completion_gate_history")
+}
+
+model DriverCompletionPolicy {
+  version    String                      @id @db.Text
+  policy     Json
+  createdAt  DateTime                    @default(now()) @db.Timestamptz(6)
+  candidates DriverCompletionCandidate[]
+
+  @@map("driver_completion_policies")
+}
+
+model DriverCompletionRun {
+  id                     String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  accountId              String                      @db.Uuid
+  shopId                 String                      @db.Uuid
+  driverId               String                      @db.Uuid
+  routePlanId            String                      @db.Uuid
+  assignmentGeneration   BigInt
+  expectedRouteVersionId String                      @db.Uuid
+  routeName              String                      @db.Text
+  stops                  Json
+  policyVersions         Json                        @default("[]")
+  activationId           String?                     @db.Text
+  trackingEndedAt        DateTime?                   @db.Timestamptz(6)
+  invalidatedAt          DateTime?                   @db.Timestamptz(6)
+  createdAt              DateTime                    @default(now()) @db.Timestamptz(6)
+  candidates             DriverCompletionCandidate[]
+  receipts               DriverCompletionReceipt[]
+
+  @@unique([routePlanId, assignmentGeneration, expectedRouteVersionId], map: "driver_completion_runs_assignment_identity_key")
+  @@index([accountId, createdAt], map: "driver_completion_runs_accountId_createdAt_idx")
+  @@map("driver_completion_runs")
+}
+
+model DriverCompletionCandidate {
+  id                           String                    @id @db.Text
+  runId                        String                    @db.Uuid
+  run                          DriverCompletionRun       @relation(fields: [runId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "driver_completion_candidates_runId_fkey")
+  deliveryStopId               String                    @db.Uuid
+  projection                   Json
+  originalCommand              Json
+  proposedExitAt               DateTime                  @db.Timestamptz(6)
+  verifiedExitAt               DateTime?                 @db.Timestamptz(6)
+  responseDeadlineAt           DateTime?                 @db.Timestamptz(6)
+  verifiedAt                   DateTime?                 @db.Timestamptz(6)
+  policyVersion                String                    @db.Text
+  policy                       DriverCompletionPolicy    @relation(fields: [policyVersion], references: [version], onDelete: Restrict, onUpdate: Cascade, map: "driver_completion_candidates_policyVersion_fkey")
+  status                       String                    @db.Text
+  revision                     Int                       @default(0)
+  response                     String?                   @db.Text
+  responseAt                   DateTime?                 @db.Timestamptz(6)
+  lastResponseCommandId        String?                   @db.Text
+  autoCompletedAt              DateTime?                 @db.Timestamptz(6)
+  automationActivationId       String?                   @db.Text
+  statusBeforeCandidateOutcome String?                   @db.Text
+  createdAt                    DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt                    DateTime                  @updatedAt @db.Timestamptz(6)
+  receipts                     DriverCompletionReceipt[]
+  outcomes                     DriverCompletionOutcome[]
+
+  @@unique([runId, deliveryStopId, proposedExitAt], map: "driver_completion_candidates_visit_key")
+  @@index([status, responseDeadlineAt], map: "driver_completion_candidates_status_deadline_idx")
+  @@map("driver_completion_candidates")
+}
+
+model DriverCompletionReceipt {
+  accountId   String                     @db.Uuid
+  commandId   String                     @db.Text
+  runId       String                     @db.Uuid
+  run         DriverCompletionRun        @relation(fields: [runId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "driver_completion_receipts_runId_fkey")
+  candidateId String?                    @db.Text
+  candidate   DriverCompletionCandidate? @relation(fields: [candidateId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "driver_completion_receipts_candidateId_fkey")
+  kind        String                     @db.Text
+  request     Json
+  result      Json
+  createdAt   DateTime                   @default(now()) @db.Timestamptz(6)
+
+  @@id([accountId, commandId], map: "driver_completion_receipts_pkey")
+  @@index([candidateId], map: "driver_completion_receipts_candidateId_idx")
+  @@map("driver_completion_receipts")
+}
+
+model DriverCompletionOutcome {
+  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidateId        String                    @db.Text
+  candidate          DriverCompletionCandidate @relation(fields: [candidateId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "driver_completion_outcomes_candidateId_fkey")
+  revision           Int
+  source             String                    @db.Text
+  commandId          String?                   @db.Text
+  previousStatus     String?                   @db.Text
+  nextStatus         String?                   @db.Text
+  previousProjection Json
+  projection         Json
+  createdAt          DateTime                  @default(now()) @db.Timestamptz(6)
+
+  @@unique([candidateId, revision], map: "driver_completion_outcomes_candidateId_revision_key")
+  @@map("driver_completion_outcomes")
 }

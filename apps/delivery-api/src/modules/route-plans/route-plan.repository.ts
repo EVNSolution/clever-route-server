@@ -259,7 +259,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
       const routeStop = await tx.routePlanStop.findFirst({
         select: {
-          deliveryStop: { select: { order: { select: { email: true, sellerOrderSourceKind: true, sourcePlatform: true } }, orderId: true, status: true } },
+          deliveryStop: { select: { completionAssistanceCandidateId: true, order: { select: { email: true, sellerOrderSourceKind: true, sourcePlatform: true } }, orderId: true, status: true } },
           deliveryStopId: true,
           routePlan: { select: { status: true } }
         },
@@ -306,7 +306,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         };
       }
 
-      if (routeStop.deliveryStop.status === deliveryStopStatus) {
+      if (routeStop.deliveryStop.status === deliveryStopStatus && routeStop.deliveryStop.completionAssistanceCandidateId == null) {
         return {
           duplicate: true as const,
           found: true as const,
