@@ -308,17 +308,17 @@ export function toRouteTrackingPositionEvents(record: RouteTrackingGeometryRecor
     const driverId = sample.driverId ?? record.lastDriverId;
     if (coordinate === undefined || driverId === null) return [];
     return [{
-      accuracyMeters: sample.accuracyMeters,
+      ...(sample.accuracyMeters === undefined ? {} : { accuracyMeters: sample.accuracyMeters }),
       driverId,
       eventId: sample.eventId,
-      gapBefore: sample.gapBefore,
+      ...(sample.gapBefore === undefined ? {} : { gapBefore: sample.gapBefore }),
       latitude: coordinate[1],
       longitude: coordinate[0],
       occurredAt: sample.occurredAt,
       receivedAt: sample.receivedAt,
       routePlanId: record.routePlanId,
       schemaVersion: 'route_tracking.v1' as const,
-      sourceIndex: sample.sourceIndex
+      ...(sample.sourceIndex === undefined ? {} : { sourceIndex: sample.sourceIndex })
     }];
   });
 }

@@ -6,6 +6,7 @@ import {
   persistRouteTrackingGeometryPosition,
   pruneRouteTrackingGeometryDocument
 } from '../src/modules/route-tracking/route-tracking.geometry.js';
+import type { RouteTrackingGeometryPositionInput } from '../src/modules/route-tracking/route-tracking.geometry.js';
 
 describe('route tracking geometry projection', () => {
   test('projects the advisory lock to a supported scalar before Prisma reads it', async () => {
@@ -218,7 +219,7 @@ describe('route tracking geometry projection', () => {
   });
 });
 
-function position(overrides: Partial<ReturnType<typeof positionDefaults>> = {}) {
+function position(overrides: Partial<RouteTrackingGeometryPositionInput> = {}): RouteTrackingGeometryPositionInput {
   return { ...positionDefaults(), ...overrides };
 }
 

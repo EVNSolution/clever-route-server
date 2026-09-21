@@ -348,7 +348,7 @@ function buildMatchUrl(baseUrl: string, chunk: MatchChunk, gpsPrecisionMeters: n
   });
   if (gpsPrecisionMeters !== null || chunk.samples.some((sample) => (sample.accuracyMeters ?? 0) > 0)) {
     params.set('radiuses', chunk.samples.map((sample) => (
-      sample.accuracyMeters !== null && sample.accuracyMeters > 0
+      typeof sample.accuracyMeters === 'number' && sample.accuracyMeters > 0
         ? String(sample.accuracyMeters)
         : String(gpsPrecisionMeters ?? 25)
     )).join(';'));
@@ -375,8 +375,10 @@ function readMatchedLines(payload: unknown, chunk: MatchChunk): MatchedLine[] {
       : tracepoints.length === chunk.samples.length && tracepoints.every((tracepoint) => tracepoint !== null)
         ? chunk.samples.map((_, index) => index)
         : [];
-    if (indexes.length < 2) return [];
-    const samples = chunk.samples.slice(indexes[0]!, indexes.at(-1) + 1);
+    const firstIndex = indexes[0];
+    const lastIndex = indexes.at(-1);
+    if (indexes.length < 2 || firstIndex === undefined || lastIndex === undefined) return [];
+    const samples = chunk.samples.slice(firstIndex, lastIndex + 1);
     return [{ confidence, coordinates: geometry, sourceRange: rangeFromSamples(samples) }];
   });
 }
@@ -617,7 +619,7 @@ function readDateText(value: unknown): string | null {
     : null;
 }
 
-function readRangeReason(value: unknown): RouteTrackingSourceRangeV1['reason'] | null {
+function readRangeReason(value: unknown): NonNullable<RouteTrackingSourceRangeV1['reason']> | null {
   return value === 'GPS_GAP' || value === 'IMPLAUSIBLE_JUMP' || value === 'LOW_ACCURACY'
     || value === 'NO_MATCH' || value === 'OUT_OF_COVERAGE'
     ? value
