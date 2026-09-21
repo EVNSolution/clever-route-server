@@ -52,6 +52,14 @@ trace must keep a v4 result with zero accepted geometry so it cannot accidentall
 fall back to an unqualified raw path. Current-position markers remain independent.
 Deploy the compatible client before publishing v4 caches.
 
+Background tracking matching has a separate bounded 30-second request budget.
+Planned-route requests and existing vehicle-telemetry consumers keep their own
+policies and timeouts. For a manual historical rebuild, pass
+`docker exec -e OSRM_TIMEOUT_MS=30000 ...` to the command process; do not change the
+shared production routing environment. South replay included valid requests over
+10 seconds, so a routing-oriented 10-second budget can prevent a complete cache
+refresh even when its geometry is valid.
+
 Inspect the selected service day's level counts and the actual road shapes during
 replay. A larger feature count or zero acquisition gaps does not prove better
 tracking. Preserve genuine turns and visits and confirm rejected intervals remain

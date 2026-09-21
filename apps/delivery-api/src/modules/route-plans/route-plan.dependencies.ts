@@ -86,7 +86,8 @@ function createRouteTrackingRoadMatchProvider(env: AdminRoutePlanRuntimeEnv): Os
   if (Object.keys(baseUrls).length === 0) return undefined;
   return new OsrmRouteTrackingRoadMatchProvider({
     baseUrls,
-    ...optionalTimeout(env.OSRM_TIMEOUT_MS)
+    // Historical display matching is asynchronous and real 34-point traces can exceed the 10s routing budget.
+    timeoutMs: 30_000,
   });
 }
 
