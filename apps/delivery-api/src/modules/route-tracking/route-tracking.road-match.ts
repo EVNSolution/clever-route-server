@@ -52,6 +52,7 @@ export type RouteTrackingRoadMatchClassifyingProvider = RouteTrackingRoadMatchPr
 
 export type OsrmRouteTrackingRoadMatchProviderOptions = {
   baseUrls: Partial<Record<RouteEngineCoverage, string>>;
+  classificationMode?: 'bounded-per-leg' | 'legacy-whole-match' | undefined;
   fetch?: FetchLike | undefined;
   gpsPrecisionMeters?: number | undefined;
   maxMatchPoints?: number | undefined;
@@ -97,6 +98,7 @@ type GapSupplementResult = {
 
 export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatchProvider {
   private readonly baseUrls: Partial<Record<RouteEngineCoverage, string>>;
+  private readonly classificationMode: 'bounded-per-leg' | 'legacy-whole-match';
   private readonly fetch: FetchLike;
   private readonly gpsPrecisionMeters: number | null;
   private readonly maxMatchPoints: number;
@@ -107,6 +109,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       Object.entries(options.baseUrls)
         .map(([coverage, baseUrl]) => [coverage, normalizeRouteEngineBaseUrl('OSRM', baseUrl)])
     );
+    this.classificationMode = options.classificationMode ?? 'bounded-per-leg';
     this.fetch = options.fetch ?? fetch;
     this.gpsPrecisionMeters = normalizeGpsPrecision(options.gpsPrecisionMeters);
     this.maxMatchPoints = normalizeMaxMatchPoints(options.maxMatchPoints);
@@ -132,9 +135,12 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     const matchedLines: MatchedLine[] = [];
     let lastMatchedPosition: RouteTrackingRoadMatchedPathV1['lastMatchedPosition'] = null;
     let retryable = false;
-    for (const chunk of splitForOsrmMatch(input, coverage, this.maxMatchPoints)) {
+    const maximumInputAccuracyMeters = this.classificationMode === 'legacy-whole-match'
+      ? ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters
+      : ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters;
+    for (const chunk of splitForOsrmMatch(input, coverage, this.maxMatchPoints, maximumInputAccuracyMeters)) {
       if (chunk.coordinates.length < 2) continue;
-      const result = await this.matchChunk(baseUrl, chunk);
+      const result = await this.matchChunk(baseUrl, chunk, maximumInputAccuracyMeters);
       retryable ||= result.retryable;
       matchedLines.push(...result.lines);
       lastMatchedPosition = result.lastMatchedPosition ?? lastMatchedPosition;
@@ -172,7 +178,9 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
         matchedGeometry: toMultiLineString(confident),
         matchedRanges: confident.map((line) => line.sourceRange),
         matchedPointCount,
-        qualityVersion: 'gps_quality.v4',
+        qualityVersion: this.classificationMode === 'legacy-whole-match'
+          ? 'gps_quality.v3'
+          : 'gps_quality.v4',
         schemaVersion: ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION,
         uncertainGeometry: toMultiLineString(uncertain),
         uncertainRanges: uncertain.map((line) => line.sourceRange),
@@ -192,12 +200,16 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     };
   }
 
-  private async matchChunk(baseUrl: string, chunk: MatchChunk): Promise<MatchChunkResult & { retryable: boolean }> {
+  private async matchChunk(
+    baseUrl: string,
+    chunk: MatchChunk,
+    maximumInputAccuracyMeters: number,
+  ): Promise<MatchChunkResult & { retryable: boolean }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
     try {
-      response = await this.fetch(buildMatchUrl(baseUrl, chunk, this.gpsPrecisionMeters), {
+      response = await this.fetch(buildMatchUrl(baseUrl, chunk, this.gpsPrecisionMeters, maximumInputAccuracyMeters), {
         method: 'GET',
         redirect: 'error',
         signal: controller.signal,
@@ -213,7 +225,9 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       retryable = true;
       return null;
     });
-    const lines = readMatchedLines(payload, chunk);
+    const lines = this.classificationMode === 'legacy-whole-match'
+      ? readLegacyMatchedLines(payload, chunk)
+      : readMatchedLines(payload, chunk);
     return {
       lastMatchedPosition: readLastMatchedPositionFromResponse(payload, chunk, lines),
       lines,
@@ -283,7 +297,12 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
     try {
-      response = await this.fetch(buildMatchUrl(baseUrl, chunk, this.gpsPrecisionMeters), {
+      response = await this.fetch(buildMatchUrl(
+        baseUrl,
+        chunk,
+        this.gpsPrecisionMeters,
+        ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters,
+      ), {
         method: 'GET',
         redirect: 'error',
         signal: controller.signal,
@@ -422,6 +441,7 @@ function splitForOsrmMatch(
   document: RouteTrackingGeometryDocumentV1,
   coverage: RouteEngineCoverage,
   maxMatchPoints: number,
+  maximumInputAccuracyMeters: number,
 ): MatchChunk[] {
   const byGap: MatchChunk[] = [];
   let current: MatchChunk = { coordinates: [], samples: [] };
@@ -432,7 +452,7 @@ function splitForOsrmMatch(
       || (typeof sample.accuracyMeters === 'number' && (
         !Number.isFinite(sample.accuracyMeters)
         || sample.accuracyMeters < 0
-        || sample.accuracyMeters > ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters
+        || sample.accuracyMeters > maximumInputAccuracyMeters
       ))) {
       if (current.coordinates.length >= 2) byGap.push(current);
       current = { coordinates: [], samples: [] };
@@ -504,7 +524,12 @@ function normalizeMaxMatchPoints(value: number | undefined): number {
   return Math.max(2, Math.min(100, Math.floor(value)));
 }
 
-function buildMatchUrl(baseUrl: string, chunk: MatchChunk, gpsPrecisionMeters: number | null): string {
+function buildMatchUrl(
+  baseUrl: string,
+  chunk: MatchChunk,
+  gpsPrecisionMeters: number | null,
+  maximumInputAccuracyMeters: number,
+): string {
   const coordinatePath = chunk.coordinates.map(([longitude, latitude]) => `${longitude},${latitude}`).join(';');
   const timestamps = chunk.samples
     .map((sample) => Math.floor(Date.parse(sample.occurredAt) / 1000))
@@ -520,8 +545,8 @@ function buildMatchUrl(baseUrl: string, chunk: MatchChunk, gpsPrecisionMeters: n
   if (gpsPrecisionMeters !== null || chunk.samples.some((sample) => (sample.accuracyMeters ?? 0) > 0)) {
     params.set('radiuses', chunk.samples.map((sample) => (
       typeof sample.accuracyMeters === 'number' && sample.accuracyMeters > 0
-        ? String(Math.min(sample.accuracyMeters, ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters))
-        : String(Math.min(gpsPrecisionMeters ?? 25, ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters))
+        ? String(Math.min(sample.accuracyMeters, maximumInputAccuracyMeters))
+        : String(Math.min(gpsPrecisionMeters ?? 25, maximumInputAccuracyMeters))
     )).join(';'));
   }
   return `${baseUrl}/match/v1/driving/${coordinatePath}?${params.toString()}`;
@@ -771,6 +796,40 @@ function readMatchedLines(payload: unknown, chunk: MatchChunk): MatchedLine[] {
       ? match.confidence
       : 0;
     return readMatchedLegLines(match, tracepoints, chunk, matchingIndex, matchings.length, confidence);
+  });
+}
+
+function readLegacyMatchedLines(payload: unknown, chunk: MatchChunk): MatchedLine[] {
+  const object = objectOrNull(payload);
+  const matchings = Array.isArray(object?.matchings) ? object.matchings : null;
+  if (object?.code !== 'Ok' || matchings === null) return [];
+  const tracepoints = Array.isArray(object.tracepoints) ? object.tracepoints : [];
+  return matchings.flatMap((matching, matchingIndex) => {
+    const match = objectOrNull(matching);
+    const confidence = typeof match?.confidence === 'number' && Number.isFinite(match.confidence)
+      ? match.confidence
+      : 0;
+    const coordinates = readLineString(match?.geometry);
+    if (coordinates === null) return [];
+    const matchedIndexes = tracepoints.flatMap((tracepoint, index) => (
+      objectOrNull(tracepoint)?.matchings_index === matchingIndex ? [index] : []
+    ));
+    const indexes = matchedIndexes.length > 0
+      ? matchedIndexes
+      : tracepoints.length === chunk.samples.length && tracepoints.every((tracepoint) => tracepoint !== null)
+        ? chunk.samples.map((_, index) => index)
+        : [];
+    const firstIndex = indexes[0];
+    const lastIndex = indexes.at(-1);
+    if (indexes.length < 2 || firstIndex === undefined || lastIndex === undefined) return [];
+    const samples = chunk.samples.slice(firstIndex, lastIndex + 1);
+    const interpolationLevel = confidence >= MIN_CONFIDENT_MATCH ? 0 : 2;
+    return [{
+      confidence,
+      coordinates,
+      interpolationLevel,
+      sourceRange: rangeFromSamples(samples, interpolationLevel),
+    }];
   });
 }
 

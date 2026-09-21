@@ -80,6 +80,49 @@ describe('route tracking road matching', () => {
     expect(requestedUrl).toContain('radiuses=75%3B75');
   });
 
+  test('preserves legacy whole-match geometry only for an explicit no-accuracy consumer', async () => {
+    const input = document([[126.9, 37.5], [126.901, 37.501]]);
+    input.samples.forEach((sample) => { delete sample.accuracyMeters; });
+    const payload = osrmMatchResponse(input.coordinates, { confidence: 0.9 });
+    const defaultFetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify(payload))));
+    const legacyFetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify(payload))));
+
+    const defaultResult = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'http://osrm-korea:5000' },
+      fetch: defaultFetch,
+      gpsPrecisionMeters: 75,
+    }).match(input);
+    const legacyResult = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'http://osrm-korea:5000' },
+      classificationMode: 'legacy-whole-match',
+      fetch: legacyFetch,
+      gpsPrecisionMeters: 75,
+    }).match(input);
+
+    expect(defaultResult?.matchedGeometry).toBeNull();
+    expect(defaultResult?.uncertainRanges).toEqual([expect.objectContaining({ interpolationLevel: 2 })]);
+    expect(legacyResult?.matchedGeometry?.coordinates).toEqual([input.coordinates]);
+    expect(legacyResult?.matchedRanges).toEqual([expect.objectContaining({ interpolationLevel: 0 })]);
+    expect(legacyResult?.qualityVersion).toBe('gps_quality.v3');
+    expect(String((legacyFetch.mock.calls as unknown as Array<[string]>)[0]![0])).toContain('radiuses=75%3B75');
+  });
+
+  test('keeps the legacy whole-match input accuracy cap at 100 meters', async () => {
+    const input = document([[126.9, 37.5], [126.901, 37.501]]);
+    input.samples.forEach((sample) => { sample.accuracyMeters = 100.01; });
+    const fetch = vi.fn();
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'http://osrm-korea:5000' },
+      classificationMode: 'legacy-whole-match',
+      fetch,
+      gpsPrecisionMeters: 75,
+    }).match(input);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result?.matchedGeometry).toBeNull();
+  });
+
   test('uses per-sample GPS accuracy as OSRM radiuses with a bounded fallback', async () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       code: 'Ok',
