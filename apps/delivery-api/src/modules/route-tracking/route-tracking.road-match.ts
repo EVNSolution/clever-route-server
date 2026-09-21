@@ -20,8 +20,10 @@ import type {
 } from './route-tracking.types.js';
 
 const ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION = 'route_tracking_road_match.v1';
-const ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_match.v3';
+const ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_match.v4';
+const LEGACY_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_match.v3';
 const MIN_CONFIDENT_MATCH = 0.5;
+const MIN_SOFT_MATCH_CONFIDENCE = 0.8;
 const MAX_OSRM_MATCH_POINTS = 80;
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
 const EARTH_RADIUS_METERS = 6_371_000;
@@ -29,6 +31,7 @@ const MAX_GAP_SUPPLEMENT_CANDIDATES = 64;
 const MAX_GAP_SUPPLEMENT_ELAPSED_MS = 120_000;
 const MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS = 50;
 const MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND = 40;
+const MAX_HARD_MATCH_SPEED_METERS_PER_SECOND = 55;
 const MIN_GAP_SUPPLEMENT_DISTANCE_METERS = 15;
 const MAX_GAP_SUPPLEMENT_DISTANCE_METERS = 750;
 
@@ -58,6 +61,7 @@ export type OsrmRouteTrackingRoadMatchProviderOptions = {
 type MatchedLine = {
   confidence: number;
   coordinates: Array<[number, number]>;
+  interpolationLevel: 0 | 1 | 2;
   sourceRange: RouteTrackingSourceRangeV1;
 };
 
@@ -72,9 +76,11 @@ type MatchChunk = {
 };
 
 type GapSupplementCandidate = {
+  coordinates: Array<[number, number]>;
   endCoordinate: [number, number];
   elapsedSeconds: number;
   range: RouteTrackingSourceRangeV1;
+  samples: RouteTrackingGeometryDocumentV1['samples'];
   startCoordinate: [number, number];
   straightDistanceMeters: number;
 };
@@ -82,6 +88,11 @@ type GapSupplementCandidate = {
 type InferredLine = {
   coordinates: Array<[number, number]>;
   sourceRange: RouteTrackingSourceRangeV1;
+};
+
+type GapSupplementResult = {
+  line: InferredLine | null;
+  retryable: boolean;
 };
 
 export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatchProvider {
@@ -106,7 +117,8 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
   }
 
   async match(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchedPathV1 | null> {
-    return (await this.matchWithStatus(document)).path;
+    const outcome = await this.matchWithStatus(document);
+    return outcome.retryable ? null : outcome.path;
   }
 
   async matchWithStatus(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchOutcome> {
@@ -127,20 +139,25 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       matchedLines.push(...result.lines);
       lastMatchedPosition = result.lastMatchedPosition ?? lastMatchedPosition;
     }
-    if (matchedLines.length === 0 || lastMatchedPosition === null) return { path: null, retryable };
-
-    const confident = matchedLines.filter((line) => line.confidence >= MIN_CONFIDENT_MATCH);
-    const uncertain = matchedLines.filter((line) => line.confidence < MIN_CONFIDENT_MATCH);
-    const matchedPointCount = matchedLines.reduce((sum, line) => sum + line.coordinates.length, 0);
-    if (matchedPointCount < 2) return { path: null, retryable };
+    const mergedLines = mergeAdjacentMatchedLines(matchedLines);
+    const confident = mergedLines.filter((line) => line.interpolationLevel === 0);
+    const moderate = mergedLines.filter((line) => line.interpolationLevel === 1);
+    const uncertain = mergedLines.filter((line) => line.interpolationLevel === 2);
+    const matchedPointCount = mergedLines.reduce((sum, line) => sum + line.coordinates.length, 0);
     const lastSample = input.samples.at(-1)!;
-    const unmatchedRanges = buildUnmatchedRanges(input, matchedLines);
-    const inferredLines = await this.inferLowAccuracyGaps(
+    const unmatchedRanges = buildUnmatchedRanges(input, [...confident, ...moderate]);
+    const supplementOutcome = await this.inferLowAccuracyGaps(
       baseUrl,
       input,
       confident,
-      unmatchedRanges,
+      [...confident, ...moderate],
+      uncertain,
     );
+    retryable ||= supplementOutcome.retryable;
+    const inferredLines: InferredLine[] = [
+      ...moderate.map(({ coordinates, sourceRange }) => ({ coordinates, sourceRange })),
+      ...supplementOutcome.lines,
+    ];
     const inferredGeometry = toInferredMultiLineString(inferredLines);
     const inferredRanges = inferredLines.map((line) => line.sourceRange);
 
@@ -155,7 +172,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
         matchedGeometry: toMultiLineString(confident),
         matchedRanges: confident.map((line) => line.sourceRange),
         matchedPointCount,
-        qualityVersion: 'gps_quality.v3',
+        qualityVersion: 'gps_quality.v4',
         schemaVersion: ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION,
         uncertainGeometry: toMultiLineString(uncertain),
         uncertainRanges: uncertain.map((line) => line.sourceRange),
@@ -166,7 +183,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
           lastInputOccurredAt: lastSample.occurredAt,
           matchedPointCount,
           lines: [
-            ...matchedLines.map((line) => line.coordinates),
+            ...mergedLines.map((line) => line.coordinates),
             ...inferredLines.map((line) => line.coordinates),
           ],
         }),
@@ -208,24 +225,28 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     baseUrl: string,
     document: RouteTrackingGeometryDocumentV1,
     confidentLines: MatchedLine[],
-    unmatchedRanges: RouteTrackingSourceRangeV1[],
-  ): Promise<InferredLine[]> {
-    const candidates = buildGapSupplementCandidates(document, confidentLines, unmatchedRanges)
+    approvedLines: MatchedLine[],
+    rejectedLines: MatchedLine[],
+  ): Promise<{ lines: InferredLine[]; retryable: boolean }> {
+    const candidates = buildGapSupplementCandidates(document, confidentLines, approvedLines, rejectedLines)
       .slice(0, MAX_GAP_SUPPLEMENT_CANDIDATES);
     const inferred: InferredLine[] = [];
+    let retryable = false;
     for (let offset = 0; offset < candidates.length; offset += 4) {
       const batch = await Promise.all(candidates.slice(offset, offset + 4).map((candidate) => (
         this.routeGapSupplement(baseUrl, candidate)
       )));
-      inferred.push(...batch.flatMap((line) => line === null ? [] : [line]));
+      retryable ||= batch.some((result) => result.retryable);
+      inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
     }
-    return inferred;
+    return { lines: inferred, retryable };
   }
 
   private async routeGapSupplement(
     baseUrl: string,
     candidate: GapSupplementCandidate,
-  ): Promise<InferredLine | null> {
+  ): Promise<GapSupplementResult> {
+    if (candidate.samples.length >= 3) return this.matchGapSupplement(baseUrl, candidate);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
@@ -236,14 +257,53 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
         signal: controller.signal,
       });
     } catch {
-      return null;
+      return { line: null, retryable: true };
     } finally {
       clearTimeout(timeout);
     }
-    if (!response.ok) return null;
-    const payload = await response.json().catch(() => null);
+    if (!response.ok) return { line: null, retryable: isRetryableStatus(response.status) };
+    let parseFailed = false;
+    const payload = await response.json().catch(() => {
+      parseFailed = true;
+      return null;
+    });
     const coordinates = selectGapSupplementRoute(payload, candidate);
-    return coordinates === null ? null : { coordinates, sourceRange: candidate.range };
+    return {
+      line: coordinates === null ? null : { coordinates, sourceRange: candidate.range },
+      retryable: parseFailed,
+    };
+  }
+
+  private async matchGapSupplement(
+    baseUrl: string,
+    candidate: GapSupplementCandidate,
+  ): Promise<GapSupplementResult> {
+    const chunk = { coordinates: candidate.coordinates, samples: candidate.samples };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Response;
+    try {
+      response = await this.fetch(buildMatchUrl(baseUrl, chunk, this.gpsPrecisionMeters), {
+        method: 'GET',
+        redirect: 'error',
+        signal: controller.signal,
+      });
+    } catch {
+      return { line: null, retryable: true };
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!response.ok) return { line: null, retryable: isRetryableStatus(response.status) };
+    let parseFailed = false;
+    const payload = await response.json().catch(() => {
+      parseFailed = true;
+      return null;
+    });
+    const coordinates = selectStrictGapSupplementMatch(payload, candidate);
+    return {
+      line: coordinates === null ? null : { coordinates, sourceRange: candidate.range },
+      retryable: parseFailed,
+    };
   }
 }
 
@@ -256,6 +316,7 @@ export function buildRouteTrackingRoadMatchedPath(
   const matchedPointCount = readPositiveInteger(record.roadMatchedPointCount);
   const lastInputOccurredAt = record.roadMatchedLastInputOccurredAt;
   const watermark = readText(record.roadMatchedWatermark);
+  const cacheVersion = record.roadMatchedSchemaVersion;
   if (
     coverage === null ||
     inputPointCount === null ||
@@ -263,7 +324,8 @@ export function buildRouteTrackingRoadMatchedPath(
     lastInputOccurredAt === null ||
     lastInputOccurredAt === undefined ||
     watermark === null ||
-    record.roadMatchedSchemaVersion !== ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION
+    (cacheVersion !== ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION
+      && cacheVersion !== LEGACY_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION)
   ) {
     return null;
   }
@@ -278,7 +340,9 @@ export function buildRouteTrackingRoadMatchedPath(
     matchedGeometry: readMultiLineString(record.roadMatchedGeometry),
     matchedRanges: readMultiLineString(record.roadMatchedGeometry)?.sourceRanges ?? [],
     matchedPointCount,
-    qualityVersion: 'gps_quality.v3',
+    qualityVersion: cacheVersion === ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION
+      ? 'gps_quality.v4'
+      : 'gps_quality.v3',
     schemaVersion: ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION,
     uncertainGeometry: readMultiLineString(record.roadMatchedUncertainGeometry),
     uncertainRanges: readMultiLineString(record.roadMatchedUncertainGeometry)?.sourceRanges ?? [],
@@ -335,12 +399,20 @@ function normalizeInputDocument(document: RouteTrackingGeometryDocumentV1): Rout
   const usableLength = Math.min(document.coordinates.length, document.samples.length);
   const coordinates: Array<[number, number]> = [];
   const samples: RouteTrackingGeometryDocumentV1['samples'] = [];
+  let forceGapBefore = false;
   for (let index = 0; index < usableLength; index += 1) {
     const coordinate = document.coordinates[index]!;
     const sample = document.samples[index]!;
     if (isValidCoordinate(coordinate) && Number.isFinite(Date.parse(sample.occurredAt))) {
       coordinates.push(coordinate);
-      samples.push({ ...sample, sourceIndex: sample.sourceIndex ?? index });
+      samples.push({
+        ...sample,
+        gapBefore: sample.gapBefore === true || forceGapBefore,
+        sourceIndex: sample.sourceIndex ?? index,
+      });
+      forceGapBefore = false;
+    } else {
+      forceGapBefore = true;
     }
   }
   return { coordinates, samples, sourcePointCount: Math.max(document.sourcePointCount, coordinates.length) };
@@ -357,7 +429,11 @@ function splitForOsrmMatch(
     const coordinate = document.coordinates[index]!;
     const sample = document.samples[index]!;
     if (!coordinateInCoverage({ latitude: coordinate[1], longitude: coordinate[0] }, coverage)
-      || (sample.accuracyMeters ?? 0) > ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters) {
+      || (typeof sample.accuracyMeters === 'number' && (
+        !Number.isFinite(sample.accuracyMeters)
+        || sample.accuracyMeters < 0
+        || sample.accuracyMeters > ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters
+      ))) {
       if (current.coordinates.length >= 2) byGap.push(current);
       current = { coordinates: [], samples: [] };
       continue;
@@ -374,7 +450,14 @@ function splitForOsrmMatch(
         > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
     if (
       previousSample !== undefined &&
-      (elapsedMs !== null && elapsedMs > ROUTE_TRACKING_V1_POLICY.delayedThresholdMs || isImplausibleJump)
+      (
+        sample.gapBefore === true
+        || previousSample.driverId !== sample.driverId
+        || elapsedMs === null
+        || elapsedMs <= 0
+        || elapsedMs > ROUTE_TRACKING_V1_POLICY.delayedThresholdMs
+        || isImplausibleJump
+      )
     ) {
       if (current.coordinates.length >= 2) byGap.push(current);
       current = { coordinates: [], samples: [] };
@@ -430,14 +513,15 @@ function buildMatchUrl(baseUrl: string, chunk: MatchChunk, gpsPrecisionMeters: n
     overview: 'full',
     geometries: 'geojson',
     gaps: 'split',
+    steps: 'true',
     tidy: 'true',
     timestamps,
   });
   if (gpsPrecisionMeters !== null || chunk.samples.some((sample) => (sample.accuracyMeters ?? 0) > 0)) {
     params.set('radiuses', chunk.samples.map((sample) => (
       typeof sample.accuracyMeters === 'number' && sample.accuracyMeters > 0
-        ? String(sample.accuracyMeters)
-        : String(gpsPrecisionMeters ?? 25)
+        ? String(Math.min(sample.accuracyMeters, ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters))
+        : String(Math.min(gpsPrecisionMeters ?? 25, ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters))
     )).join(';'));
   }
   return `${baseUrl}/match/v1/driving/${coordinatePath}?${params.toString()}`;
@@ -446,16 +530,29 @@ function buildMatchUrl(baseUrl: string, chunk: MatchChunk, gpsPrecisionMeters: n
 function buildGapSupplementCandidates(
   document: RouteTrackingGeometryDocumentV1,
   confidentLines: MatchedLine[],
-  unmatchedRanges: RouteTrackingSourceRangeV1[],
+  approvedLines: MatchedLine[],
+  rejectedLines: MatchedLine[],
 ): GapSupplementCandidate[] {
-  const confidentRanges = confidentLines.map((line) => line.sourceRange);
-  return unmatchedRanges.flatMap((range) => {
-    if (range.reason !== 'LOW_ACCURACY') return [];
-    const startIndex = document.samples.findIndex((sample) => sample.eventId === range.startEventId);
-    const endIndex = document.samples.findIndex((sample) => sample.eventId === range.endEventId);
-    if (startIndex <= 0 || endIndex < startIndex || endIndex >= document.samples.length - 1) return [];
-    const leftIndex = startIndex - 1;
-    const rightIndex = endIndex + 1;
+  const ranges = confidentLines.map((line) => line.sourceRange)
+    .sort((left, right) => left.startSourceIndex - right.startSourceIndex);
+  const approvedRanges = approvedLines.map((line) => line.sourceRange);
+  const rejectedRanges = rejectedLines.map((line) => line.sourceRange);
+  return ranges.slice(0, -1).flatMap((leftRange, index) => {
+    const rightRange = ranges[index + 1]!;
+    if (rightRange.startSourceIndex <= leftRange.endSourceIndex) return [];
+    if (approvedRanges.some((range) => (
+      range.startSourceIndex < rightRange.startSourceIndex
+      && range.endSourceIndex > leftRange.endSourceIndex
+      && !(range.startSourceIndex === leftRange.startSourceIndex && range.endSourceIndex === leftRange.endSourceIndex)
+      && !(range.startSourceIndex === rightRange.startSourceIndex && range.endSourceIndex === rightRange.endSourceIndex)
+    ))) return [];
+    if (rejectedRanges.some((range) => (
+      range.startSourceIndex < rightRange.startSourceIndex
+      && range.endSourceIndex > leftRange.endSourceIndex
+    ))) return [];
+    const leftIndex = document.samples.findIndex((sample) => sample.sourceIndex === leftRange.endSourceIndex);
+    const rightIndex = document.samples.findIndex((sample) => sample.sourceIndex === rightRange.startSourceIndex);
+    if (leftIndex < 0 || rightIndex <= leftIndex) return [];
     const leftSample = document.samples[leftIndex]!;
     const rightSample = document.samples[rightIndex]!;
     const leftSourceIndex = leftSample.sourceIndex;
@@ -465,11 +562,32 @@ function buildGapSupplementCandidates(
       || typeof rightSample.accuracyMeters !== 'number'
       || leftSample.accuracyMeters > MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS
       || rightSample.accuracyMeters > MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS
+      || typeof leftSample.driverId !== 'string'
+      || leftSample.driverId.trim() === ''
       || leftSourceIndex === undefined
       || rightSourceIndex === undefined
-      || !isSourceIndexCovered(leftSourceIndex, confidentRanges)
-      || !isSourceIndexCovered(rightSourceIndex, confidentRanges)
-      || document.samples.slice(startIndex, rightIndex + 1).some((sample) => sample.gapBefore !== false)
+      || !isSourceIndexCovered(leftSourceIndex, ranges)
+      || !isSourceIndexCovered(rightSourceIndex, ranges)
+    ) return [];
+    const samples = document.samples.slice(leftIndex, rightIndex + 1);
+    const coordinates = document.coordinates.slice(leftIndex, rightIndex + 1);
+    if (
+      samples.length !== coordinates.length
+      || samples.slice(1).some((sample) => sample.gapBefore !== false)
+      || samples.some((sample) => (
+        typeof sample.accuracyMeters !== 'number'
+        || !Number.isFinite(sample.accuracyMeters)
+        || sample.accuracyMeters < 0
+        || sample.accuracyMeters > ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters
+        || sample.driverId !== leftSample.driverId
+      ))
+      || samples.slice(1).some((sample, sampleIndex) => {
+        const previous = samples[sampleIndex]!;
+        const elapsedMs = Date.parse(sample.occurredAt) - Date.parse(previous.occurredAt);
+        if (!(elapsedMs > 0 && elapsedMs <= ROUTE_TRACKING_V1_POLICY.delayedThresholdMs)) return true;
+        return distanceBetweenCoordinatesMeters(coordinates[sampleIndex]!, coordinates[sampleIndex + 1]!)
+          / (elapsedMs / 1000) > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
+      })
     ) return [];
     const elapsedSeconds = (Date.parse(rightSample.occurredAt) - Date.parse(leftSample.occurredAt)) / 1000;
     if (!(elapsedSeconds > 0 && elapsedSeconds <= MAX_GAP_SUPPLEMENT_ELAPSED_MS / 1000)) return [];
@@ -482,17 +600,22 @@ function buildGapSupplementCandidates(
       || straightDistanceMeters / elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
     ) return [];
     return [{
+      coordinates,
       elapsedSeconds,
       endCoordinate,
       range: {
         endEventId: rightSample.eventId,
         endOccurredAt: rightSample.occurredAt,
         endSourceIndex: rightSourceIndex,
-        reason: 'LOW_ACCURACY',
+        interpolationLevel: 1,
+        reason: samples.slice(1, -1).some((sample) => (
+          sample.accuracyMeters! > ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters
+        )) ? 'LOW_ACCURACY' : 'NO_MATCH',
         startEventId: leftSample.eventId,
         startOccurredAt: leftSample.occurredAt,
         startSourceIndex: leftSourceIndex,
       },
+      samples,
       startCoordinate,
       straightDistanceMeters,
     }];
@@ -567,37 +690,296 @@ function selectGapSupplementRoute(
   return ambiguous ? null : best.coordinates;
 }
 
+function selectStrictGapSupplementMatch(
+  payload: unknown,
+  candidate: GapSupplementCandidate,
+): Array<[number, number]> | null {
+  const object = objectOrNull(payload);
+  if (object?.code !== 'Ok' || !Array.isArray(object.matchings) || !Array.isArray(object.tracepoints)) return null;
+  if (object.matchings.length !== 1 || object.tracepoints.length !== candidate.samples.length) return null;
+  const matching = objectOrNull(object.matchings[0]);
+  const confidence = Number(matching?.confidence);
+  const distance = Number(matching?.distance);
+  const duration = Number(matching?.duration);
+  const coordinates = readLineString(matching?.geometry);
+  const maxRoadDistance = Math.min(1_250, candidate.straightDistanceMeters * 1.8 + 50);
+  const maxRouteDuration = candidate.elapsedSeconds * 1.5 + 15;
+  if (
+    !Number.isFinite(confidence)
+    || confidence < MIN_CONFIDENT_MATCH
+    || !Number.isFinite(distance)
+    || !Number.isFinite(duration)
+    || distance <= 0
+    || duration <= 0
+    || distance > maxRoadDistance
+    || distance / candidate.elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
+    || duration > maxRouteDuration
+    || coordinates === null
+  ) return null;
+  const supported = object.tracepoints.every((tracepoint, index) => {
+    const point = objectOrNull(tracepoint);
+    const location = readCoordinatePair(point?.location);
+    return point?.matchings_index === 0
+      && isUnambiguousTracepoint(point)
+      && location !== null
+      && isSnapDisplacementPlausible(
+        candidate.coordinates[index]!,
+        location,
+        candidate.samples[index]!.accuracyMeters,
+      );
+  });
+  if (!supported) return null;
+  const firstLocation = readCoordinatePair(objectOrNull(object.tracepoints[0])?.location);
+  const lastLocation = readCoordinatePair(objectOrNull(object.tracepoints.at(-1))?.location);
+  if (
+    firstLocation === null
+    || lastLocation === null
+    || distanceBetweenCoordinatesMeters(candidate.startCoordinate, firstLocation) > 50
+    || distanceBetweenCoordinatesMeters(candidate.endCoordinate, lastLocation) > 50
+  ) return null;
+  return coordinates;
+}
+
 function readCoordinatePair(value: unknown): [number, number] | null {
   if (!Array.isArray(value) || value.length < 2) return null;
   const coordinate: [number, number] = [Number(value[0]), Number(value[1])];
   return isValidCoordinate(coordinate) ? coordinate : null;
 }
 
+function readAlternativesCount(value: Record<string, unknown> | null): number | null {
+  const count = value?.alternatives_count;
+  return typeof count === 'number'
+    && Number.isFinite(count)
+    && Number.isInteger(count)
+    && count >= 0
+    ? count
+    : null;
+}
+
+function isUnambiguousTracepoint(value: Record<string, unknown> | null): boolean {
+  return readAlternativesCount(value) === 0;
+}
+
 function readMatchedLines(payload: unknown, chunk: MatchChunk): MatchedLine[] {
   const object = objectOrNull(payload);
-  if (object?.code !== 'Ok' || !Array.isArray(object.matchings)) return [];
+  const matchings = Array.isArray(object?.matchings) ? object.matchings : null;
+  if (object?.code !== 'Ok' || matchings === null) return [];
   const tracepoints = Array.isArray(object.tracepoints) ? object.tracepoints : [];
-  return object.matchings.flatMap((matching, matchingIndex) => {
+  return matchings.flatMap((matching, matchingIndex) => {
     const match = objectOrNull(matching);
     const confidence = typeof match?.confidence === 'number' && Number.isFinite(match.confidence)
       ? match.confidence
       : 0;
-    const geometry = readLineString(match?.geometry);
-    if (geometry === null) return [];
-    const matchedIndexes = tracepoints.flatMap((tracepoint, index) => (
-      objectOrNull(tracepoint)?.matchings_index === matchingIndex ? [index] : []
-    ));
-    const indexes = matchedIndexes.length > 0
-      ? matchedIndexes
-      : tracepoints.length === chunk.samples.length && tracepoints.every((tracepoint) => tracepoint !== null)
-        ? chunk.samples.map((_, index) => index)
-        : [];
-    const firstIndex = indexes[0];
-    const lastIndex = indexes.at(-1);
-    if (indexes.length < 2 || firstIndex === undefined || lastIndex === undefined) return [];
-    const samples = chunk.samples.slice(firstIndex, lastIndex + 1);
-    return [{ confidence, coordinates: geometry, sourceRange: rangeFromSamples(samples) }];
+    return readMatchedLegLines(match, tracepoints, chunk, matchingIndex, matchings.length, confidence);
   });
+}
+
+function readMatchedLegLines(
+  matching: Record<string, unknown> | null,
+  tracepoints: unknown[],
+  chunk: MatchChunk,
+  matchingIndex: number,
+  matchingCount: number,
+  confidence: number,
+): MatchedLine[] {
+  const legs = Array.isArray(matching?.legs) ? matching.legs : [];
+  const lines: MatchedLine[] = [];
+  for (let index = 0; index < chunk.samples.length - 1; index += 1) {
+    const left = objectOrNull(tracepoints[index]);
+    const right = objectOrNull(tracepoints[index + 1]);
+    const leftMatchingIndex = left?.matchings_index;
+    const rightMatchingIndex = right?.matchings_index;
+    const leftMatchingIndexValid = isValidMatchingIndex(leftMatchingIndex, matchingCount);
+    const rightMatchingIndexValid = isValidMatchingIndex(rightMatchingIndex, matchingCount);
+    if (!leftMatchingIndexValid || !rightMatchingIndexValid) {
+      const rejectionOwner = leftMatchingIndexValid
+        ? leftMatchingIndex
+        : rightMatchingIndexValid
+          ? rightMatchingIndex
+          : 0;
+      if (matchingIndex === rejectionOwner) lines.push(rejectedLegLine(chunk, index, confidence));
+      continue;
+    }
+    if (leftMatchingIndex !== matchingIndex && rightMatchingIndex !== matchingIndex) continue;
+    if (left === null || right === null) {
+      lines.push(rejectedLegLine(chunk, index, confidence));
+      continue;
+    }
+    if (leftMatchingIndex !== rightMatchingIndex) continue;
+    const leftWaypointIndex = left?.waypoint_index;
+    const rightWaypointIndex = right?.waypoint_index;
+    const leftAlternativesCount = readAlternativesCount(left);
+    const rightAlternativesCount = readAlternativesCount(right);
+    if (
+      leftMatchingIndex !== matchingIndex
+      || typeof leftWaypointIndex !== 'number'
+      || !Number.isFinite(leftWaypointIndex)
+      || !Number.isInteger(leftWaypointIndex)
+      || typeof rightWaypointIndex !== 'number'
+      || !Number.isFinite(rightWaypointIndex)
+      || rightWaypointIndex !== leftWaypointIndex + 1
+      || leftAlternativesCount === null
+      || rightAlternativesCount === null
+    ) {
+      lines.push(rejectedLegLine(chunk, index, confidence));
+      continue;
+    }
+    const leg = objectOrNull(legs[leftWaypointIndex]);
+    const coordinates = readLegCoordinates(leg);
+    if (coordinates === null) {
+      lines.push(rejectedLegLine(chunk, index, confidence));
+      continue;
+    }
+    const samples = chunk.samples.slice(index, index + 2);
+    const inputCoordinates = chunk.coordinates.slice(index, index + 2);
+    const leftLocation = readCoordinatePair(left.location);
+    const rightLocation = readCoordinatePair(right.location);
+    const elapsedSeconds = (Date.parse(samples[1]!.occurredAt) - Date.parse(samples[0]!.occurredAt)) / 1000;
+    const roadDistance = Number(leg?.distance);
+    const roadDuration = Number(leg?.duration);
+    const straightDistance = distanceBetweenCoordinatesMeters(inputCoordinates[0]!, inputCoordinates[1]!);
+    const accuracies = samples.map((sample) => sample.accuracyMeters);
+    const hasKnownBoundedAccuracy = accuracies.every((accuracy) => (
+      typeof accuracy === 'number'
+      && Number.isFinite(accuracy)
+      && accuracy >= 0
+      && accuracy <= ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters
+    ));
+    const accuracySum = hasKnownBoundedAccuracy ? (accuracies[0]! + accuracies[1]!) : 0;
+    const strictSnap = leftLocation !== null
+      && rightLocation !== null
+      && isSnapDisplacementPlausible(inputCoordinates[0]!, leftLocation, accuracies[0], 1)
+      && isSnapDisplacementPlausible(inputCoordinates[1]!, rightLocation, accuracies[1], 1);
+    const hardSnap = leftLocation !== null
+      && rightLocation !== null
+      && isSnapDisplacementPlausible(inputCoordinates[0]!, leftLocation, accuracies[0], 3)
+      && isSnapDisplacementPlausible(inputCoordinates[1]!, rightLocation, accuracies[1], 3);
+    const strictDetour = roadDistance <= Math.min(1_250, straightDistance * 1.8 + 50);
+    const hardDetour = roadDistance <= Math.min(1_250, straightDistance * 1.8 + 50 + 3 * accuracySum);
+    const strictSpeed = roadDistance / elapsedSeconds <= MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND;
+    const hardSpeed = Math.max(0, roadDistance - 3 * accuracySum) / elapsedSeconds
+      <= MAX_HARD_MATCH_SPEED_METERS_PER_SECOND;
+    const strictDuration = roadDuration <= elapsedSeconds * 1.5 + 15;
+    if (
+      leftLocation === null
+      || rightLocation === null
+      || !hasKnownBoundedAccuracy
+      || !Number.isFinite(roadDistance)
+      || !Number.isFinite(roadDuration)
+      || roadDistance <= 0
+      || roadDuration <= 0
+      || !(elapsedSeconds > 0 && elapsedSeconds <= ROUTE_TRACKING_V1_POLICY.delayedThresholdMs / 1000)
+      || confidence < MIN_CONFIDENT_MATCH
+      || !hardDetour
+      || !hardSpeed
+      || !hardSnap
+    ) {
+      lines.push(rejectedLegLine(chunk, index, confidence));
+      continue;
+    }
+    const requiresSoftAcceptance = leftAlternativesCount > 0
+      || rightAlternativesCount > 0
+      || !strictDetour
+      || !strictSpeed
+      || !strictDuration
+      || !strictSnap;
+    if (requiresSoftAcceptance && confidence < MIN_SOFT_MATCH_CONFIDENCE) {
+      lines.push(rejectedLegLine(chunk, index, confidence));
+      continue;
+    }
+    const interpolationLevel: 0 | 1 = requiresSoftAcceptance
+      || accuracies.some((accuracy) => accuracy! > ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters)
+      ? 1
+      : 0;
+    lines.push({
+      confidence,
+      coordinates,
+      interpolationLevel,
+      sourceRange: rangeFromSamples(samples, interpolationLevel),
+    });
+  }
+  return lines;
+}
+
+function isValidMatchingIndex(value: unknown, matchingCount: number): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && Number.isInteger(value)
+    && value >= 0
+    && value < matchingCount;
+}
+
+function rejectedLegLine(chunk: MatchChunk, index: number, confidence: number): MatchedLine {
+  const samples = chunk.samples.slice(index, index + 2);
+  return {
+    confidence,
+    coordinates: chunk.coordinates.slice(index, index + 2),
+    interpolationLevel: 2,
+    sourceRange: rangeFromSamples(samples, 2),
+  };
+}
+
+function isSnapDisplacementPlausible(
+  observed: [number, number],
+  snapped: [number, number],
+  accuracyMeters: number | null | undefined,
+  accuracyMultiplier = 1,
+): boolean {
+  if (typeof accuracyMeters !== 'number' || !Number.isFinite(accuracyMeters) || accuracyMeters < 0) return false;
+  const maximumDisplacement = accuracyMultiplier === 1
+    ? Math.min(225, Math.max(25, accuracyMeters) + 10)
+    : Math.min(600, Math.max(25, accuracyMultiplier * accuracyMeters) + 10);
+  return distanceBetweenCoordinatesMeters(observed, snapped) <= maximumDisplacement;
+}
+
+function readLegCoordinates(value: unknown): Array<[number, number]> | null {
+  const steps = objectOrNull(value)?.steps;
+  if (!Array.isArray(steps)) return null;
+  const coordinates: Array<[number, number]> = [];
+  for (const step of steps) {
+    const line = readLineString(objectOrNull(step)?.geometry);
+    if (line === null) return null;
+    if (coordinates.length > 0 && !sameCoordinate(coordinates.at(-1)!, line[0]!)) return null;
+    if (coordinates.length > 0 && line.every((coordinate) => sameCoordinate(coordinates.at(-1)!, coordinate))) continue;
+    coordinates.push(...(coordinates.length > 0 ? line.slice(1) : line));
+  }
+  return coordinates.length >= 2 ? coordinates : null;
+}
+
+function mergeAdjacentMatchedLines(lines: MatchedLine[]): MatchedLine[] {
+  const ordered = [...lines].sort((left, right) => (
+    left.sourceRange.startSourceIndex - right.sourceRange.startSourceIndex
+    || left.sourceRange.endSourceIndex - right.sourceRange.endSourceIndex
+  ));
+  const merged: MatchedLine[] = [];
+  for (const line of ordered) {
+    const previous = merged.at(-1);
+    if (
+      previous !== undefined
+      && previous.interpolationLevel === line.interpolationLevel
+      && previous.sourceRange.endSourceIndex === line.sourceRange.startSourceIndex
+      && sameCoordinate(previous.coordinates.at(-1)!, line.coordinates[0]!)
+    ) {
+      previous.coordinates.push(...line.coordinates.slice(1));
+      previous.sourceRange = {
+        ...line.sourceRange,
+        startEventId: previous.sourceRange.startEventId,
+        startOccurredAt: previous.sourceRange.startOccurredAt,
+        startSourceIndex: previous.sourceRange.startSourceIndex,
+      };
+      previous.confidence = Math.min(previous.confidence, line.confidence);
+      continue;
+    }
+    if (previous?.sourceRange.startSourceIndex === line.sourceRange.startSourceIndex
+      && previous.sourceRange.endSourceIndex === line.sourceRange.endSourceIndex
+      && previous.interpolationLevel === line.interpolationLevel) continue;
+    merged.push({ ...line, coordinates: [...line.coordinates], sourceRange: { ...line.sourceRange } });
+  }
+  return merged;
+}
+
+function sameCoordinate(left: [number, number], right: [number, number]): boolean {
+  return left[0] === right[0] && left[1] === right[1];
 }
 
 function readLastMatchedPositionFromResponse(
@@ -641,22 +1023,11 @@ function readLineString(value: unknown): Array<[number, number]> | null {
     const latitude = Number(coordinate[1]);
     return isValidCoordinate([longitude, latitude]) ? [[longitude, latitude] as [number, number]] : [];
   });
-  const withoutClosedTail = removeClosedTail(coordinates);
-  return withoutClosedTail.length >= 2 ? withoutClosedTail : null;
-}
-
-function removeClosedTail(coordinates: Array<[number, number]>): Array<[number, number]> {
-  if (coordinates.length < 2) return coordinates;
-  const first = coordinates[0]!;
-  const last = coordinates.at(-1)!;
-  return first[0] === last[0] && first[1] === last[1]
-    ? coordinates.slice(0, -1)
-    : coordinates;
+  return coordinates.length >= 2 ? coordinates : null;
 }
 
 function toMultiLineString(lines: MatchedLine[]): RouteTrackingRoadMatchedGeometryV1 | null {
   const usableLines = lines
-    .map((line) => ({ ...line, coordinates: removeClosedTail(line.coordinates) }))
     .filter((line) => line.coordinates.length >= 2);
   return usableLines.length === 0
     ? null
@@ -669,7 +1040,6 @@ function toMultiLineString(lines: MatchedLine[]): RouteTrackingRoadMatchedGeomet
 
 function toInferredMultiLineString(lines: InferredLine[]): RouteTrackingRoadMatchedGeometryV1 | null {
   const usableLines = lines
-    .map((line) => ({ ...line, coordinates: removeClosedTail(line.coordinates) }))
     .filter((line) => line.coordinates.length >= 2);
   return usableLines.length === 0
     ? null
@@ -730,8 +1100,7 @@ function readMultiLineString(value: unknown): RouteTrackingRoadMatchedGeometryV1
       const latitude = Number(coordinate[1]);
       return isValidCoordinate([longitude, latitude]) ? [[longitude, latitude] as [number, number]] : [];
     });
-    const withoutClosedTail = removeClosedTail(coordinates);
-    return withoutClosedTail.length >= 2 ? [withoutClosedTail] : [];
+    return coordinates.length >= 2 ? [coordinates] : [];
   });
   if (coordinates.length === 0) return null;
   const anchors = readGeometryAnchors(object.anchors, coordinates);
@@ -744,17 +1113,25 @@ function readMultiLineString(value: unknown): RouteTrackingRoadMatchedGeometryV1
   };
 }
 
-function rangeFromSamples(samples: RouteTrackingGeometryDocumentV1['samples']): RouteTrackingSourceRangeV1 {
+function rangeFromSamples(
+  samples: RouteTrackingGeometryDocumentV1['samples'],
+  interpolationLevel?: 0 | 1 | 2,
+): RouteTrackingSourceRangeV1 {
   const first = samples[0]!;
   const last = samples.at(-1)!;
   return {
     endEventId: last.eventId,
     endOccurredAt: last.occurredAt,
     endSourceIndex: last.sourceIndex ?? samples.length - 1,
+    ...(interpolationLevel === undefined ? {} : { interpolationLevel }),
     startEventId: first.eventId,
     startOccurredAt: first.occurredAt,
     startSourceIndex: first.sourceIndex ?? 0,
   };
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
 }
 
 function buildUnmatchedRanges(
@@ -781,6 +1158,7 @@ function buildUnmatchedRanges(
       endEventId: range.endEventId,
       endOccurredAt: range.endOccurredAt,
       endSourceIndex: range.endSourceIndex,
+      interpolationLevel: 2,
       reason,
       startEventId: range.startEventId,
       startOccurredAt: range.startOccurredAt,
@@ -822,16 +1200,22 @@ function readSourceRanges(value: unknown): RouteTrackingSourceRangeV1[] {
     if (startEventId === null || endEventId === null || startOccurredAt === null || endOccurredAt === null
       || startSourceIndex === null || endSourceIndex === null || endSourceIndex < startSourceIndex) return [];
     const reason = readRangeReason(object?.reason);
+    const interpolationLevel = readInterpolationLevel(object?.interpolationLevel);
     return [{
       endEventId,
       endOccurredAt,
       endSourceIndex,
+      ...(interpolationLevel === null ? {} : { interpolationLevel }),
       ...(reason === null ? {} : { reason }),
       startEventId,
       startOccurredAt,
       startSourceIndex,
     }];
   });
+}
+
+function readInterpolationLevel(value: unknown): 0 | 1 | 2 | null {
+  return value === 0 || value === 1 || value === 2 ? value : null;
 }
 
 function readEmbeddedUnmatchedRanges(...values: unknown[]): RouteTrackingSourceRangeV1[] {
@@ -864,9 +1248,14 @@ function embedRoadMatchMetadata(
   inferredGeometry: RouteTrackingRoadMatchedGeometryV1 | null | undefined,
   inferredRanges: RouteTrackingSourceRangeV1[] | undefined,
 ): RouteTrackingRoadMatchedGeometryV1 | null {
-  if (geometry === null) return null;
+  if (
+    geometry === null
+    && (unmatchedRanges === undefined || unmatchedRanges.length === 0)
+    && (inferredGeometry === undefined || inferredGeometry === null)
+    && (inferredRanges === undefined || inferredRanges.length === 0)
+  ) return null;
   return {
-    ...geometry,
+    ...(geometry ?? { coordinates: [], type: 'MultiLineString' as const }),
     ...(unmatchedRanges === undefined || unmatchedRanges.length === 0 ? {} : { unmatchedRanges }),
     ...(inferredGeometry === undefined || inferredGeometry === null ? {} : { inferredGeometry }),
     ...(inferredRanges === undefined || inferredRanges.length === 0 ? {} : { inferredRanges }),

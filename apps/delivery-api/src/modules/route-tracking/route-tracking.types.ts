@@ -126,6 +126,7 @@ export type RouteTrackingSourceRangeV1 = {
   endEventId: string;
   endOccurredAt: string;
   endSourceIndex: number;
+  interpolationLevel?: 0 | 1 | 2;
   reason?: 'GPS_GAP' | 'IMPLAUSIBLE_JUMP' | 'LOW_ACCURACY' | 'NO_MATCH' | 'OUT_OF_COVERAGE';
   startEventId: string;
   startOccurredAt: string;
@@ -146,7 +147,7 @@ export type RouteTrackingRoadMatchedPathV1 = {
   matchedPointCount: number;
   inferredGeometry?: RouteTrackingRoadMatchedGeometryV1 | null;
   inferredRanges?: RouteTrackingSourceRangeV1[];
-  qualityVersion?: 'gps_quality.v2' | 'gps_quality.v3';
+  qualityVersion?: 'gps_quality.v2' | 'gps_quality.v3' | 'gps_quality.v4';
   schemaVersion: 'route_tracking_road_match.v1';
   uncertainGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
   uncertainRanges?: RouteTrackingSourceRangeV1[];
