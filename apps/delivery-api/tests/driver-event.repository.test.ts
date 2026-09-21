@@ -18,6 +18,16 @@ const serverReceivedAt = new Date('2026-06-01T06:00:00.000Z');
 type RoutePlanStopFixture = { id: string } | ReturnType<typeof confirmedTimeConstraintRoutePlanStop>;
 
 describe('PrismaDriverEventRepository', () => {
+  test('stamps GPS with the locked server assignment and current route version', async () => {
+    const { prisma } = createPrismaHarness({ driverEventRouteVersionColumnExists: true, routeEtaInputVersionId: 'current-version' });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+    await repository.recordDriverEvent(baseInput({ eventType: 'LOCATION_UPDATED', deliveryStopId: null, routePlanId: 'route-plan-id',
+      assignmentGeneration: '999', expectedRouteVersionId: 'forged-client-version' }));
+    expect(prisma.driverEvent.create.mock.calls[0]?.[0]).toMatchObject({ data: {
+      assignmentGeneration: 1n, expectedRouteVersionId: 'current-version', routeVersionId: 'current-version'
+    } });
+  });
+
   test('keeps committed receipt recovery non-blocking while surfacing sanitized attempt finalization failure', async () => {
     const failures: Array<{ attemptId: string; errorCode: string }> = [];
     const prisma = {
@@ -64,6 +74,8 @@ describe('PrismaDriverEventRepository', () => {
         longitude: '-79.3832',
         occurredAt,
         payload: { source: 'driver-app' },
+        assignmentGeneration: 1n,
+        expectedRouteVersionId: null,
         routePlanId: 'route-plan-id',
         shopId: 'shop-id'
       }
@@ -177,7 +189,10 @@ describe('PrismaDriverEventRepository', () => {
           }
         },
         shopId: 'shop-id',
-        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'DELIVERED'] }
+        OR: [
+          { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'DELIVERED'] } },
+          { status: { in: ['DELIVERED', 'FAILED'] }, completionAssistanceCandidateId: { not: null } }
+        ]
       }
     });
     expect(prisma.routePlanStop.update).toHaveBeenCalledWith({
@@ -236,7 +251,10 @@ describe('PrismaDriverEventRepository', () => {
           }
         },
         shopId: 'shop-id',
-        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'FAILED'] }
+        OR: [
+          { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'FAILED'] } },
+          { status: { in: ['DELIVERED', 'FAILED'] }, completionAssistanceCandidateId: { not: null } }
+        ]
       }
     });
     expect(result).toMatchObject({
@@ -1858,7 +1876,7 @@ function createPrismaHarness(input: {
       findFirst: ReturnType<typeof vi.fn>;
       updateMany: ReturnType<typeof vi.fn>;
     };
-    routePlan: { findFirst: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
+    routePlan: { findFirst: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
     routePlanGeometryCache: { findFirst: ReturnType<typeof vi.fn> };
     routePlanStop: {
       deleteMany: ReturnType<typeof vi.fn>;
@@ -1993,6 +2011,7 @@ function createPrismaHarness(input: {
       })
     },
     routePlan: {
+      findUnique: vi.fn(() => Promise.resolve({ assignmentGeneration: 1n })),
       findFirst: vi.fn((args: { select?: { routeStops?: unknown } }) => {
         const routePlan = input.routePlan === undefined ? { id: 'route-plan-id', status: 'IN_PROGRESS' } : input.routePlan;
         if (routePlan === null) {

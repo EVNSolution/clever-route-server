@@ -111,9 +111,14 @@ import {
   DriverDeliverySpaceError,
   type DriverDeliverySpaceServiceContract
 } from '../modules/driver/driver-delivery-space.service.js';
+import {
+  registerDriverCompletionAssistanceRoutes,
+  type CompletionAssistanceServiceApi
+} from './driver-completion-assistance.routes.js';
 
 export type DriverApiDependencies = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
+  completionAssistanceService?: CompletionAssistanceServiceApi;
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
   driverConsentService?: DriverConsentServiceContract;
   driverDeliverySpaceService?: DriverDeliverySpaceServiceContract;
@@ -321,6 +326,15 @@ export function registerDriverEventRoutes(
   app: FastifyInstance,
   dependencies: DriverApiDependencies
 ): void {
+  if (dependencies.completionAssistanceService !== undefined) {
+    registerDriverCompletionAssistanceRoutes(app, {
+      completionAssistanceService: dependencies.completionAssistanceService,
+      ...(dependencies.driverTokenAccessRepository === undefined ? {} : { driverTokenAccessRepository: dependencies.driverTokenAccessRepository }),
+      jwtSecret: dependencies.jwtSecret,
+      ...(dependencies.now === undefined ? {} : { now: dependencies.now })
+    });
+  }
+
   const syncHealthService = dependencies.driverSyncHealthService;
   if (syncHealthService !== undefined) {
     app.put<{ Body: unknown }>('/driver/sync-health', async (request, reply) => {

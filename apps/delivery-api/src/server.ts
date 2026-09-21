@@ -14,6 +14,7 @@ import { PrismaEmailRuntimeHealthService } from './modules/customer-email/email-
 import { EmailRuntimeHealthRuntime } from './modules/customer-email/email-runtime-health.runtime.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
 import { DriverOperationalHealthRuntime } from './modules/driver/driver-operational-health.runtime.js';
+import { CompletionAssistanceRuntime } from './modules/driver/completion-assistance.runtime.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
 import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
@@ -171,6 +172,13 @@ const emailHealthRuntime = new EmailRuntimeHealthRuntime(
 const driverOperationalHealthRuntime = driverApi?.driverOperationalHealthService === undefined
   ? null
   : new DriverOperationalHealthRuntime(driverApi.driverOperationalHealthService, app.log);
+const completionAssistanceRuntime = driverApi?.completionAssistanceService === undefined
+  ? null
+  : new CompletionAssistanceRuntime(
+      driverApi.completionAssistanceService,
+      process.env.COMPLETION_ASSISTANCE_WORKER_ENABLED === 'true',
+      app.log
+    );
 const uvisTelemetryRuntime = createUvisTelemetryRuntime({
   env: process.env,
   logger: app.log,
@@ -183,6 +191,7 @@ try {
   await customerDeliveryNotificationRuntime.start();
   emailHealthRuntime.start();
   driverOperationalHealthRuntime?.start();
+  completionAssistanceRuntime?.start();
   await dsvV1Read?.driverNotificationRuntime?.start();
   uvisTelemetryRuntime.start();
   shopifyWebhookRuntime?.worker?.start();
@@ -196,6 +205,7 @@ try {
     customerDeliveryNotificationRuntime.close(),
     emailHealthRuntime.close(),
     driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
+    completionAssistanceRuntime?.close() ?? Promise.resolve(),
     dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
     uvisTelemetryRuntime.close(),
     shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
@@ -213,6 +223,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         customerDeliveryNotificationRuntime.close(),
         emailHealthRuntime.close(),
         driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
+        completionAssistanceRuntime?.close() ?? Promise.resolve(),
         dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
         uvisTelemetryRuntime.close(),
         shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),

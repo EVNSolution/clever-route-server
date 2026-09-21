@@ -56,6 +56,7 @@ import {
   DsvAssignmentCommandService,
   assignmentMap
 } from '../dsv/dsv-assignment-command.service.js';
+import { PrismaCompletionAssistanceService } from './completion-assistance.service.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 365;
 export const DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS = 90;
@@ -88,6 +89,12 @@ export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_ROUTE_MAP_PREVIEW_ENABLED'
   | 'DRIVER_ROUTE_MAP_PREVIEW_SECRET'
   | 'DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS'
+  | 'COMPLETION_ASSISTANCE_POLICY_JSON'
+  | 'COMPLETION_ASSISTANCE_ACCOUNT_IDS'
+  | 'COMPLETION_ASSISTANCE_ACTIVATION_ID'
+  | 'COMPLETION_ASSISTANCE_ACTIVATED_AT'
+  | 'COMPLETION_ASSISTANCE_DETECTION_ENABLED'
+  | 'COMPLETION_ASSISTANCE_WORKER_ENABLED'
   | 'DELIVERY_API_PUBLIC_URL'
   | 'JWT_SECRET'
   | 'NODE_ENV',
@@ -156,6 +163,7 @@ export function loadDriverApiDependencies(
       ? {}
       : { adminNotificationService: input.adminNotificationService }),
     driverAssignedRouteService,
+    completionAssistanceService: new PrismaCompletionAssistanceService(input.prisma, { env: input.env }),
     driverRouteOrderService: new PrismaDriverRouteOrderService(input.prisma),
     driverDestinationNotesService: new PrismaDriverDestinationNotesRepository(input.prisma),
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),

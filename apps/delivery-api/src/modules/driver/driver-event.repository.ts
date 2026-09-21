@@ -351,6 +351,14 @@ export class PrismaDriverEventRepository {
           ? null
           : await loadCurrentRouteVersionIdForDriverEvent(transaction, schemaCapabilities, input.routePlanId, input.shopId);
 
+        // GPS clients do not carry ordered-v2 identity. Stamp the server-owned
+        // assignment under the route lock so later evidence cannot cross a reassignment.
+        const locationAssignment = input.eventType === 'LOCATION_UPDATED' && input.routePlanId !== null
+          ? await transaction.routePlan.findUnique({
+              where: { id: input.routePlanId }, select: { assignmentGeneration: true }
+            })
+          : null;
+
         const event = await transaction.driverEvent.create({
           data: {
             clientEventId: input.clientEventId,
@@ -370,6 +378,10 @@ export class PrismaDriverEventRepository {
                   expectedRouteVersionId: requireExpectedRouteVersionId(input)
                 }),
             ...(routeVersionId === undefined ? {} : { routeVersionId }),
+            ...(locationAssignment?.assignmentGeneration === undefined ? {} : {
+              assignmentGeneration: locationAssignment.assignmentGeneration,
+              expectedRouteVersionId: routeVersionId ?? null
+            }),
             shopId: input.shopId
           }
         });
@@ -632,6 +644,8 @@ async function lockRoutePlanForSerializedEvent(
     && input.eventType !== 'PICKUP_COMPLETED'
     && input.eventType !== 'STOP_ARRIVED'
     && input.eventType !== 'STOP_DELIVERED'
+    && input.eventType !== 'STOP_FAILED'
+    && input.eventType !== 'LOCATION_UPDATED'
     && input.eventType !== 'ROUTE_COMPLETED'
   ) {
     return;
@@ -1320,7 +1334,12 @@ async function applyDriverEventStateTransition(
           }
         },
         shopId,
-        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', targetStatus] }
+        OR: [
+          { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', targetStatus] } },
+          // A real button result supersedes a candidate-owned result. The DB
+          // status trigger invalidates that candidate and clears its ownership.
+          { status: { in: ['DELIVERED', 'FAILED'] }, completionAssistanceCandidateId: { not: null } }
+        ]
       }
     });
     if (updated.count !== 1) throw new DriverEventStopTransitionConflictError();
