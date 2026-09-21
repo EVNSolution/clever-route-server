@@ -117,6 +117,8 @@ export type RouteTrackingRoadMatchedGeometryV1 = {
   coordinates: Array<Array<[number, number]>>;
   sourceRanges?: RouteTrackingSourceRangeV1[];
   type: 'MultiLineString';
+  inferredGeometry?: RouteTrackingRoadMatchedGeometryV1 | null;
+  inferredRanges?: RouteTrackingSourceRangeV1[];
   unmatchedRanges?: RouteTrackingSourceRangeV1[];
 };
 
@@ -142,7 +144,9 @@ export type RouteTrackingRoadMatchedPathV1 = {
   matchedGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
   matchedRanges?: RouteTrackingSourceRangeV1[];
   matchedPointCount: number;
-  qualityVersion?: 'gps_quality.v2';
+  inferredGeometry?: RouteTrackingRoadMatchedGeometryV1 | null;
+  inferredRanges?: RouteTrackingSourceRangeV1[];
+  qualityVersion?: 'gps_quality.v2' | 'gps_quality.v3';
   schemaVersion: 'route_tracking_road_match.v1';
   uncertainGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
   uncertainRanges?: RouteTrackingSourceRangeV1[];
