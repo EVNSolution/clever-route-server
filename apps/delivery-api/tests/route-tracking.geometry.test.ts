@@ -61,15 +61,103 @@ describe('route tracking geometry projection', () => {
       position({ eventId: 'event-1', latitude: 37.5, longitude: 126.9, occurredAt: '2026-07-21T00:00:00.000Z' }),
       position({ eventId: 'event-2', latitude: 37.5, longitude: 126.901, occurredAt: '2026-07-21T00:00:30.000Z' })
     ]);
-    const afterGap = appendRouteTrackingGeometryPosition(beforeGap, position({
+    const firstAfterGap = appendRouteTrackingGeometryPosition(beforeGap, position({
       eventId: 'event-3',
       latitude: 37.5,
       longitude: 126.902,
       occurredAt: '2026-07-21T00:05:00.000Z'
     }));
+    const afterGap = appendRouteTrackingGeometryPosition(firstAfterGap, position({
+      eventId: 'event-4',
+      latitude: 37.5,
+      longitude: 126.9021,
+      occurredAt: '2026-07-21T00:05:06.000Z'
+    }));
 
-    expect(afterGap.coordinates).toHaveLength(3);
-    expect(afterGap.samples.map((sample) => sample.eventId)).toEqual(['event-1', 'event-2', 'event-3']);
+    expect(afterGap.coordinates).toHaveLength(4);
+    expect(afterGap.samples.map((sample) => sample.eventId)).toEqual(['event-1', 'event-2', 'event-3', 'event-4']);
+    expect(afterGap.samples.find((sample) => sample.eventId === 'event-3')?.gapBefore).toBe(true);
+  });
+
+  test('preserves a slow right-angle turn instead of collapsing cumulative short steps', () => {
+    const metersToLatitude = (meters: number) => meters / 111_320;
+    const metersToLongitude = (meters: number) => meters / (111_320 * Math.cos(43.65 * Math.PI / 180));
+    const positions = Array.from({ length: 121 }, (_, index) => {
+      const eastMeters = Math.min(index, 60) * 2.5;
+      const northMeters = Math.max(0, index - 60) * 2.5;
+      return position({
+        eventId: `turn-${index}`,
+        latitude: 43.65 + metersToLatitude(northMeters),
+        longitude: -79.4 + metersToLongitude(eastMeters),
+        occurredAt: new Date(Date.parse('2026-09-17T13:00:00.000Z') + index * 6_000).toISOString()
+      });
+    });
+
+    const geometry = buildRouteTrackingGeometryDocument(positions);
+
+    expect(geometry.sourcePointCount).toBe(121);
+    expect(geometry.coordinates.length).toBeGreaterThan(2);
+    expect(geometry.coordinates.some(([longitude, latitude]) => (
+      Math.abs(longitude - (-79.4 + metersToLongitude(150))) < 0.00001
+      && Math.abs(latitude - 43.65) < 0.00001
+    ))).toBe(true);
+  });
+
+  test('does not classify a real low-speed circle as stationary GPS jitter', () => {
+    const latitude = 43.65;
+    const metersToLatitude = (meters: number) => meters / 111_320;
+    const metersToLongitude = (meters: number) => meters / (111_320 * Math.cos(latitude * Math.PI / 180));
+    const positions = Array.from({ length: 7 }, (_, index) => {
+      const angle = index * Math.PI / 3;
+      return position({
+        accuracyMeters: 20,
+        eventId: `circle-${index}`,
+        latitude: latitude + metersToLatitude(Math.sin(angle) * 10),
+        longitude: -79.4 + metersToLongitude(Math.cos(angle) * 10),
+        occurredAt: new Date(Date.parse('2026-09-17T13:00:00.000Z') + index * 6_000).toISOString()
+      });
+    });
+
+    const geometry = buildRouteTrackingGeometryDocument(positions);
+
+    expect(geometry.coordinates.length).toBeGreaterThan(3);
+    expect(new Set(geometry.coordinates.map((coordinate) => coordinate.join(','))).size).toBeGreaterThan(3);
+  });
+
+  test('preserves a narrow low-speed hairpin despite GPS accuracy wider than the lane spacing', () => {
+    const latitude = 43.65;
+    const metersToLatitude = (meters: number) => meters / 111_320;
+    const metersToLongitude = (meters: number) => meters / (111_320 * Math.cos(latitude * Math.PI / 180));
+    const meters: Array<[number, number]> = [[0, 0], [10, 0], [20, 0], [20, 5], [10, 5], [0, 5]];
+    const geometry = buildRouteTrackingGeometryDocument(meters.map(([east, north], index) => position({
+      accuracyMeters: 20,
+      eventId: `hairpin-${index}`,
+      latitude: latitude + metersToLatitude(north),
+      longitude: -79.4 + metersToLongitude(east),
+      occurredAt: new Date(Date.parse('2026-09-17T13:00:00.000Z') + index * 6_000).toISOString()
+    })));
+
+    expect(geometry.coordinates.length).toBeGreaterThanOrEqual(3);
+    expect(Math.max(...geometry.coordinates.map(([longitude]) => longitude)))
+      .toBeGreaterThan(-79.4 + metersToLongitude(19));
+  });
+
+  test('keeps true acquisition-gap semantics after compressing frequent straight samples', () => {
+    const positions = Array.from({ length: 101 }, (_, index) => position({
+      eventId: `continuous-${index}`,
+      longitude: 126.9 + index * 0.00001,
+      occurredAt: new Date(Date.parse('2026-09-17T13:00:00.000Z') + index * 6_000).toISOString()
+    }));
+
+    const geometry = buildRouteTrackingGeometryDocument(positions);
+
+    expect(geometry.sourcePointCount).toBe(101);
+    expect(geometry.samples.every((sample) => sample.gapBefore === false)).toBe(true);
+    expect(geometry.samples.at(-1)?.sourceIndex).toBe(100);
+    expect(pruneRouteTrackingGeometryDocument(
+      geometry,
+      new Date('2026-09-17T12:59:00.000Z')
+    ).sourcePointCount).toBe(101);
   });
 
   test('does not resurrect expired GPS geometry from a late location event', async () => {

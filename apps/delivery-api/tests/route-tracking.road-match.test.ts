@@ -89,6 +89,31 @@ describe('route tracking road matching', () => {
     expect(requestedUrl).toContain('radiuses=75%3B75');
   });
 
+  test('uses per-sample GPS accuracy as OSRM radiuses with a bounded fallback', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{
+        confidence: 0.9,
+        geometry: { coordinates: [[126.9, 37.5], [126.901, 37.501], [126.902, 37.502]], type: 'LineString' },
+      }],
+      tracepoints: [{}, {}, {}],
+    }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'http://osrm-korea:5000' },
+      fetch,
+      gpsPrecisionMeters: 40,
+    });
+    const input = document([[126.9, 37.5], [126.901, 37.501], [126.902, 37.502]]);
+    input.samples[0]!.accuracyMeters = 8.4;
+    input.samples[1]!.accuracyMeters = 25;
+    input.samples[2]!.accuracyMeters = null;
+
+    await provider.match(input);
+
+    const requestedUrl = String((fetch.mock.calls as unknown as Array<[string]>)[0]![0]);
+    expect(requestedUrl).toContain('radiuses=8.4%3B25%3B40');
+  });
+
   test('splits by GPS gaps and by 80-point OSRM match request limit', async () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       code: 'Ok',
@@ -304,6 +329,101 @@ describe('route tracking road matching', () => {
       longitude: 126.901,
       occurredAt: '2026-07-21T00:00:30.000Z',
     });
+    expect(result?.matchedRanges).toEqual([expect.objectContaining({
+      startEventId: 'event-0',
+      endEventId: 'event-1',
+      startSourceIndex: 0,
+      endSourceIndex: 1,
+    })]);
+    expect(result?.unmatchedRanges).toEqual([expect.objectContaining({
+      startEventId: 'event-2',
+      endEventId: 'event-2',
+      reason: 'NO_MATCH',
+    })]);
+  });
+
+  test('keeps a confident matching when one internal tracepoint is an OSRM outlier', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{
+        confidence: 0.91,
+        geometry: {
+          coordinates: [[-79.4, 43.65], [-79.401, 43.651], [-79.403, 43.653]],
+          type: 'LineString',
+        },
+      }],
+      tracepoints: [
+        { location: [-79.4, 43.65], matchings_index: 0, waypoint_index: 0 },
+        { location: [-79.401, 43.651], matchings_index: 0, waypoint_index: 1 },
+        null,
+        { location: [-79.403, 43.653], matchings_index: 0, waypoint_index: 2 },
+      ],
+    }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    });
+
+    const result = await provider.match(document([
+      [-79.4, 43.65], [-79.401, 43.651], [-79.402, 43.652], [-79.403, 43.653]
+    ]));
+
+    expect(result?.matchedGeometry?.coordinates).toHaveLength(1);
+    expect(result?.matchedRanges).toEqual([expect.objectContaining({
+      startSourceIndex: 0,
+      endSourceIndex: 3,
+    })]);
+    expect(result?.unmatchedRanges).toEqual([]);
+  });
+
+  test('never lets a matched source range cross an actual acquisition gap', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{
+        confidence: 0.9,
+        geometry: { coordinates: [[-79.4, 43.65], [-79.401, 43.651]], type: 'LineString' },
+      }],
+      tracepoints: [{}, {}],
+    }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({ baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch });
+
+    const result = await provider.match(document([
+      [-79.4, 43.65], [-79.401, 43.651], [-79.402, 43.652], [-79.403, 43.653]
+    ], { gapBeforeIndex: 2 }));
+
+    expect(result?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ startSourceIndex: 2, endSourceIndex: 3 }),
+    ]);
+  });
+
+  test('excludes low-accuracy samples from confident road matching and reports their raw range', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{
+        confidence: 0.9,
+        geometry: { coordinates: [[-79.4, 43.65], [-79.401, 43.651]], type: 'LineString' },
+      }],
+      tracepoints: [
+        { location: [-79.4, 43.65], matchings_index: 0, waypoint_index: 0 },
+        { location: [-79.401, 43.651], matchings_index: 0, waypoint_index: 1 },
+      ],
+    }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({ baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch });
+    const input = document([
+      [-79.4, 43.65], [-79.401, 43.651], [-79.8, 43.9], [-79.402, 43.652], [-79.403, 43.653]
+    ]);
+    input.samples[2]!.accuracyMeters = 292.87;
+
+    const result = await provider.match(input);
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(String((fetch.mock.calls as unknown as Array<[string]>)[0]![0])).not.toContain('-79.8');
+    expect(result?.unmatchedRanges).toEqual([expect.objectContaining({
+      startEventId: 'event-2',
+      endEventId: 'event-2',
+      reason: 'LOW_ACCURACY',
+    })]);
   });
 
   test('ignores an out-of-coverage GPS outlier instead of discarding the Korea path', async () => {
@@ -337,7 +457,7 @@ describe('route tracking road matching', () => {
   test('does not refresh from cache when the watermark already covers the latest input', () => {
     const record = trackingRecord({
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:02:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v1',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v2',
       roadMatchedSourcePointCount: 3,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:02:00.000Z:abc',
       sourcePointCount: 3,
@@ -346,7 +466,7 @@ describe('route tracking road matching', () => {
     expect(shouldRefreshRouteTrackingRoadMatchedPath(record)).toBe(false);
     expect(shouldRefreshRouteTrackingRoadMatchedPath(trackingRecord({
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:01:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v1',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v2',
       roadMatchedSourcePointCount: 2,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:2:2:2026-07-21T00:01:00.000Z:abc',
       sourcePointCount: 3,
@@ -367,7 +487,7 @@ describe('route tracking road matching', () => {
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:01:00.000Z'),
       roadMatchedLastPosition: { latitude: 37.51, longitude: 126.91, occurredAt: '2026-07-21T00:01:00.000Z' },
       roadMatchedPointCount: 2,
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v1',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v2',
       roadMatchedSourcePointCount: 3,
       roadMatchedUncertainGeometry: null,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:01:00.000Z:abc',
@@ -386,9 +506,13 @@ describe('route tracking road matching', () => {
         coordinates: [[[126.9, 37.5], [126.91, 37.51]]],
         type: 'MultiLineString',
       },
+      matchedRanges: [],
       matchedPointCount: 2,
+      qualityVersion: 'gps_quality.v2',
       schemaVersion: 'route_tracking_road_match.v1',
       uncertainGeometry: null,
+      uncertainRanges: [],
+      unmatchedRanges: [],
       watermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:01:00.000Z:abc',
     });
   });
