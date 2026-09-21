@@ -49,8 +49,14 @@ docker exec "${tracking_container}" node dist/scripts/rebuild-route-tracking-qua
 ```
 
 Record the reported `planHash`, `backup.sha256`, before/after point counts, gap
-counts, matched point counts, and time ranges. The output contains aggregate data
-only. It does not print raw coordinates.
+counts, matched point counts, `inferredLineCount`, and time ranges. The output
+contains aggregate data only. It does not print raw coordinates.
+
+`inferredLineCount` counts conservative road connections generated only to make a
+known tracking gap readable. These lines are not observed GPS, do not prove that
+the driver used that exact road, and must never be used as delivery-completion or
+return-to-depot evidence. A surprising inferred count or range is a reason to stop
+and review the dry-run rather than apply it.
 
 Copy the backup out before apply and verify both copies. The file contains private
 derived GPS coordinates and must not be committed or attached to a public log.
@@ -98,8 +104,10 @@ verify its SHA-256 immediately after apply.
 3. Confirm route status and every delivery-stop status are unchanged.
 4. Confirm the `LOCATION_UPDATED` source-event count and reviewed-prefix digest are
    unchanged; later append-only events are expected while live tracking continues.
-5. Open the selected historical route and verify road-following geometry, explicit
-   gaps, uncertain segments, and current-position separation.
+5. Open the selected historical route and verify the map keeps only the planned
+   route and a uniform GPS presentation. Confirm inferred and uncertain provenance
+   remains distinguishable in the API/cache for diagnostics without creating extra
+   map styles, and remains excluded from delivery-completion evidence.
 
 Rollback is a scoped restore of the single backed-up derived row. It takes the same
 route advisory lock, requires the exact currently deployed road-match watermark,

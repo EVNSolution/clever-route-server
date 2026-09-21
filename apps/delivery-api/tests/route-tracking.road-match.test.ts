@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
   OsrmRouteTrackingRoadMatchProvider,
+  buildRouteTrackingRoadMatchCacheWrite,
   buildRouteTrackingRoadMatchedPath,
   shouldRefreshRouteTrackingRoadMatchedPath,
 } from '../src/modules/route-tracking/route-tracking.road-match.js';
@@ -426,6 +427,135 @@ describe('route tracking road matching', () => {
     })]);
   });
 
+  test('supplements a short low-accuracy span with a conservative OSRM road route', async () => {
+    const input = supplementInput();
+    const fetch = supplementFetch(routeResponse());
+    const provider = new OsrmRouteTrackingRoadMatchProvider({ baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch });
+
+    const result = await provider.match(input);
+
+    const routeUrl = (fetch.mock.calls as unknown as Array<[string]>).map(([url]) => String(url))
+      .find((url) => url.includes('/route/v1/driving/'));
+    expect(routeUrl).toContain('alternatives=true');
+    expect(routeUrl).toContain('overview=full');
+    expect(routeUrl).toContain('geometries=geojson');
+    expect(routeUrl).toContain('radiuses=50%3B50');
+    expect(result?.inferredGeometry?.coordinates).toEqual([supplementRouteCoordinates()]);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({
+      startEventId: 'event-1',
+      endEventId: 'event-3',
+      startSourceIndex: 1,
+      endSourceIndex: 3,
+      reason: 'LOW_ACCURACY',
+    })]);
+    expect(result?.unmatchedRanges).toEqual([expect.objectContaining({
+      startEventId: 'event-2',
+      endEventId: 'event-2',
+      reason: 'LOW_ACCURACY',
+    })]);
+    expect(result?.qualityVersion).toBe('gps_quality.v3');
+  });
+
+  test.each([
+    ['true acquisition gap', (input: RouteTrackingGeometryDocumentV1) => { input.samples[2]!.gapBefore = true; }],
+    ['long elapsed span', (input: RouteTrackingGeometryDocumentV1) => {
+      input.samples[3]!.occurredAt = '2026-07-21T00:03:01.000Z';
+      input.samples[4]!.occurredAt = '2026-07-21T00:03:31.000Z';
+    }],
+  ])('does not supplement a LOW_ACCURACY span across a %s', async (_label, mutate) => {
+    const input = supplementInput();
+    mutate(input);
+    const fetch = supplementFetch(routeResponse());
+    const provider = new OsrmRouteTrackingRoadMatchProvider({ baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch });
+
+    const result = await provider.match(input);
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => String(url).includes('/route/v1/driving/'))).toBe(false);
+    expect(result?.inferredGeometry).toBeNull();
+    expect(result?.inferredRanges).toEqual([]);
+  });
+
+  test('does not supplement when either retained anchor has poor or unknown accuracy', async () => {
+    const input = supplementInput();
+    input.samples[1]!.accuracyMeters = 51;
+    const fetch = supplementFetch(routeResponse());
+    const provider = new OsrmRouteTrackingRoadMatchProvider({ baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch });
+
+    const result = await provider.match(input);
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => String(url).includes('/route/v1/driving/'))).toBe(false);
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
+  test('does not widen a LOW_ACCURACY supplement across an adjacent good-accuracy NO_MATCH sample', async () => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3997, 43.6500], [-79.3994, 43.6501],
+      [-79.3991, 43.6501], [-79.3988, 43.6500], [-79.3985, 43.6500],
+    ]);
+    input.samples.forEach((sample, index) => {
+      sample.accuracyMeters = index === 2 ? 250 : 20;
+      sample.gapBefore = false;
+      sample.sourceIndex = index;
+    });
+    let matchCall = 0;
+    const fetch = vi.fn((url: string) => {
+      if (url.includes('/route/v1/driving/')) return Promise.resolve(new Response(JSON.stringify(routeResponse())));
+      const payload = matchCall++ === 0
+        ? {
+            code: 'Ok',
+            matchings: [{ confidence: 0.9, geometry: { coordinates: input.coordinates.slice(0, 2), type: 'LineString' } }],
+            tracepoints: [{}, {}],
+          }
+        : {
+            code: 'Ok',
+            matchings: [{ confidence: 0.9, geometry: { coordinates: input.coordinates.slice(4, 6), type: 'LineString' } }],
+            tracepoints: [null, { location: input.coordinates[4], matchings_index: 0 }, { location: input.coordinates[5], matchings_index: 0 }],
+          };
+      return Promise.resolve(new Response(JSON.stringify(payload)));
+    });
+    const provider = new OsrmRouteTrackingRoadMatchProvider({ baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch });
+
+    const result = await provider.match(input);
+
+    expect(result?.unmatchedRanges).toEqual([
+      expect.objectContaining({ startEventId: 'event-2', endEventId: 'event-2', reason: 'LOW_ACCURACY' }),
+      expect.objectContaining({ startEventId: 'event-3', endEventId: 'event-3', reason: 'NO_MATCH' }),
+    ]);
+    expect(result?.inferredGeometry).toBeNull();
+    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => String(url).includes('/route/v1/driving/'))).toBe(false);
+  });
+
+  test.each([
+    ['implausible speed', routeResponse({ distance: 150, duration: 3 })],
+    ['excessive detour', routeResponse({ distance: 1_000, duration: 60 })],
+    ['ambiguous alternatives', routeResponse({ ambiguous: true })],
+  ])('rejects a %s road supplement', async (_label, routePayload) => {
+    const fetch = supplementFetch(routePayload);
+    const provider = new OsrmRouteTrackingRoadMatchProvider({ baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch });
+
+    const result = await provider.match(supplementInput());
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => String(url).includes('/route/v1/driving/'))).toBe(true);
+    expect(result?.inferredGeometry).toBeNull();
+    expect(result?.inferredRanges).toEqual([]);
+  });
+
+  test('rejects a road detour that exceeds the observed-gap speed despite plausible OSRM travel speed', async () => {
+    const input = supplementInput();
+    input.samples[0]!.occurredAt = '2026-07-21T00:00:00.000Z';
+    input.samples[1]!.occurredAt = '2026-07-21T00:00:02.500Z';
+    input.samples[2]!.occurredAt = '2026-07-21T00:00:03.500Z';
+    input.samples[3]!.occurredAt = '2026-07-21T00:00:05.000Z';
+    input.samples[4]!.occurredAt = '2026-07-21T00:00:07.500Z';
+    const fetch = supplementFetch(routeResponse({ distance: 150, duration: 5 }));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({ baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch });
+
+    const result = await provider.match(input);
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => String(url).includes('/route/v1/driving/'))).toBe(true);
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
   test('ignores an out-of-coverage GPS outlier instead of discarding the Korea path', async () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       code: 'Ok',
@@ -457,7 +587,7 @@ describe('route tracking road matching', () => {
   test('does not refresh from cache when the watermark already covers the latest input', () => {
     const record = trackingRecord({
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:02:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v2',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v3',
       roadMatchedSourcePointCount: 3,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:02:00.000Z:abc',
       sourcePointCount: 3,
@@ -466,7 +596,7 @@ describe('route tracking road matching', () => {
     expect(shouldRefreshRouteTrackingRoadMatchedPath(record)).toBe(false);
     expect(shouldRefreshRouteTrackingRoadMatchedPath(trackingRecord({
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:01:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v2',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v3',
       roadMatchedSourcePointCount: 2,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:2:2:2026-07-21T00:01:00.000Z:abc',
       sourcePointCount: 3,
@@ -482,12 +612,26 @@ describe('route tracking road matching', () => {
           { observedAt: '2026-07-21T00:00:00.000Z', lineIndex: 0, coordinateIndex: 0 },
         ],
         coordinates: [[[126.9, 37.5], [126.91, 37.51]]],
+        inferredGeometry: {
+          coordinates: [[[126.905, 37.505], [126.906, 37.506]]],
+          sourceRanges: [{
+            startEventId: 'event-0', startOccurredAt: '2026-07-21T00:00:00.000Z', startSourceIndex: 0,
+            endEventId: 'event-1', endOccurredAt: '2026-07-21T00:01:00.000Z', endSourceIndex: 1,
+            reason: 'LOW_ACCURACY',
+          }],
+          type: 'MultiLineString',
+        },
+        inferredRanges: [{
+          startEventId: 'event-0', startOccurredAt: '2026-07-21T00:00:00.000Z', startSourceIndex: 0,
+          endEventId: 'event-1', endOccurredAt: '2026-07-21T00:01:00.000Z', endSourceIndex: 1,
+          reason: 'LOW_ACCURACY',
+        }],
         type: 'MultiLineString',
       },
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:01:00.000Z'),
       roadMatchedLastPosition: { latitude: 37.51, longitude: 126.91, occurredAt: '2026-07-21T00:01:00.000Z' },
       roadMatchedPointCount: 2,
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v2',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v3',
       roadMatchedSourcePointCount: 3,
       roadMatchedUncertainGeometry: null,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:01:00.000Z:abc',
@@ -496,6 +640,20 @@ describe('route tracking road matching', () => {
     expect(path).toEqual({
       coverage: 'korea',
       inputPointCount: 3,
+      inferredGeometry: {
+        coordinates: [[[126.905, 37.505], [126.906, 37.506]]],
+        sourceRanges: [{
+          startEventId: 'event-0', startOccurredAt: '2026-07-21T00:00:00.000Z', startSourceIndex: 0,
+          endEventId: 'event-1', endOccurredAt: '2026-07-21T00:01:00.000Z', endSourceIndex: 1,
+          reason: 'LOW_ACCURACY',
+        }],
+        type: 'MultiLineString',
+      },
+      inferredRanges: [{
+        startEventId: 'event-0', startOccurredAt: '2026-07-21T00:00:00.000Z', startSourceIndex: 0,
+        endEventId: 'event-1', endOccurredAt: '2026-07-21T00:01:00.000Z', endSourceIndex: 1,
+        reason: 'LOW_ACCURACY',
+      }],
       lastInputOccurredAt: '2026-07-21T00:01:00.000Z',
       lastMatchedPosition: { latitude: 37.51, longitude: 126.91, occurredAt: '2026-07-21T00:01:00.000Z' },
       matchedGeometry: {
@@ -508,13 +666,32 @@ describe('route tracking road matching', () => {
       },
       matchedRanges: [],
       matchedPointCount: 2,
-      qualityVersion: 'gps_quality.v2',
+      qualityVersion: 'gps_quality.v3',
       schemaVersion: 'route_tracking_road_match.v1',
       uncertainGeometry: null,
       uncertainRanges: [],
       unmatchedRanges: [],
       watermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:01:00.000Z:abc',
     });
+  });
+
+  test('round-trips inferred road supplements through the existing cache JSON columns', async () => {
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch: supplementFetch(routeResponse()),
+    });
+    const path = await provider.match(supplementInput());
+    expect(path).not.toBeNull();
+    const write = buildRouteTrackingRoadMatchCacheWrite(path!);
+
+    const restored = buildRouteTrackingRoadMatchedPath(trackingRecord(write));
+
+    expect(write.roadMatchedSchemaVersion).toBe('route_tracking_road_match.v3');
+    expect(restored?.qualityVersion).toBe('gps_quality.v3');
+    expect(restored?.inferredGeometry?.coordinates).toEqual([supplementRouteCoordinates()]);
+    expect(restored?.inferredRanges).toEqual([expect.objectContaining({
+      startEventId: 'event-1', endEventId: 'event-3', reason: 'LOW_ACCURACY',
+    })]);
   });
 });
 
@@ -558,5 +735,74 @@ function trackingRecord(overrides: Partial<RouteTrackingGeometryRecord> = {}): R
     ],
     sourcePointCount: 3,
     ...overrides,
+  };
+}
+
+function supplementInput(): RouteTrackingGeometryDocumentV1 {
+  const input = document([
+    [-79.4000, 43.6500],
+    [-79.3995, 43.6500],
+    [-79.3990, 43.6501],
+    [-79.3985, 43.6500],
+    [-79.3980, 43.6500],
+  ]);
+  input.samples.forEach((sample, index) => {
+    sample.accuracyMeters = index === 2 ? 220 : 20;
+    sample.gapBefore = false;
+    sample.sourceIndex = index;
+  });
+  return input;
+}
+
+function supplementRouteCoordinates(): Array<[number, number]> {
+  return [
+    [-79.3995, 43.6500],
+    [-79.3990, 43.6502],
+    [-79.3985, 43.6500],
+  ];
+}
+
+function supplementFetch(routePayload: unknown) {
+  let matchCall = 0;
+  return vi.fn((url: string) => {
+    if (url.includes('/route/v1/driving/')) {
+      return Promise.resolve(new Response(JSON.stringify(routePayload)));
+    }
+    const coordinates: Array<[number, number]> = matchCall === 0
+      ? [[-79.4000, 43.6500], [-79.3995, 43.6500]]
+      : [[-79.3985, 43.6500], [-79.3980, 43.6500]];
+    matchCall += 1;
+    return Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{ confidence: 0.9, geometry: { coordinates, type: 'LineString' } }],
+      tracepoints: [{}, {}],
+    })));
+  });
+}
+
+function routeResponse(options: { ambiguous?: boolean; distance?: number; duration?: number } = {}) {
+  const distance = options.distance ?? 100;
+  const duration = options.duration ?? 60;
+  return {
+    code: 'Ok',
+    routes: [
+      { distance, duration, geometry: { coordinates: supplementRouteCoordinates(), type: 'LineString' } },
+      ...(options.ambiguous ? [{
+        distance: distance * 1.1,
+        duration: duration * 1.08,
+        geometry: {
+          coordinates: [
+            [-79.3995, 43.6500],
+            [-79.3991, 43.6498],
+            [-79.3985, 43.6500],
+          ],
+          type: 'LineString',
+        },
+      }] : []),
+    ],
+    waypoints: [
+      { location: [-79.3995, 43.6500] },
+      { location: [-79.3985, 43.6500] },
+    ],
   };
 }

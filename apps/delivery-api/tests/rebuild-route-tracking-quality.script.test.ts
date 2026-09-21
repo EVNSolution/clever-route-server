@@ -35,6 +35,7 @@ describe('route tracking quality rebuild script', () => {
     const result = await executeRouteTrackingQualityRebuild({ args, roadMatchProvider, store });
 
     expect(result).toMatchObject({ mode: 'dry-run', mutationCount: 0, ...scope });
+    expect(result.after).toMatchObject({ inferredLineCount: 1 });
     expect(store.derivedMutationCount).toBe(0);
     expect(store.rawEventMutationCount).toBe(0);
     expect(store.routeStateMutationCount).toBe(0);
@@ -215,6 +216,26 @@ function matchedPath(document: Parameters<RouteTrackingRoadMatchClassifyingProvi
     lastInputOccurredAt: document.samples.at(-1)!.occurredAt,
     lastMatchedPosition: { latitude: 43.65, longitude: -79.38, occurredAt: document.samples.at(-1)!.occurredAt },
     matchedGeometry: { coordinates: [[[-79.4, 43.6] as [number, number], [-79.38, 43.65] as [number, number]]], type: 'MultiLineString' as const },
+    inferredGeometry: {
+      coordinates: [[[-79.38, 43.65] as [number, number], [-79.37, 43.66] as [number, number]]],
+      sourceRanges: [{
+        endEventId: document.samples.at(-1)!.eventId,
+        endOccurredAt: document.samples.at(-1)!.occurredAt,
+        endSourceIndex: document.samples.at(-1)!.sourceIndex ?? document.sourcePointCount - 1,
+        startEventId: document.samples[0]!.eventId,
+        startOccurredAt: document.samples[0]!.occurredAt,
+        startSourceIndex: document.samples[0]!.sourceIndex ?? 0,
+      }],
+      type: 'MultiLineString' as const,
+    },
+    inferredRanges: [{
+      endEventId: document.samples.at(-1)!.eventId,
+      endOccurredAt: document.samples.at(-1)!.occurredAt,
+      endSourceIndex: document.samples.at(-1)!.sourceIndex ?? document.sourcePointCount - 1,
+      startEventId: document.samples[0]!.eventId,
+      startOccurredAt: document.samples[0]!.occurredAt,
+      startSourceIndex: document.samples[0]!.sourceIndex ?? 0,
+    }],
     matchedPointCount: 2,
     schemaVersion: 'route_tracking_road_match.v1' as const,
     uncertainGeometry: null,
@@ -256,5 +277,5 @@ function derived() {
 }
 
 function derivedSummary() {
-  return { firstOccurredAt: null, gapCount: 0, geometryPointCount: 2, lastOccurredAt: null, matchedPointCount: 2, sourcePointCount: 2, uncertainLineCount: 0 };
+  return { firstOccurredAt: null, gapCount: 0, geometryPointCount: 2, inferredLineCount: 1, lastOccurredAt: null, matchedPointCount: 2, sourcePointCount: 2, uncertainLineCount: 0 };
 }

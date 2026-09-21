@@ -63,6 +63,7 @@ type TrackingSummary = {
   firstOccurredAt: string | null;
   gapCount: number;
   geometryPointCount: number;
+  inferredLineCount: number;
   lastOccurredAt: string | null;
   matchedPointCount: number;
   sourcePointCount: number;
@@ -566,10 +567,12 @@ function summarize(
   roadMatchWrite: RebuildPlan['roadMatchWrite'],
 ): TrackingSummary {
   const uncertain = jsonSafe(roadMatchWrite.roadMatchedUncertainGeometry) as { coordinates?: unknown[] } | null;
+  const matched = jsonSafe(roadMatchWrite.roadMatchedGeometry);
   return {
     firstOccurredAt: document.samples[0]?.occurredAt ?? null,
     gapCount: document.samples.filter((sample) => sample.gapBefore).length,
     geometryPointCount: document.coordinates.length,
+    inferredLineCount: readInferredLineCount(matched),
     lastOccurredAt: document.samples.at(-1)?.occurredAt ?? null,
     matchedPointCount: roadMatchWrite.roadMatchedPointCount,
     sourcePointCount: document.sourcePointCount,
@@ -587,6 +590,7 @@ function summarizeDerived(value: unknown): TrackingSummary {
     firstOccurredAt: isoOrNull(value.firstOccurredAt),
     gapCount: samples.filter((sample) => isRecord(sample) && sample.gapBefore === true).length,
     geometryPointCount: integerOrZero(value.geometryPointCount),
+    inferredLineCount: readInferredLineCount(value.roadMatchedGeometry),
     lastOccurredAt: isoOrNull(value.lastOccurredAt),
     matchedPointCount: integerOrZero(value.roadMatchedPointCount),
     sourcePointCount: integerOrZero(value.sourcePointCount),
@@ -595,7 +599,12 @@ function summarizeDerived(value: unknown): TrackingSummary {
 }
 
 function emptySummary(): TrackingSummary {
-  return { firstOccurredAt: null, gapCount: 0, geometryPointCount: 0, lastOccurredAt: null, matchedPointCount: 0, sourcePointCount: 0, uncertainLineCount: 0 };
+  return { firstOccurredAt: null, gapCount: 0, geometryPointCount: 0, inferredLineCount: 0, lastOccurredAt: null, matchedPointCount: 0, sourcePointCount: 0, uncertainLineCount: 0 };
+}
+
+function readInferredLineCount(value: unknown): number {
+  if (!isRecord(value) || !isRecord(value.inferredGeometry)) return 0;
+  return Array.isArray(value.inferredGeometry.coordinates) ? value.inferredGeometry.coordinates.length : 0;
 }
 
 export function routeTrackingDerivedMatches(current: unknown, desired: Record<string, unknown>): boolean {
