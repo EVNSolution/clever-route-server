@@ -11,6 +11,52 @@ the same route advisory lock as live ingestion, rechecks tenant and route state,
 accepts only an unchanged reviewed source prefix plus a strictly append-only tail.
 OSRM calls happen before that transaction.
 
+## Interpolation levels
+
+Quality/cache v4 preserves the recorded GPS order and classifies derived road
+legs internally. It never runs VROOM visit-order optimization on the GPS trace.
+
+| Level | Meaning | Map behavior |
+| --- | --- | --- |
+| 0 | Accepted road matching, GPS accuracy up to 100 m, confidence at least 0.5, and no soft uncertainty | Show road geometry |
+| 1 | Accepted matching up to 200 m accuracy, constrained soft uncertainty with confidence at least 0.8, or a bounded road supplement | Show road geometry in the same GPS color |
+| 2 | Rejected, ambiguous, missing, or implausible evidence | Leave the path disconnected |
+
+The 200 m limit is an initial inference ceiling, not a statement that every point
+below it is reliable. Actual acquisition gaps, driver changes, invalid/reversed
+time, implausible speed, and unsupported road transitions remain disqualifiers.
+Short supplements additionally require reliable anchors (at most 50 m accuracy),
+at most 120 seconds and 750 m between endpoints, and the road distance, duration,
+and ambiguity checks. Interior observations must participate in matching; do not
+replace an observed trace with an unconstrained endpoint route.
+
+Each accepted leg requires explicit OSRM tracepoint-to-leg mapping, continuous
+step geometry, valid time order, and bounded road distance and displacement.
+OSRM radiuses express GPS standard deviation; point-local alternatives and nominal
+road duration are not independent proof that a matching is wrong. Local alternatives,
+displacement beyond the reported accuracy, and nominal travel-time disagreement
+may qualify only for Level 1 with matching confidence at least 0.8. The hard
+displacement and observed-speed checks account for a bounded three-sigma endpoint
+error envelope; they never excuse missing source/matching metadata or an actual gap.
+These cutoffs are initial product policy, not guarantees supplied by OSRM.
+A rejected leg cannot be promoted by a later supplement pass. Repeated
+arrival coordinates are valid zero-length steps; genuine closed turns must be
+preserved rather than treated as malformed paths.
+
+Source semantics: [OSRM v26.5 Match API](https://github.com/Project-OSRM/osrm-backend/blob/v26.5.0/docs/http.md#match-service).
+
+V4 clients display only accepted `matchedGeometry` and `inferredGeometry`.
+`uncertainGeometry` and unmatched ranges remain diagnostic evidence; clients must
+not reconnect them with raw GPS lines or a live-tail fallback. An entirely rejected
+trace must keep a v4 result with zero accepted geometry so it cannot accidentally
+fall back to an unqualified raw path. Current-position markers remain independent.
+Deploy the compatible client before publishing v4 caches.
+
+Inspect the selected service day's level counts and the actual road shapes during
+replay. A larger feature count or zero acquisition gaps does not prove better
+tracking. Preserve genuine turns and visits and confirm rejected intervals remain
+visibly disconnected. Inferred geometry is never completion evidence.
+
 ## Preconditions
 
 - Deploy an image containing `dist/scripts/rebuild-route-tracking-quality.js` and
