@@ -13,8 +13,11 @@ OSRM calls happen before that transaction.
 
 ## Interpolation levels
 
-Quality/cache v4 preserves the recorded GPS order and classifies derived road
-legs internally. It never runs VROOM visit-order optimization on the GPS trace.
+Quality policy v4 with cache schema v5 preserves the recorded GPS order and
+classifies derived road legs internally. It never runs VROOM visit-order
+optimization on the GPS trace. The cache schema changed so existing v4 results
+are recomputed by the durable worker; the API remains `gps_quality.v4` for the
+deployed client contract.
 
 | Level | Meaning | Map behavior |
 | --- | --- | --- |
@@ -43,6 +46,17 @@ A rejected leg cannot be promoted by a later supplement pass. Repeated
 arrival coordinates are valid zero-length steps; genuine closed turns must be
 preserved rather than treated as malformed paths.
 
+Cache v5 adds a separate contextual supplement for spans that the normal matcher
+cannot ingest because interior accuracy is above 200 m. It requires confident
+anchors on both sides, at least two chronological interior observations, one
+driver, no acquisition gap, known accuracy at most 400 m, at most 10 minutes and
+3 km between anchors, a unique OSRM route candidate, and monotonic projection of
+every observation inside its bounded accuracy corridor. Per-sample projected
+speed still has the hard 55 m/s ceiling. A competing route of similar cost, an
+off-corridor observation, reversed progress, or any existing rejected OSRM leg
+keeps the span disconnected. This is additional evidence validation, not a wider
+acceptance threshold for normal v4 matching.
+
 Source semantics: [OSRM v26.5 Match API](https://github.com/Project-OSRM/osrm-backend/blob/v26.5.0/docs/http.md#match-service).
 
 V4 clients display only accepted `matchedGeometry` and `inferredGeometry`.
@@ -59,6 +73,23 @@ policies and timeouts. For a manual historical rebuild, pass
 shared production routing environment. South replay included valid requests over
 10 seconds, so a routing-oriented 10-second budget can prevent a complete cache
 refresh even when its geometry is valid.
+
+## Durable background refresh
+
+Every accepted route-tracking geometry write transaction also upserts one durable
+road-match job for the latest source point count and timestamp. API snapshot reads
+serve the last verified cache and never wait for OSRM. The worker claims jobs with
+a database lease, limits batch size and concurrency, retries transient provider
+failures with bounded exponential backoff, and recovers expired work after a
+process restart. A new GPS input supersedes the claimed input version. Publication
+locks the route and compares the job lease, source point count, and last input
+timestamp before replacing cache fields, so an older or partial result cannot
+overwrite a newer geometry. The previous verified cache remains readable while a
+job is queued, processing, retrying, or rejected.
+
+The migration queues existing geometry rows whose cache schema is older than v5
+without clearing their current cache. Do not manually delete the queue or cache
+rows to force a refresh. Diagnose job status and provider reachability first.
 
 Inspect the selected service day's level counts and the actual road shapes during
 replay. A larger feature count or zero acquisition gaps does not prove better

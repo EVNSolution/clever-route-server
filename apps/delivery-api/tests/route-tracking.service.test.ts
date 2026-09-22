@@ -1,8 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import type { RouteTrackingRoadMatchProvider } from '../src/modules/route-tracking/route-tracking.road-match.js';
 import { PrismaRouteTrackingService } from '../src/modules/route-tracking/route-tracking.service.js';
-import type { RouteTrackingRoadMatchedPathV1 } from '../src/modules/route-tracking/route-tracking.types.js';
 
 describe('PrismaRouteTrackingService', () => {
   test('returns full-route GPS history, current driver stage, and durable stop outcomes', async () => {
@@ -498,7 +496,7 @@ describe('PrismaRouteTrackingService', () => {
     });
   });
 
-  test('includes cached road-matched path and refreshes stale road-match cache asynchronously', async () => {
+  test('returns the last verified road-match cache without starting provider work in the request path', async () => {
     const sampleMetadata = [
       {
         driverId: 'driver-1',
@@ -542,48 +540,16 @@ describe('PrismaRouteTrackingService', () => {
     };
     const routePlanStop = { findMany: vi.fn(() => Promise.resolve([])) };
     const routeTrackingGeometry = {
-      findUnique: vi.fn(() => Promise.resolve(staleGeometry)),
-      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+      findUnique: vi.fn(() => Promise.resolve(staleGeometry))
     };
-    const matchedPath: RouteTrackingRoadMatchedPathV1 = {
-      coverage: 'korea',
-      inputPointCount: 2,
-      lastInputOccurredAt: '2026-07-20T04:02:00.000Z',
-      lastMatchedPosition: { latitude: 37.51, longitude: 126.91, occurredAt: '2026-07-20T04:02:00.000Z' },
-      matchedGeometry: { coordinates: [[[126.9, 37.5], [126.91, 37.51]]], type: 'MultiLineString' },
-      matchedPointCount: 2,
-      schemaVersion: 'route_tracking_road_match.v1',
-      uncertainGeometry: null,
-      watermark: 'route_tracking_road_match.v1:korea:2:2:2026-07-20T04:02:00.000Z:new'
-    };
-    const match = vi.fn(() => Promise.resolve(matchedPath));
-    const roadMatchProvider: RouteTrackingRoadMatchProvider = { match };
-    const service = new PrismaRouteTrackingService(
-      { driverEvent, routePlanStop, routeTrackingGeometry } as never,
-      { roadMatchProvider }
-    );
+    const service = new PrismaRouteTrackingService({ driverEvent, routePlanStop, routeTrackingGeometry } as never);
 
     const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
 
     expect(snapshot.roadMatchedPath?.watermark).toBe('route_tracking_road_match.v1:korea:1:2:2026-07-20T04:01:00.000Z:old');
-    await vi.waitFor(() => expect(routeTrackingGeometry.updateMany).toHaveBeenCalledTimes(1));
-    expect(match).toHaveBeenCalledWith({
-      coordinates: [[126.9, 37.5], [126.91, 37.51]],
-      samples: sampleMetadata,
-      sourcePointCount: 2
-    });
-    expect((routeTrackingGeometry.updateMany.mock.calls as unknown as Array<[unknown]>)[0]![0]).toMatchObject({
-      where: {
-        routePlanId: 'route-1',
-        OR: [
-          { roadMatchedSourcePointCount: null },
-          { roadMatchedSourcePointCount: { lte: 2 } }
-        ]
-      }
-    });
   });
 
-  test('keeps base snapshot available when asynchronous road matching fails', async () => {
+  test('keeps the base snapshot independent of unavailable road-match output', async () => {
     const sampleMetadata = [
       { driverId: 'driver-1', eventId: 'position-1', occurredAt: '2026-07-20T04:01:00.000Z', receivedAt: '2026-07-20T04:01:01.000Z' },
       { driverId: 'driver-1', eventId: 'position-2', occurredAt: '2026-07-20T04:02:00.000Z', receivedAt: '2026-07-20T04:02:01.000Z' }
@@ -607,21 +573,14 @@ describe('PrismaRouteTrackingService', () => {
         routePlanId: 'route-1',
         sampleMetadata,
         sourcePointCount: 2
-      })),
-      updateMany: vi.fn(() => Promise.resolve({ count: 0 }))
+      }))
     };
-    const roadMatchProvider = { match: vi.fn(() => Promise.reject(new Error('OSRM unavailable'))) };
-    const service = new PrismaRouteTrackingService(
-      { driverEvent, routePlanStop, routeTrackingGeometry } as never,
-      { roadMatchProvider }
-    );
+    const service = new PrismaRouteTrackingService({ driverEvent, routePlanStop, routeTrackingGeometry } as never);
 
     const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
 
     expect(snapshot.recordedPath?.geometryPointCount).toBe(2);
     expect(snapshot.roadMatchedPath).toBeNull();
     expect(snapshot.latestPosition?.eventId).toBe('position-2');
-    await vi.waitFor(() => expect(roadMatchProvider.match).toHaveBeenCalledTimes(1));
-    expect(routeTrackingGeometry.updateMany).not.toHaveBeenCalled();
   });
 });

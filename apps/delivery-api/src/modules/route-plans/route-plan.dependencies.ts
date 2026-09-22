@@ -16,7 +16,6 @@ import { PrismaRoutePlanRepository } from './route-plan.repository.js';
 import { RoutePlanAdminService } from './route-plan.service.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
 import { PrismaRouteTrackingService } from '../route-tracking/route-tracking.service.js';
-import { OsrmRouteTrackingRoadMatchProvider } from '../route-tracking/route-tracking.road-match.js';
 import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
 import { PrismaDriverSyncHealthService } from '../driver/driver-sync-health.service.js';
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
@@ -52,9 +51,7 @@ export function loadAdminRoutePlanDependencies(input: {
       input.routeTrackingStreamHub
     ),
     ...(input.routeGroupingService === undefined ? {} : { routeGroupingService: input.routeGroupingService }),
-    routeTrackingService: new PrismaRouteTrackingService(input.prisma, {
-      roadMatchProvider: createRouteTrackingRoadMatchProvider(input.env)
-    }),
+    routeTrackingService: new PrismaRouteTrackingService(input.prisma),
     operationalStateService: new PrismaRouteOperationalStateService(input.prisma, syncHealthService, input.operationalAlertRepository),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
@@ -79,16 +76,6 @@ export function createAdminRouteGeometryProvider(env: AdminRoutePlanRuntimeEnv) 
   return osrmBaseUrl === undefined
     ? undefined
     : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl, ...optionalTimeout(env.OSRM_TIMEOUT_MS) });
-}
-
-function createRouteTrackingRoadMatchProvider(env: AdminRoutePlanRuntimeEnv): OsrmRouteTrackingRoadMatchProvider | undefined {
-  const baseUrls = readConfiguredCoverageBaseUrls(env, 'OSRM');
-  if (Object.keys(baseUrls).length === 0) return undefined;
-  return new OsrmRouteTrackingRoadMatchProvider({
-    baseUrls,
-    // Historical display matching is asynchronous and real 34-point traces can exceed the 10s routing budget.
-    timeoutMs: 30_000,
-  });
 }
 
 function readOptional(value: string | undefined): string | undefined {

@@ -9,6 +9,33 @@ import {
 import type { RouteTrackingGeometryPositionInput } from '../src/modules/route-tracking/route-tracking.geometry.js';
 
 describe('route tracking geometry projection', () => {
+  test('queues durable road matching in the same transaction after geometry changes', async () => {
+    const routeTrackingRoadMatchJob = {
+      create: vi.fn(() => Promise.resolve({ id: 'job-1' })),
+      findUnique: vi.fn(() => Promise.resolve(null)),
+      update: vi.fn(),
+    };
+    const prisma = {
+      $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
+      driverEvent: { findMany: vi.fn(() => Promise.resolve([])) },
+      routeTrackingGeometry: {
+        findUnique: vi.fn(() => Promise.resolve(null)),
+        upsert: vi.fn(() => Promise.resolve(null)),
+      },
+      routeTrackingRoadMatchJob,
+    } as unknown as Parameters<typeof persistRouteTrackingGeometryPosition>[0];
+
+    await persistRouteTrackingGeometryPosition(prisma, position());
+
+    const expectedNextAttemptAt: unknown = expect.any(Date);
+    expect(routeTrackingRoadMatchJob.create).toHaveBeenCalledWith({ data: {
+      nextAttemptAt: expectedNextAttemptAt,
+      routePlanId: position().routePlanId,
+      targetLastInputOccurredAt: new Date(position().occurredAt),
+      targetSourcePointCount: 1,
+    } });
+  });
+
   test('projects the advisory lock to a supported scalar before Prisma reads it', async () => {
     let lockSql = '';
     const prisma = {
@@ -20,7 +47,8 @@ describe('route tracking geometry projection', () => {
       routeTrackingGeometry: {
         findUnique: () => Promise.resolve(null),
         upsert: () => Promise.resolve(null)
-      }
+      },
+      routeTrackingRoadMatchJob: roadMatchJobDelegate(),
     } as unknown as Parameters<typeof persistRouteTrackingGeometryPosition>[0];
 
     await persistRouteTrackingGeometryPosition(prisma, position());
@@ -205,7 +233,8 @@ describe('route tracking geometry projection', () => {
       routeTrackingGeometry: {
         findUnique: vi.fn(() => Promise.resolve({ lastOccurredAt: new Date('2026-08-25T00:00:00.000Z') })),
         upsert: vi.fn(() => Promise.resolve(null))
-      }
+      },
+      routeTrackingRoadMatchJob: roadMatchJobDelegate(),
     } as unknown as Parameters<typeof persistRouteTrackingGeometryPosition>[0];
 
     await persistRouteTrackingGeometryPosition(prisma, position({
@@ -221,6 +250,14 @@ describe('route tracking geometry projection', () => {
 
 function position(overrides: Partial<RouteTrackingGeometryPositionInput> = {}): RouteTrackingGeometryPositionInput {
   return { ...positionDefaults(), ...overrides };
+}
+
+function roadMatchJobDelegate() {
+  return {
+    create: vi.fn(() => Promise.resolve({ id: 'job-1' })),
+    findUnique: vi.fn(() => Promise.resolve(null)),
+    update: vi.fn(),
+  };
 }
 
 function positionDefaults() {

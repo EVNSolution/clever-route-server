@@ -26,6 +26,7 @@ import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocom
 import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
 import { PrismaOperationalAlertRepository } from './modules/notifications/operational-alert.repository.js';
 import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.stream.js';
+import { createRouteTrackingRoadMatchRuntime } from './modules/route-tracking/route-tracking-road-match.runtime.js';
 import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
 import { loadDsvV1ReadDependencies } from './modules/dsv/dsv-v1-read.dependencies.js';
 import { loadDsvDriverAuthDependencies } from './modules/dsv/dsv-driver-auth.dependencies.js';
@@ -159,6 +160,11 @@ const customerDeliveryNotificationRuntime = createCustomerDeliveryNotificationRu
   logger: app.log,
   prisma
 });
+const routeTrackingRoadMatchRuntime = createRouteTrackingRoadMatchRuntime({
+  env: process.env,
+  logger: app.log,
+  prisma
+});
 const emailSenderConfigured = typeof process.env.BREVO_API_KEY === 'string' && process.env.BREVO_API_KEY.trim() !== '';
 const emailHealthRuntime = new EmailRuntimeHealthRuntime(
   prisma,
@@ -189,6 +195,7 @@ try {
   await app.listen({ host: '0.0.0.0', port: env.port });
   await adminNotificationRuntime.start();
   await customerDeliveryNotificationRuntime.start();
+  routeTrackingRoadMatchRuntime.start();
   emailHealthRuntime.start();
   driverOperationalHealthRuntime?.start();
   completionAssistanceRuntime?.start();
@@ -203,6 +210,7 @@ try {
     app.close(),
     adminNotificationRuntime.close(),
     customerDeliveryNotificationRuntime.close(),
+    routeTrackingRoadMatchRuntime.close(),
     emailHealthRuntime.close(),
     driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
     completionAssistanceRuntime?.close() ?? Promise.resolve(),
@@ -221,6 +229,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       void Promise.all([
         adminNotificationRuntime.close(),
         customerDeliveryNotificationRuntime.close(),
+        routeTrackingRoadMatchRuntime.close(),
         emailHealthRuntime.close(),
         driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
         completionAssistanceRuntime?.close() ?? Promise.resolve(),

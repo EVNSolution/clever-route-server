@@ -163,7 +163,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(108);
+    expect(migrations).toHaveLength(109);
     expect(migrations).toContain('20260910170000_link_driver_proof_media_delivery_stops');
     expect(migrations).toContain('20260907000000_restore_active_job_uniqueness');
     expect(migrations).toContain('20260907010000_dsv_driver_inquiries');
@@ -408,7 +408,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260910150000_add_driver_account_password_reset_links')).toBeLessThan(
       migrations.indexOf('20260910170000_link_driver_proof_media_delivery_stops')
     );
-    expect(migrations.at(-1)).toBe('20260921120000_driver_completion_assistance');
+    expect(migrations.indexOf('20260921120000_driver_completion_assistance')).toBeLessThan(
+      migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')
+    );
+    expect(migrations.at(-1)).toBe('20260922155500_add_route_tracking_road_match_jobs');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {
@@ -587,8 +590,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('schema preserves historical DB defaults instead of planning default drops', async () => {
     const schema = await readFile(schemaPath, 'utf8');
 
-    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(60);
-    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(23);
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(61);
+    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(24);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });
 });

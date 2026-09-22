@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 
 import { ROUTE_TRACKING_V1_POLICY } from './route-tracking.policy.js';
+import { enqueueRouteTrackingRoadMatch } from './route-tracking-road-match-job.repository.js';
 
 export const ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS = 90;
 const ROUTE_TRACKING_GEOMETRY_SCHEMA_VERSION = 'route_tracking_geometry.v1';
@@ -60,7 +61,9 @@ export type RouteTrackingGeometryRecord = {
 type RouteTrackingGeometryPrismaClient = Pick<
   Prisma.TransactionClient,
   '$queryRaw' | 'driverEvent' | 'routeTrackingGeometry'
->;
+> & {
+  routeTrackingRoadMatchJob?: Prisma.TransactionClient['routeTrackingRoadMatchJob'];
+};
 
 export async function persistRouteTrackingGeometryPosition(
   prisma: RouteTrackingGeometryPrismaClient,
@@ -98,6 +101,19 @@ export async function persistRouteTrackingGeometryPosition(
     update: write,
     where: { routePlanId: position.routePlanId }
   });
+  const lastSample = document.samples.at(-1);
+  const geometryChanged = current === null
+    || current === undefined
+    || mustRebuild
+    || current.sourcePointCount !== document.sourcePointCount
+    || current.lastEventId !== lastSample?.eventId;
+  if (geometryChanged && lastSample !== undefined && prisma.routeTrackingRoadMatchJob !== undefined) {
+    await enqueueRouteTrackingRoadMatch(prisma as RouteTrackingGeometryPrismaClient & { routeTrackingRoadMatchJob: Prisma.TransactionClient['routeTrackingRoadMatchJob'] }, {
+      lastInputOccurredAt: new Date(lastSample.occurredAt),
+      routePlanId: position.routePlanId,
+      sourcePointCount: document.sourcePointCount,
+    });
+  }
   return document;
 }
 
@@ -118,6 +134,14 @@ export async function rebuildRouteTrackingGeometryForRoute(
   if (document.coordinates.length === 0) return document;
   const write = createRouteTrackingGeometryWrite(routePlanId, document);
   await prisma.routeTrackingGeometry.upsert({ create: write, update: write, where: { routePlanId } });
+  const lastSample = document.samples.at(-1)!;
+  if (prisma.routeTrackingRoadMatchJob !== undefined) {
+    await enqueueRouteTrackingRoadMatch(prisma as RouteTrackingGeometryPrismaClient & { routeTrackingRoadMatchJob: Prisma.TransactionClient['routeTrackingRoadMatchJob'] }, {
+      lastInputOccurredAt: new Date(lastSample.occurredAt),
+      routePlanId,
+      sourcePointCount: document.sourcePointCount,
+    });
+  }
   return document;
 }
 

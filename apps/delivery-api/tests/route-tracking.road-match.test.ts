@@ -717,6 +717,48 @@ describe('route tracking road matching', () => {
     expect(result?.inferredRanges).toEqual([]);
   });
 
+  test('uses the full observed corridor to infer a longer high-accuracy-excluded span', async () => {
+    const input = contextualSupplementInput();
+    const fetch = contextualSupplementFetch(input);
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(input);
+
+    const routeCalls = (fetch.mock.calls as unknown as Array<[string]>)
+      .map(([url]) => String(url))
+      .filter((url) => url.includes('/route/v1/driving/'));
+    expect(routeCalls).toHaveLength(1);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1,
+      reason: 'LOW_ACCURACY',
+      startSourceIndex: 1,
+      endSourceIndex: 5,
+    })]);
+    expect(result?.inferredGeometry?.coordinates).toEqual([contextualSupplementRoute()]);
+  });
+
+  test.each([
+    ['an ambiguous road alternative', { ambiguous: true, offCorridor: false }],
+    ['a route outside the recorded accuracy corridor', { ambiguous: false, offCorridor: true }],
+  ])('keeps a contextual span disconnected for %s', async (_label, options) => {
+    const input = contextualSupplementInput();
+    const fetch = contextualSupplementFetch(input, options);
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(input);
+
+    expect(result?.inferredRanges).toEqual([]);
+    expect(result?.unmatchedRanges).toEqual([expect.objectContaining({
+      reason: 'LOW_ACCURACY',
+      startSourceIndex: 2,
+      endSourceIndex: 4,
+    })]);
+  });
+
   test.each(['missing-alternatives', 'string-waypoint'])('rejects malformed %s tracepoint metadata', async (kind) => {
     const input = document([[-79.4, 43.65], [-79.3995, 43.6502]]);
     const payload = osrmMatchResponse(input.coordinates);
@@ -870,7 +912,7 @@ describe('route tracking road matching', () => {
   test('does not refresh from cache when the watermark already covers the latest input', () => {
     const record = trackingRecord({
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:02:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v4',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v5',
       roadMatchedSourcePointCount: 3,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:02:00.000Z:abc',
       sourcePointCount: 3,
@@ -879,9 +921,16 @@ describe('route tracking road matching', () => {
     expect(shouldRefreshRouteTrackingRoadMatchedPath(record)).toBe(false);
     expect(shouldRefreshRouteTrackingRoadMatchedPath(trackingRecord({
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:01:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v4',
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v5',
       roadMatchedSourcePointCount: 2,
       roadMatchedWatermark: 'route_tracking_road_match.v1:korea:2:2:2026-07-21T00:01:00.000Z:abc',
+      sourcePointCount: 3,
+    }))).toBe(true);
+    expect(shouldRefreshRouteTrackingRoadMatchedPath(trackingRecord({
+      roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:02:00.000Z'),
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v4',
+      roadMatchedSourcePointCount: 3,
+      roadMatchedWatermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:02:00.000Z:abc',
       sourcePointCount: 3,
     }))).toBe(true);
   });
@@ -969,7 +1018,7 @@ describe('route tracking road matching', () => {
 
     const restored = buildRouteTrackingRoadMatchedPath(trackingRecord(write));
 
-    expect(write.roadMatchedSchemaVersion).toBe('route_tracking_road_match.v4');
+    expect(write.roadMatchedSchemaVersion).toBe('route_tracking_road_match.v5');
     expect(restored?.qualityVersion).toBe('gps_quality.v4');
     expect(restored?.inferredGeometry?.coordinates).toEqual([supplementRouteCoordinates()]);
     expect(restored?.inferredRanges).toEqual([expect.objectContaining({
@@ -1064,6 +1113,75 @@ function supplementRouteCoordinates(): Array<[number, number]> {
     [-79.3990, 43.6502],
     [-79.3985, 43.6500],
   ];
+}
+
+function contextualSupplementInput(): RouteTrackingGeometryDocumentV1 {
+  const input = document([
+    [-79.4060, 43.6500],
+    [-79.4055, 43.6500],
+    [-79.4048, 43.6501],
+    [-79.4040, 43.6502],
+    [-79.4032, 43.6501],
+    [-79.4025, 43.6500],
+    [-79.4020, 43.6500],
+  ], { intervalMs: 60_000 });
+  input.samples.forEach((sample, index) => {
+    sample.accuracyMeters = index >= 2 && index <= 4 ? 260 : 20;
+    sample.gapBefore = false;
+    sample.sourceIndex = index;
+  });
+  return input;
+}
+
+function contextualSupplementRoute(): Array<[number, number]> {
+  return [
+    [-79.4055, 43.6500],
+    [-79.4048, 43.6501],
+    [-79.4040, 43.6502],
+    [-79.4032, 43.6501],
+    [-79.4025, 43.6500],
+  ];
+}
+
+function contextualSupplementFetch(
+  input: RouteTrackingGeometryDocumentV1,
+  options: { ambiguous?: boolean; offCorridor?: boolean } = {},
+) {
+  return vi.fn((url: string) => {
+    if (url.includes('/route/v1/driving/')) {
+      const coordinates = options.offCorridor
+        ? [
+            [-79.4055, 43.6500],
+            [-79.4040, 43.7000],
+            [-79.4025, 43.6500],
+          ]
+        : contextualSupplementRoute();
+      return Promise.resolve(new Response(JSON.stringify({
+        code: 'Ok',
+        routes: [
+          { distance: 260, duration: 180, geometry: { coordinates, type: 'LineString' } },
+          ...(options.ambiguous ? [{
+            distance: 275,
+            duration: 185,
+            geometry: {
+              coordinates: [
+                [-79.4055, 43.6500],
+                [-79.4040, 43.6490],
+                [-79.4025, 43.6500],
+              ],
+              type: 'LineString',
+            },
+          }] : []),
+        ],
+        waypoints: [
+          { location: input.coordinates[1] },
+          { location: input.coordinates[5] },
+        ],
+      })));
+    }
+    const requested = readRequestedCoordinates(url);
+    return Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(requested))));
+  });
 }
 
 function supplementFetch(supplementPayload: unknown = supplementMatchResponse()) {
