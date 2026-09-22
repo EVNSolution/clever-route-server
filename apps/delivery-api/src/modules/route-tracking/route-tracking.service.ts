@@ -5,15 +5,11 @@ import {
   ROUTE_TRACKING_V1_POLICY
 } from './route-tracking.policy.js';
 import {
-  readRouteTrackingGeometryDocument,
   toRouteTrackingPositionEvents,
   toRouteTrackingRecordedPath
 } from './route-tracking.geometry.js';
 import {
-  buildRouteTrackingRoadMatchCacheWrite,
   buildRouteTrackingRoadMatchedPath,
-  shouldRefreshRouteTrackingRoadMatchedPath,
-  type RouteTrackingRoadMatchProvider,
 } from './route-tracking.road-match.js';
 import type {
   RouteTrackingPositionEventV1,
@@ -82,15 +78,7 @@ type DriverLifecycleEventRow = {
 };
 
 export class PrismaRouteTrackingService implements RouteTrackingService {
-  private readonly roadMatchProvider: RouteTrackingRoadMatchProvider | undefined;
-  private readonly roadMatchRefreshes = new Set<string>();
-
-  constructor(
-    private readonly prisma: RouteTrackingPrismaClient,
-    options: { roadMatchProvider?: RouteTrackingRoadMatchProvider | undefined } = {}
-  ) {
-    this.roadMatchProvider = options.roadMatchProvider;
-  }
+  constructor(private readonly prisma: RouteTrackingPrismaClient) {}
 
   async getRouteTrackingSnapshot(input: {
     now?: Date;
@@ -235,8 +223,6 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       .filter((position): position is RouteTrackingPositionEventV1 => position !== null);
     const progress = buildProgressSnapshot(latestProgressRow, latestDriverStageRow, routeStops);
     const executionEvidence = await this.getExecutionEvidence(input.routePlanId, recentPositions);
-    this.refreshRoadMatchedPath(recordedGeometry);
-
     return {
       executionEvidence,
       latestPosition,
@@ -307,40 +293,6 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
     };
   }
 
-  refreshRoadMatchedPath(recordedGeometry: Parameters<typeof shouldRefreshRouteTrackingRoadMatchedPath>[0]): void {
-    if (
-      this.roadMatchProvider === undefined ||
-      recordedGeometry === null ||
-      recordedGeometry === undefined ||
-      !shouldRefreshRouteTrackingRoadMatchedPath(recordedGeometry) ||
-      this.roadMatchRefreshes.has(recordedGeometry.routePlanId)
-    ) {
-      return;
-    }
-    const routePlanId = recordedGeometry.routePlanId;
-    this.roadMatchRefreshes.add(routePlanId);
-    void (async () => {
-      try {
-        const path = await this.roadMatchProvider!.match(readRouteTrackingGeometryDocument(recordedGeometry));
-        if (path === null) return;
-        await this.prisma.routeTrackingGeometry.updateMany({
-          data: buildRouteTrackingRoadMatchCacheWrite(path),
-          where: {
-            routePlanId,
-            OR: [
-              { roadMatchedSourcePointCount: null },
-              { roadMatchedSourcePointCount: { lte: path.inputPointCount } }
-            ]
-          }
-        });
-      } catch {
-        // Road matching is display-only. Raw tracking snapshot and writes must
-        // remain available when OSRM is slow, unavailable, or returns NoMatch.
-      } finally {
-        this.roadMatchRefreshes.delete(routePlanId);
-      }
-    })();
-  }
 }
 
 function emptyExecutionEvidence(

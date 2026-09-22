@@ -20,7 +20,8 @@ import type {
 } from './route-tracking.types.js';
 
 const ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION = 'route_tracking_road_match.v1';
-const ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_match.v4';
+const ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_match.v5';
+const PREVIOUS_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_match.v4';
 const LEGACY_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_match.v3';
 const MIN_CONFIDENT_MATCH = 0.5;
 const MIN_SOFT_MATCH_CONFIDENCE = 0.8;
@@ -34,6 +35,9 @@ const MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND = 40;
 const MAX_HARD_MATCH_SPEED_METERS_PER_SECOND = 55;
 const MIN_GAP_SUPPLEMENT_DISTANCE_METERS = 15;
 const MAX_GAP_SUPPLEMENT_DISTANCE_METERS = 750;
+const MAX_CONTEXTUAL_SUPPLEMENT_ACCURACY_METERS = 400;
+const MAX_CONTEXTUAL_SUPPLEMENT_DISTANCE_METERS = 3_000;
+const MAX_CONTEXTUAL_SUPPLEMENT_ELAPSED_MS = 10 * 60_000;
 
 type FetchLike = (url: string, init: { method: 'GET'; redirect: 'error'; signal?: AbortSignal }) => Promise<Response>;
 
@@ -77,6 +81,7 @@ type MatchChunk = {
 };
 
 type GapSupplementCandidate = {
+  contextual: boolean;
   coordinates: Array<[number, number]>;
   endCoordinate: [number, number];
   elapsedSeconds: number;
@@ -253,6 +258,27 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       retryable ||= batch.some((result) => result.retryable);
       inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
     }
+    const contextualCandidates = buildContextualGapSupplementCandidates(
+      document,
+      confidentLines,
+      [
+        ...approvedLines,
+        ...inferred.map((line) => ({
+          confidence: 1,
+          coordinates: line.coordinates,
+          interpolationLevel: 1 as const,
+          sourceRange: line.sourceRange,
+        })),
+      ],
+      rejectedLines,
+    ).slice(0, MAX_GAP_SUPPLEMENT_CANDIDATES);
+    for (let offset = 0; offset < contextualCandidates.length; offset += 2) {
+      const batch = await Promise.all(contextualCandidates.slice(offset, offset + 2).map((candidate) => (
+        this.routeGapSupplement(baseUrl, candidate)
+      )));
+      retryable ||= batch.some((result) => result.retryable);
+      inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
+    }
     return { lines: inferred, retryable };
   }
 
@@ -260,7 +286,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     baseUrl: string,
     candidate: GapSupplementCandidate,
   ): Promise<GapSupplementResult> {
-    if (candidate.samples.length >= 3) return this.matchGapSupplement(baseUrl, candidate);
+    if (!candidate.contextual && candidate.samples.length >= 3) return this.matchGapSupplement(baseUrl, candidate);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
@@ -344,6 +370,7 @@ export function buildRouteTrackingRoadMatchedPath(
     lastInputOccurredAt === undefined ||
     watermark === null ||
     (cacheVersion !== ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION
+      && cacheVersion !== PREVIOUS_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION
       && cacheVersion !== LEGACY_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION)
   ) {
     return null;
@@ -359,9 +386,9 @@ export function buildRouteTrackingRoadMatchedPath(
     matchedGeometry: readMultiLineString(record.roadMatchedGeometry),
     matchedRanges: readMultiLineString(record.roadMatchedGeometry)?.sourceRanges ?? [],
     matchedPointCount,
-    qualityVersion: cacheVersion === ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION
-      ? 'gps_quality.v4'
-      : 'gps_quality.v3',
+    qualityVersion: cacheVersion === LEGACY_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION
+      ? 'gps_quality.v3'
+      : 'gps_quality.v4',
     schemaVersion: ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION,
     uncertainGeometry: readMultiLineString(record.roadMatchedUncertainGeometry),
     uncertainRanges: readMultiLineString(record.roadMatchedUncertainGeometry)?.sourceRanges ?? [],
@@ -625,6 +652,7 @@ function buildGapSupplementCandidates(
       || straightDistanceMeters / elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
     ) return [];
     return [{
+      contextual: false,
       coordinates,
       elapsedSeconds,
       endCoordinate,
@@ -639,6 +667,97 @@ function buildGapSupplementCandidates(
         startEventId: leftSample.eventId,
         startOccurredAt: leftSample.occurredAt,
         startSourceIndex: leftSourceIndex,
+      },
+      samples,
+      startCoordinate,
+      straightDistanceMeters,
+    }];
+  });
+}
+
+function buildContextualGapSupplementCandidates(
+  document: RouteTrackingGeometryDocumentV1,
+  confidentLines: MatchedLine[],
+  approvedLines: MatchedLine[],
+  rejectedLines: MatchedLine[],
+): GapSupplementCandidate[] {
+  const ranges = confidentLines.map((line) => line.sourceRange)
+    .sort((left, right) => left.startSourceIndex - right.startSourceIndex);
+  const approvedRanges = approvedLines.map((line) => line.sourceRange);
+  const rejectedRanges = rejectedLines.map((line) => line.sourceRange);
+  return ranges.slice(0, -1).flatMap((leftRange, index) => {
+    const rightRange = ranges[index + 1]!;
+    if (rightRange.startSourceIndex <= leftRange.endSourceIndex + 1) return [];
+    if (approvedRanges.some((range) => (
+      range.startSourceIndex <= leftRange.endSourceIndex
+      && range.endSourceIndex >= rightRange.startSourceIndex
+    ))) return [];
+    if (rejectedRanges.some((range) => (
+      range.startSourceIndex < rightRange.startSourceIndex
+      && range.endSourceIndex > leftRange.endSourceIndex
+    ))) return [];
+    const leftIndex = document.samples.findIndex((sample) => sample.sourceIndex === leftRange.endSourceIndex);
+    const rightIndex = document.samples.findIndex((sample) => sample.sourceIndex === rightRange.startSourceIndex);
+    if (leftIndex < 0 || rightIndex - leftIndex < 3) return [];
+    const samples = document.samples.slice(leftIndex, rightIndex + 1);
+    const coordinates = document.coordinates.slice(leftIndex, rightIndex + 1);
+    const leftSample = samples[0]!;
+    const rightSample = samples.at(-1)!;
+    const driverId = leftSample.driverId;
+    if (
+      coordinates.length !== samples.length
+      || typeof driverId !== 'string'
+      || driverId.trim() === ''
+      || typeof leftSample.accuracyMeters !== 'number'
+      || typeof rightSample.accuracyMeters !== 'number'
+      || leftSample.accuracyMeters > MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS
+      || rightSample.accuracyMeters > MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS
+      || samples.slice(1).some((sample) => sample.gapBefore !== false)
+      || samples.some((sample) => (
+        sample.driverId !== driverId
+        || typeof sample.accuracyMeters !== 'number'
+        || !Number.isFinite(sample.accuracyMeters)
+        || sample.accuracyMeters < 0
+        || sample.accuracyMeters > MAX_CONTEXTUAL_SUPPLEMENT_ACCURACY_METERS
+      ))
+      || !samples.slice(1, -1).some((sample) => (
+        sample.accuracyMeters! > ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters
+      ))
+      || samples.slice(1).some((sample, sampleIndex) => {
+        const previous = samples[sampleIndex]!;
+        const elapsedMs = Date.parse(sample.occurredAt) - Date.parse(previous.occurredAt);
+        if (!(elapsedMs > 0 && elapsedMs <= ROUTE_TRACKING_V1_POLICY.delayedThresholdMs)) return true;
+        return distanceBetweenCoordinatesMeters(coordinates[sampleIndex]!, coordinates[sampleIndex + 1]!)
+          / (elapsedMs / 1000) > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
+      })
+    ) return [];
+    const elapsedSeconds = (Date.parse(rightSample.occurredAt) - Date.parse(leftSample.occurredAt)) / 1000;
+    const startCoordinate = coordinates[0]!;
+    const endCoordinate = coordinates.at(-1)!;
+    const straightDistanceMeters = distanceBetweenCoordinatesMeters(startCoordinate, endCoordinate);
+    if (
+      !(elapsedSeconds > 0 && elapsedSeconds <= MAX_CONTEXTUAL_SUPPLEMENT_ELAPSED_MS / 1000)
+      || straightDistanceMeters < MIN_GAP_SUPPLEMENT_DISTANCE_METERS
+      || straightDistanceMeters > MAX_CONTEXTUAL_SUPPLEMENT_DISTANCE_METERS
+      || straightDistanceMeters / elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
+    ) return [];
+    const startSourceIndex = leftSample.sourceIndex;
+    const endSourceIndex = rightSample.sourceIndex;
+    if (startSourceIndex === undefined || endSourceIndex === undefined) return [];
+    return [{
+      contextual: true,
+      coordinates,
+      elapsedSeconds,
+      endCoordinate,
+      range: {
+        endEventId: rightSample.eventId,
+        endOccurredAt: rightSample.occurredAt,
+        endSourceIndex,
+        interpolationLevel: 1,
+        reason: 'LOW_ACCURACY',
+        startEventId: leftSample.eventId,
+        startOccurredAt: leftSample.occurredAt,
+        startSourceIndex,
       },
       samples,
       startCoordinate,
@@ -682,8 +801,10 @@ function selectGapSupplementRoute(
     || distanceBetweenCoordinatesMeters(candidate.startCoordinate, startWaypoint) > 50
     || distanceBetweenCoordinatesMeters(candidate.endCoordinate, endWaypoint) > 50
   ) return null;
-  const maxRoadDistance = Math.min(1_250, candidate.straightDistanceMeters * 1.8 + 50);
-  const maxRouteDuration = candidate.elapsedSeconds * 1.5 + 15;
+  const maxRoadDistance = candidate.contextual
+    ? Math.min(5_000, candidate.straightDistanceMeters * 2 + 100)
+    : Math.min(1_250, candidate.straightDistanceMeters * 1.8 + 50);
+  const maxRouteDuration = candidate.elapsedSeconds * 1.5 + (candidate.contextual ? 30 : 15);
   const routes = object.routes.flatMap((route) => {
     const record = objectOrNull(route);
     const distance = Number(record?.distance);
@@ -712,7 +833,81 @@ function selectGapSupplementRoute(
     && route.duration <= best.duration * 1.25
     && JSON.stringify(route.coordinates) !== bestGeometry
   ));
-  return ambiguous ? null : best.coordinates;
+  if (ambiguous) return null;
+  return candidate.contextual && !supportsContextualRoute(candidate, best.coordinates)
+    ? null
+    : best.coordinates;
+}
+
+function supportsContextualRoute(
+  candidate: GapSupplementCandidate,
+  routeCoordinates: Array<[number, number]>,
+): boolean {
+  const routeLength = routeCoordinates.slice(1).reduce((sum, coordinate, index) => (
+    sum + distanceBetweenCoordinatesMeters(routeCoordinates[index]!, coordinate)
+  ), 0);
+  if (!(routeLength > 0)) return false;
+  const projections = candidate.coordinates.map((coordinate) => projectCoordinateOntoLine(coordinate, routeCoordinates));
+  if (projections.some((projection) => projection === null)) return false;
+  const supported = projections.every((projection, index) => {
+    const accuracy = candidate.samples[index]!.accuracyMeters!;
+    const maximumDistance = index === 0 || index === projections.length - 1
+      ? 50
+      : Math.min(150, Math.max(35, accuracy + 15));
+    return projection!.distanceMeters <= maximumDistance;
+  });
+  if (!supported) return false;
+  const first = projections[0]!;
+  const last = projections.at(-1)!;
+  if (first.offsetMeters > 50 || routeLength - last.offsetMeters > 50) return false;
+  for (let index = 1; index < projections.length; index += 1) {
+    const previous = projections[index - 1]!;
+    const current = projections[index]!;
+    if (current.offsetMeters + 20 < previous.offsetMeters) return false;
+    const elapsedSeconds = (
+      Date.parse(candidate.samples[index]!.occurredAt)
+      - Date.parse(candidate.samples[index - 1]!.occurredAt)
+    ) / 1000;
+    if (!(elapsedSeconds > 0)) return false;
+    if (Math.max(0, current.offsetMeters - previous.offsetMeters) / elapsedSeconds
+      > MAX_HARD_MATCH_SPEED_METERS_PER_SECOND) return false;
+  }
+  return true;
+}
+
+function projectCoordinateOntoLine(
+  coordinate: [number, number],
+  line: Array<[number, number]>,
+): { distanceMeters: number; offsetMeters: number } | null {
+  if (line.length < 2) return null;
+  let best: { distanceMeters: number; offsetMeters: number } | null = null;
+  let offsetBeforeSegment = 0;
+  for (let index = 1; index < line.length; index += 1) {
+    const start = line[index - 1]!;
+    const end = line[index]!;
+    const meanLatitudeRadians = toRadians((start[1] + end[1] + coordinate[1]) / 3);
+    const scaleX = Math.cos(meanLatitudeRadians);
+    const segmentX = (end[0] - start[0]) * scaleX;
+    const segmentY = end[1] - start[1];
+    const pointX = (coordinate[0] - start[0]) * scaleX;
+    const pointY = coordinate[1] - start[1];
+    const denominator = segmentX ** 2 + segmentY ** 2;
+    const ratio = denominator === 0
+      ? 0
+      : Math.max(0, Math.min(1, (pointX * segmentX + pointY * segmentY) / denominator));
+    const projected: [number, number] = [
+      start[0] + (end[0] - start[0]) * ratio,
+      start[1] + (end[1] - start[1]) * ratio,
+    ];
+    const segmentLength = distanceBetweenCoordinatesMeters(start, end);
+    const projection = {
+      distanceMeters: distanceBetweenCoordinatesMeters(coordinate, projected),
+      offsetMeters: offsetBeforeSegment + segmentLength * ratio,
+    };
+    if (best === null || projection.distanceMeters < best.distanceMeters) best = projection;
+    offsetBeforeSegment += segmentLength;
+  }
+  return best;
 }
 
 function selectStrictGapSupplementMatch(

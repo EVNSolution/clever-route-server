@@ -136,6 +136,13 @@ enum RouteOptimizationJobStep {
   COMPLETED
 }
 
+enum RouteTrackingRoadMatchJobStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  DEAD
+}
+
 enum DriverStatus {
   ACTIVE
   INACTIVE
@@ -1446,6 +1453,7 @@ model RoutePlan {
   driverRouteNotificationAttempts DriverRouteNotificationAttempt[]
   routeGeometryCaches             RoutePlanGeometryCache[]
   trackingGeometry                RouteTrackingGeometry?
+  trackingRoadMatchJob            RouteTrackingRoadMatchJob?
   previousDsvCommandReceipts      DsvCommandReceipt[]              @relation("DsvCommandReceiptPreviousRoutePlan")
   nextDsvCommandReceipts          DsvCommandReceipt[]              @relation("DsvCommandReceiptNextRoutePlan")
   previousDsvAuditEvents          DsvAuditEvent[]                  @relation("DsvAuditEventPreviousRoutePlan")
@@ -1489,6 +1497,29 @@ model RouteTrackingGeometry {
 
   @@index([expiresAt])
   @@map("route_tracking_geometries")
+}
+
+model RouteTrackingRoadMatchJob {
+  id                        String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  routePlanId               String                          @unique @db.Uuid
+  routePlan                 RoutePlan                       @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  status                    RouteTrackingRoadMatchJobStatus @default(QUEUED)
+  targetSourcePointCount    Int
+  targetLastInputOccurredAt DateTime                        @db.Timestamptz(6)
+  attemptCount              Int                             @default(0)
+  nextAttemptAt             DateTime?                       @default(now()) @db.Timestamptz(6)
+  leaseToken                String?                         @db.Uuid
+  leaseExpiresAt            DateTime?                       @db.Timestamptz(6)
+  processingStartedAt       DateTime?                       @db.Timestamptz(6)
+  completedAt               DateTime?                       @db.Timestamptz(6)
+  errorCode                 String?                         @db.Text
+  errorMessage              String?                         @db.Text
+  createdAt                 DateTime                        @default(now()) @db.Timestamptz(6)
+  updatedAt                 DateTime                        @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([status, nextAttemptAt])
+  @@index([status, leaseExpiresAt])
+  @@map("route_tracking_road_match_jobs")
 }
 
 model RoutePlanGeometryCache {
