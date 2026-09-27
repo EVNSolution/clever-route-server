@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import {
-  canAccessDsvStoreReviewData,
   DsvForbiddenError,
   requireDsvScopes,
 } from '../modules/dsv/dsv-principal.js';
@@ -326,6 +325,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
       }
 
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { proofMediaIds: [mediaId] });
         const access = await dependencies.proofMediaService.createAdminProofMediaReadAccess({
           mediaId,
           shopId: principal.shopId,
@@ -1604,9 +1604,6 @@ async function filterAccessibleRoutePlans(
   principal: DsvAdminPrincipal,
   routePlans: readonly RoutePlanSummary[],
 ): Promise<RoutePlanSummary[]> {
-  if (canAccessDsvStoreReviewData(principal)) {
-    return [...routePlans];
-  }
   const accessibility = await Promise.all(routePlans.map(async (routePlan) => {
     try {
       await dependencies.storeReviewAccess.assertAccessible(principal, { routePlanIds: [routePlan.id] });

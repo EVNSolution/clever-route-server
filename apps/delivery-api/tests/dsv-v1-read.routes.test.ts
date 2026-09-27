@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildApp, type BuildAppOptions } from '../src/app.js';
 import { createAdminWebSession } from '../src/routes/admin-ui-session.js';
 import type {
+  DsvV1AdminProofMediaReadService,
   DsvV1ReadDependencies,
   DsvV1ReadQueryService,
   DsvV1SessionResolver,
@@ -91,6 +92,38 @@ describe('DSV v1 read routes', () => {
       });
       expect(response.body).not.toContain('storageKey');
       expect(createAdminProofMediaReadAccess).toHaveBeenCalledWith({ mediaId: proofMediaId, shopId });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('blocks review proof media before creating a signed URL', async () => {
+    const createAdminProofMediaReadAccess = vi.fn<DsvV1AdminProofMediaReadService['createAdminProofMediaReadAccess']>();
+    const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
+      if (resources.proofMediaIds?.includes(proofMediaId) === true) {
+        return Promise.reject(new DsvForbiddenError({ principal, requiredScopes: ['dsv:accounts:read'] }));
+      }
+      return Promise.resolve();
+    });
+    const { app } = await createHarness({
+      proofMediaService: { createAdminProofMediaReadAccess },
+      storeReviewAccess,
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access`,
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ error: { code: 'FORBIDDEN' } });
+      expect(storeReviewAccess.assertAccessible).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        { proofMediaIds: [proofMediaId] },
+      );
+      expect(createAdminProofMediaReadAccess).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -747,7 +780,10 @@ describe('DSV v1 read routes', () => {
     }
   });
 
-  test('omits store review route plans from control geometry for operators', async () => {
+  test.each([
+    ['operator', dsvOperatorScopes],
+    ['developer', undefined],
+  ] as const)('omits store review route plans from control geometry for %s', async (_role, adminScopes) => {
     const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
       if (resources.routePlanIds?.includes('22222222-2222-4222-8222-222222222222') === true) {
         return Promise.reject(new DsvForbiddenError({ principal, requiredScopes: ['dsv:accounts:read'] }));
@@ -755,7 +791,7 @@ describe('DSV v1 read routes', () => {
       return Promise.resolve();
     });
     const { app, routePlanService } = await createHarness({
-      adminScopes: dsvOperatorScopes,
+      ...(adminScopes === undefined ? {} : { adminScopes }),
       storeReviewAccess,
     });
     const admin = signedCookie('dsv-shop:tomatonofood.com');
@@ -786,7 +822,10 @@ describe('DSV v1 read routes', () => {
     }
   });
 
-  test('blocks operator writes to store review orders before command services run', async () => {
+  test.each([
+    ['operator', dsvOperatorScopes],
+    ['developer', undefined],
+  ] as const)('blocks %s writes to store review orders before command services run', async (_role, adminScopes) => {
     const protectedOrderId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
       if (resources.orderIds?.includes(protectedOrderId) === true) {
@@ -807,7 +846,7 @@ describe('DSV v1 read routes', () => {
       confirm: confirmTimeConstraint,
     };
     const { app } = await createHarness({
-      adminScopes: dsvOperatorScopes,
+      ...(adminScopes === undefined ? {} : { adminScopes }),
       orderMessageService,
       storeReviewAccess,
       timeConstraintCommandService,

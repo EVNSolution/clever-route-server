@@ -1,6 +1,15 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 const inquirySelect = { id: true, title: true, body: true, authorName: true, createdAt: true } as const;
+const adminInquiryWhere = (shopId: string): Prisma.DsvDriverInquiryWhereInput => ({
+  account: {
+    isStoreReviewAccount: false,
+    drivers: {
+      some: { isStoreReviewData: false, shopId },
+      none: { isStoreReviewData: true },
+    },
+  },
+});
 export type DsvInquiryScope = { accountId: string; tokenVersion: number };
 export type DsvInquiryCursor = { createdAt: Date; id: string };
 export class DsvInquiryError extends Error {
@@ -46,12 +55,12 @@ export class PrismaDsvDriverInquiryRepository {
   }
 
   listForShop(shopId: string, before: DsvInquiryCursor | null, limit: number) {
-    return this.page({ account: { drivers: { some: { shopId } } } }, before, limit);
+    return this.page(adminInquiryWhere(shopId), before, limit);
   }
 
   async detailForShop(shopId: string, id: string) {
     return this.prisma.dsvDriverInquiry.findFirst({
-      where: { id, account: { drivers: { some: { shopId } } } }, select: inquirySelect
+      where: { id, ...adminInquiryWhere(shopId) }, select: inquirySelect
     });
   }
 

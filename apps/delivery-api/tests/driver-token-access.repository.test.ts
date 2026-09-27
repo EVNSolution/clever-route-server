@@ -3,6 +3,30 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrismaDriverTokenAccessRepository } from '../src/modules/driver/driver-token-access.repository.js';
 
 describe('PrismaDriverTokenAccessRepository', () => {
+  test('preserves review account access to its own active route', async () => {
+    const { prisma } = createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan: {
+        driver: {
+          account: { isStoreReviewAccount: true }, accountId: 'review-account-id',
+          authSubject: 'driver-review-driver-id', id: 'review-driver-id', isStoreReviewData: true,
+          status: 'ACTIVE',
+        },
+        id: 'review-route-plan-id', isStoreReviewData: true,
+        routeGroupingChildVersions: [{ publishedAt: null }],
+        shop: { id: 'shop-id', shopDomain: 'review.example' }, status: 'IN_PROGRESS',
+      },
+    });
+    const repository = new PrismaDriverTokenAccessRepository(prisma as never);
+
+    await expect(repository.resolveDriverRouteAccess({
+      accountId: 'review-account-id', routePlanId: 'review-route-plan-id', tokenVersion: 2,
+    })).resolves.toEqual({
+      accountId: 'review-account-id', driverId: 'review-driver-id',
+      routePlanId: 'review-route-plan-id', shopDomain: 'review.example', shopId: 'shop-id',
+    });
+  });
+
   test('resolves a route token only from the account-to-route assignment', async () => {
     const { prisma } = createPrismaHarness({
       account: { status: 'ACTIVE', tokenVersion: 2 },
@@ -237,12 +261,15 @@ function createPrismaHarness(input: {
   driver?: { tokenVersion: number } | null;
   routePlan?: {
     driver: {
+      account?: { isStoreReviewAccount: boolean };
       accountId: string | null;
       authSubject: string | null;
       id: string;
+      isStoreReviewData?: boolean;
       status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
     } | null;
     id: string;
+    isStoreReviewData?: boolean;
     routeGroupingChildVersions?: Array<{ publishedAt: Date | null }>;
     shop: { id: string; shopDomain: string };
     status?: string;

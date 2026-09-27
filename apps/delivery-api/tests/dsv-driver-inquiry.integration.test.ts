@@ -9,11 +9,14 @@ const databaseUrl = process.env.DSV_DRIVER_INQUIRY_DATABASE_URL ?? process.env.D
 const live = databaseUrl === '' ? test.skip : test;
 const accountA = 'a1100000-0000-4000-8000-000000000001';
 const accountB = 'a1100000-0000-4000-8000-000000000002';
+const reviewAccount = 'a1100000-0000-4000-8000-000000000003';
+const reviewDriverAccount = 'a1100000-0000-4000-8000-000000000004';
 const shopA = 'a2100000-0000-4000-8000-000000000001';
 const shopB = 'a2100000-0000-4000-8000-000000000002';
 const requestKey = 'a3100000-0000-4000-8000-000000000001';
 const scopeA = { accountId: accountA, tokenVersion: 0 };
 const scopeB = { accountId: accountB, tokenVersion: 0 };
+const reviewScope = { accountId: reviewAccount, tokenVersion: 0 };
 const input = { title: 'Synthetic support', body: 'No real customer data', clientRequestId: requestKey };
 
 function client() {
@@ -28,18 +31,22 @@ async function seed(prisma: PrismaClient) {
   await prisma.driverAccount.createMany({ data: [
     { id: accountA, name: 'Synthetic A', phone: '+10000909101', loginId: 'inquiry-fixture-a' },
     { id: accountB, name: 'Synthetic B', phone: '+10000909102', loginId: 'inquiry-fixture-b' },
+    { id: reviewAccount, name: 'Synthetic Review', phone: '+10000909103', loginId: 'inquiry-fixture-review', isStoreReviewAccount: true },
+    { id: reviewDriverAccount, name: 'Synthetic Review Driver', phone: '+10000909104', loginId: 'inquiry-fixture-review-driver' },
   ] });
   await prisma.shop.createMany({ data: [{ id: shopA, shopDomain: 'inquiry-a.invalid' }, { id: shopB, shopDomain: 'inquiry-b.invalid' }] });
   await prisma.driver.createMany({ data: [
     { shopId: shopA, accountId: accountA, displayName: 'Synthetic A' },
     { shopId: shopB, accountId: accountB, displayName: 'Synthetic B' },
+    { shopId: shopA, accountId: reviewAccount, displayName: 'Synthetic Review', isStoreReviewData: true },
+    { shopId: shopA, accountId: reviewDriverAccount, displayName: 'Synthetic Review Driver', isStoreReviewData: true },
   ] });
 }
 
 async function cleanup(prisma: PrismaClient) {
-  await prisma.driverAccountDeletionRequest.deleteMany({ where: { accountId: { in: [accountA, accountB] } } });
+  await prisma.driverAccountDeletionRequest.deleteMany({ where: { accountId: { in: [accountA, accountB, reviewAccount, reviewDriverAccount] } } });
   await prisma.shop.deleteMany({ where: { id: { in: [shopA, shopB] } } });
-  await prisma.driverAccount.deleteMany({ where: { id: { in: [accountA, accountB] } } });
+  await prisma.driverAccount.deleteMany({ where: { id: { in: [accountA, accountB, reviewAccount, reviewDriverAccount] } } });
   await prisma.$disconnect();
 }
 
@@ -56,6 +63,8 @@ describe('DSV inquiry PostgreSQL isolation and lifecycle', () => {
       expect(new Set(race.map(result => result.inquiry.id)).size).toBe(1);
       const own = race[0]!.inquiry;
       const foreign = (await repository.create(scopeB, input)).inquiry;
+      const reviewOwn = (await repository.create(reviewScope, input)).inquiry;
+      const reviewDriverOwn = (await repository.create({ accountId: reviewDriverAccount, tokenVersion: 0 }, input)).inquiry;
       await expect(repository.create(scopeA, { ...input, title: 'Different payload' })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
       const tokenA = signDriverAccountToken({ ...scopeA, subject: accountA, expiresInSeconds: 900 }, { secret }).token;
       const tokenB = signDriverAccountToken({ ...scopeB, subject: accountB, expiresInSeconds: 900 }, { secret }).token;
@@ -67,6 +76,17 @@ describe('DSV inquiry PostgreSQL isolation and lifecycle', () => {
         expect((await app.inject({ method: 'GET', url: `/api/dsv/driver/inquiries/${otherId}`, headers })).statusCode).toBe(404);
       }
       expect((await repository.listForShop(shopA, null, 20)).items.map(row => row.id)).toEqual([own.id]);
+      expect((await repository.listForShop(shopA, null, 1)).nextCursor).toBeNull();
+      expect(await repository.detailForShop(shopA, reviewOwn.id)).toBeNull();
+      expect(await repository.detailForShop(shopA, reviewDriverOwn.id)).toBeNull();
+      expect((await repository.list(reviewScope, null, 20)).items.map(row => row.id)).toEqual([reviewOwn.id]);
+      expect((await repository.detail(reviewScope, reviewOwn.id)).inquiry.id).toBe(reviewOwn.id);
+      const reviewToken = signDriverAccountToken({ ...reviewScope, subject: reviewAccount, expiresInSeconds: 900 }, { secret }).token;
+      const reviewHeaders = { authorization: `Bearer ${reviewToken}` };
+      const reviewList = await app.inject({ method: 'GET', url: '/api/dsv/driver/inquiries', headers: reviewHeaders });
+      expect(reviewList.statusCode).toBe(200);
+      expect(reviewList.json<{ data: { items: Array<{ id: string }> } }>().data.items.map(row => row.id)).toEqual([reviewOwn.id]);
+      expect((await app.inject({ method: 'GET', url: `/api/dsv/driver/inquiries/${reviewOwn.id}`, headers: reviewHeaders })).statusCode).toBe(200);
       expect(await repository.detailForShop(shopA, foreign.id)).toBeNull();
       expect(await repository.detailForShop(shopB, own.id)).toBeNull();
       await prisma.driver.deleteMany({ where: { accountId: accountB } });
