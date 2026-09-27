@@ -769,6 +769,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       if (dependencies.driverPasswordResetService === undefined) {
         return sendError(reply, 503, 'DRIVER_PASSWORD_RESET_UNAVAILABLE', '배송원 비밀번호 초기화 기능을 사용할 수 없습니다.');
       }
+      await dependencies.storeReviewAccess.assertAccessible(principal, { driverIds: [driverId] });
       try {
         const reset = await dependencies.driverPasswordResetService.issueLink({
           actorId: actor,

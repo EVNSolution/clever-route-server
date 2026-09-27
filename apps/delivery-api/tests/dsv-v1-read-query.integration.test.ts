@@ -321,7 +321,7 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(destinationB.page.hasMore).toBe(false);
   });
 
-  test('collapses active duplicate destination identities before pagination and keeps store-review mode isolated', async () => {
+  test('collapses active duplicate destination identities before pagination and excludes review data for all operational roles', async () => {
     const shop = await createShop(prisma, `destination-register-${randomUUID()}`);
     createdShopIds.push(shop.id);
     const [oldest, distinct] = await Promise.all([
@@ -406,8 +406,8 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(developer.items.map((destination) => destination.displayName)).toEqual([
       'Alpha Dock',
       'Beta Dock',
-      'Delta Review',
     ]);
+    expect(developer.page.hasMore).toBe(false);
   });
 
   test('emits endpoint-specific management cursor sort identities for every management list', async () => {

@@ -2285,6 +2285,41 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('blocks a review driver password reset before issuing a link', async () => {
+    const issueLink = vi.fn<DsvDriverPasswordResetService['issueLink']>();
+    const assertAccessible = vi.fn((principal: DsvPrincipal) => Promise.reject(new DsvForbiddenError({
+      principal,
+      requiredScopes: ['dsv:accounts:read'],
+    })));
+    const { app } = await createHarness({
+      driverPasswordResetService: {
+        complete: vi.fn(),
+        issueLink,
+        validateLink: vi.fn(),
+      },
+      storeReviewAccess: { assertAccessible },
+    });
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: {},
+        url: `/api/dsv/drivers/${targetDriverId}/password-reset-link`,
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ error: { code: 'DSV_FORBIDDEN' } });
+      expect(assertAccessible).toHaveBeenCalledWith(
+        expect.objectContaining({ actorId: adminAccountId, shopId }),
+        { driverIds: [targetDriverId] },
+      );
+      expect(issueLink).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('requires administrator authentication, CSRF, and both reset scopes without accepting a temporary password', async () => {
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),

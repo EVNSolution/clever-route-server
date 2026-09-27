@@ -1497,7 +1497,10 @@ describe('PrismaDsvV1ReadQueryService', () => {
     }]);
   });
 
-  test('filters store-review rows before pagination, counts, and summaries for non-developer principals', async () => {
+  test.each([
+    ['operator', adminPrincipal()],
+    ['developer', developerAdminPrincipal()],
+  ] as const)('filters store-review rows before pagination, counts, and summaries for %s', async (_role, principal) => {
     const customerListPrisma = prismaMock({ $queryRaw: vi.fn(() => Promise.resolve([])) });
     const destinationListPrisma = prismaMock({ $queryRaw: vi.fn(() => Promise.resolve([])) });
     const recordsPrisma = prismaMock({
@@ -1512,13 +1515,13 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
     const driverPrisma = prismaMock({ driver: { findMany: vi.fn(() => Promise.resolve([])) } });
 
-    await new PrismaDsvV1ReadQueryService(dispatchPrisma as never).listDispatches(adminPrincipal(), {
+    await new PrismaDsvV1ReadQueryService(dispatchPrisma as never).listDispatches(principal, {
       serviceDate: '2026-07-22',
     });
-    await new PrismaDsvV1ReadQueryService(recordsPrisma as never).listRecords(adminPrincipal());
-    await new PrismaDsvV1ReadQueryService(driverPrisma as never).listDrivers(adminPrincipal());
-    await new PrismaDsvV1ReadQueryService(customerListPrisma as never).listCustomers(adminPrincipal());
-    await new PrismaDsvV1ReadQueryService(destinationListPrisma as never).listDestinations(adminPrincipal());
+    await new PrismaDsvV1ReadQueryService(recordsPrisma as never).listRecords(principal);
+    await new PrismaDsvV1ReadQueryService(driverPrisma as never).listDrivers(principal);
+    await new PrismaDsvV1ReadQueryService(customerListPrisma as never).listCustomers(principal);
+    await new PrismaDsvV1ReadQueryService(destinationListPrisma as never).listDestinations(principal);
 
     expect(firstMockArg<OrderFindManyQuery>(dispatchPrisma.order.findMany)?.where).toMatchObject({
       isStoreReviewData: false,
@@ -1539,7 +1542,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(destinationSql).toContain('GROUP BY "isStoreReviewData", name_key, address_key');
   });
 
-  test('developer admin retains store-review rows in admin reads and customer-scope adapters', async () => {
+  test('developer admin excludes store-review rows in admin reads and customer-scope adapters', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
@@ -1553,11 +1556,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
     await service.listCustomerRouteScopeForAdmin(developerAdminPrincipal(), 'review-customer', '2026-07-22');
 
     for (const [query] of (prisma.order.findMany as ReturnType<typeof vi.fn>).mock.calls) {
-      expect((query as { where: unknown }).where).not.toHaveProperty('isStoreReviewData');
+      expect((query as { where: unknown }).where).toMatchObject({ isStoreReviewData: false, shopId: 'shop-a' });
     }
   });
 
-  test('developer admin retains review route sessions and review driver assignments', async () => {
+  test('developer admin excludes review route sessions and review driver assignments', async () => {
     const gpsPrisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
       routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
@@ -1584,9 +1587,9 @@ describe('PrismaDsvV1ReadQueryService', () => {
     );
     await new PrismaDsvV1ReadQueryService(vehiclePrisma as never).listVehicles(developerAdminPrincipal());
 
-    expect(firstMockArg<OrderFindManyQuery>(gpsPrisma.routePlan.findMany)?.where).not.toHaveProperty('isStoreReviewData');
+    expect(firstMockArg<OrderFindManyQuery>(gpsPrisma.routePlan.findMany)?.where).toMatchObject({ isStoreReviewData: false });
     expect(firstMockArg<OrderFindManyQuery>(vehiclePrisma.dsvVehicleDriverAssignment.findMany)?.where)
-      .not.toHaveProperty('driver');
+      .toMatchObject({ driver: { isStoreReviewData: false } });
   });
 
   test('customer principals cannot read store-review orders or route scope', async () => {

@@ -132,19 +132,26 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     expect([customer, destination, order, routePlan].every((record) => record.isStoreReviewData)).toBe(true);
   });
 
-  test('shows a review driver to developer admins but not operators in the real query service', async () => {
+  test('excludes a review driver from every operational role in the real query service', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'review-driver-query-visibility');
-    await prisma.driver.update({ data: { isStoreReviewData: true }, where: { id: fixture.driverId } });
     const service = new PrismaDsvV1ReadQueryService(prisma);
-
-    const operator = await service.listDrivers(createDsvAdminPrincipal({
+    const operatorPrincipal = createDsvAdminPrincipal({
       scopes: dsvOperatorScopes,
       shopId: fixture.shopId,
-    }));
-    const developer = await service.listDrivers(createDsvAdminPrincipal({ shopId: fixture.shopId }));
+    });
+    const developerPrincipal = createDsvAdminPrincipal({ shopId: fixture.shopId });
+
+    const operatorBefore = await service.listDrivers(operatorPrincipal);
+    const developerBefore = await service.listDrivers(developerPrincipal);
+    expect(operatorBefore.items.map((driver) => driver.driverId)).toContain(fixture.driverId);
+    expect(developerBefore.items.map((driver) => driver.driverId)).toContain(fixture.driverId);
+
+    await prisma.driver.update({ data: { isStoreReviewData: true }, where: { id: fixture.driverId } });
+    const operator = await service.listDrivers(operatorPrincipal);
+    const developer = await service.listDrivers(developerPrincipal);
 
     expect(operator.items.map((driver) => driver.driverId)).not.toContain(fixture.driverId);
-    expect(developer.items.map((driver) => driver.driverId)).toContain(fixture.driverId);
+    expect(developer.items.map((driver) => driver.driverId)).not.toContain(fixture.driverId);
   });
 
   test('applies a consolidated order with zero shipped boxes', async () => {

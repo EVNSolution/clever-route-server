@@ -1,7 +1,7 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
-import { canAccessDsvStoreReviewData, type DsvPrincipal } from './dsv-principal.js';
+import type { DsvPrincipal } from './dsv-principal.js';
 import { PrismaDsvStoreReviewAccess, type DsvStoreReviewAccess } from './dsv-store-review-access.js';
 
 type DsvResourceAccess = { principal: DsvPrincipal };
@@ -94,9 +94,7 @@ export class PrismaDsvResourceService implements DsvResourceService {
   async list(input: DsvResourceAccess & { shopDomain: string }): Promise<DsvResourceSnapshot | null> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) return null;
-    const reviewWhere = canAccessDsvStoreReviewData(input.principal)
-      ? {}
-      : { isStoreReviewData: false };
+    const reviewWhere = { isStoreReviewData: false };
     const [drivers, vehicles, assignments] = await Promise.all([
       this.prisma.driver.findMany({
         include: { dsvProfile: true },

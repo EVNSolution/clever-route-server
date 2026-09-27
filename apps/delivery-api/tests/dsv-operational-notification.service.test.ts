@@ -97,7 +97,7 @@ describe('PrismaDsvOperationalNotificationService', () => {
     await expect(service.list({ principal: operatorPrincipal, shopDomain: 'missing.example' })).resolves.toEqual({ items: [] });
   });
 
-  test('filters review records before limits and skips account-link reads for operators', async () => {
+  test.each([operatorPrincipal, adminPrincipal])('filters review records before limits for %s', async (principal) => {
     const prisma = {
       driverRouteNotificationAttempt: { findMany: vi.fn().mockResolvedValue([]) },
       dsvDispatchChangeRequest: { findMany: vi.fn().mockResolvedValue([]) },
@@ -107,7 +107,7 @@ describe('PrismaDsvOperationalNotificationService', () => {
     const linkService = { listPending: vi.fn().mockResolvedValue([]) };
     const service = new PrismaDsvOperationalNotificationService(prisma as never, linkService);
 
-    await service.list({ principal: operatorPrincipal, shopDomain: 'dsv.example' });
+    await service.list({ principal, shopDomain: 'dsv.example' });
 
     expect(prisma.dsvDispatchChangeRequest.findMany).toHaveBeenCalledWith(expect.objectContaining({
       take: 50,
@@ -121,6 +121,6 @@ describe('PrismaDsvOperationalNotificationService', () => {
       take: 50,
       where: expect.objectContaining({ isStoreReviewData: false }) as unknown,
     }));
-    expect(linkService.listPending).not.toHaveBeenCalled();
+    expect(linkService.listPending).toHaveBeenCalledTimes(principal === operatorPrincipal ? 0 : 1);
   });
 });
