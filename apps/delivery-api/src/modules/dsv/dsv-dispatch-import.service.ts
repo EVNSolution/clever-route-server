@@ -1967,6 +1967,12 @@ async function invalidateReadyRoutePlansForUpdates(
       where: { routePlanId: { in: routePlanIds } },
     }),
   ]);
+  if (assignedRoutePlanIds.length > 0) {
+    await tx.routePlanStop.updateMany({
+      data: { etaStatus: 'PENDING' },
+      where: { routePlanId: { in: assignedRoutePlanIds }, shopId },
+    });
+  }
   return assignedRoutePlanIds;
 }
 

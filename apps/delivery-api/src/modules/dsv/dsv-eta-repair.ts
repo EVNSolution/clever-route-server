@@ -20,7 +20,7 @@ const SNAPSHOT_SELECT = {
   id: true,
   isStoreReviewData: true,
   planDate: true,
-  routeGeometryCaches: { select: { id: true } },
+  routeGeometryCaches: { orderBy: { id: 'asc' }, select: { id: true, shapeSignature: true } },
   routeGroupingChildVersions: {
     orderBy: { id: 'asc' },
     select: { id: true, status: true, supersededAt: true, updatedAt: true }
@@ -97,17 +97,19 @@ export type DsvEtaRepairStopUpdate = {
 export type DsvEtaRepairPlan = {
   generatedAt: string;
   routes: Array<{
+    beforeCacheIds?: string[];
     beforeFingerprint: string;
+    cacheAction?: 'CREATE' | 'REUSE';
     executionFingerprint: string;
     geometry: RoutePlanRouteResult;
     plannedStartAt: string;
     plannedStartSource: 'REVIEWED_OVERRIDE';
     routePlanId: string;
     shapeSignature: string;
-    status: 'IN_PROGRESS' | 'COMPLETED';
+    status: 'READY' | 'IN_PROGRESS' | 'COMPLETED';
     stops: DsvEtaRepairStopUpdate[];
   }>;
-  schema: 'dsv_eta_missing_duration_repair_v1';
+  schema: 'dsv_eta_missing_duration_repair_v1' | 'dsv_eta_missing_duration_repair_v2';
   sourceRevision: string;
   scope: DsvEtaRepairScope;
 };
@@ -129,12 +131,26 @@ export async function createDsvEtaRepairPlan(
   const routes: DsvEtaRepairPlan['routes'] = [];
   for (const routePlanId of scope.routePlanIds) {
     const before = await readRoute(prisma, scope, routePlanId);
-    const currentVersionId = validateRoute(before, scope);
+    const currentVersionId = validateRoute(before, scope, 'dsv_eta_missing_duration_repair_v2');
     const detail = await repo.findRoutePlanDetail({ appId: 'clever', routePlanId, shopDomain: scope.shopDomain });
     refuseUnless(detail !== null, 'ROUTE_DETAIL_MISSING');
     const shapeSignature = computeRouteShapeSignature(detail);
-    const geometry = await provider.buildRoute(detail);
-    validateGeometry(before, geometry);
+    const hasMatchingCache = before.routeGeometryCaches.some((cache) => cache.shapeSignature === shapeSignature);
+    const cached = hasMatchingCache
+      && detail.routeGeometryStatus === 'fresh'
+      && isCompleteGeometry(detail.routeGeometry, detail.routeMetrics)
+      && detail.routeStopPoints.length === before.routeStops.length
+      && before.routeStops.every((stop, index) => {
+        const point = detail.routeStopPoints[index];
+        return point?.deliveryStopId === stop.deliveryStopId && point.sequence === stop.sequence
+          && roundedNonNegative(point.durationFromPreviousSeconds) !== null
+          && roundedNonNegative(point.distanceFromPreviousMeters) !== null;
+      });
+    refuseUnless(!hasMatchingCache || cached, 'MATCHING_CACHE_INCOMPLETE');
+    const geometry: RoutePlanRouteResult = cached
+      ? { routeGeometry: detail.routeGeometry ?? null, routeMetrics: detail.routeMetrics ?? null, routeStopPoints: detail.routeStopPoints ?? [] }
+      : await provider.buildRoute(detail);
+    validateDsvEtaRepairGeometry(before, geometry);
     const plannedStartAt = new Date(scope.plannedStarts[routePlanId] ?? '');
     refuseUnless(Number.isFinite(plannedStartAt.getTime())
       && plannedStartAt.toISOString() === scope.plannedStarts[routePlanId]
@@ -143,23 +159,24 @@ export async function createDsvEtaRepairPlan(
     const afterRead = await readRoute(prisma, scope, routePlanId);
     refuseUnless(fingerprint(before) === fingerprint(afterRead), 'CHANGED_DURING_DRY_RUN');
     routes.push({
+      beforeCacheIds: before.routeGeometryCaches.map((cache) => cache.id),
       beforeFingerprint: fingerprint(before),
+      cacheAction: cached ? 'REUSE' : 'CREATE',
       executionFingerprint: executionFingerprint(before),
       geometry,
       plannedStartAt: plannedStartAt.toISOString(),
       plannedStartSource: 'REVIEWED_OVERRIDE',
       routePlanId,
       shapeSignature,
-      status: before.status as 'IN_PROGRESS' | 'COMPLETED',
+      status: before.status as 'READY' | 'IN_PROGRESS' | 'COMPLETED',
       stops: buildDsvEtaRepairStopUpdates(before, geometry, currentVersionId, plannedStartAt, now)
     });
   }
-  return { generatedAt: now.toISOString(), routes, schema: 'dsv_eta_missing_duration_repair_v1', sourceRevision, scope };
+  return { generatedAt: now.toISOString(), routes, schema: 'dsv_eta_missing_duration_repair_v2', sourceRevision, scope };
 }
 
 export async function applyDsvEtaRepairPlan(prisma: PrismaClient, plan: DsvEtaRepairPlan): Promise<{ appliedStops: number; routes: number }> {
-  refuseUnless(plan.schema === 'dsv_eta_missing_duration_repair_v1', 'PLAN_SCHEMA_MISMATCH');
-  refuseUnless(plan.routes.length === plan.scope.routePlanIds.length && plan.routes.length > 0, 'PLAN_SCOPE_MISMATCH');
+  validateDsvEtaRepairPlanSchema(plan);
   return prisma.$transaction(async (tx) => {
     for (const routePlanId of plan.scope.routePlanIds) {
       const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -172,10 +189,13 @@ export async function applyDsvEtaRepairPlan(prisma: PrismaClient, plan: DsvEtaRe
       const item = plan.routes.find((route) => route.routePlanId === routePlanId);
       refuseUnless(item !== undefined, 'PLAN_ROUTE_MISSING');
       const before = await readRoute(tx, plan.scope, routePlanId);
-      const currentVersionId = validateRoute(before, plan.scope);
-      refuseUnless(fingerprint(before) === item.beforeFingerprint, 'CHANGED_SINCE_DRY_RUN');
+      const currentVersionId = validateRoute(before, plan.scope, plan.schema);
+      refuseUnless(fingerprintForSchema(before, plan.schema) === item.beforeFingerprint, 'CHANGED_SINCE_DRY_RUN');
+      if (plan.schema === 'dsv_eta_missing_duration_repair_v2') {
+        refuseUnless(fingerprint(before.routeGeometryCaches.map((cache) => cache.id)) === fingerprint(item.beforeCacheIds), 'CACHE_BASELINE_CHANGED');
+      }
       refuseUnless(executionFingerprint(before) === item.executionFingerprint, 'EXECUTION_CHANGED_SINCE_DRY_RUN');
-      validateGeometry(before, item.geometry);
+      validateDsvEtaRepairGeometry(before, item.geometry);
       refuseUnless(routeShapeSignature(before) === item.shapeSignature, 'SHAPE_SIGNATURE_MISMATCH');
       refuseUnless(item.plannedStartSource === 'REVIEWED_OVERRIDE'
         && item.plannedStartAt === plan.scope.plannedStarts[routePlanId], 'PLANNED_START_MISMATCH');
@@ -184,18 +204,24 @@ export async function applyDsvEtaRepairPlan(prisma: PrismaClient, plan: DsvEtaRe
       );
       refuseUnless(fingerprint(expected) === fingerprint(item.stops), 'PLAN_ETA_MISMATCH');
       refuseUnless(item.stops.length === before.routeStops.length, 'PLAN_STOP_COUNT_MISMATCH');
-      await tx.routePlanGeometryCache.create({
-        data: routeGeometryCacheCreateData({
-          generatedAt: new Date(plan.generatedAt),
-          geometry: item.geometry.routeGeometry,
-          metrics: item.geometry.routeMetrics,
-          provider: 'osrm',
-          routePlanId,
-          shapeSignature: item.shapeSignature,
-          source: 'EXPLICIT_REFRESH',
-          stopPoints: item.geometry.routeStopPoints
-        })
-      });
+      if (plan.schema === 'dsv_eta_missing_duration_repair_v1' || item.cacheAction === 'CREATE') {
+        refuseUnless(!before.routeGeometryCaches.some((cache) => cache.shapeSignature === item.shapeSignature), 'CACHE_ALREADY_PRESENT');
+        await tx.routePlanGeometryCache.create({
+          data: routeGeometryCacheCreateData({
+            generatedAt: new Date(plan.generatedAt),
+            geometry: item.geometry.routeGeometry,
+            metrics: item.geometry.routeMetrics,
+            provider: 'osrm',
+            routePlanId,
+            shapeSignature: item.shapeSignature,
+            source: 'EXPLICIT_REFRESH',
+            stopPoints: item.geometry.routeStopPoints
+          })
+        });
+      } else {
+        refuseUnless(item.cacheAction === 'REUSE'
+          && before.routeGeometryCaches.some((cache) => cache.shapeSignature === item.shapeSignature), 'CACHE_REUSE_MISMATCH');
+      }
       for (const stop of item.stops) {
         const current = before.routeStops.find((candidate) => candidate.id === stop.id);
         refuseUnless(current?.deliveryStopId === stop.deliveryStopId && current.sequence === stop.sequence, 'PLAN_STOP_MISMATCH');
@@ -224,17 +250,19 @@ export async function applyDsvEtaRepairPlan(prisma: PrismaClient, plan: DsvEtaRe
         appliedStops += 1;
       }
       const after = await readRoute(tx, plan.scope, routePlanId);
-      await assertAppliedRoute(tx, item, after);
+      await assertAppliedRoute(tx, item, after, plan.schema);
     }
     return { appliedStops, routes: plan.routes.length };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 120_000 });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000,
+    timeout: plan.schema === 'dsv_eta_missing_duration_repair_v2' ? 300_000 : 120_000 });
 }
 
 export async function auditDsvEtaRepairPlan(prisma: PrismaClient, plan: DsvEtaRepairPlan): Promise<{ auditedStops: number; routes: number }> {
+  validateDsvEtaRepairPlanSchema(plan);
   let auditedStops = 0;
   for (const item of plan.routes) {
     const route = await readRoute(prisma, plan.scope, item.routePlanId);
-    await assertAppliedRoute(prisma, item, route);
+    await assertAppliedRoute(prisma, item, route, plan.schema);
     auditedStops += item.stops.length;
   }
   return { auditedStops, routes: plan.routes.length };
@@ -243,12 +271,12 @@ export async function auditDsvEtaRepairPlan(prisma: PrismaClient, plan: DsvEtaRe
 async function assertAppliedRoute(
   db: Db,
   item: DsvEtaRepairPlan['routes'][number],
-  after: RouteSnapshot
+  after: RouteSnapshot,
+  schema: DsvEtaRepairPlan['schema']
 ): Promise<void> {
   refuseUnless(item.executionFingerprint === executionFingerprint(after), 'EXECUTION_INVARIANT_CHANGED');
   refuseUnless(routeShapeSignature(after) === item.shapeSignature, 'SHAPE_SIGNATURE_CHANGED');
-  const cache = after.routeGeometryCaches[0];
-  refuseUnless(after.routeGeometryCaches.length === 1 && cache !== undefined, 'POSTCHECK_CACHE_MISSING');
+  const cache = validateDsvEtaAppliedCacheSet(item, after.routeGeometryCaches, schema);
   const writtenCache = await db.routePlanGeometryCache.findUnique({
     where: { id: cache.id }, select: { geometry: true, metrics: true, shapeSignature: true, stopPoints: true }
   });
@@ -268,6 +296,27 @@ async function assertAppliedRoute(
       && actual.etaFailureCode === null
       && actual.etaFailureMessage === null, 'POSTCHECK_MISMATCH');
   }
+}
+
+export function validateDsvEtaAppliedCacheSet(
+  item: DsvEtaRepairPlan['routes'][number],
+  afterCaches: RouteSnapshot['routeGeometryCaches'],
+  schema: DsvEtaRepairPlan['schema']
+): RouteSnapshot['routeGeometryCaches'][number] {
+  const matching = afterCaches.filter((cache) => cache.shapeSignature === item.shapeSignature);
+  const cache = matching[0];
+  refuseUnless(matching.length === 1 && cache !== undefined, 'POSTCHECK_CACHE_MISSING');
+  if (schema === 'dsv_eta_missing_duration_repair_v1') {
+    refuseUnless(afterCaches.length === 1, 'POSTCHECK_CACHE_SET_CHANGED');
+  } else {
+    const beforeIds = item.beforeCacheIds ?? [];
+    const afterIds = afterCaches.map((candidate) => candidate.id);
+    refuseUnless(item.cacheAction === 'REUSE'
+      ? fingerprint(afterIds) === fingerprint(beforeIds) && beforeIds.includes(cache.id)
+      : fingerprint(afterIds.filter((id) => id !== cache.id)) === fingerprint(beforeIds)
+        && !beforeIds.includes(cache.id), 'POSTCHECK_CACHE_SET_CHANGED');
+  }
+  return cache;
 }
 
 export function buildDsvEtaRepairStopUpdates(
@@ -314,8 +363,11 @@ export function buildDsvEtaRepairStopUpdates(
       id: event.id,
       occurredAt: event.occurredAt
     }));
-  refuseUnless(events.length > 0 && events.every((event) => event.driverId === route.driverId), 'CURRENT_EVENTS_UNUSABLE');
-  const replay = replayRollingEta({ currentRouteVersionId: currentVersionId, events, stops: seeded });
+  refuseUnless(events.every((event) => event.driverId === route.driverId)
+    && (events.length > 0 || (route.status === 'READY' && route.driverEvents.length === 0)), 'CURRENT_EVENTS_UNUSABLE');
+  const replay = events.length === 0
+    ? { stops: seeded, unsafeReason: null }
+    : replayRollingEta({ currentRouteVersionId: currentVersionId, events, stops: seeded });
   refuseUnless(replay.unsafeReason === null, 'EVENT_REPLAY_UNSAFE');
   return route.routeStops.map((stop, index) => {
     const point = points.get(stop.deliveryStopId)!;
@@ -357,10 +409,40 @@ async function readRoute(db: Db, scope: DsvEtaRepairScope, routePlanId: string):
   return route;
 }
 
-function validateRoute(route: RouteSnapshot, scope: DsvEtaRepairScope): string {
+export function validateDsvEtaRepairPlanSchema(plan: DsvEtaRepairPlan): void {
+  refuseUnless(plan.schema === 'dsv_eta_missing_duration_repair_v1'
+    || plan.schema === 'dsv_eta_missing_duration_repair_v2', 'PLAN_SCHEMA_MISMATCH');
+  refuseUnless(plan.routes.length === plan.scope.routePlanIds.length && plan.routes.length > 0
+    && new Set(plan.routes.map((route) => route.routePlanId)).size === plan.routes.length
+    && plan.routes.every((route) => plan.scope.routePlanIds.includes(route.routePlanId)), 'PLAN_SCOPE_MISMATCH');
+  for (const route of plan.routes) {
+    if (plan.schema === 'dsv_eta_missing_duration_repair_v1') {
+      refuseUnless(route.cacheAction === undefined && route.beforeCacheIds === undefined
+        && (route.status === 'IN_PROGRESS' || route.status === 'COMPLETED')
+        && route.stops.every((stop) => stop.before.etaStatus === 'PENDING' || stop.before.etaStatus === 'FAILED'), 'PLAN_V1_SEMANTICS_CHANGED');
+    } else {
+      refuseUnless((route.cacheAction === 'CREATE' || route.cacheAction === 'REUSE')
+        && Array.isArray(route.beforeCacheIds)
+        && new Set(route.beforeCacheIds).size === route.beforeCacheIds.length
+        && route.beforeCacheIds.every((id) => typeof id === 'string'), 'PLAN_CACHE_BASELINE_MISSING');
+    }
+  }
+}
+
+function fingerprintForSchema(route: RouteSnapshot, schema: DsvEtaRepairPlan['schema']): string {
+  if (schema === 'dsv_eta_missing_duration_repair_v2') return fingerprint(route);
+  return fingerprint({ ...route, routeGeometryCaches: route.routeGeometryCaches.map((cache) => ({ id: cache.id })) });
+}
+
+function validateRoute(route: RouteSnapshot, scope: DsvEtaRepairScope, schema: DsvEtaRepairPlan['schema']): string {
   refuseUnless(route.shopId === scope.shopId && !route.isStoreReviewData && route.driverId !== null, 'ROUTE_SCOPE_MISMATCH');
-  refuseUnless(route.status === 'IN_PROGRESS' || route.status === 'COMPLETED', 'ROUTE_STATUS_CHANGED');
-  refuseUnless(route.routeGeometryCaches.length === 0 && route.routeStops.length > 0, 'GEOMETRY_ALREADY_PRESENT');
+  refuseUnless(schema === 'dsv_eta_missing_duration_repair_v2'
+    ? route.status === 'READY' || route.status === 'IN_PROGRESS' || route.status === 'COMPLETED'
+    : route.status === 'IN_PROGRESS' || route.status === 'COMPLETED', 'ROUTE_STATUS_CHANGED');
+  if (schema === 'dsv_eta_missing_duration_repair_v1') {
+    refuseUnless(route.routeGeometryCaches.length === 0, 'GEOMETRY_ALREADY_PRESENT');
+  }
+  refuseUnless(route.routeStops.length > 0, 'EMPTY_ROUTE');
   const current = route.routeGroupingChildVersions.filter((version) => version.status === 'CURRENT' && version.supersededAt === null);
   refuseUnless(current.length === 1, 'CURRENT_VERSION_AMBIGUOUS');
   const versionId = current[0]!.id;
@@ -369,16 +451,17 @@ function validateRoute(route: RouteSnapshot, scope: DsvEtaRepairScope): string {
     && stop.durationFromPreviousSeconds === null
     && stop.distanceFromPreviousMeters === null
     && stop.estimatedArrivalAt === null
-    && (stop.etaStatus === 'PENDING' || stop.etaStatus === 'FAILED')
+    && (stop.etaStatus === 'PENDING' || stop.etaStatus === 'FAILED'
+      || (schema === 'dsv_eta_missing_duration_repair_v2' && stop.etaStatus === 'NOT_REQUIRED'))
     && (stop.etaFailureCode === null || stop.etaFailureCode === 'ETA_INPUT_DURATION_UNAVAILABLE')
     && (stop.deliveryStop.status === 'PENDING' || stop.deliveryStop.status === 'DELIVERED')), 'STOP_STATE_UNEXPECTED');
   refuseUnless(route.status !== 'COMPLETED' || route.routeStops.every((stop) => stop.deliveryStop.status === 'DELIVERED'), 'COMPLETED_ROUTE_HAS_PENDING_STOP');
+  refuseUnless(route.status !== 'READY' || route.routeStops.every((stop) => stop.deliveryStop.status === 'PENDING'), 'READY_ROUTE_HAS_COMPLETED_STOP');
   return versionId;
 }
 
-function validateGeometry(route: RouteSnapshot, geometry: RoutePlanRouteResult): void {
-  refuseUnless(geometry.routeGeometry !== null && geometry.routeMetrics !== null
-    && geometry.routeGeometry.coordinates.length >= 2
+export function validateDsvEtaRepairGeometry(route: RouteSnapshot, geometry: RoutePlanRouteResult): void {
+  refuseUnless(isCompleteGeometry(geometry.routeGeometry, geometry.routeMetrics)
     && geometry.routeStopPoints.length === route.routeStops.length, 'GEOMETRY_INCOMPLETE');
   route.routeStops.forEach((stop, index) => {
     const point = geometry.routeStopPoints[index];
@@ -386,6 +469,20 @@ function validateGeometry(route: RouteSnapshot, geometry: RoutePlanRouteResult):
       && roundedNonNegative(point.durationFromPreviousSeconds) !== null
       && roundedNonNegative(point.distanceFromPreviousMeters) !== null, 'GEOMETRY_STOP_MISMATCH');
   });
+}
+
+function isCompleteGeometry(
+  routeGeometry: RoutePlanRouteResult['routeGeometry'],
+  routeMetrics: RoutePlanRouteResult['routeMetrics']
+): boolean {
+  return routeGeometry !== null && routeMetrics !== null
+    && roundedNonNegative(routeMetrics.distanceMeters) !== null
+    && roundedNonNegative(routeMetrics.durationSeconds) !== null
+    && routeGeometry.coordinates.length >= 2
+    && routeGeometry.coordinates.every(([longitude, latitude]) =>
+      typeof longitude === 'number' && Number.isFinite(longitude) && longitude >= -180 && longitude <= 180
+      && typeof latitude === 'number' && Number.isFinite(latitude) && latitude >= -90 && latitude <= 90
+      && !(longitude === 0 && latitude === 0));
 }
 
 function roundedNonNegative(value: number | null | undefined): number | null {

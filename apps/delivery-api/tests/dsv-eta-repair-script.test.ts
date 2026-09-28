@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { PrismaClient } from '@prisma/client';
 import { afterEach, describe, expect, test } from 'vitest';
 
-import { DsvEtaRepairRefusal } from '../src/modules/dsv/dsv-eta-repair.js';
+import { DsvEtaRepairRefusal, type DsvEtaRepairPlan } from '../src/modules/dsv/dsv-eta-repair.js';
 import { parseDsvEtaRepairFlags, verifyBackupEvidence, verifyRuntimeRevision } from '../src/scripts/repair-dsv-route-eta.js';
 
 const revision = 'a'.repeat(40);
@@ -84,7 +84,9 @@ describe('DSV ETA repair operator gates', () => {
     { invalidHeader: false, wrongCluster: true, code: 'HOST_BACKUP_EVIDENCE_MISMATCH' }
   ])('rejects invalid host backup evidence before apply: %j', async ({ code, ...input }) => {
     const { flags, prisma } = await backupFixture(input);
-    await expect(verifyBackupEvidence(prisma, flags, planSha256, generatedAt))
+    await expect(verifyBackupEvidence(prisma, flags, planSha256, {
+      generatedAt, routes: [], schema: 'dsv_eta_missing_duration_repair_v1'
+    } as unknown as DsvEtaRepairPlan))
       .rejects.toThrowError(new DsvEtaRepairRefusal(code));
   });
 });

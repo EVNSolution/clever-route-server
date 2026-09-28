@@ -596,7 +596,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       etaFailureMessage: null,
       etaInputRouteVersionId: null,
       etaSource: null,
-      etaStatus: 'NOT_REQUIRED',
+      etaStatus: 'PENDING',
     });
     await expect(prisma.routePlanGeometryCache.count({ where: { routePlanId: readyRoute.routePlanId } })).resolves.toBe(0);
     expect(unassignedRoutePlanStop).toMatchObject({

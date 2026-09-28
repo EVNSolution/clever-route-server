@@ -19,7 +19,7 @@ const reviewedMutationInventory = [
   'modules/driver/driver-route-order.service.ts:routePlanStop.updateMany:1',
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
-  'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:1',
+  'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:2',
   'modules/dsv/dsv-eta-repair.ts:routePlanStop.updateMany:1',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.create:8',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.update:4',
