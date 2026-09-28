@@ -2,6 +2,11 @@ import { Prisma } from '@prisma/client';
 
 import { ROUTE_TRACKING_V1_POLICY } from './route-tracking.policy.js';
 import { enqueueRouteTrackingRoadMatch } from './route-tracking-road-match-job.repository.js';
+import {
+  loadRouteTrackingEventWindow,
+  occurredAtWithinRouteTrackingEventWindow,
+  type RouteTrackingEventWindow
+} from './route-tracking.event-window.js';
 
 export const ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS = 90;
 const ROUTE_TRACKING_GEOMETRY_SCHEMA_VERSION = 'route_tracking_geometry.v1';
@@ -60,7 +65,7 @@ export type RouteTrackingGeometryRecord = {
 
 type RouteTrackingGeometryPrismaClient = Pick<
   Prisma.TransactionClient,
-  '$queryRaw' | 'driverEvent' | 'routeTrackingGeometry'
+  '$queryRaw' | 'driverEvent' | 'routePlan' | 'routeTrackingGeometry'
 > & {
   routeTrackingRoadMatchJob?: Prisma.TransactionClient['routeTrackingRoadMatchJob'];
 };
@@ -73,9 +78,13 @@ export async function persistRouteTrackingGeometryPosition(
     Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${position.routePlanId}, 0))`
   );
 
+  const eventWindow = await loadRouteTrackingEventWindow(prisma, position.routePlanId);
   const current = await prisma.routeTrackingGeometry.findUnique({
     where: { routePlanId: position.routePlanId }
   });
+  if (eventWindow !== null && !occurredAtWithinRouteTrackingEventWindow(eventWindow, position.occurredAt)) {
+    return readRouteTrackingGeometryDocument(current);
+  }
   const retentionCutoff = new Date(
     Date.parse(position.receivedAt) - ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS * 24 * 60 * 60 * 1000
   );
@@ -86,10 +95,11 @@ export async function persistRouteTrackingGeometryPosition(
   const nextOccurredAt = Date.parse(position.occurredAt);
   const mustRebuild = current !== null && (
     !hasCurrentQualityMetadata(current.sampleMetadata)
+    || eventWindow !== null && hasSamplesOutsideWindow(current.sampleMetadata, eventWindow)
     || Number.isFinite(nextOccurredAt) && nextOccurredAt < currentLastOccurredAt
   );
   const document = mustRebuild
-    ? buildRouteTrackingGeometryDocument(await loadRouteTrackingPositions(prisma, position.routePlanId, retentionCutoff))
+    ? buildRouteTrackingGeometryDocument(await loadRouteTrackingPositions(prisma, position.routePlanId, retentionCutoff, eventWindow))
     : appendRouteTrackingGeometryPosition(
         pruneRouteTrackingGeometryDocument(readRouteTrackingGeometryDocument(current), retentionCutoff),
         position
@@ -128,8 +138,9 @@ export async function rebuildRouteTrackingGeometryForRoute(
   const retentionCutoff = new Date(
     now.getTime() - ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS * 24 * 60 * 60 * 1000
   );
+  const eventWindow = await loadRouteTrackingEventWindow(prisma, routePlanId);
   const document = buildRouteTrackingGeometryDocument(
-    await loadRouteTrackingPositions(prisma, routePlanId, retentionCutoff)
+    await loadRouteTrackingPositions(prisma, routePlanId, retentionCutoff, eventWindow)
   );
   if (document.coordinates.length === 0) return document;
   const write = createRouteTrackingGeometryWrite(routePlanId, document);
@@ -380,8 +391,12 @@ export function createRouteTrackingGeometryWrite(routePlanId: string, document: 
 async function loadRouteTrackingPositions(
   prisma: RouteTrackingGeometryPrismaClient,
   routePlanId: string,
-  retentionCutoff: Date
+  retentionCutoff: Date,
+  eventWindow: RouteTrackingEventWindow | null
 ): Promise<RouteTrackingGeometryPositionInput[]> {
+  const occurredAtStart = eventWindow === null
+    ? retentionCutoff
+    : new Date(Math.max(retentionCutoff.getTime(), eventWindow.startInclusive.getTime()));
   const rows = await prisma.driverEvent.findMany({
     orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     select: {
@@ -398,7 +413,9 @@ async function loadRouteTrackingPositions(
       eventType: 'LOCATION_UPDATED',
       latitude: { not: null },
       longitude: { not: null },
-      occurredAt: { gte: retentionCutoff },
+      occurredAt: eventWindow === null
+        ? { gte: occurredAtStart }
+        : { gte: occurredAtStart, lt: eventWindow.endExclusive },
       routePlanId
     }
   });
@@ -516,6 +533,12 @@ function hasCurrentQualityMetadata(value: unknown): boolean {
   return value.every((sample) => sample !== null && typeof sample === 'object' && !Array.isArray(sample)
     && typeof (sample as Record<string, unknown>).gapBefore === 'boolean'
     && Number.isInteger((sample as Record<string, unknown>).sourceIndex));
+}
+
+function hasSamplesOutsideWindow(value: unknown, window: RouteTrackingEventWindow): boolean {
+  return readSamples(value).some((sample) =>
+    !occurredAtWithinRouteTrackingEventWindow(window, sample.occurredAt)
+  );
 }
 
 function nonNegativeIntegerOrNull(value: unknown): number | null {

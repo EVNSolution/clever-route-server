@@ -6,6 +6,10 @@ import { assertRoutePlanExecutionOwnership, RouteExecutionConflictError } from '
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
 import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tracking.geometry.js';
+import {
+  loadRouteTrackingEventWindow,
+  occurredAtWithinRouteTrackingEventWindow
+} from '../route-tracking/route-tracking.event-window.js';
 import { persistAutomaticCustomerEmailFacts } from '../customer-email/customer-email-automatic-fact.js';
 import { deriveDsvTimeConstraintState, dsvTimeConstraintAuditEvents } from '../dsv/dsv-time-constraint.js';
 import {
@@ -85,6 +89,7 @@ export type RecordDriverEventResult = {
   etaUpdate?: DriverRouteEtaUpdate;
   eventId: string;
   sequenceDeviation?: DriverStopSequenceDeviation;
+  trackingPositionAccepted?: boolean;
 };
 
 export type CompleteDriverDeliveryDestinationInput = {
@@ -358,6 +363,11 @@ export class PrismaDriverEventRepository {
               where: { id: input.routePlanId }, select: { assignmentGeneration: true }
             })
           : null;
+        const locationWindow = input.eventType === 'LOCATION_UPDATED' && input.routePlanId !== null
+          ? await loadRouteTrackingEventWindow(transaction, input.routePlanId)
+          : null;
+        const trackingPositionAccepted = locationWindow === null
+          || occurredAtWithinRouteTrackingEventWindow(locationWindow, input.occurredAt);
 
         const event = await transaction.driverEvent.create({
           data: {
@@ -365,10 +375,12 @@ export class PrismaDriverEventRepository {
             deliveryStopId: input.deliveryStopId,
             driverId: input.driverId,
             eventType: input.eventType as never,
-            latitude: input.latitude,
-            longitude: input.longitude,
+            latitude: trackingPositionAccepted ? input.latitude : null,
+            longitude: trackingPositionAccepted ? input.longitude : null,
             occurredAt: input.occurredAt,
-            payload: persistedDriverEventPayload(input, completionInvariant),
+            payload: trackingPositionAccepted
+              ? persistedDriverEventPayload(input, completionInvariant)
+              : { redacted: true, schema: 'driver_location_service_window_tombstone_v1' },
             routePlanId: input.routePlanId,
             ...(input.driverContractVersion === undefined || input.driverContractVersion === null
               ? {}
@@ -392,7 +404,9 @@ export class PrismaDriverEventRepository {
           });
         }
 
-        const trackingPosition = toRouteTrackingGeometryPosition(input, event.id, event.createdAt);
+        const trackingPosition = trackingPositionAccepted
+          ? toRouteTrackingGeometryPosition(input, event.id, event.createdAt)
+          : null;
         if (trackingPosition !== null) {
           await persistRouteTrackingGeometryPosition(transaction, trackingPosition);
         }
@@ -424,6 +438,7 @@ export class PrismaDriverEventRepository {
           ...(etaResult.etaSnapshot === undefined ? {} : { etaSnapshot: etaResult.etaSnapshot }),
           ...(etaResult.etaUpdate === undefined ? {} : { etaUpdate: etaResult.etaUpdate }),
           eventId: event.id,
+          ...(trackingPositionAccepted ? {} : { trackingPositionAccepted: false }),
           ...(sequenceDeviation === null ? {} : { sequenceDeviation })
         };
       });
@@ -602,6 +617,7 @@ function publicRecordDriverEventResult(result: RecordDriverEventResult): RecordD
     ...(result.etaSnapshot === undefined ? {} : { etaSnapshot: result.etaSnapshot }),
     ...(result.etaUpdate === undefined ? {} : { etaUpdate: result.etaUpdate }),
     eventId: result.eventId,
+    ...(result.trackingPositionAccepted === undefined ? {} : { trackingPositionAccepted: result.trackingPositionAccepted }),
     ...(result.sequenceDeviation === undefined ? {} : { sequenceDeviation: result.sequenceDeviation })
   };
 }

@@ -17,7 +17,8 @@ describe('route tracking geometry projection', () => {
     };
     const prisma = {
       $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
-      driverEvent: { findMany: vi.fn(() => Promise.resolve([])) },
+      driverEvent: { findFirst: vi.fn(() => Promise.resolve(null)), findMany: vi.fn(() => Promise.resolve([])) },
+      routePlan: routePlanDelegate(),
       routeTrackingGeometry: {
         findUnique: vi.fn(() => Promise.resolve(null)),
         upsert: vi.fn(() => Promise.resolve(null)),
@@ -43,7 +44,8 @@ describe('route tracking geometry projection', () => {
         lockSql = query.strings.join('?');
         return Promise.resolve([{ locked: true }]);
       },
-      driverEvent: { findMany: () => Promise.resolve([]) },
+      driverEvent: { findFirst: () => Promise.resolve(null), findMany: () => Promise.resolve([]) },
+      routePlan: routePlanDelegate(),
       routeTrackingGeometry: {
         findUnique: () => Promise.resolve(null),
         upsert: () => Promise.resolve(null)
@@ -193,7 +195,8 @@ describe('route tracking geometry projection', () => {
     const upsert = vi.fn(() => Promise.resolve(null));
     const prisma = {
       $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
-      driverEvent: { findMany: vi.fn(() => Promise.resolve([])) },
+      driverEvent: { findFirst: vi.fn(() => Promise.resolve(null)), findMany: vi.fn(() => Promise.resolve([])) },
+      routePlan: routePlanDelegate(),
       routeTrackingGeometry: { findUnique: vi.fn(() => Promise.resolve(null)), upsert }
     } as unknown as Parameters<typeof persistRouteTrackingGeometryPosition>[0];
 
@@ -229,7 +232,8 @@ describe('route tracking geometry projection', () => {
     }]));
     const prisma = {
       $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
-      driverEvent: { findMany },
+      driverEvent: { findFirst: vi.fn(() => Promise.resolve(null)), findMany },
+      routePlan: routePlanDelegate('2026-08-24', { timezone: 'UTC' }),
       routeTrackingGeometry: {
         findUnique: vi.fn(() => Promise.resolve({ lastOccurredAt: new Date('2026-08-25T00:00:00.000Z') })),
         upsert: vi.fn(() => Promise.resolve(null))
@@ -243,8 +247,33 @@ describe('route tracking geometry projection', () => {
     }));
 
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ occurredAt: { gte: new Date('2026-05-27T00:00:00.000Z') } }) as unknown
+      where: expect.objectContaining({
+        occurredAt: {
+          gte: new Date('2026-08-24T00:00:00.000Z'),
+          lt: new Date('2026-08-26T00:00:00.000Z')
+        }
+      }) as unknown
     }));
+  });
+
+  test('acknowledges an event outside the route service window without changing derived geometry or jobs', async () => {
+    const upsert = vi.fn(() => Promise.resolve(null));
+    const routeTrackingRoadMatchJob = roadMatchJobDelegate();
+    const prisma = {
+      $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
+      driverEvent: { findFirst: vi.fn(() => Promise.resolve(null)), findMany: vi.fn(() => Promise.resolve([])) },
+      routePlan: routePlanDelegate('2026-09-17', { timezone: 'America/Toronto' }),
+      routeTrackingGeometry: { findUnique: vi.fn(() => Promise.resolve(null)), upsert },
+      routeTrackingRoadMatchJob
+    } as unknown as Parameters<typeof persistRouteTrackingGeometryPosition>[0];
+
+    await expect(persistRouteTrackingGeometryPosition(prisma, position({
+      occurredAt: '2026-09-19T04:00:00.000Z',
+      receivedAt: '2026-09-19T04:00:01.000Z'
+    }))).resolves.toEqual({ coordinates: [], samples: [], sourcePointCount: 0 });
+
+    expect(upsert).not.toHaveBeenCalled();
+    expect(routeTrackingRoadMatchJob.create).not.toHaveBeenCalled();
   });
 });
 
@@ -257,6 +286,17 @@ function roadMatchJobDelegate() {
     create: vi.fn(() => Promise.resolve({ id: 'job-1' })),
     findUnique: vi.fn(() => Promise.resolve(null)),
     update: vi.fn(),
+  };
+}
+
+function routePlanDelegate(planDate = '2026-07-21', constraints: unknown = {}) {
+  return {
+    findUnique: vi.fn(() => Promise.resolve({
+      constraints,
+      planDate: new Date(`${planDate}T00:00:00.000Z`),
+      shopId: 'shop-1',
+      shop: { commerceConnections: [] }
+    }))
   };
 }
 

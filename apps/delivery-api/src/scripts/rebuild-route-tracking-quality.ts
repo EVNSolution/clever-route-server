@@ -12,10 +12,17 @@ import {
   type RouteTrackingGeometryPositionInput,
 } from '../modules/route-tracking/route-tracking.geometry.js';
 import {
+  buildRouteTrackingRoadMatchedPath,
   buildRouteTrackingRoadMatchCacheWrite,
   OsrmRouteTrackingRoadMatchProvider,
   type RouteTrackingRoadMatchClassifyingProvider,
 } from '../modules/route-tracking/route-tracking.road-match.js';
+import { enqueueRouteTrackingRoadMatch } from '../modules/route-tracking/route-tracking-road-match-job.repository.js';
+import {
+  loadRouteTrackingEventWindow,
+  occurredAtWithinRouteTrackingEventWindow,
+  type RouteTrackingEventWindow,
+} from '../modules/route-tracking/route-tracking.event-window.js';
 
 type RebuildArgs = {
   appId: string;
@@ -44,12 +51,22 @@ type RouteIdentity = {
 
 type RebuildInspection = {
   currentDerived: unknown;
+  eventWindow: RouteTrackingEventWindow;
   identity: RouteIdentity;
   source: RouteTrackingGeometryPositionInput[];
 };
 
+type RebuildEventWindow = {
+  anchorSource: 'PLAN_DATE' | 'ROUTE_STARTED';
+  endExclusive: string;
+  serviceDate: string;
+  startInclusive: string;
+  timezone: string;
+};
+
 type RebuildPlan = {
   document: RouteTrackingGeometryDocumentV1;
+  eventWindow: RebuildEventWindow;
   identity: RouteIdentity;
   planHash: string;
   roadMatchWrite: ReturnType<typeof buildRouteTrackingRoadMatchCacheWrite>;
@@ -74,6 +91,7 @@ type BackupEnvelope = {
   backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1';
   capturedAt: string;
   currentDerived: unknown;
+  eventWindow: RebuildEventWindow;
   identity: RouteIdentity;
   planHash: string;
   routeStateHash: string;
@@ -94,6 +112,7 @@ export interface RouteTrackingQualityRebuildStore {
   inspect(args: Pick<RebuildArgs, 'appId' | 'routePlanId' | 'shopDomain'>): Promise<RebuildInspection>;
   applyDerived(input: {
     backupFile: string;
+    expectedEventWindow: RebuildEventWindow;
     expectedIdentity: RouteIdentity;
     expectedRouteStateHash: string;
     expectedSourcePrefixDigest: string;
@@ -106,6 +125,7 @@ export interface RouteTrackingQualityRebuildStore {
     backupDerived: unknown;
     expectedCurrentDerivedHash: string;
     expectedCurrentWatermark: string;
+    expectedEventWindow: RebuildEventWindow;
     expectedIdentity: RouteIdentity;
     expectedRouteStateHash: string;
   }): Promise<{ mutationCount: number; preRestoreBackupFile: string }>;
@@ -207,7 +227,9 @@ export async function buildRouteTrackingQualityPlan(
   const routeStateHash = hashCanonical(inspection.identity);
   const sourcePrefixDigest = digestRouteTrackingSource(inspection.source);
   const sourcePrefixLastKey = sourceKey(inspection.source.at(-1)!);
+  const eventWindow = serializeEventWindow(inspection.eventWindow);
   const planPayload = {
+    eventWindow,
     identity: inspection.identity,
     proposedGeometry: createRouteTrackingGeometryWrite(inspection.identity.routePlanId, document),
     proposedRoadMatch: roadMatchWrite,
@@ -218,6 +240,7 @@ export async function buildRouteTrackingQualityPlan(
   };
   return {
     document,
+    eventWindow,
     identity: inspection.identity,
     planHash: hashCanonical(planPayload),
     roadMatchWrite,
@@ -240,11 +263,14 @@ export async function executeRouteTrackingQualityRebuild(input: {
   if (input.args.restore) {
     const reviewedBackup = await readReviewedBackup(input.args.backupFile!, input.args.backupSha256!);
     assertIdentity(reviewedBackup.identity, input.args);
+    assertEventWindow(inspection.eventWindow, reviewedBackup.eventWindow);
+    assertDerivedWithinEventWindow(reviewedBackup.currentDerived, inspection.eventWindow);
     const restored = await input.store.restoreDerived({
       backupDerived: reviewedBackup.currentDerived,
       backupFile: input.args.backupFile!,
       expectedCurrentDerivedHash: input.args.expectedCurrentDerivedHash!,
       expectedCurrentWatermark: input.args.expectedCurrentWatermark!,
+      expectedEventWindow: reviewedBackup.eventWindow,
       expectedIdentity: reviewedBackup.identity,
       expectedRouteStateHash: reviewedBackup.routeStateHash,
     });
@@ -267,6 +293,7 @@ export async function executeRouteTrackingQualityRebuild(input: {
         backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
         capturedAt: new Date().toISOString(),
         currentDerived: inspection.currentDerived,
+        eventWindow: plan.eventWindow,
         identity: inspection.identity,
         planHash: plan.planHash,
         routeStateHash: plan.routeStateHash,
@@ -281,6 +308,7 @@ export async function executeRouteTrackingQualityRebuild(input: {
   const backupFile = input.args.backupFile!;
   const reviewedBackup = await readReviewedBackup(backupFile, input.args.backupSha256!);
   assertIdentity(reviewedBackup.identity, input.args);
+  assertEventWindow(inspection.eventWindow, reviewedBackup.eventWindow);
   if (hashCanonical(inspection.identity) !== reviewedBackup.routeStateHash) {
     throw new Error('Route identity, route status, assignment, or stop status changed after review.');
   }
@@ -289,6 +317,7 @@ export async function executeRouteTrackingQualityRebuild(input: {
     reviewedBackup.sourcePrefixPointCount,
     reviewedBackup.sourcePrefixDigest,
   );
+  assertNoSourceTailAfterReview(inspection.source, reviewedBackup.sourcePrefixPointCount);
   const approvedPrefix = inspection.source.slice(0, reviewedBackup.sourcePrefixPointCount);
   const plan = await buildRouteTrackingQualityPlan({
     ...inspection,
@@ -305,6 +334,7 @@ export async function executeRouteTrackingQualityRebuild(input: {
   }
   const applied = await input.store.applyDerived({
     backupFile,
+    expectedEventWindow: reviewedBackup.eventWindow,
     expectedIdentity: reviewedBackup.identity,
     expectedRouteStateHash: reviewedBackup.routeStateHash,
     expectedSourcePrefixDigest: reviewedBackup.sourcePrefixDigest,
@@ -334,21 +364,41 @@ export function assertAppendOnlySourcePrefix(
   }
 }
 
+function assertNoSourceTailAfterReview(
+  current: RouteTrackingGeometryPositionInput[],
+  expectedCount: number,
+): void {
+  if (current.length !== expectedCount) {
+    throw new Error('Eligible GPS source changed after review; run a new dry-run before apply.');
+  }
+}
+
+export async function lockRoutePlanThenTrackingAdvisory(
+  tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
+  routePlanId: string,
+): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "route_plans" WHERE "id" = ${routePlanId}::uuid FOR UPDATE`);
+  await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${routePlanId}, 0))`);
+}
+
 export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQualityRebuildStore {
   constructor(private readonly prisma: PrismaClient) {}
 
   async inspect(args: Pick<RebuildArgs, 'appId' | 'routePlanId' | 'shopDomain'>): Promise<RebuildInspection> {
     const identity = await loadIdentity(this.prisma, args);
     if (identity === null) throw new Error('Route plan was not found for the exact app and shop identity.');
+    const eventWindow = await loadRouteTrackingEventWindow(this.prisma, identity.routePlanId);
+    if (eventWindow === null) throw new Error('Route tracking event window could not be resolved.');
     const [source, currentDerived] = await Promise.all([
-      loadSource(this.prisma, identity.routePlanId),
+      loadSource(this.prisma, identity.routePlanId, eventWindow),
       this.prisma.routeTrackingGeometry.findUnique({ where: { routePlanId: identity.routePlanId } }),
     ]);
-    return { currentDerived: jsonSafe(currentDerived), identity, source };
+    return { currentDerived: jsonSafe(currentDerived), eventWindow, identity, source };
   }
 
   async applyDerived(input: {
     backupFile: string;
+    expectedEventWindow: RebuildEventWindow;
     expectedIdentity: RouteIdentity;
     expectedRouteStateHash: string;
     expectedSourcePrefixDigest: string;
@@ -357,13 +407,17 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
     roadMatchWrite: RebuildPlan['roadMatchWrite'];
   }): Promise<ApplyResult> {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${input.expectedIdentity.routePlanId}, 0))`);
+      await lockRoutePlanThenTrackingAdvisory(tx, input.expectedIdentity.routePlanId);
       const identity = await loadIdentity(tx, input.expectedIdentity);
       if (identity === null || hashCanonical(identity) !== input.expectedRouteStateHash) {
         throw new Error('Route identity, route status, assignment, or stop status changed after review.');
       }
-      const source = await loadSource(tx, identity.routePlanId);
+      const eventWindow = await loadRouteTrackingEventWindow(tx, identity.routePlanId);
+      if (eventWindow === null) throw new Error('Route tracking event window could not be resolved.');
+      assertEventWindow(eventWindow, input.expectedEventWindow);
+      const source = await loadSource(tx, identity.routePlanId, eventWindow);
       assertAppendOnlySourcePrefix(source, input.expectedSourcePrefixPointCount, input.expectedSourcePrefixDigest);
+      assertNoSourceTailAfterReview(source, input.expectedSourcePrefixPointCount);
       const document = buildRouteTrackingGeometryDocument(source);
       const geometryWrite = createRouteTrackingGeometryWrite(identity.routePlanId, document);
       const desired = { ...geometryWrite, ...input.roadMatchWrite };
@@ -372,6 +426,7 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
         backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
         capturedAt: new Date().toISOString(),
         currentDerived: jsonSafe(current),
+        eventWindow: serializeEventWindow(eventWindow),
         identity,
         planHash: input.planHash,
         routeStateHash: input.expectedRouteStateHash,
@@ -387,6 +442,11 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
           where: { routePlanId: identity.routePlanId },
         });
       }
+      await tx.routeTrackingRoadMatchJob.updateMany(buildHistoricalRebuildJobSettlement(
+        identity.routePlanId,
+        document,
+        new Date(),
+      ));
       return {
         after: summarize(document, input.roadMatchWrite),
         before: summarizeDerived(current),
@@ -402,21 +462,27 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
     backupDerived: unknown;
     expectedCurrentDerivedHash: string;
     expectedCurrentWatermark: string;
+    expectedEventWindow: RebuildEventWindow;
     expectedIdentity: RouteIdentity;
     expectedRouteStateHash: string;
   }): Promise<{ mutationCount: number; preRestoreBackupFile: string }> {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${input.expectedIdentity.routePlanId}, 0))`);
+      await lockRoutePlanThenTrackingAdvisory(tx, input.expectedIdentity.routePlanId);
       const identity = await loadIdentity(tx, input.expectedIdentity);
       if (identity === null || hashCanonical(identity) !== input.expectedRouteStateHash) {
         throw new Error('Route identity, route status, assignment, or stop status changed after backup.');
       }
+      const eventWindow = await loadRouteTrackingEventWindow(tx, identity.routePlanId);
+      if (eventWindow === null) throw new Error('Route tracking event window could not be resolved.');
+      assertEventWindow(eventWindow, input.expectedEventWindow);
+      assertDerivedWithinEventWindow(input.backupDerived, eventWindow);
       const current = await tx.routeTrackingGeometry.findUnique({ where: { routePlanId: identity.routePlanId } });
       assertCurrentDerivedRestoreState(current, input.expectedCurrentWatermark, input.expectedCurrentDerivedHash);
       const preRestoreBackupFile = await writePrewriteBackup(input.backupFile, {
         backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
         capturedAt: new Date().toISOString(),
         currentDerived: jsonSafe(current),
+        eventWindow: serializeEventWindow(eventWindow),
         identity,
         planHash: 'restore-prewrite',
         routeStateHash: input.expectedRouteStateHash,
@@ -426,6 +492,7 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
       });
       if (input.backupDerived === null) {
         const deleted = await tx.routeTrackingGeometry.deleteMany({ where: { routePlanId: identity.routePlanId } });
+        await tx.routeTrackingRoadMatchJob.deleteMany({ where: { routePlanId: identity.routePlanId } });
         return { mutationCount: deleted.count, preRestoreBackupFile };
       }
       const restoreWrite = readDerivedRestoreWrite(input.backupDerived, identity.routePlanId);
@@ -434,6 +501,7 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
         update: restoreWrite,
         where: { routePlanId: identity.routePlanId },
       });
+      await reconcileRestoredRoadMatchJob(tx, identity.routePlanId, restoreWrite, new Date());
       return { mutationCount: 1, preRestoreBackupFile };
     }, { timeout: 60_000 });
   }
@@ -507,11 +575,18 @@ async function loadIdentity(
 async function loadSource(
   prisma: Pick<PrismaClient, 'driverEvent'> | Prisma.TransactionClient,
   routePlanId: string,
+  eventWindow: RouteTrackingEventWindow,
 ): Promise<RouteTrackingGeometryPositionInput[]> {
   const rows = await prisma.driverEvent.findMany({
     orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     select: { createdAt: true, driverId: true, id: true, latitude: true, longitude: true, occurredAt: true, payload: true, routePlanId: true },
-    where: { eventType: 'LOCATION_UPDATED', latitude: { not: null }, longitude: { not: null }, routePlanId },
+    where: {
+      eventType: 'LOCATION_UPDATED',
+      latitude: { not: null },
+      longitude: { not: null },
+      occurredAt: { gte: eventWindow.startInclusive, lt: eventWindow.endExclusive },
+      routePlanId,
+    },
   });
   return rows.flatMap((row) => {
     const latitude = Number(row.latitude);
@@ -543,6 +618,117 @@ function assertIdentity(identity: RouteIdentity, args: Pick<RebuildArgs, 'appId'
   if (identity.appId !== args.appId || identity.shopDomain !== args.shopDomain || identity.routePlanId !== args.routePlanId) {
     throw new Error('Route identity does not match --app-id, --shop-domain, and --route-plan-id.');
   }
+}
+
+function serializeEventWindow(window: RouteTrackingEventWindow): RebuildEventWindow {
+  return {
+    anchorSource: window.anchorSource,
+    endExclusive: window.endExclusive.toISOString(),
+    serviceDate: window.serviceDate,
+    startInclusive: window.startInclusive.toISOString(),
+    timezone: window.timezone,
+  };
+}
+
+function assertEventWindow(current: RouteTrackingEventWindow, expected: RebuildEventWindow): void {
+  if (hashCanonical(serializeEventWindow(current)) !== hashCanonical(expected)) {
+    throw new Error('Route tracking event window or timezone changed after review.');
+  }
+}
+
+function assertDerivedWithinEventWindow(value: unknown, eventWindow: RouteTrackingEventWindow): void {
+  if (value === null) return;
+  if (!isRecord(value)) throw new Error('Backup derived tracking row is invalid.');
+  const occurredAtValues: unknown[] = [
+    value.firstOccurredAt,
+    value.lastOccurredAt,
+    value.roadMatchedLastInputOccurredAt,
+  ];
+  if (Array.isArray(value.sampleMetadata)) {
+    occurredAtValues.push(...value.sampleMetadata.map((sample) => isRecord(sample) ? sample.occurredAt : null));
+  }
+  if (isRecord(value.roadMatchedLastPosition)) occurredAtValues.push(value.roadMatchedLastPosition.occurredAt);
+  const outsideWindow = occurredAtValues.some((occurredAt) => occurredAt !== null
+    && occurredAt !== undefined
+    && (typeof occurredAt !== 'string' && !(occurredAt instanceof Date)
+      || !occurredAtWithinRouteTrackingEventWindow(eventWindow, occurredAt)));
+  if (outsideWindow) {
+    throw new Error('Backup derived tracking row contains GPS evidence outside the current route event window.');
+  }
+}
+
+export function buildHistoricalRebuildJobSettlement(
+  routePlanId: string,
+  document: RouteTrackingGeometryDocumentV1,
+  now: Date,
+): Prisma.RouteTrackingRoadMatchJobUpdateManyArgs {
+  return {
+    data: {
+      completedAt: now,
+      errorCode: null,
+      errorMessage: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      processingStartedAt: null,
+      status: 'SUCCEEDED',
+      targetLastInputOccurredAt: new Date(document.samples.at(-1)!.occurredAt),
+      targetSourcePointCount: document.sourcePointCount,
+    },
+    where: { routePlanId },
+  };
+}
+
+export function buildRestoredRoadMatchJobSettlement(
+  routePlanId: string,
+  restored: { lastOccurredAt: Date; sourcePointCount: number },
+  now: Date,
+): Prisma.RouteTrackingRoadMatchJobUpsertArgs {
+  const data = {
+    completedAt: now,
+    errorCode: null,
+    errorMessage: null,
+    leaseExpiresAt: null,
+    leaseToken: null,
+    nextAttemptAt: null,
+    processingStartedAt: null,
+    status: 'SUCCEEDED' as const,
+    targetLastInputOccurredAt: restored.lastOccurredAt,
+    targetSourcePointCount: restored.sourcePointCount,
+  };
+  return {
+    create: { ...data, routePlanId },
+    update: data,
+    where: { routePlanId },
+  };
+}
+
+export function restoredRoadMatchCacheIsUsable(
+  restored: Parameters<typeof buildRouteTrackingRoadMatchedPath>[0],
+): boolean {
+  return buildRouteTrackingRoadMatchedPath(restored) !== null;
+}
+
+export async function reconcileRestoredRoadMatchJob(
+  tx: Pick<Prisma.TransactionClient, 'routeTrackingRoadMatchJob'>,
+  routePlanId: string,
+  restored: NonNullable<Parameters<typeof buildRouteTrackingRoadMatchedPath>[0]> & {
+    lastOccurredAt: Date;
+    sourcePointCount: number;
+  },
+  now: Date,
+): Promise<void> {
+  if (restoredRoadMatchCacheIsUsable(restored)) {
+    await tx.routeTrackingRoadMatchJob.upsert(buildRestoredRoadMatchJobSettlement(routePlanId, restored, now));
+    return;
+  }
+  await tx.routeTrackingRoadMatchJob.deleteMany({ where: { routePlanId } });
+  await enqueueRouteTrackingRoadMatch(tx, {
+    lastInputOccurredAt: restored.lastOccurredAt,
+    now,
+    routePlanId,
+    sourcePointCount: restored.sourcePointCount,
+  });
 }
 
 export function digestRouteTrackingSource(source: RouteTrackingGeometryPositionInput[]): string {
@@ -705,7 +891,20 @@ function isBackupEnvelope(value: unknown): value is BackupEnvelope {
     && typeof value.sourcePrefixDigest === 'string'
     && typeof value.sourcePrefixLastKey === 'string'
     && Number.isInteger(value.sourcePrefixPointCount)
+    && isRebuildEventWindow(value.eventWindow)
     && isRecord(value.identity);
+}
+
+function isRebuildEventWindow(value: unknown): value is RebuildEventWindow {
+  return isRecord(value)
+    && (value.anchorSource === 'PLAN_DATE' || value.anchorSource === 'ROUTE_STARTED')
+    && typeof value.endExclusive === 'string'
+    && Number.isFinite(Date.parse(value.endExclusive))
+    && typeof value.startInclusive === 'string'
+    && Number.isFinite(Date.parse(value.startInclusive))
+    && typeof value.serviceDate === 'string'
+    && typeof value.timezone === 'string'
+    && value.timezone !== '';
 }
 
 function output(
@@ -720,6 +919,7 @@ function output(
     ...scopeOutput(args),
     planHash: plan.planHash,
     plannedRoadMatchedWatermark: plan.roadMatchWrite.roadMatchedWatermark,
+    eventWindow: plan.eventWindow,
     sourcePrefixDigest: plan.sourcePrefixDigest,
     before,
     after,
