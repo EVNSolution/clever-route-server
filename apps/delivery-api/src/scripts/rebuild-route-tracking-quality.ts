@@ -25,6 +25,7 @@ import {
 } from '../modules/route-tracking/route-tracking.event-window.js';
 
 type RebuildArgs = {
+  allowUnmeasuredAccuracyInference: boolean;
   appId: string;
   apply: boolean;
   backupFile?: string;
@@ -89,6 +90,7 @@ type TrackingSummary = {
 
 type BackupEnvelope = {
   backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1';
+  allowUnmeasuredAccuracyInference?: boolean;
   capturedAt: string;
   currentDerived: unknown;
   eventWindow: RebuildEventWindow;
@@ -111,6 +113,7 @@ type ApplyResult = {
 export interface RouteTrackingQualityRebuildStore {
   inspect(args: Pick<RebuildArgs, 'appId' | 'routePlanId' | 'shopDomain'>): Promise<RebuildInspection>;
   applyDerived(input: {
+    allowUnmeasuredAccuracyInference: boolean;
     backupFile: string;
     expectedEventWindow: RebuildEventWindow;
     expectedIdentity: RouteIdentity;
@@ -145,6 +148,7 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
   ]);
   let apply = false;
   let restore = false;
+  let allowUnmeasuredAccuracyInference = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === undefined) continue;
@@ -156,6 +160,11 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
     if (arg === '--restore') {
       if (restore) throw new Error('Duplicate --restore flag.');
       restore = true;
+      continue;
+    }
+    if (arg === '--allow-unmeasured-accuracy-inference') {
+      if (allowUnmeasuredAccuracyInference) throw new Error('Duplicate --allow-unmeasured-accuracy-inference flag.');
+      allowUnmeasuredAccuracyInference = true;
       continue;
     }
     if (arg === '--help' || arg === '-h') throw new UsageRequestedError();
@@ -174,6 +183,7 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
   const expectedCurrentWatermark = optional(values, '--expected-current-watermark');
   const planHash = optional(values, '--plan-hash');
   const result: RebuildArgs = {
+    allowUnmeasuredAccuracyInference,
     appId: required(values, '--app-id'),
     apply,
     restore,
@@ -189,6 +199,12 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
     throw new Error('--backup-file must be an absolute path inside the runtime container.');
   }
   if (apply && restore) throw new Error('--apply and --restore are mutually exclusive.');
+  if (allowUnmeasuredAccuracyInference && restore) {
+    throw new Error('--allow-unmeasured-accuracy-inference is not used with --restore.');
+  }
+  if (allowUnmeasuredAccuracyInference && backupFile === undefined) {
+    throw new Error('--allow-unmeasured-accuracy-inference requires a private --backup-file.');
+  }
   if (apply) {
     if (result.backupFile === undefined || result.backupSha256 === undefined || result.planHash === undefined) {
       throw new Error('--apply requires --backup-file, --backup-sha256, and --plan-hash from a reviewed dry-run.');
@@ -215,6 +231,7 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
 export async function buildRouteTrackingQualityPlan(
   inspection: RebuildInspection,
   roadMatchProvider: RouteTrackingRoadMatchClassifyingProvider,
+  allowUnmeasuredAccuracyInference = false,
 ): Promise<RebuildPlan> {
   if (inspection.source.length === 0) throw new Error('No LOCATION_UPDATED source events were found for this route.');
   const document = buildRouteTrackingGeometryDocument(inspection.source);
@@ -229,6 +246,7 @@ export async function buildRouteTrackingQualityPlan(
   const sourcePrefixLastKey = sourceKey(inspection.source.at(-1)!);
   const eventWindow = serializeEventWindow(inspection.eventWindow);
   const planPayload = {
+    ...(allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
     eventWindow,
     identity: inspection.identity,
     proposedGeometry: createRouteTrackingGeometryWrite(inspection.identity.routePlanId, document),
@@ -286,11 +304,16 @@ export async function executeRouteTrackingQualityRebuild(input: {
   if (input.roadMatchProvider === undefined) throw new Error('OSRM road-match provider is required.');
 
   if (!input.args.apply) {
-    const plan = await buildRouteTrackingQualityPlan(inspection, input.roadMatchProvider);
+    const plan = await buildRouteTrackingQualityPlan(inspection, input.roadMatchProvider,
+      input.args.allowUnmeasuredAccuracyInference);
+    if (input.args.allowUnmeasuredAccuracyInference) {
+      assertUnmeasuredAccuracyInferenceGain(inspection.currentDerived, plan.roadMatchWrite);
+    }
     let backup: { path: string; sha256: string } | null = null;
     if (input.args.backupFile !== undefined) {
       backup = await writeBackupExclusive(input.args.backupFile, {
         backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
+        ...(input.args.allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
         capturedAt: new Date().toISOString(),
         currentDerived: inspection.currentDerived,
         eventWindow: plan.eventWindow,
@@ -307,6 +330,9 @@ export async function executeRouteTrackingQualityRebuild(input: {
 
   const backupFile = input.args.backupFile!;
   const reviewedBackup = await readReviewedBackup(backupFile, input.args.backupSha256!);
+  if ((reviewedBackup.allowUnmeasuredAccuracyInference === true) !== input.args.allowUnmeasuredAccuracyInference) {
+    throw new Error('Reviewed unmeasured-accuracy inference policy does not match this apply.');
+  }
   assertIdentity(reviewedBackup.identity, input.args);
   assertEventWindow(inspection.eventWindow, reviewedBackup.eventWindow);
   if (hashCanonical(inspection.identity) !== reviewedBackup.routeStateHash) {
@@ -323,7 +349,7 @@ export async function executeRouteTrackingQualityRebuild(input: {
     ...inspection,
     identity: reviewedBackup.identity,
     source: approvedPrefix,
-  }, input.roadMatchProvider);
+  }, input.roadMatchProvider, input.args.allowUnmeasuredAccuracyInference);
   if (reviewedBackup.planHash !== input.args.planHash || reviewedBackup.planHash !== plan.planHash) {
     throw new Error('Reviewed plan hash does not match the current approved source prefix and proposed output.');
   }
@@ -332,7 +358,11 @@ export async function executeRouteTrackingQualityRebuild(input: {
     || reviewedBackup.sourcePrefixLastKey !== plan.sourcePrefixLastKey) {
     throw new Error('Reviewed source prefix no longer matches the planned source prefix.');
   }
+  if (input.args.allowUnmeasuredAccuracyInference) {
+    assertUnmeasuredAccuracyInferenceGain(inspection.currentDerived, plan.roadMatchWrite);
+  }
   const applied = await input.store.applyDerived({
+    allowUnmeasuredAccuracyInference: input.args.allowUnmeasuredAccuracyInference,
     backupFile,
     expectedEventWindow: reviewedBackup.eventWindow,
     expectedIdentity: reviewedBackup.identity,
@@ -397,6 +427,7 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
   }
 
   async applyDerived(input: {
+    allowUnmeasuredAccuracyInference: boolean;
     backupFile: string;
     expectedEventWindow: RebuildEventWindow;
     expectedIdentity: RouteIdentity;
@@ -422,6 +453,9 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
       const geometryWrite = createRouteTrackingGeometryWrite(identity.routePlanId, document);
       const desired = { ...geometryWrite, ...input.roadMatchWrite };
       const current = await tx.routeTrackingGeometry.findUnique({ where: { routePlanId: identity.routePlanId } });
+      if (input.allowUnmeasuredAccuracyInference) {
+        assertUnmeasuredAccuracyInferenceGain(current, input.roadMatchWrite);
+      }
       const prewriteBackupFile = await writePrewriteBackup(input.backupFile, {
         backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
         capturedAt: new Date().toISOString(),
@@ -788,6 +822,40 @@ function emptySummary(): TrackingSummary {
   return { firstOccurredAt: null, gapCount: 0, geometryPointCount: 0, inferredLineCount: 0, lastOccurredAt: null, matchedPointCount: 0, sourcePointCount: 0, uncertainLineCount: 0 };
 }
 
+// The opt-in pilot may fill an empty road cache, but may never replace already recovered road lines.
+export function assertUnmeasuredAccuracyInferenceGain(
+  currentDerived: unknown,
+  proposed: Pick<RebuildPlan['roadMatchWrite'], 'roadMatchedGeometry'>,
+): void {
+  if (currentDerived !== null && currentDerived !== undefined) {
+    if (!isRecord(currentDerived)) throw new Error('Unmeasured-accuracy pilot requires an empty road cache.');
+    const matched = currentDerived.roadMatchedGeometry;
+    const uncertain = currentDerived.roadMatchedUncertainGeometry;
+    if (existingRoadLineCount(matched) > 0
+      || existingInferredLineCount(matched) > 0
+      || existingInferredLineCount(uncertain) > 0) {
+      throw new Error('Unmeasured-accuracy pilot requires an empty road cache.');
+    }
+  }
+  if (readInferredLineCount(jsonSafe(proposed.roadMatchedGeometry)) === 0) {
+    throw new Error('Unmeasured-accuracy pilot requires at least one new inferred road line.');
+  }
+}
+
+function existingRoadLineCount(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (!isRecord(value) || value.type !== 'MultiLineString' || !Array.isArray(value.coordinates)) {
+    throw new Error('Unmeasured-accuracy pilot requires an empty road cache.');
+  }
+  return value.coordinates.length;
+}
+
+function existingInferredLineCount(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (!isRecord(value)) throw new Error('Unmeasured-accuracy pilot requires an empty road cache.');
+  return existingRoadLineCount(value.inferredGeometry);
+}
+
 function readInferredLineCount(value: unknown): number {
   if (!isRecord(value) || !isRecord(value.inferredGeometry)) return 0;
   return Array.isArray(value.inferredGeometry.coordinates) ? value.inferredGeometry.coordinates.length : 0;
@@ -886,6 +954,7 @@ async function writePrewriteBackup(basePath: string, envelope: BackupEnvelope): 
 function isBackupEnvelope(value: unknown): value is BackupEnvelope {
   return isRecord(value)
     && value.backupSchemaVersion === 'route_tracking_quality_rebuild_backup.v1'
+    && (value.allowUnmeasuredAccuracyInference === undefined || typeof value.allowUnmeasuredAccuracyInference === 'boolean')
     && typeof value.planHash === 'string'
     && typeof value.routeStateHash === 'string'
     && typeof value.sourcePrefixDigest === 'string'
@@ -917,6 +986,7 @@ function output(
   return {
     ok: true,
     ...scopeOutput(args),
+    ...(args.allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
     planHash: plan.planHash,
     plannedRoadMatchedWatermark: plan.roadMatchWrite.roadMatchedWatermark,
     eventWindow: plan.eventWindow,
@@ -1022,12 +1092,16 @@ function optional(values: Map<string, string>, key: string): string | undefined 
   return value === undefined || value === '' ? undefined : value;
 }
 
-function createRoadMatchProvider(env: RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>): OsrmRouteTrackingRoadMatchProvider {
+function createRoadMatchProvider(
+  env: RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>,
+  allowUnmeasuredAccuracyInference: boolean,
+): OsrmRouteTrackingRoadMatchProvider {
   const baseUrls = readConfiguredCoverageBaseUrls(env, 'OSRM');
   if (Object.keys(baseUrls).length === 0) throw new Error('An OSRM coverage URL is required for route-tracking rebuild.');
   const timeoutMs = Number.parseInt(env.OSRM_TIMEOUT_MS ?? '', 10);
   return new OsrmRouteTrackingRoadMatchProvider({
     baseUrls,
+    allowUnmeasuredAccuracyInference,
     ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
   });
 }
@@ -1040,7 +1114,7 @@ async function main(): Promise<void> {
   try {
     const result = await executeRouteTrackingQualityRebuild({
       args,
-      ...(args.restore ? {} : { roadMatchProvider: createRoadMatchProvider(process.env) }),
+      ...(args.restore ? {} : { roadMatchProvider: createRoadMatchProvider(process.env, args.allowUnmeasuredAccuracyInference) }),
       store: new PrismaRouteTrackingQualityRebuildStore(prisma),
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -1050,7 +1124,7 @@ async function main(): Promise<void> {
 }
 
 function printUsage(): void {
-  process.stderr.write('Usage: node dist/scripts/rebuild-route-tracking-quality.js --app-id <app> --shop-domain <domain> --route-plan-id <uuid> [--backup-file <absolute-private-path>] [--apply --plan-hash <sha256> --backup-sha256 <sha256> | --restore --backup-sha256 <sha256> --expected-current-derived-hash <sha256> --expected-current-watermark <watermark>]\n');
+  process.stderr.write('Usage: node dist/scripts/rebuild-route-tracking-quality.js --app-id <app> --shop-domain <domain> --route-plan-id <uuid> [--backup-file <absolute-private-path>] [--allow-unmeasured-accuracy-inference] [--apply --plan-hash <sha256> --backup-sha256 <sha256> | --restore --backup-sha256 <sha256> --expected-current-derived-hash <sha256> --expected-current-watermark <watermark>]\n');
 }
 
 function isMainModule(): boolean {

@@ -70,6 +70,21 @@ off-corridor observation, reversed progress, or any existing rejected OSRM leg
 keeps the span disconnected. This is additional evidence validation, not a wider
 acceptance threshold for normal v4 matching.
 
+Historical routes with no recorded GPS accuracy remain disconnected by default.
+For an exact, reviewed route only, `--allow-unmeasured-accuracy-inference` can
+promote individual OSRM legs to Level 1 when both endpoints lack accuracy,
+matching confidence is at least 0.95, neither endpoint has an alternative,
+each road snap is within 12 m, and the leg is at most 250 m and 30 seconds with
+road speed at most 25 m/s. The existing time-order, driver, detour, and road
+duration checks still apply. This opt-in does not invent a GPS accuracy value,
+does not create Level 0 observed geometry, and is not enabled in the normal
+background worker. OSRM confidence alone is not proof of the driven road.
+The opt-in pilot applies only when the current road cache has no accepted or
+inferred lines and the proposed rebuild adds at least one inferred line. Both
+dry-run and the locked apply transaction enforce this rule, so the pilot cannot
+replace an already recovered road path or publish a zero-gain candidate. Routes
+with existing road lines require a separate preservation-aware policy review.
+
 Source semantics: [OSRM v26.5 Match API](https://github.com/Project-OSRM/osrm-backend/blob/v26.5.0/docs/http.md#match-service).
 
 V4 clients display only accepted `matchedGeometry` and `inferredGeometry`.
@@ -152,6 +167,13 @@ docker exec "${tracking_container}" node dist/scripts/rebuild-route-tracking-qua
 Record the reported `planHash`, `backup.sha256`, before/after point counts, gap
 counts, matched point counts, `inferredLineCount`, and time ranges. The output
 contains aggregate data only. It does not print raw coordinates.
+
+For an unmeasured-accuracy pilot, add `--allow-unmeasured-accuracy-inference`
+to both the dry-run and guarded apply commands. The flag requires a private
+backup file, is recorded in the backup and plan hash, and cannot be used for
+restore. Compare the candidate with a same-source default replay before apply;
+publish only actual additional inferred lines without losing existing accepted
+geometry. Keep the flag absent for other routes and all ordinary maintenance.
 
 `inferredLineCount` counts conservative road connections generated only to make a
 known tracking gap readable. These lines are not observed GPS, do not prove that

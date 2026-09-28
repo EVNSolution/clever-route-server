@@ -111,6 +111,82 @@ describe('route tracking road matching', () => {
     expect(String((legacyFetch.mock.calls as unknown as Array<[string]>)[0]![0])).toContain('radiuses=75%3B75');
   });
 
+  test('can infer only tightly corroborated short legs when GPS accuracy was not recorded', async () => {
+    const coordinates: Array<[number, number]> = [
+      [126.9, 37.5], [126.9001, 37.5], [126.9002, 37.5],
+    ];
+    const input = document(coordinates);
+    input.samples.forEach((sample) => { sample.accuracyMeters = null; });
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'http://osrm-korea:5000' },
+      allowUnmeasuredAccuracyInference: true,
+      fetch: vi.fn(() => Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(coordinates, { confidence: 0.98 }))))),
+    });
+
+    const result = await provider.match(input);
+
+    expect(result?.matchedGeometry).toBeNull();
+    expect(result?.inferredGeometry?.coordinates).toHaveLength(1);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({ interpolationLevel: 1 })]);
+  });
+
+  test('keeps high-confidence missing-accuracy legs disconnected without explicit opt-in', async () => {
+    const coordinates: Array<[number, number]> = [
+      [126.9, 37.5], [126.9001, 37.5], [126.9002, 37.5],
+    ];
+    const input = document(coordinates);
+    input.samples.forEach((sample) => { sample.accuracyMeters = null; });
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'http://osrm-korea:5000' },
+      fetch: vi.fn(() => Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(coordinates, { confidence: 0.98 }))))),
+    }).match(input);
+
+    expect(result?.matchedGeometry).toBeNull();
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
+  test('rejects missing-accuracy inference when confidence, alternatives, or snap evidence is weak', async () => {
+    const coordinates: Array<[number, number]> = [
+      [126.9, 37.5], [126.9001, 37.5], [126.9002, 37.5],
+    ];
+    const input = document(coordinates);
+    input.samples.forEach((sample) => { sample.accuracyMeters = null; });
+    const confident = osrmMatchResponse(coordinates, { confidence: 0.98 });
+    const ambiguous = structuredClone(confident);
+    ambiguous.tracepoints[1]!.alternatives_count = 1;
+    const displaced = structuredClone(confident);
+    displaced.tracepoints[1]!.location = [126.9001, 37.5002];
+    const lowConfidence = osrmMatchResponse(coordinates, { confidence: 0.94 });
+    const invalidConfidence = osrmMatchResponse(coordinates, { confidence: 1.01 });
+
+    for (const response of [ambiguous, displaced, lowConfidence, invalidConfidence]) {
+      const result = await new OsrmRouteTrackingRoadMatchProvider({
+        baseUrls: { korea: 'http://osrm-korea:5000' },
+        allowUnmeasuredAccuracyInference: true,
+        fetch: vi.fn(() => Promise.resolve(new Response(JSON.stringify(response)))),
+      }).match(input);
+
+      expect(result?.matchedGeometry).toBeNull();
+      expect(result?.inferredGeometry).toBeNull();
+    }
+  });
+
+  test('rejects missing-accuracy inference across a long sampling interval', async () => {
+    const coordinates: Array<[number, number]> = [
+      [126.9, 37.5], [126.9001, 37.5], [126.9002, 37.5],
+    ];
+    const input = document(coordinates, { intervalMs: 45_000 });
+    input.samples.forEach((sample) => { sample.accuracyMeters = null; });
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'http://osrm-korea:5000' },
+      allowUnmeasuredAccuracyInference: true,
+      fetch: vi.fn(() => Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(coordinates, { confidence: 0.98 }))))),
+    }).match(input);
+
+    expect(result?.matchedGeometry).toBeNull();
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
   test('keeps the legacy whole-match input accuracy cap at 100 meters', async () => {
     const input = document([[126.9, 37.5], [126.901, 37.501]]);
     input.samples.forEach((sample) => { sample.accuracyMeters = 100.01; });

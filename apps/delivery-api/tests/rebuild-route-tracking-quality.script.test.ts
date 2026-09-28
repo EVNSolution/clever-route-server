@@ -12,6 +12,7 @@ import {
 import type { RouteTrackingRoadMatchClassifyingProvider } from '../src/modules/route-tracking/route-tracking.road-match.js';
 import {
   assertAppendOnlySourcePrefix,
+  assertUnmeasuredAccuracyInferenceGain,
   assertCurrentDerivedRestoreState,
   buildHistoricalRebuildJobSettlement,
   buildRestoredRoadMatchJobSettlement,
@@ -102,6 +103,118 @@ describe('route tracking quality rebuild script', () => {
     await expect(executeRouteTrackingQualityRebuild({ args: applyArgs, roadMatchProvider, store }))
       .rejects.toThrow('Reviewed plan hash does not match');
     expect(store.derivedMutationCount).toBe(0);
+  });
+
+  test('binds the explicit unmeasured-accuracy policy to the reviewed backup and apply', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tracking-rebuild-'));
+    const backupFile = join(directory, 'backup.json');
+    const store = new InMemoryStore();
+    const baseArgs = [
+      '--app-id', scope.appId,
+      '--shop-domain', scope.shopDomain,
+      '--route-plan-id', scope.routePlanId,
+      '--backup-file', backupFile,
+    ];
+    const dryRun = await executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([...baseArgs, '--allow-unmeasured-accuracy-inference']),
+      roadMatchProvider,
+      store,
+    });
+    const backup = dryRun.backup as { sha256: string };
+    expect(dryRun.allowUnmeasuredAccuracyInference).toBe(true);
+    const reviewedArgs = [
+      ...baseArgs,
+      '--backup-sha256', backup.sha256,
+      '--plan-hash', String(dryRun.planHash),
+      '--apply',
+    ];
+
+    await expect(executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs(reviewedArgs),
+      roadMatchProvider,
+      store,
+    })).rejects.toThrow('inference policy does not match');
+    expect(store.derivedMutationCount).toBe(0);
+
+    const applied = await executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([...reviewedArgs, '--allow-unmeasured-accuracy-inference']),
+      roadMatchProvider,
+      store,
+    });
+    expect(applied).toMatchObject({ mode: 'apply', mutationCount: 1, allowUnmeasuredAccuracyInference: true });
+  });
+
+  test('rejects unmeasured-accuracy pilots that would replace an existing road line or add no inferred line', async () => {
+    const args = parseRebuildRouteTrackingQualityArgs([
+      '--app-id', scope.appId,
+      '--shop-domain', scope.shopDomain,
+      '--route-plan-id', scope.routePlanId,
+      '--backup-file', join(await mkdtemp(join(tmpdir(), 'tracking-rebuild-')), 'backup.json'),
+      '--allow-unmeasured-accuracy-inference',
+    ]);
+    const accepted = new InMemoryStore({ currentDerived: {
+      roadMatchedGeometry: { coordinates: [[[-79.4, 43.6], [-79.38, 43.65]]], type: 'MultiLineString' },
+      roadMatchedPointCount: 2,
+    } });
+    await expect(executeRouteTrackingQualityRebuild({ args, roadMatchProvider, store: accepted }))
+      .rejects.toThrow('empty road cache');
+
+    const existingInference = new InMemoryStore({ currentDerived: {
+      roadMatchedGeometry: {
+        coordinates: [],
+        inferredGeometry: { coordinates: [[[-79.4, 43.6], [-79.38, 43.65]]], type: 'MultiLineString' },
+        type: 'MultiLineString',
+      },
+      roadMatchedPointCount: 0,
+    } });
+    await expect(executeRouteTrackingQualityRebuild({ args, roadMatchProvider, store: existingInference }))
+      .rejects.toThrow('empty road cache');
+
+    const noGainProvider: RouteTrackingRoadMatchClassifyingProvider = {
+      ...roadMatchProvider,
+      matchWithStatus: (document) => Promise.resolve({
+        path: { ...matchedPath(document), inferredGeometry: null, inferredRanges: [] },
+        retryable: false,
+      }),
+    };
+    await expect(executeRouteTrackingQualityRebuild({ args, roadMatchProvider: noGainProvider, store: new InMemoryStore() }))
+      .rejects.toThrow('new inferred road line');
+    const uncertainOnly = new InMemoryStore({ currentDerived: {
+      roadMatchedGeometry: { coordinates: [], type: 'MultiLineString' },
+      roadMatchedPointCount: 4,
+      roadMatchedUncertainGeometry: { coordinates: [[[-79.4, 43.6], [-79.38, 43.65]]], type: 'MultiLineString' },
+    } });
+    const reviewed = await executeRouteTrackingQualityRebuild({ args, roadMatchProvider, store: uncertainOnly });
+    expect(reviewed).toMatchObject({ mode: 'dry-run', after: { inferredLineCount: 1 } });
+    expect(accepted.derivedMutationCount).toBe(0);
+    expect(existingInference.derivedMutationCount).toBe(0);
+  });
+
+  test('rechecks the unmeasured-accuracy gain against transaction-time derived state', () => {
+    const proposed = { roadMatchedGeometry: {
+      coordinates: [],
+      inferredGeometry: { coordinates: [[[-79.4, 43.6], [-79.38, 43.65]]], type: 'MultiLineString' },
+      type: 'MultiLineString',
+    }, roadMatchedPointCount: 0 };
+    expect(() => assertUnmeasuredAccuracyInferenceGain(null, proposed)).not.toThrow();
+    expect(() => assertUnmeasuredAccuracyInferenceGain({
+      roadMatchedGeometry: { coordinates: [], type: 'MultiLineString' },
+      roadMatchedPointCount: 4,
+      roadMatchedUncertainGeometry: { coordinates: [[[-79.4, 43.6], [-79.38, 43.65]]], type: 'MultiLineString' },
+    }, proposed)).not.toThrow();
+    expect(() => assertUnmeasuredAccuracyInferenceGain({
+      roadMatchedGeometry: { coordinates: [[[-79.4, 43.6], [-79.38, 43.65]]], type: 'MultiLineString' },
+      roadMatchedPointCount: 2,
+    }, proposed)).toThrow('empty road cache');
+  });
+
+  test('requires a private backup for unmeasured-accuracy inference', () => {
+    expect(() => parseRebuildRouteTrackingQualityArgs([
+      '--app-id', scope.appId,
+      '--shop-domain', scope.shopDomain,
+      '--route-plan-id', scope.routePlanId,
+      '--allow-unmeasured-accuracy-inference',
+    ])).toThrow('requires a private --backup-file');
   });
 
   test('refuses apply when eligible GPS was appended after dry-run review', async () => {

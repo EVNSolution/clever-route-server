@@ -26,6 +26,11 @@ const PREVIOUS_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_ma
 const LEGACY_ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION = 'route_tracking_road_match.v3';
 const MIN_CONFIDENT_MATCH = 0.5;
 const MIN_SOFT_MATCH_CONFIDENCE = 0.8;
+const MIN_UNMEASURED_MATCH_CONFIDENCE = 0.95;
+const MAX_UNMEASURED_SNAP_METERS = 12;
+const MAX_UNMEASURED_LEG_METERS = 250;
+const MAX_UNMEASURED_LEG_SECONDS = 30;
+const MAX_UNMEASURED_SPEED_METERS_PER_SECOND = 25;
 const MAX_OSRM_MATCH_POINTS = 80;
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
 const EARTH_RADIUS_METERS = 6_371_000;
@@ -60,6 +65,7 @@ export type RouteTrackingRoadMatchClassifyingProvider = RouteTrackingRoadMatchPr
 
 export type OsrmRouteTrackingRoadMatchProviderOptions = {
   baseUrls: Partial<Record<RouteEngineCoverage, string>>;
+  allowUnmeasuredAccuracyInference?: boolean | undefined;
   classificationMode?: 'bounded-per-leg' | 'legacy-whole-match' | undefined;
   fetch?: FetchLike | undefined;
   gpsPrecisionMeters?: number | undefined;
@@ -116,6 +122,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
   private readonly gpsPrecisionMeters: number | null;
   private readonly maxMatchPoints: number;
   private readonly timeoutMs: number;
+  private readonly allowUnmeasuredAccuracyInference: boolean;
 
   constructor(options: OsrmRouteTrackingRoadMatchProviderOptions) {
     this.baseUrls = Object.fromEntries(
@@ -130,6 +137,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
         ? Math.max(1000, Math.floor(options.timeoutMs))
         : 10000;
+    this.allowUnmeasuredAccuracyInference = options.allowUnmeasuredAccuracyInference === true;
   }
 
   async match(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchedPathV1 | null> {
@@ -246,7 +254,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     });
     const lines = this.classificationMode === 'legacy-whole-match'
       ? readLegacyMatchedLines(payload, chunk)
-      : readMatchedLines(payload, chunk, chunkIndex);
+      : readMatchedLines(payload, chunk, chunkIndex, this.allowUnmeasuredAccuracyInference);
     return {
       lastMatchedPosition: readLastMatchedPositionFromResponse(payload, chunk, lines),
       lines,
@@ -1185,7 +1193,7 @@ function isUnambiguousTracepoint(value: Record<string, unknown> | null): boolean
   return readAlternativesCount(value) === 0;
 }
 
-function readMatchedLines(payload: unknown, chunk: MatchChunk, chunkIndex: number): MatchedLine[] {
+function readMatchedLines(payload: unknown, chunk: MatchChunk, chunkIndex: number, allowUnmeasuredAccuracyInference: boolean): MatchedLine[] {
   const object = objectOrNull(payload);
   const matchings = Array.isArray(object?.matchings) ? object.matchings : null;
   if (object?.code !== 'Ok' || matchings === null) return [];
@@ -1193,10 +1201,11 @@ function readMatchedLines(payload: unknown, chunk: MatchChunk, chunkIndex: numbe
   return matchings.flatMap((matching, matchingIndex) => {
     const match = objectOrNull(matching);
     const confidence = typeof match?.confidence === 'number' && Number.isFinite(match.confidence)
+      && match.confidence >= 0 && match.confidence <= 1
       ? match.confidence
       : 0;
     return readMatchedLegLines(match, tracepoints, chunk, matchingIndex, matchings.length, confidence,
-      `${chunkIndex}:${matchingIndex}`);
+      `${chunkIndex}:${matchingIndex}`, allowUnmeasuredAccuracyInference);
   });
 }
 
@@ -1242,6 +1251,7 @@ function readMatchedLegLines(
   matchingCount: number,
   confidence: number,
   matchingIdentity: string,
+  allowUnmeasuredAccuracyInference: boolean,
 ): MatchedLine[] {
   const legs = Array.isArray(matching?.legs) ? matching.legs : [];
   const lines: MatchedLine[] = [];
@@ -1329,10 +1339,25 @@ function readMatchedLegLines(
     const hardSpeed = Math.max(0, roadDistance - 3 * accuracySum) / elapsedSeconds
       <= MAX_HARD_MATCH_SPEED_METERS_PER_SECOND;
     const strictDuration = roadDuration <= elapsedSeconds * 1.5 + 15;
+    const unmeasuredAccuracyInference = allowUnmeasuredAccuracyInference
+      && accuracies.every((accuracy) => accuracy === null || accuracy === undefined)
+      && leftLocation !== null
+      && rightLocation !== null
+      && confidence >= MIN_UNMEASURED_MATCH_CONFIDENCE
+      && leftAlternativesCount === 0
+      && rightAlternativesCount === 0
+      && roadDistance <= MAX_UNMEASURED_LEG_METERS
+      && elapsedSeconds > 0
+      && elapsedSeconds <= MAX_UNMEASURED_LEG_SECONDS
+      && roadDistance / elapsedSeconds <= MAX_UNMEASURED_SPEED_METERS_PER_SECOND
+      && strictDetour
+      && strictDuration
+      && distanceBetweenCoordinatesMeters(inputCoordinates[0]!, leftLocation) <= MAX_UNMEASURED_SNAP_METERS
+      && distanceBetweenCoordinatesMeters(inputCoordinates[1]!, rightLocation) <= MAX_UNMEASURED_SNAP_METERS;
     if (
       leftLocation === null
       || rightLocation === null
-      || !hasKnownBoundedAccuracy
+      || (!hasKnownBoundedAccuracy && !unmeasuredAccuracyInference)
       || !Number.isFinite(roadDistance)
       || !Number.isFinite(roadDuration)
       || roadDistance <= 0
@@ -1341,12 +1366,13 @@ function readMatchedLegLines(
       || confidence < MIN_CONFIDENT_MATCH
       || !hardDetour
       || !hardSpeed
-      || !hardSnap
+      || (!hardSnap && !unmeasuredAccuracyInference)
     ) {
       lines.push(rejectedLegLine(chunk, index, confidence, matchingIdentity));
       continue;
     }
-    const requiresSoftAcceptance = leftAlternativesCount > 0
+    const requiresSoftAcceptance = unmeasuredAccuracyInference
+      || leftAlternativesCount > 0
       || rightAlternativesCount > 0
       || !strictDetour
       || !strictSpeed
