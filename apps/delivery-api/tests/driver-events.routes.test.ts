@@ -145,6 +145,31 @@ describe('Driver events route', () => {
     }
   });
 
+  test('does not stream a GPS position that was acknowledged as outside the service window', async () => {
+    const publishPosition = vi.fn();
+    const publishProgress = vi.fn();
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockResolvedValue({ duplicate: false, eventId: 'late-event-id', trackingPositionAccepted: false });
+    dependencies.routeTrackingStreamHub = { publishPosition, publishProgress } as never;
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: eventPayload(),
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({ data: { duplicate: false, eventId: 'late-event-id' }, error: null });
+      expect(publishPosition).not.toHaveBeenCalled();
+      expect(publishProgress).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('publishes route progress after a nonduplicate driver stage event is committed', async () => {
     const publishProgress = vi.fn();
     const { dependencies } = createDependencyHarness();

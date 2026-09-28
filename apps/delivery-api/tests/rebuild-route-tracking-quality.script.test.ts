@@ -5,14 +5,22 @@ import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 
-import type { RouteTrackingGeometryPositionInput } from '../src/modules/route-tracking/route-tracking.geometry.js';
+import {
+  buildRouteTrackingGeometryDocument,
+  type RouteTrackingGeometryPositionInput,
+} from '../src/modules/route-tracking/route-tracking.geometry.js';
 import type { RouteTrackingRoadMatchClassifyingProvider } from '../src/modules/route-tracking/route-tracking.road-match.js';
 import {
   assertAppendOnlySourcePrefix,
   assertCurrentDerivedRestoreState,
+  buildHistoricalRebuildJobSettlement,
+  buildRestoredRoadMatchJobSettlement,
   digestRouteTrackingSource,
   executeRouteTrackingQualityRebuild,
+  lockRoutePlanThenTrackingAdvisory,
   parseRebuildRouteTrackingQualityArgs,
+  reconcileRestoredRoadMatchJob,
+  restoredRoadMatchCacheIsUsable,
   routeTrackingDerivedMatches,
   routeTrackingDerivedStateHash,
   type RouteTrackingQualityRebuildStore,
@@ -52,6 +60,13 @@ describe('route tracking quality rebuild script', () => {
     const result = await executeRouteTrackingQualityRebuild({ args, roadMatchProvider, store });
 
     expect(result).toMatchObject({ mode: 'dry-run', mutationCount: 0, ...scope });
+    expect(result.eventWindow).toEqual({
+      anchorSource: 'PLAN_DATE',
+      endExclusive: '2026-09-19T04:00:00.000Z',
+      serviceDate: '2026-09-17',
+      startInclusive: '2026-09-17T04:00:00.000Z',
+      timezone: 'America/Toronto',
+    });
     expect(result.after).toMatchObject({ inferredLineCount: 1 });
     expect(store.derivedMutationCount).toBe(0);
     expect(store.rawEventMutationCount).toBe(0);
@@ -74,7 +89,6 @@ describe('route tracking quality rebuild script', () => {
     ]);
     const dryRun = await executeRouteTrackingQualityRebuild({ args: dryRunArgs, roadMatchProvider, store });
     const backup = dryRun.backup as { sha256: string };
-    store.append(position(3));
     const applyArgs = parseRebuildRouteTrackingQualityArgs([
       '--app-id', scope.appId,
       '--shop-domain', scope.shopDomain,
@@ -90,6 +104,115 @@ describe('route tracking quality rebuild script', () => {
     expect(store.derivedMutationCount).toBe(0);
   });
 
+  test('refuses apply when eligible GPS was appended after dry-run review', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tracking-rebuild-'));
+    const backupFile = join(directory, 'backup.json');
+    const store = new InMemoryStore();
+    const dryRun = await executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([
+        '--app-id', scope.appId,
+        '--shop-domain', scope.shopDomain,
+        '--route-plan-id', scope.routePlanId,
+        '--backup-file', backupFile,
+      ]),
+      roadMatchProvider,
+      store,
+    });
+    const backup = dryRun.backup as { sha256: string };
+    store.append(position(3));
+
+    await expect(executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([
+        '--app-id', scope.appId,
+        '--shop-domain', scope.shopDomain,
+        '--route-plan-id', scope.routePlanId,
+        '--backup-file', backupFile,
+        '--backup-sha256', backup.sha256,
+        '--plan-hash', String(dryRun.planHash),
+        '--apply',
+      ]),
+      roadMatchProvider,
+      store,
+    })).rejects.toThrow('run a new dry-run');
+    expect(store.derivedMutationCount).toBe(0);
+  });
+
+  test('refuses apply when the route timezone changes after dry-run review', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tracking-rebuild-'));
+    const backupFile = join(directory, 'backup.json');
+    const store = new InMemoryStore();
+    const dryRun = await executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([
+        '--app-id', scope.appId,
+        '--shop-domain', scope.shopDomain,
+        '--route-plan-id', scope.routePlanId,
+        '--backup-file', backupFile,
+      ]),
+      roadMatchProvider,
+      store,
+    });
+    store.setEventWindow({
+      anchorSource: 'PLAN_DATE',
+      endExclusive: new Date('2026-09-19T00:00:00.000Z'),
+      serviceDate: '2026-09-17',
+      startInclusive: new Date('2026-09-17T00:00:00.000Z'),
+      timezone: 'UTC',
+    });
+    const backup = dryRun.backup as { sha256: string };
+
+    await expect(executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([
+        '--app-id', scope.appId,
+        '--shop-domain', scope.shopDomain,
+        '--route-plan-id', scope.routePlanId,
+        '--backup-file', backupFile,
+        '--backup-sha256', backup.sha256,
+        '--plan-hash', String(dryRun.planHash),
+        '--apply',
+      ]),
+      roadMatchProvider,
+      store,
+    })).rejects.toThrow('event window or timezone changed');
+    expect(store.derivedMutationCount).toBe(0);
+  });
+
+  test('refuses rollback that would restore derived GPS outside the current event window', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'tracking-rebuild-'));
+    const backupFile = join(directory, 'backup.json');
+    const store = new InMemoryStore({
+      currentDerived: {
+        firstOccurredAt: '2026-09-17T13:00:01.000Z',
+        lastOccurredAt: '2026-09-20T13:00:01.000Z',
+        sampleMetadata: [{ occurredAt: '2026-09-20T13:00:01.000Z' }],
+      },
+    });
+    const dryRun = await executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([
+        '--app-id', scope.appId,
+        '--shop-domain', scope.shopDomain,
+        '--route-plan-id', scope.routePlanId,
+        '--backup-file', backupFile,
+      ]),
+      roadMatchProvider,
+      store,
+    });
+    const backup = dryRun.backup as { sha256: string };
+
+    await expect(executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([
+        '--app-id', scope.appId,
+        '--shop-domain', scope.shopDomain,
+        '--route-plan-id', scope.routePlanId,
+        '--backup-file', backupFile,
+        '--backup-sha256', backup.sha256,
+        '--expected-current-derived-hash', 'a'.repeat(64),
+        '--expected-current-watermark', 'reviewed-watermark',
+        '--restore',
+      ]),
+      store,
+    })).rejects.toThrow('outside the current route event window');
+  });
+
   test('accepts only an unchanged prefix with a strictly append-only tail', () => {
     const prefix = positions();
     const digest = digestRouteTrackingSource(prefix);
@@ -97,6 +220,34 @@ describe('route tracking quality rebuild script', () => {
     expect(() => assertAppendOnlySourcePrefix([prefix[0]!, position(9, '2026-09-17T13:00:03.000Z'), prefix[1]!], prefix.length, digest))
       .toThrow('prefix changed');
     expect(() => assertAppendOnlySourcePrefix(prefix.slice(0, 1), prefix.length, digest)).toThrow('prefix shrank');
+  });
+
+  test('binds the reviewed plan hash to the local service-date event window', async () => {
+    const args = parseRebuildRouteTrackingQualityArgs([
+      '--app-id', scope.appId,
+      '--shop-domain', scope.shopDomain,
+      '--route-plan-id', scope.routePlanId,
+    ]);
+    const baseline = await executeRouteTrackingQualityRebuild({
+      args,
+      roadMatchProvider,
+      store: new InMemoryStore(),
+    });
+    const changedTimezone = await executeRouteTrackingQualityRebuild({
+      args,
+      roadMatchProvider,
+      store: new InMemoryStore({
+        eventWindow: {
+          anchorSource: 'PLAN_DATE',
+          endExclusive: new Date('2026-09-19T00:00:00.000Z'),
+          serviceDate: '2026-09-17',
+          startInclusive: new Date('2026-09-17T00:00:00.000Z'),
+          timezone: 'UTC',
+        },
+      }),
+    });
+
+    expect(changedTimezone.planHash).not.toBe(baseline.planHash);
   });
 
   test('apply mutates only the derived tracking row and a repeat is a no-op', async () => {
@@ -114,7 +265,6 @@ describe('route tracking quality rebuild script', () => {
       store,
     });
     const backup = dryRun.backup as { sha256: string };
-    store.append(position(3));
     const args = parseRebuildRouteTrackingQualityArgs([
       '--app-id', scope.appId,
       '--shop-domain', scope.shopDomain,
@@ -134,9 +284,13 @@ describe('route tracking quality rebuild script', () => {
     expect(store.routeStateMutationCount).toBe(0);
   });
 
-  test('production adapter has no mutation path outside the derived tracking row', async () => {
+  test('production adapter mutates only tracking-derived state and its worker job', async () => {
     const source = await readFile(new URL('../src/scripts/rebuild-route-tracking-quality.ts', import.meta.url), 'utf8');
     expect(source).toContain('routeTrackingGeometry.upsert');
+    expect(source).toContain('routeTrackingRoadMatchJob.updateMany(buildHistoricalRebuildJobSettlement(');
+    expect(source).toContain('routeTrackingRoadMatchJob.upsert(buildRestoredRoadMatchJobSettlement(');
+    expect(source).toContain('routeTrackingRoadMatchJob.deleteMany');
+    expect(source).toContain('enqueueRouteTrackingRoadMatch(tx, {');
     expect(source).not.toMatch(/driverEvent\.(?:create|delete|update|upsert)/u);
     expect(source).not.toMatch(/routePlan\.(?:create|delete|update|upsert)/u);
     expect(source).not.toMatch(/deliveryStop\.(?:create|delete|update|upsert)/u);
@@ -172,6 +326,105 @@ describe('route tracking quality rebuild script', () => {
       sourcePointCount: 3,
     }, 'stable-watermark', approvedHash)).toThrow('tracking state changed');
   });
+
+  test('invalidates normal matcher leases at the exact reviewed derived input', () => {
+    const document = buildRouteTrackingGeometryDocumentForTest();
+    const now = new Date('2026-09-28T12:00:00.000Z');
+
+    const settlement = buildHistoricalRebuildJobSettlement(scope.routePlanId, document, now);
+    expect(settlement.data).toMatchObject({
+      completedAt: now,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      processingStartedAt: null,
+      status: 'SUCCEEDED',
+      targetLastInputOccurredAt: new Date('2026-09-17T13:00:02.000Z'),
+      targetSourcePointCount: 2,
+    });
+    expect(settlement.where).toEqual({ routePlanId: scope.routePlanId });
+  });
+
+  test('locks the exact route row before taking the tracking advisory lock', async () => {
+    const sql: string[] = [];
+    const tx = {
+      $queryRaw: vi.fn((query: { strings: readonly string[] }) => {
+        sql.push(query.strings.join(''));
+        return Promise.resolve([]);
+      }),
+    };
+
+    await lockRoutePlanThenTrackingAdvisory(tx as never, scope.routePlanId);
+
+    expect(sql).toHaveLength(2);
+    expect(sql[0]).toContain('FROM "route_plans"');
+    expect(sql[0]).toContain('FOR UPDATE');
+    expect(sql[1]).toContain('pg_advisory_xact_lock');
+  });
+
+  test('invalidates a stale matcher lease against restored derived coordinates', () => {
+    const now = new Date('2026-09-28T12:00:00.000Z');
+    const settlement = buildRestoredRoadMatchJobSettlement(scope.routePlanId, {
+      lastOccurredAt: new Date('2026-09-17T13:00:02.000Z'),
+      sourcePointCount: 2,
+    }, now);
+
+    expect(settlement.update).toMatchObject({
+      completedAt: now,
+      leaseToken: null,
+      nextAttemptAt: null,
+      status: 'SUCCEEDED',
+      targetLastInputOccurredAt: new Date('2026-09-17T13:00:02.000Z'),
+      targetSourcePointCount: 2,
+    });
+    expect(settlement.create).toMatchObject({ routePlanId: scope.routePlanId, status: 'SUCCEEDED' });
+    expect(settlement.where).toEqual({ routePlanId: scope.routePlanId });
+  });
+
+  test('treats non-null but malformed restored road-match JSON as unusable', () => {
+    expect(restoredRoadMatchCacheIsUsable({
+      roadMatchedGeometry: { coordinates: [], type: 'MultiLineString' },
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v5',
+    } as never)).toBe(false);
+  });
+
+  test('creates a fresh queued matcher job when malformed restored cache has no job row', async () => {
+    const calls: string[] = [];
+    const routeTrackingRoadMatchJob = {
+      create: vi.fn(() => {
+        calls.push('create');
+        return Promise.resolve({});
+      }),
+      deleteMany: vi.fn(() => {
+        calls.push('deleteMany');
+        return Promise.resolve({ count: 0 });
+      }),
+      findUnique: vi.fn(() => {
+        calls.push('findUnique');
+        return Promise.resolve(null);
+      }),
+      update: vi.fn(),
+      upsert: vi.fn(),
+    };
+    const now = new Date('2026-09-28T12:00:00.000Z');
+
+    await reconcileRestoredRoadMatchJob({ routeTrackingRoadMatchJob } as never, scope.routePlanId, {
+      lastOccurredAt: new Date('2026-09-17T13:00:02.000Z'),
+      roadMatchedGeometry: { coordinates: [], type: 'MultiLineString' },
+      roadMatchedSchemaVersion: 'route_tracking_road_match.v5',
+      sourcePointCount: 2,
+    } as never, now);
+
+    expect(calls).toEqual(['deleteMany', 'findUnique', 'create']);
+    expect(routeTrackingRoadMatchJob.create).toHaveBeenCalledWith({
+      data: {
+        nextAttemptAt: now,
+        routePlanId: scope.routePlanId,
+        targetLastInputOccurredAt: new Date('2026-09-17T13:00:02.000Z'),
+        targetSourcePointCount: 2,
+      },
+    });
+  });
 });
 
 class InMemoryStore implements RouteTrackingQualityRebuildStore {
@@ -180,15 +433,29 @@ class InMemoryStore implements RouteTrackingQualityRebuildStore {
   routeStateMutationCount = 0;
   private applied = false;
   private readonly currentIdentity: ReturnType<typeof identity>;
+  private readonly currentDerived: unknown;
+  private eventWindow: ReturnType<typeof trackingEventWindow>;
   private readonly source = positions();
 
-  constructor(options: { identity?: ReturnType<typeof identity> } = {}) {
+  constructor(options: {
+    currentDerived?: unknown;
+    eventWindow?: ReturnType<typeof trackingEventWindow>;
+    identity?: ReturnType<typeof identity>;
+  } = {}) {
     this.currentIdentity = options.identity ?? identity();
+    this.currentDerived = options.currentDerived ?? null;
+    this.eventWindow = options.eventWindow ?? trackingEventWindow();
   }
 
-  inspect(): Promise<{ currentDerived: unknown; identity: ReturnType<typeof identity>; source: RouteTrackingGeometryPositionInput[] }> {
+  inspect(): Promise<{
+    currentDerived: unknown;
+    eventWindow: ReturnType<typeof trackingEventWindow>;
+    identity: ReturnType<typeof identity>;
+    source: RouteTrackingGeometryPositionInput[];
+  }> {
     return Promise.resolve({
-      currentDerived: this.applied ? derived() : null,
+      currentDerived: this.applied ? derived() : this.currentDerived,
+      eventWindow: this.eventWindow,
       identity: this.currentIdentity,
       source: this.source,
     });
@@ -212,6 +479,10 @@ class InMemoryStore implements RouteTrackingQualityRebuildStore {
 
   append(next: RouteTrackingGeometryPositionInput): void {
     this.source.push(next);
+  }
+
+  setEventWindow(next: ReturnType<typeof trackingEventWindow>): void {
+    this.eventWindow = next;
   }
 
   restoreDerived(input: Parameters<RouteTrackingQualityRebuildStore['restoreDerived']>[0]) {
@@ -272,8 +543,22 @@ function identity() {
   };
 }
 
+function trackingEventWindow() {
+  return {
+    anchorSource: 'PLAN_DATE' as const,
+    endExclusive: new Date('2026-09-19T04:00:00.000Z'),
+    serviceDate: '2026-09-17',
+    startInclusive: new Date('2026-09-17T04:00:00.000Z'),
+    timezone: 'America/Toronto',
+  };
+}
+
 function positions(): RouteTrackingGeometryPositionInput[] {
   return [position(1), position(2)];
+}
+
+function buildRouteTrackingGeometryDocumentForTest() {
+  return buildRouteTrackingGeometryDocument(positions());
 }
 
 function position(index: number, occurredAt = `2026-09-17T13:00:${String(index).padStart(2, '0')}.000Z`): RouteTrackingGeometryPositionInput {

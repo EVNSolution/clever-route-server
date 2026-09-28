@@ -32,6 +32,10 @@ import {
   type UvisVehicleTrailMarker,
 } from '../uvis/uvis-vehicle-trail-materializer.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
+import {
+  occurredAtWithinRouteTrackingEventWindow,
+  resolveRouteTrackingEventWindow,
+} from '../route-tracking/route-tracking.event-window.js';
 
 export const dsvV1ReadDefaultLimit = 50;
 export const dsvV1ReadMaxLimit = 100;
@@ -1479,10 +1483,19 @@ const customerRouteScopeOrderSelect = {
       routePlanId: true,
       routePlan: {
         select: {
+            constraints: true,
+            driverEvents: {
+              orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+              select: { eventType: true, occurredAt: true },
+              take: 1,
+              where: { eventType: 'ROUTE_STARTED' },
+            },
+            planDate: true,
             trackingGeometry: {
               select: {
                 lastLatitude: true,
                 lastLongitude: true,
+                lastOccurredAt: true,
               },
             },
             vehicleId: true,
@@ -1511,6 +1524,8 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
         routePlanId: true,
         routePlan: {
           select: {
+            constraints: true,
+            planDate: true,
             vehicle: {
               select: {
                 id: true,
@@ -1523,6 +1538,7 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
               select: {
                 lastLatitude: true,
                 lastLongitude: true,
+                lastOccurredAt: true,
               },
             },
             driverEvents: {
@@ -1714,7 +1730,7 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
   const stop = requireSelectedCustomerDeliveryStop(row.deliveryStops[0] ?? null, row.id);
   const eta = selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
   const vehicle = row.currentRouteVersion?.routePlan?.vehicle ?? null;
-  const vehiclePosition = row.currentRouteVersion?.routePlan?.trackingGeometry ?? null;
+  const vehiclePosition = usableDsvTrackingGeometry(row.currentRouteVersion?.routePlan ?? null);
   const currentRouteStop = selectCurrentRouteStop(stop.routePlanStops, row.currentRouteVersion?.routePlanId ?? null);
   const routePlanId = currentRouteStop?.routePlanId ?? eta?.routePlanId ?? row.currentRouteVersion?.routePlanId ?? null;
   return {
@@ -1744,7 +1760,7 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
 function toCustomerRouteScopeRow(row: CustomerRouteScopeOrderRow): DsvV1CustomerRouteScopeRow[] {
   const routeVersion = row.currentRouteVersion;
   const routePlan = routeVersion?.routePlan ?? null;
-  const vehiclePosition = routePlan?.trackingGeometry ?? null;
+  const vehiclePosition = usableDsvTrackingGeometry(routePlan);
   const vehicleLatitude = decimalToNumber(vehiclePosition?.lastLatitude ?? null);
   const vehicleLongitude = decimalToNumber(vehiclePosition?.lastLongitude ?? null);
   if (
@@ -1760,6 +1776,26 @@ function toCustomerRouteScopeRow(row: CustomerRouteScopeOrderRow): DsvV1Customer
     vehicleLatitude,
     vehicleLongitude,
   }];
+}
+
+function usableDsvTrackingGeometry<T extends {
+  constraints: unknown;
+  driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
+  planDate: Date;
+  trackingGeometry: { lastOccurredAt: Date } | null;
+}>(routePlan: T | null): T['trackingGeometry'] | null {
+  if (routePlan?.trackingGeometry === null || routePlan === null) return null;
+  const eventWindow = resolveRouteTrackingEventWindow({
+    constraints: routePlan.constraints,
+    planDate: routePlan.planDate,
+    startOccurredAt: (routePlan.driverEvents ?? [])
+      .filter((event) => event.eventType === 'ROUTE_STARTED')
+      .sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime())[0]?.occurredAt,
+  });
+  return eventWindow === null
+    || occurredAtWithinRouteTrackingEventWindow(eventWindow, routePlan.trackingGeometry.lastOccurredAt)
+    ? routePlan.trackingGeometry
+    : null;
 }
 
 function requireSelectedCustomerDeliveryStop(

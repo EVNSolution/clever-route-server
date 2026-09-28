@@ -1630,7 +1630,7 @@ export function registerDriverEventRoutes(
       }
     }
 
-    if (!result.duplicate && eventInput.eventType === 'LOCATION_UPDATED') {
+    if (!result.duplicate && eventInput.eventType === 'LOCATION_UPDATED' && result.trackingPositionAccepted !== false) {
       const positionEvent = createRouteTrackingPositionEvent({
         driverId: driverContext.driverId,
         eventId: result.eventId,
@@ -1643,7 +1643,7 @@ export function registerDriverEventRoutes(
       if (positionEvent !== null) {
         dependencies.routeTrackingStreamHub?.publishPosition(positionEvent);
       }
-    } else if (!result.duplicate) {
+    } else if (!result.duplicate && eventInput.eventType !== 'LOCATION_UPDATED') {
       const progressEvent = createRouteTrackingProgressEvent({
         deliveryStopId: eventInput.deliveryStopId,
         driverId: driverContext.driverId,
