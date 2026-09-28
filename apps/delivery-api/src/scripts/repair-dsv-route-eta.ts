@@ -117,14 +117,14 @@ async function main(): Promise<void> {
         process.stdout.write(`${JSON.stringify({ ...result, mode: 'audit', planSha256, runtimeRevision: imageRevision })}\n`);
         return;
       }
-      const backup = await verifyBackupEvidence(prisma, flags, planSha256, plan.generatedAt);
+      const backup = await verifyBackupEvidence(prisma, flags, planSha256, plan);
       const result = await applyDsvEtaRepairPlan(prisma, plan);
       process.stdout.write(`${JSON.stringify({ ...result, backupSha256: backup.backupSha256, mode: 'apply', planSha256, runtimeRevision: imageRevision })}\n`);
       return;
     }
     const baseUrl = process.env.OSRM_KOREA_BASE_URL;
     if (!baseUrl) throw new DsvEtaRepairRefusal('KOREA_OSRM_UNAVAILABLE');
-    const plan = await createDsvEtaRepairPlan(prisma, new OsrmRouteGeometryProvider({ baseUrl, timeoutMs: 60_000 }), scope, imageRevision);
+    const plan = await createDsvEtaRepairPlan(prisma, new OsrmRouteGeometryProvider({ baseUrl, timeoutMs: 120_000 }), scope, imageRevision);
     const stopCount = plan.routes.reduce((sum, route) => sum + route.stops.length, 0);
     if (stopCount !== flags.expectedStopCount) throw new DsvEtaRepairRefusal('EXPECTED_STOP_COUNT_MISMATCH');
     const data = JSON.stringify(plan);
@@ -158,10 +158,12 @@ type BackupManifest = {
   backupBytes: number;
   backupListingSha256: string;
   backupSha256: string;
+  cacheBaselineSha256?: string;
   createdAt: string;
   database: string;
   planSha256: string;
   recoveryPlanSha256: string;
+  repairSchema?: DsvEtaRepairPlan['schema'];
   routePlanIds: string[];
   runtimeRevision: string;
   schema: string;
@@ -173,10 +175,12 @@ const execFileAsync = promisify(execFile);
 
 type RecoveryPlan = {
   backupSha256: string;
+  cacheBaselineSha256?: string;
   database: string;
   disposableDatabase: string;
   planSha256: string;
   routePlanIds: string[];
+  repairSchema?: DsvEtaRepairPlan['schema'];
   schema: 'dsv_eta_scoped_recovery_v1';
   steps: ['RESTORE_TO_DISPOSABLE_DATABASE', 'VERIFY_TARGET_BASELINE', 'CAS_COMPENSATE_ETA_AND_CACHE', 'AUDIT_UNCHANGED_OPERATIONS'];
   systemIdentifier: string;
@@ -186,7 +190,7 @@ export async function verifyBackupEvidence(
   prisma: PrismaClient,
   flags: Flags,
   planSha256: string,
-  planGeneratedAt: string
+  plan: DsvEtaRepairPlan
 ): Promise<BackupManifest> {
   const manifest = JSON.parse(await readFile(flags.backupManifest!, 'utf8')) as BackupManifest;
   const createdAt = Date.parse(manifest.createdAt);
@@ -196,6 +200,10 @@ export async function verifyBackupEvidence(
   `;
   const recoveryText = await readFile(flags.recoveryPlanFile!, 'utf8');
   const recovery = JSON.parse(recoveryText) as RecoveryPlan;
+  const cacheBaselineSha256 = plan.schema === 'dsv_eta_missing_duration_repair_v2'
+    ? sha(JSON.stringify(plan.routes.map((route) => ({
+      routePlanId: route.routePlanId, cacheAction: route.cacheAction, beforeCacheIds: route.beforeCacheIds
+    })))) : undefined;
   const header = Buffer.alloc(5);
   const archive = await open(flags.backupFile!, 'r');
   try { await archive.read(header, 0, 5, 0); } finally { await archive.close(); }
@@ -205,7 +213,11 @@ export async function verifyBackupEvidence(
     || !isSha(manifest.backupListingSha256)
     || !isSha(manifest.recoveryPlanSha256)
     || !Number.isSafeInteger(manifest.backupBytes) || manifest.backupBytes < 1024
-    || !Number.isFinite(createdAt) || createdAt < Date.parse(planGeneratedAt) || createdAt > Date.now()
+    || !Number.isFinite(createdAt) || createdAt < Date.parse(plan.generatedAt) || createdAt > Date.now()
+    || manifest.repairSchema !== (plan.schema === 'dsv_eta_missing_duration_repair_v2' ? plan.schema : undefined)
+    || recovery.repairSchema !== manifest.repairSchema
+    || manifest.cacheBaselineSha256 !== cacheBaselineSha256
+    || recovery.cacheBaselineSha256 !== cacheBaselineSha256
     || manifest.database !== database[0]?.database
     || manifest.systemIdentifier !== cluster[0]?.systemIdentifier
     || manifest.systemIdentifier !== flags.clusterSystemIdentifier
