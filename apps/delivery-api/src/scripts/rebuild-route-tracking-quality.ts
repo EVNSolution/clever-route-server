@@ -199,7 +199,7 @@ export async function buildRouteTrackingQualityPlan(
   if (inspection.source.length === 0) throw new Error('No LOCATION_UPDATED source events were found for this route.');
   const document = buildRouteTrackingGeometryDocument(inspection.source);
   if (document.coordinates.length < 2) throw new Error('At least two valid tracking coordinates are required.');
-  const outcome = await roadMatchProvider.matchWithStatus(document);
+  const outcome = await roadMatchProvider.matchWithStatus(document, inspection.source);
   if (outcome.retryable) throw new Error('OSRM route-tracking match was incomplete or retryable; rebuild aborted.');
   const path = outcome.path;
   if (path === null) throw new Error('OSRM did not produce a usable route-tracking match.');

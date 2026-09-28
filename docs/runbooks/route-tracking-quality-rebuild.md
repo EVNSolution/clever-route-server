@@ -30,8 +30,8 @@ below it is reliable. Actual acquisition gaps, driver changes, invalid/reversed
 time, implausible speed, and unsupported road transitions remain disqualifiers.
 Short supplements additionally require reliable anchors (at most 50 m accuracy),
 at most 120 seconds and 750 m between endpoints, and the road distance, duration,
-and ambiguity checks. Interior observations must participate in matching; do not
-replace an observed trace with an unconstrained endpoint route.
+and ambiguity checks. Interior observations must constrain the road geometry;
+do not replace an observed trace with an unconstrained endpoint route.
 
 Each accepted leg requires explicit OSRM tracepoint-to-leg mapping, continuous
 step geometry, valid time order, and bounded road distance and displacement.
@@ -42,9 +42,22 @@ may qualify only for Level 1 with matching confidence at least 0.8. The hard
 displacement and observed-speed checks account for a bounded three-sigma endpoint
 error envelope; they never excuse missing source/matching metadata or an actual gap.
 These cutoffs are initial product policy, not guarantees supplied by OSRM.
-A rejected leg cannot be promoted by a later supplement pass. Repeated
-arrival coordinates are valid zero-length steps; genuine closed turns must be
-preserved rather than treated as malformed paths.
+Ordinary rejected legs cannot be promoted by a later supplement pass. The one
+exception is a short interval rejected solely because OSRM returned null
+tracepoints: both adjacent Level 0 road anchors must remain unchanged, every
+intervening source edge must be explicitly classified as null-tracepoint-only,
+and every raw GPS source index must be examined. This exception is enabled only
+for a guarded historical rebuild that supplies the original event sequence;
+the normal background worker does not run this observed-null rescue pass.
+The rebuild can examine points removed by geometry simplification. The same driver,
+reliable timestamps and accuracy, a unique bounded OSRM road
+candidate, and monotonic support from every observation are also required.
+Matching-index boundaries, malformed tracepoint metadata, filtered-out raw
+fixes, or any competing rejection cause leave the path disconnected. This
+adds Level 1 inferred road geometry; it never rewrites an accepted match or
+the recorded GPS events. Repeated arrival coordinates are valid zero-length
+steps; genuine closed turns must be preserved rather than treated as malformed
+paths.
 
 Cache v5 adds a separate contextual supplement for spans that the normal matcher
 cannot ingest because interior accuracy is above 200 m. It requires confident
@@ -90,6 +103,9 @@ job is queued, processing, retrying, or rejected.
 The migration queues existing geometry rows whose cache schema is older than v5
 without clearing their current cache. Do not manually delete the queue or cache
 rows to force a refresh. Diagnose job status and provider reachability first.
+An algorithm-only release under the same cache schema does not refresh existing
+v5 rows. Historical recomputation must use the guarded per-route dry-run,
+backup, and apply procedure below, one route at a time with resource checks.
 
 Inspect the selected service day's level counts and the actual road shapes during
 replay. A larger feature count or zero acquisition gaps does not prove better
