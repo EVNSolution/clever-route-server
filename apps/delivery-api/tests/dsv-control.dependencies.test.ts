@@ -3,7 +3,10 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import { DsvAssignmentCommandService } from '../src/modules/dsv/dsv-assignment-command.service.js';
-import { loadDsvControlDependencies } from '../src/modules/dsv/dsv-control.dependencies.js';
+import {
+  loadDsvControlDependencies,
+  loadDsvRouteOptimizationScheduler,
+} from '../src/modules/dsv/dsv-control.dependencies.js';
 import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
 import { DsvRouteOptimizationScheduler } from '../src/modules/dsv/dsv-route-optimization.scheduler.js';
 import type { RouteGroupingService } from '../src/modules/route-grouping/route-grouping.types.js';
@@ -139,6 +142,25 @@ describe('loadDsvControlDependencies', () => {
 
     expect(dispatchImportService.options.routeOptimizationScheduler)
       .toBeInstanceOf(DsvRouteOptimizationScheduler);
+  });
+
+  test('gives DSV geometry fallback enough time without changing the optimizer timeout', () => {
+    const scheduler = loadDsvRouteOptimizationScheduler({
+      env: {
+        OSRM_KOREA_BASE_URL: 'http://osrm-korea:5000',
+        OSRM_TIMEOUT_MS: '10000',
+      },
+      nodeEnv: 'test',
+      prisma: {} as PrismaClient,
+    }) as unknown as {
+      services: {
+        routeOptimizationService: { timeoutMs: number };
+        routePlanService: { routeGeometryProvider: { timeoutMs: number } };
+      };
+    };
+
+    expect(scheduler.services.routeOptimizationService.timeoutMs).toBe(10_000);
+    expect(scheduler.services.routePlanService.routeGeometryProvider.timeoutMs).toBe(45_000);
   });
 
   test('wires assignment command service so unassign route is not service unavailable', async () => {
