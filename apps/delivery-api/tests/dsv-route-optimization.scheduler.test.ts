@@ -135,6 +135,87 @@ describe('DsvRouteOptimizationScheduler', () => {
     expect(createJob).not.toHaveBeenCalled();
   });
 
+  test.each(['FAILED', 'TIMEOUT'] as const)(
+    'falls back to geometry-only ETA generation when READY route optimization ends as %s',
+    async (jobStatus) => {
+      vi.useFakeTimers();
+      const detail = routeDetail();
+      const job = {
+        id: 'job-timeout',
+        routePlanId: detail.routePlan.id,
+        status: 'QUEUED',
+      };
+      const refreshRouteGeometryForRoutePlan = vi.fn().mockResolvedValue(detail);
+      const updateRoutePlanStops = vi.fn();
+      const scheduler = new DsvRouteOptimizationScheduler({
+        routeOptimizationJobService: {
+          createJob: vi.fn().mockResolvedValue(job),
+          findLatestJob: vi.fn().mockResolvedValue({ ...job, status: jobStatus }),
+          markApplyingResult: vi.fn(),
+          markRunning: vi.fn().mockResolvedValue({ ...job, status: 'RUNNING' }),
+          recordEngineOutcome: vi.fn().mockResolvedValue({ ...job, status: jobStatus }),
+        },
+        routeOptimizationService: {
+          optimizeStopOrder: vi.fn(),
+          optimizeStopOrderWithDiagnostics: vi.fn().mockResolvedValue({
+            failure: {
+              code: jobStatus === 'TIMEOUT' ? 'solver_timeout' : 'network_error',
+              elapsedMs: 10_000,
+              message: 'OSRM Trip request failed.',
+            },
+            ok: false,
+          }),
+        },
+        routePlanService: {
+          getRoutePlanDetail: vi.fn().mockResolvedValue(detail),
+          refreshRouteGeometryForRoutePlan,
+          updateRoutePlanStops,
+        },
+      }, { debounceMs: 0 });
+
+      scheduler.schedule({ routePlanIds: ['route-1'], shopDomain: 'DSV-DEMO.LOCAL' });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(updateRoutePlanStops).not.toHaveBeenCalled();
+      expect(refreshRouteGeometryForRoutePlan).toHaveBeenCalledWith({
+        routePlanId: 'route-1',
+        shopDomain: 'dsv-demo.local',
+        source: 'EXPLICIT_REFRESH',
+      });
+    },
+  );
+
+  test.each(['IN_PROGRESS', 'COMPLETED'])('never optimizes or refreshes an assigned %s route', async (status) => {
+    vi.useFakeTimers();
+    const detail = routeDetail();
+    detail.routePlan.status = status;
+    const createJob = vi.fn();
+    const optimizeStopOrder = vi.fn();
+    const refreshRouteGeometryForRoutePlan = vi.fn();
+    const scheduler = new DsvRouteOptimizationScheduler({
+      routeOptimizationJobService: {
+        createJob,
+        findLatestJob: vi.fn(),
+        markApplyingResult: vi.fn(),
+        markRunning: vi.fn(),
+        recordEngineOutcome: vi.fn(),
+      },
+      routeOptimizationService: { optimizeStopOrder },
+      routePlanService: {
+        getRoutePlanDetail: vi.fn().mockResolvedValue(detail),
+        refreshRouteGeometryForRoutePlan,
+        updateRoutePlanStops: vi.fn(),
+      },
+    }, { debounceMs: 0 });
+
+    scheduler.schedule({ routePlanIds: ['route-1'], shopDomain: 'dsv-demo.local' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(createJob).not.toHaveBeenCalled();
+    expect(optimizeStopOrder).not.toHaveBeenCalled();
+    expect(refreshRouteGeometryForRoutePlan).not.toHaveBeenCalled();
+  });
+
   test('skips empty and unassigned routes without refreshing geometry or creating jobs', async () => {
     vi.useFakeTimers();
     const empty = routeDetail();

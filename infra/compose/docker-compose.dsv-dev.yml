@@ -23,6 +23,8 @@ services:
       context: ../..
       dockerfile: apps/delivery-api/Dockerfile
       target: runtime
+      args:
+        COMMIT_SHA: ${COMMIT_SHA:-0000000000000000000000000000000000000000}
     command: ["/app/scripts/dsv-g007-migrate-deploy.sh"]
     depends_on:
       postgres:
@@ -56,6 +58,8 @@ services:
       context: ../..
       dockerfile: apps/delivery-api/Dockerfile
       target: runtime
+      args:
+        COMMIT_SHA: ${COMMIT_SHA:-0000000000000000000000000000000000000000}
     depends_on:
       seed:
         condition: service_completed_successfully

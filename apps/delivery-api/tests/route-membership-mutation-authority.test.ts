@@ -9,6 +9,7 @@ const authorizedMembershipWriters = [
   'modules/driver/rolling-eta-backfill.ts',
   'modules/dsv/dsv-assignment-command.service.ts',
   'modules/dsv/dsv-dispatch-import.service.ts',
+  'modules/dsv/dsv-eta-repair.ts', // Reviewed ETA-only stop update; no membership fields.
   'modules/route-grouping/route-grouping.service.ts',
   'modules/route-plans/route-plan.repository.ts'
 ];
@@ -19,6 +20,7 @@ const reviewedMutationInventory = [
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:1',
+  'modules/dsv/dsv-eta-repair.ts:routePlanStop.updateMany:1',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.create:8',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.update:4',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.updateMany:2',

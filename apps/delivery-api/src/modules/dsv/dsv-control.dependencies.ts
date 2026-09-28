@@ -58,6 +58,8 @@ export type DsvControlRuntimeEnv = AdminRouteGroupRuntimeEnv
   string
 >>;
 
+const DSV_ROUTE_GEOMETRY_TIMEOUT_MS = 45_000;
+
 export function loadDsvControlDependencies(input: {
   adminAccounts?: DsvAdminAccountAuthenticator;
   env: DsvControlRuntimeEnv;
@@ -175,7 +177,7 @@ export function loadDsvRouteOptimizationScheduler(input: {
     new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }),
     new OsrmRouteGeometryProvider({
       baseUrl,
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      timeoutMs: Math.max(DSV_ROUTE_GEOMETRY_TIMEOUT_MS, timeoutMs ?? 0),
     }),
     routeOptimizationJobService,
   );

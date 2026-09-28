@@ -121,6 +121,7 @@ build_and_push() {
     --target runtime \
     --push \
     --provenance=false \
+    --build-arg COMMIT_SHA="$COMMIT_SHA" \
     --label "org.opencontainers.image.revision=$COMMIT_SHA" \
     --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
     --label "org.clever-route.image-role=runtime" \
