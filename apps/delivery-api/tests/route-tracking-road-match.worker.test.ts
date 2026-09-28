@@ -144,6 +144,50 @@ describe('route tracking road match worker', () => {
     expect(maximumActive).toBe(2);
   });
 
+  test('continues claiming work when another matching job remains active', async () => {
+    const first = claimedJob;
+    const second = { ...claimedJob, id: 'job-2', leaseToken: 'lease-2', routePlanId: 'route-2' };
+    let firstClaimed = false;
+    let secondAvailable = false;
+    let secondClaimed = false;
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let providerCalls = 0;
+    const repository = {
+      claimNext: vi.fn(() => {
+        if (!firstClaimed) { firstClaimed = true; return Promise.resolve(first); }
+        if (secondAvailable && !secondClaimed) { secondClaimed = true; return Promise.resolve(second); }
+        return Promise.resolve(null);
+      }),
+      loadInput: vi.fn(() => Promise.resolve(document)),
+      markDead: vi.fn(),
+      markSucceededWithoutPath: vi.fn(() => Promise.resolve(true)),
+      publishMatchedPath: vi.fn(),
+      releaseForRetry: vi.fn(),
+    };
+    const provider = { match: vi.fn(async () => {
+      providerCalls += 1;
+      if (providerCalls === 1) await firstGate;
+      return null;
+    }) };
+    const worker = new RouteTrackingRoadMatchWorker(repository as never, provider, {
+      batchSize: 2,
+      concurrency: 2,
+      pollIntervalMs: 10,
+    });
+
+    try {
+      worker.start();
+      await vi.waitFor(() => expect(provider.match).toHaveBeenCalledTimes(1));
+      secondAvailable = true;
+      await vi.waitFor(() => expect(provider.match).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+      expect(secondClaimed).toBe(true);
+    } finally {
+      releaseFirst();
+      await worker.close();
+    }
+  });
+
   test('renews the lease while a long provider call remains active', async () => {
     vi.useFakeTimers();
     try {

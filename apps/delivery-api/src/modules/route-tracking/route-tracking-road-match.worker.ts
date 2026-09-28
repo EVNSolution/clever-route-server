@@ -97,10 +97,27 @@ export class RouteTrackingRoadMatchWorker {
   }
 
   private async runLoop(): Promise<void> {
+    const active = new Set<Promise<void>>();
     while (!this.stopped) {
       try {
-        const processed = await this.runDueBatch();
-        if (processed >= this.options.batchSize) continue;
+        let claimed = 0;
+        while (!this.stopped && active.size < this.options.concurrency && claimed < this.options.batchSize) {
+          const job = await this.repository.claimNext({
+            leaseMs: this.options.leaseMs,
+            now: new Date(),
+          });
+          if (job === null) break;
+          claimed += 1;
+          const pending = this.service.process(job)
+            .catch((error: unknown) => {
+              this.logger?.error?.(
+                { errorCode: 'ROUTE_TRACKING_ROAD_MATCH_WORKER_ITERATION_FAILED', message: errorMessage(error) },
+                'route tracking road match worker iteration failed',
+              );
+            })
+            .finally(() => { active.delete(pending); });
+          active.add(pending);
+        }
       } catch (error) {
         this.logger?.error?.(
           { errorCode: 'ROUTE_TRACKING_ROAD_MATCH_WORKER_ITERATION_FAILED', message: errorMessage(error) },
@@ -110,6 +127,7 @@ export class RouteTrackingRoadMatchWorker {
       if (this.stopped) break;
       await this.waitForNextPoll();
     }
+    await Promise.allSettled(active);
   }
 
   private async waitForNextPoll(): Promise<void> {
