@@ -286,7 +286,9 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     baseUrl: string,
     candidate: GapSupplementCandidate,
   ): Promise<GapSupplementResult> {
-    if (!candidate.contextual && candidate.samples.length >= 3) return this.matchGapSupplement(baseUrl, candidate);
+    if (candidate.samples.length >= 3 && (!candidate.contextual || candidate.samples.length === 3)) {
+      return this.matchGapSupplement(baseUrl, candidate);
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
@@ -319,6 +321,9 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     candidate: GapSupplementCandidate,
   ): Promise<GapSupplementResult> {
     const chunk = { coordinates: candidate.coordinates, samples: candidate.samples };
+    const maximumInputAccuracyMeters = candidate.contextual
+      ? MAX_CONTEXTUAL_SUPPLEMENT_ACCURACY_METERS
+      : ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
@@ -327,7 +332,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
         baseUrl,
         chunk,
         this.gpsPrecisionMeters,
-        ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters,
+        maximumInputAccuracyMeters,
       ), {
         method: 'GET',
         redirect: 'error',
@@ -698,7 +703,7 @@ function buildContextualGapSupplementCandidates(
     ))) return [];
     const leftIndex = document.samples.findIndex((sample) => sample.sourceIndex === leftRange.endSourceIndex);
     const rightIndex = document.samples.findIndex((sample) => sample.sourceIndex === rightRange.startSourceIndex);
-    if (leftIndex < 0 || rightIndex - leftIndex < 3) return [];
+    if (leftIndex < 0 || rightIndex - leftIndex < 2) return [];
     const samples = document.samples.slice(leftIndex, rightIndex + 1);
     const coordinates = document.coordinates.slice(leftIndex, rightIndex + 1);
     const leftSample = samples[0]!;
@@ -735,10 +740,17 @@ function buildContextualGapSupplementCandidates(
     const startCoordinate = coordinates[0]!;
     const endCoordinate = coordinates.at(-1)!;
     const straightDistanceMeters = distanceBetweenCoordinatesMeters(startCoordinate, endCoordinate);
+    const singleInteriorObservation = samples.length === 3;
+    const maxElapsedMs = singleInteriorObservation
+      ? MAX_GAP_SUPPLEMENT_ELAPSED_MS
+      : MAX_CONTEXTUAL_SUPPLEMENT_ELAPSED_MS;
+    const maxDistanceMeters = singleInteriorObservation
+      ? MAX_GAP_SUPPLEMENT_DISTANCE_METERS
+      : MAX_CONTEXTUAL_SUPPLEMENT_DISTANCE_METERS;
     if (
-      !(elapsedSeconds > 0 && elapsedSeconds <= MAX_CONTEXTUAL_SUPPLEMENT_ELAPSED_MS / 1000)
+      !(elapsedSeconds > 0 && elapsedSeconds <= maxElapsedMs / 1000)
       || straightDistanceMeters < MIN_GAP_SUPPLEMENT_DISTANCE_METERS
-      || straightDistanceMeters > MAX_CONTEXTUAL_SUPPLEMENT_DISTANCE_METERS
+      || straightDistanceMeters > maxDistanceMeters
       || straightDistanceMeters / elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
     ) return [];
     const startSourceIndex = leftSample.sourceIndex;
@@ -926,7 +938,7 @@ function selectStrictGapSupplementMatch(
   const maxRouteDuration = candidate.elapsedSeconds * 1.5 + 15;
   if (
     !Number.isFinite(confidence)
-    || confidence < MIN_CONFIDENT_MATCH
+    || confidence < (candidate.contextual ? MIN_SOFT_MATCH_CONFIDENCE : MIN_CONFIDENT_MATCH)
     || !Number.isFinite(distance)
     || !Number.isFinite(duration)
     || distance <= 0
@@ -946,7 +958,9 @@ function selectStrictGapSupplementMatch(
         candidate.coordinates[index]!,
         location,
         candidate.samples[index]!.accuracyMeters,
-      );
+      )
+      && (!candidate.contextual || index !== 1
+        || distanceBetweenCoordinatesMeters(candidate.coordinates[index]!, location) <= 75);
   });
   if (!supported) return null;
   const firstLocation = readCoordinatePair(objectOrNull(object.tracepoints[0])?.location);
@@ -957,7 +971,9 @@ function selectStrictGapSupplementMatch(
     || distanceBetweenCoordinatesMeters(candidate.startCoordinate, firstLocation) > 50
     || distanceBetweenCoordinatesMeters(candidate.endCoordinate, lastLocation) > 50
   ) return null;
-  return coordinates;
+  return candidate.contextual && !supportsContextualRoute(candidate, coordinates)
+    ? null
+    : coordinates;
 }
 
 function readCoordinatePair(value: unknown): [number, number] | null {

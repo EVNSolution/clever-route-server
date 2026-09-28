@@ -739,6 +739,129 @@ describe('route tracking road matching', () => {
     expect(result?.inferredGeometry?.coordinates).toEqual([contextualSupplementRoute()]);
   });
 
+  test('supplements one noisy observation only through a short, unique road corridor', async () => {
+    const input = supplementInput();
+    input.samples[2]!.accuracyMeters = 260;
+    const fetch = singleNoisyObservationFetch();
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(input);
+
+    const matchUrls = (fetch.mock.calls as unknown as Array<[string]>).map(([url]) => url)
+      .filter((url) => url.includes('/match/v1/driving/'));
+    expect(matchUrls).toHaveLength(3);
+    expect(matchUrls[2]).toContain('radiuses=20%3B260%3B20');
+    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => url.includes('/route/v1/driving/'))).toBe(false);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1,
+      reason: 'LOW_ACCURACY',
+      startSourceIndex: 1,
+      endSourceIndex: 3,
+    })]);
+    expect(result?.inferredGeometry?.coordinates).toEqual([supplementRouteCoordinates()]);
+  });
+
+  test('keeps a single noisy observation disconnected when road alternatives are ambiguous', async () => {
+    const input = supplementInput();
+    input.samples[2]!.accuracyMeters = 260;
+    const fetch = singleNoisyObservationFetch(supplementMatchResponse({ ambiguous: true }));
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(input);
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => url.includes('/match/v1/driving/'))).toHaveLength(3);
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
+  test('keeps a single noisy observation disconnected when the road detour is too long', async () => {
+    const input = supplementInput();
+    input.samples[2]!.accuracyMeters = 260;
+    const fetch = singleNoisyObservationFetch(supplementMatchResponse({ distance: 230 }));
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(input);
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => url.includes('/match/v1/driving/'))).toHaveLength(3);
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
+  test.each([
+    ['low confidence', supplementMatchResponse({ confidence: 0.79 })],
+    ['an excessive interior snap', (() => {
+      const payload = supplementMatchResponse();
+      payload.tracepoints[1] = { ...payload.tracepoints[1]!, location: [-79.3990, 43.6510] };
+      return payload;
+    })()],
+    ['a missing interior tracepoint', supplementMatchResponse({ partial: true })],
+    ['a different matching index', (() => {
+      const payload = supplementMatchResponse();
+      payload.tracepoints[1] = { ...payload.tracepoints[1]!, matchings_index: 1 };
+      return payload;
+    })()],
+    ['an off-corridor road shape', (() => {
+      const payload = supplementMatchResponse();
+      payload.matchings[0]!.geometry.coordinates = [
+        [-79.3995, 43.6500], [-79.3990, 43.6600], [-79.3985, 43.6500],
+      ];
+      return payload;
+    })()],
+  ])('keeps a single noisy observation disconnected for %s', async (_label, payload) => {
+    const input = supplementInput();
+    input.samples[2]!.accuracyMeters = 260;
+    const fetch = singleNoisyObservationFetch(payload);
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(input);
+
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
+  test.each([
+    ['accuracy above 400 m', (input: RouteTrackingGeometryDocumentV1) => { input.samples[2]!.accuracyMeters = 401; }],
+    ['a GPS acquisition gap', (input: RouteTrackingGeometryDocumentV1) => { input.samples[2]!.gapBefore = true; }],
+    ['a driver change', (input: RouteTrackingGeometryDocumentV1) => { input.samples[2]!.driverId = 'driver-2'; }],
+  ])('does not retry a single noisy observation across %s', async (_label, mutate) => {
+    const input = supplementInput();
+    input.samples[2]!.accuracyMeters = 260;
+    mutate(input);
+    const fetch = singleNoisyObservationFetch();
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(input);
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => readRequestedCoordinates(url).length === 3)).toBe(false);
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
+  test('does not extend a single-observation corridor past the short-gap time bound', async () => {
+    const input = supplementInput();
+    input.samples[2]!.accuracyMeters = 260;
+    input.samples[2]!.occurredAt = '2026-07-21T00:01:30.000Z';
+    input.samples[3]!.occurredAt = '2026-07-21T00:02:40.000Z';
+    input.samples[4]!.occurredAt = '2026-07-21T00:03:10.000Z';
+    const fetch = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(
+      osrmMatchResponse(readRequestedCoordinates(url)),
+    ))));
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(input);
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).every(([url]) => readRequestedCoordinates(url).length === 2)).toBe(true);
+    expect(result?.inferredGeometry).toBeNull();
+  });
+
   test.each([
     ['an ambiguous road alternative', { ambiguous: true, offCorridor: false }],
     ['a route outside the recorded accuracy corridor', { ambiguous: false, offCorridor: true }],
@@ -1115,6 +1238,15 @@ function supplementRouteCoordinates(): Array<[number, number]> {
   ];
 }
 
+function singleNoisyObservationFetch(supplementPayload: unknown = supplementMatchResponse()) {
+  return vi.fn((url: string) => {
+    const requested = readRequestedCoordinates(url);
+    return Promise.resolve(new Response(JSON.stringify(
+      requested.length === 3 ? supplementPayload : osrmMatchResponse(requested),
+    )));
+  });
+}
+
 function contextualSupplementInput(): RouteTrackingGeometryDocumentV1 {
   const input = document([
     [-79.4060, 43.6500],
@@ -1217,12 +1349,12 @@ function supplementFetch(supplementPayload: unknown = supplementMatchResponse())
   });
 }
 
-function supplementMatchResponse(options: { ambiguous?: boolean; confidence?: number; partial?: boolean } = {}) {
+function supplementMatchResponse(options: { ambiguous?: boolean; confidence?: number; distance?: number; partial?: boolean } = {}) {
   return {
     code: 'Ok',
     matchings: [{
       confidence: options.confidence ?? 0.9,
-      distance: 100,
+      distance: options.distance ?? 100,
       duration: 60,
       geometry: { coordinates: supplementRouteCoordinates(), type: 'LineString' },
     }],

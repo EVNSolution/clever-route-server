@@ -48,14 +48,24 @@ preserved rather than treated as malformed paths.
 
 Cache v5 adds a separate contextual supplement for spans that the normal matcher
 cannot ingest because interior accuracy is above 200 m. It requires confident
-anchors on both sides, at least two chronological interior observations, one
-driver, no acquisition gap, known accuracy at most 400 m, at most 10 minutes and
-3 km between anchors, a unique OSRM route candidate, and monotonic projection of
-every observation inside its bounded accuracy corridor. Per-sample projected
-speed still has the hard 55 m/s ceiling. A competing route of similar cost, an
-off-corridor observation, reversed progress, or any existing rejected OSRM leg
-keeps the span disconnected. This is additional evidence validation, not a wider
-acceptance threshold for normal v4 matching.
+anchors on both sides, one driver, no acquisition gap, known accuracy at most
+400 m, and monotonic projection of every observation inside its bounded
+accuracy corridor. A span with one interior observation uses the short-gap
+limits of 120 seconds and 750 m between anchors and re-matches all three
+observations. It requires one OSRM matching with confidence at least 0.8, three
+unambiguous tracepoints, at most 75 m interior displacement, and the stricter
+short-route distance and duration checks. Spans with at least two interior
+observations retain the 10-minute and 3-km limits and require a unique OSRM
+route candidate. Per-sample projected speed still has the hard 55 m/s ceiling.
+A competing route of similar cost, an off-corridor observation, reversed
+progress, or any existing rejected OSRM leg keeps the span disconnected. This
+is additional evidence validation, not a wider acceptance threshold for normal
+v4 matching.
+
+This refinement does not change the v5 cache schema. Deploying it does not
+recalculate an already published v5 historical path; use the guarded per-route
+rebuild below after reviewing its dry-run, or wait for a later accepted GPS input
+to queue a refresh.
 
 Source semantics: [OSRM v26.5 Match API](https://github.com/Project-OSRM/osrm-backend/blob/v26.5.0/docs/http.md#match-service).
 
