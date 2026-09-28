@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 
 import type { RouteTrackingGeometryPositionInput } from '../src/modules/route-tracking/route-tracking.geometry.js';
@@ -25,6 +25,23 @@ const scope = {
 };
 
 describe('route tracking quality rebuild script', () => {
+  test('passes the complete original GPS sequence to the historical road matcher', async () => {
+    const store = new InMemoryStore();
+    const matchWithStatus = vi.fn((document: Parameters<RouteTrackingRoadMatchClassifyingProvider['matchWithStatus']>[0]) =>
+      Promise.resolve({ path: matchedPath(document), retryable: false }));
+    await executeRouteTrackingQualityRebuild({
+      args: parseRebuildRouteTrackingQualityArgs([
+        '--app-id', scope.appId,
+        '--shop-domain', scope.shopDomain,
+        '--route-plan-id', scope.routePlanId,
+      ]),
+      roadMatchProvider: { ...roadMatchProvider, matchWithStatus },
+      store,
+    });
+
+    expect(matchWithStatus).toHaveBeenCalledWith(expect.anything(), positions());
+  });
+
   test('requires exact tenant identity and defaults to mutation-free dry-run', async () => {
     const store = new InMemoryStore();
     const args = parseRebuildRouteTrackingQualityArgs([

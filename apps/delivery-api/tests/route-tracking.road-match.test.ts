@@ -6,7 +6,11 @@ import {
   buildRouteTrackingRoadMatchedPath,
   shouldRefreshRouteTrackingRoadMatchedPath,
 } from '../src/modules/route-tracking/route-tracking.road-match.js';
-import type { RouteTrackingGeometryDocumentV1, RouteTrackingGeometryRecord } from '../src/modules/route-tracking/route-tracking.geometry.js';
+import type {
+  RouteTrackingGeometryDocumentV1,
+  RouteTrackingGeometryPositionInput,
+  RouteTrackingGeometryRecord,
+} from '../src/modules/route-tracking/route-tracking.geometry.js';
 
 describe('route tracking road matching', () => {
   test('matches GPS samples against OSRM without closing the path or exposing point markers', async () => {
@@ -717,6 +721,221 @@ describe('route tracking road matching', () => {
     expect(result?.inferredRanges).toEqual([]);
   });
 
+  test('rescues only an observed short NO_MATCH corridor between confident road anchors', async () => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
+      [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
+    ], { intervalMs: 10_000 });
+    input.samples.forEach((sample, index) => { if (index > 0) sample.gapBefore = false; sample.sourceIndex = index; });
+    const fetch = observedNoMatchFetch(input);
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).map(([url]) => String(url))
+      .filter((url) => url.includes('/route/v1/driving/'))).toHaveLength(1);
+    expect(result.path?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ startSourceIndex: 4, endSourceIndex: 5 }),
+    ]);
+    expect(result.path?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1, reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex: 4,
+    })]);
+    expect(result.path?.inferredGeometry?.coordinates).toEqual([input.coordinates.slice(1, 5)]);
+  });
+
+  test('does not add observed NO_MATCH Route requests to the normal durable worker', async () => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
+      [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
+    ], { intervalMs: 10_000 });
+    input.samples.forEach((sample, index) => { sample.gapBefore = false; sample.sourceIndex = index; });
+    const fetch = observedNoMatchFetch(input);
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input);
+
+    expect(result.retryable).toBe(false);
+    expect(result.path?.inferredRanges).toEqual([]);
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) =>
+      String(url).includes('/route/v1/driving/'))).toHaveLength(0);
+  });
+
+  test('does not bridge a null tracepoint run that also crosses an OSRM matching boundary', async () => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
+      [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
+    ], { intervalMs: 10_000 });
+    input.samples.forEach((sample, index) => { if (index > 0) sample.gapBefore = false; sample.sourceIndex = index; });
+    const left = osrmMatchResponse(input.coordinates.slice(0, 4), { nullIndexes: [2] });
+    const right = osrmMatchResponse(input.coordinates.slice(4));
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [left.matchings[0], right.matchings[0]],
+      tracepoints: [
+        ...left.tracepoints.map((tracepoint) => tracepoint === null ? null : { ...tracepoint, matchings_index: 0 }),
+        ...right.tracepoints.map((tracepoint) => ({ ...tracepoint, matchings_index: 1 })),
+      ],
+    }))));
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(result.path?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ startSourceIndex: 4, endSourceIndex: 5 }),
+    ]);
+    expect(result.path?.inferredRanges).toEqual([]);
+  });
+
+  test('does not bridge a null-only run between different OSRM matching identities', async () => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
+      [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
+    ], { intervalMs: 10_000 });
+    input.samples.forEach((sample, index) => { sample.gapBefore = false; sample.sourceIndex = index; });
+    const left = osrmMatchResponse(input.coordinates.slice(0, 2));
+    const right = osrmMatchResponse(input.coordinates.slice(4));
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [left.matchings[0], right.matchings[0]],
+      tracepoints: [
+        ...left.tracepoints.map((point) => ({ ...point, matchings_index: 0 })),
+        null, null,
+        ...right.tracepoints.map((point) => ({ ...point, matchings_index: 1 })),
+      ],
+    }))));
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect(result.path?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ startSourceIndex: 4, endSourceIndex: 5 }),
+    ]);
+    expect(result.path?.inferredRanges).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['valid', 'invalid-waypoint', 'ambiguous'])('does not bridge a null run around an interior %s tracepoint', async (variant) => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
+      [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
+      [-79.3988, 43.6500],
+    ], { intervalMs: 10_000 });
+    input.samples.forEach((sample, index) => { if (index > 0) sample.gapBefore = false; sample.sourceIndex = index; });
+    const payload = osrmMatchResponse(input.coordinates, { nullIndexes: [2, 4] });
+    const interior = payload.tracepoints[3] as Record<string, unknown>;
+    if (variant === 'invalid-waypoint') interior.waypoint_index = 99;
+    if (variant === 'ambiguous') interior.alternatives_count = 1;
+    const fetch = vi.fn((url: string) => {
+      if (url.includes('/route/v1/driving/')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          code: 'Ok',
+          routes: [{ distance: 90, duration: 40, geometry: {
+            coordinates: input.coordinates.slice(1, 6), type: 'LineString',
+          } }],
+          waypoints: [{ location: input.coordinates[1] }, { location: input.coordinates[5] }],
+        })));
+      }
+      return Promise.resolve(new Response(JSON.stringify(payload)));
+    });
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) =>
+      String(url).includes('/route/v1/driving/'))).toHaveLength(0);
+    expect(result.path?.inferredRanges).not.toContainEqual(expect.objectContaining({
+      reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex: 5,
+    }));
+  });
+
+  test.each([
+    ['a real acquisition gap', (input: RouteTrackingGeometryDocumentV1) => {
+      input.samples.slice(3).forEach((sample) => {
+        sample.occurredAt = new Date(Date.parse(sample.occurredAt) + 200_000).toISOString();
+        sample.receivedAt = new Date(Date.parse(sample.receivedAt) + 200_000).toISOString();
+      });
+      input.samples[3]!.gapBefore = true;
+    }, {}],
+    ['a driver change', (input: RouteTrackingGeometryDocumentV1) => { input.samples[3]!.driverId = 'driver-2'; }, {}],
+    ['an unexamined raw GPS point', (input: RouteTrackingGeometryDocumentV1) => {
+      input.samples.slice(3).forEach((sample) => { sample.sourceIndex! += 1; });
+      input.sourcePointCount += 1;
+    }, {}],
+    ['an equally supported alternative road', () => {}, { alternate: true }],
+  ])('keeps a short NO_MATCH corridor disconnected for %s', async (_label, mutate, options) => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
+      [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
+    ], { intervalMs: 10_000 });
+    input.samples.forEach((sample, index) => { if (index > 0) sample.gapBefore = false; sample.sourceIndex = index; });
+    mutate(input);
+    const fetch = observedNoMatchFetch(input, options);
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect(result.path?.inferredRanges).not.toContainEqual(expect.objectContaining({
+      reason: 'NO_MATCH', startSourceIndex: 1,
+    }));
+  });
+
+  test.each([
+    ['supported', [-79.3993, 43.6500], true],
+    ['backtracking', [-79.3998, 43.6500], false],
+    ['off-road', [-79.3993, 43.6520], false],
+  ] as const)('checks a filtered raw GPS point before rescuing an observed corridor: %s', async (_label, omitted, accepted) => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
+      [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
+    ], { intervalMs: 10_000 });
+    input.samples.forEach((sample, index) => {
+      sample.gapBefore = false;
+      sample.sourceIndex = index >= 4 ? index + 1 : index;
+    });
+    input.sourcePointCount = 7;
+    const rawEvidence: RouteTrackingGeometryPositionInput[] = input.samples.map((sample, index) => ({
+      ...(sample.accuracyMeters === undefined ? {} : { accuracyMeters: sample.accuracyMeters }),
+      driverId: sample.driverId,
+      eventId: sample.eventId,
+      latitude: input.coordinates[index]![1],
+      longitude: input.coordinates[index]![0],
+      occurredAt: sample.occurredAt,
+      receivedAt: sample.receivedAt,
+      routePlanId: 'route-1',
+    }));
+    rawEvidence.splice(4, 0, {
+      accuracyMeters: 20,
+      driverId: 'driver-1',
+      eventId: 'filtered-event',
+      latitude: omitted[1],
+      longitude: omitted[0],
+      occurredAt: '2026-07-21T00:00:35.000Z',
+      receivedAt: '2026-07-21T00:00:36.000Z',
+      routePlanId: 'route-1',
+    });
+    const fetch = observedNoMatchFetch(input);
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidence);
+
+    expect(result.retryable).toBe(false);
+    expect(result.path?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ startSourceIndex: 5, endSourceIndex: 6 }),
+    ]);
+    expect(result.path?.inferredRanges?.some((range) => (
+      range.reason === 'NO_MATCH' && range.startSourceIndex === 1 && range.endSourceIndex === 5
+    )) ?? false).toBe(accepted);
+  });
+
   test('uses the full observed corridor to infer a longer high-accuracy-excluded span', async () => {
     const input = contextualSupplementInput();
     const fetch = contextualSupplementFetch(input);
@@ -1069,6 +1288,19 @@ function document(
   };
 }
 
+function rawEvidenceFromDocument(input: RouteTrackingGeometryDocumentV1): RouteTrackingGeometryPositionInput[] {
+  return input.samples.map((sample, index) => ({
+    ...(sample.accuracyMeters === undefined ? {} : { accuracyMeters: sample.accuracyMeters }),
+    driverId: sample.driverId,
+    eventId: sample.eventId,
+    latitude: input.coordinates[index]![1],
+    longitude: input.coordinates[index]![0],
+    occurredAt: sample.occurredAt,
+    receivedAt: sample.receivedAt,
+    routePlanId: 'route-1',
+  }));
+}
+
 function trackingRecord(overrides: Partial<RouteTrackingGeometryRecord> = {}): RouteTrackingGeometryRecord {
   return {
     firstOccurredAt: new Date('2026-07-21T00:00:00.000Z'),
@@ -1089,6 +1321,27 @@ function trackingRecord(overrides: Partial<RouteTrackingGeometryRecord> = {}): R
     sourcePointCount: 3,
     ...overrides,
   };
+}
+
+function observedNoMatchFetch(input: RouteTrackingGeometryDocumentV1, options: { alternate?: boolean } = {}) {
+  return vi.fn((url: string) => {
+    if (url.includes('/route/v1/driving/')) {
+      const coordinates = input.coordinates.slice(1, 5);
+      return Promise.resolve(new Response(JSON.stringify({
+        code: 'Ok',
+        routes: [
+          { distance: 70, duration: 30, geometry: { coordinates, type: 'LineString' } },
+          ...(options.alternate ? [{
+            distance: 75,
+            duration: 32,
+            geometry: { coordinates: [coordinates[0], [-79.3996, 43.6501], coordinates.at(-1)], type: 'LineString' },
+          }] : []),
+        ],
+        waypoints: [{ location: coordinates[0] }, { location: coordinates.at(-1) }],
+      })));
+    }
+    return Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(input.coordinates, { nullIndexes: [2, 3] }))));
+  });
 }
 
 function supplementInput(): RouteTrackingGeometryDocumentV1 {
