@@ -59,6 +59,35 @@ describe('buildUvisVehicleDailyRoute', () => {
     ]);
   });
 
+  test('does not promote an impossible frozen-position jump to a matched road', () => {
+    const samples = [
+      sample('2026-09-29T22:33:44.000Z', 37.285223, 126.949263),
+      sample('2026-09-29T22:34:44.000Z', 37.243395, 126.950675),
+    ];
+    const roadVertex: [number, number] = [126.96, 37.26];
+    const document = trailDocument(samples, [[
+      [126.949263, 37.285223],
+      roadVertex,
+      [126.950675, 37.243395],
+    ]], [
+      { observedAt: samples[0]!.observedAt, lineIndex: 0, coordinateIndex: 0 },
+      { observedAt: samples[1]!.observedAt, lineIndex: 0, coordinateIndex: 2 },
+    ]);
+
+    const route = buildUvisVehicleDailyRoute(samples, document);
+
+    expect(route?.coordinates).toEqual([
+      [126.949263, 37.285223],
+      [126.950675, 37.243395],
+    ]);
+    expect(route?.coordinates).not.toContainEqual(roadVertex);
+    expect(route?.bridges).toEqual([{
+      fromObservedAt: samples[0]!.observedAt,
+      toObservedAt: samples[1]!.observedAt,
+      reason: 'IMPLAUSIBLE_JUMP',
+    }]);
+  });
+
   test('uses distinct raw endpoints when trusted anchors collapse the whole path to one point', () => {
     const samples = [
       sample('2026-09-29T01:10:00.000Z', 37, 127),

@@ -1596,11 +1596,17 @@ describe('DSV v1 read routes', () => {
         sessions: [{
           completedAt: null,
           completionEventId: null,
-          endpoint: { endedAt: '2026-08-09T01:02:00.000Z', reason: 'LAST_VALID_SAMPLE' },
+          endpoint: { endedAt: '2026-08-09T01:03:00.000Z', reason: 'LAST_VALID_SAMPLE' },
           restart: null,
           routePlanId: 'route-plan-1',
           segments: [{
             roadMatchedGeometry: {
+              anchors: [
+                { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-09T01:00:00.000Z' },
+                { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-09T01:01:00.000Z' },
+                { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-09T01:02:00.000Z' },
+                { coordinateIndex: 1, lineIndex: 1, observedAt: '2026-08-09T01:03:00.000Z' },
+              ],
               coordinates: [
                 [[126.905, 37.5], [126.915, 37.5]],
                 [[126.918, 37.5], [126.94, 37.5]],
@@ -1611,6 +1617,7 @@ describe('DSV v1 read routes', () => {
               { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z', speedKph: 10 },
               { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:01:00.000Z', speedKph: 10 },
               { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.92, observedAt: '2026-08-09T01:02:00.000Z', speedKph: 10 },
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.94, observedAt: '2026-08-09T01:03:00.000Z', speedKph: 10 },
             ],
             trailMarker: { kind: 'START', latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z' },
           }],
@@ -1662,6 +1669,77 @@ describe('DSV v1 read routes', () => {
         expect.arrayContaining([expect.objectContaining({ routePlanId: 'route-plan-1' })]),
       );
       expect(JSON.stringify(expectDsvV1Metadata(response).data)).not.toContain('route-plan-1');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not publish a road line after its stationary end anchor is rejected', async () => {
+    const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
+    try {
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1' })],
+        page: { hasMore: false },
+        serviceDate: '2026-08-09',
+        timezone: 'Asia/Seoul',
+      });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1', vehicleLatitude: 37.5, vehicleLongitude: 126.91 },
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-last', vehicleId: 'vehicle-1', vehicleLatitude: 37.5, vehicleLongitude: 126.91 },
+      ]);
+      queryService.listCustomerGpsTrailHistories.mockResolvedValueOnce([{
+        dailyRoute: null,
+        serviceDate: '2026-08-09',
+        sessions: [{
+          completedAt: null,
+          completionEventId: null,
+          endpoint: { endedAt: '2026-08-09T01:01:00.000Z', reason: 'LAST_VALID_SAMPLE' },
+          restart: null,
+          routePlanId: 'route-plan-1',
+          segments: [{
+            roadMatchedGeometry: {
+              anchors: [
+                { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-09T01:00:00.000Z' },
+                { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-09T01:01:00.000Z' },
+              ],
+              coordinates: [[[126.91, 37.5], [126.9104, 37.5]]],
+              type: 'MultiLineString',
+            },
+            samples: [
+              { distanceTodayKm: null, ignitionOn: false, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:00:00.000Z', speedKph: 0 },
+              { distanceTodayKm: null, ignitionOn: false, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:01:00.000Z', speedKph: 0 },
+            ],
+          }],
+          sessionIndex: 0,
+          startedAt: '2026-08-09T01:00:00.000Z',
+          startEventId: null,
+          startSource: 'ROUTE_STARTED',
+        }],
+        timezone: 'Asia/Seoul',
+        vehicleId: 'vehicle-1',
+      }]);
+      routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+        routeGeometry: null,
+        routeStopPoints: [
+          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 1, shopifyOrderGid: 'order-customer-first', snappedCoordinates: [126.909, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 2, shopifyOrderGid: 'order-customer-last', snappedCoordinates: [126.911, 37.5] }),
+        ],
+        stops: [
+          routeDetailStop({ deliveryStopId: 'customer-first-stop', orderId: 'order-customer-first', sequence: 1 }),
+          routeDetailStop({ deliveryStopId: 'customer-last-stop', orderId: 'order-customer-last', sequence: 2 }),
+        ],
+      }));
+      routeGeometryProvider.buildRoute.mockRejectedValueOnce(new Error('OSRM unavailable'));
+
+      const response = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?includeGpsTrails=true&serviceDate=2026-08-09',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(expectDsvV1Metadata(response).data).toMatchObject({ trails: [] });
     } finally {
       await app.close();
     }

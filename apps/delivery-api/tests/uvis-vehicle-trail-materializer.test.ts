@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import {
+  filterDistantRoadMatchedAnchors,
   PrismaUvisVehicleTrailMaterializationRepository,
   UVIS_ROAD_MATCH_POLICY_VERSION,
   UvisVehicleTrailMaterializationQueue,
@@ -662,9 +663,7 @@ describe('PrismaUvisVehicleTrailMaterializationRepository', () => {
     });
 
     expect(document?.segments[0]?.samples).toHaveLength(2);
-    expect(document?.segments[0]?.roadMatchedGeometry?.anchors).toEqual([
-      { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-03T23:50:00.000Z' },
-    ]);
+    expect(document?.segments[0]?.roadMatchedGeometry).toBeNull();
   });
 
   test('sends chronological samples to OSRM when movement starts after a stationary interval', async () => {
@@ -776,6 +775,110 @@ describe('UvisVehicleTrailMaterializationQueue', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('filterDistantRoadMatchedAnchors', () => {
+  const firstAt = '2026-09-29T02:30:25.000Z';
+  const secondAt = '2026-09-29T02:31:25.000Z';
+  const geometry = {
+    type: 'MultiLineString' as const,
+    coordinates: [[
+      [126.954678, 37.353191],
+      [126.954389, 37.353053],
+    ]] as Array<Array<[number, number]>>,
+    anchors: [
+      { observedAt: firstAt, lineIndex: 0, coordinateIndex: 0 },
+      { observedAt: secondAt, lineIndex: 0, coordinateIndex: 1 },
+    ],
+  };
+
+  test('omits road geometry without two source anchors', () => {
+    const samples = [{ observedAt: firstAt, latitude: 37.353191, longitude: 126.954678, speedKph: 30 }];
+    expect(filterDistantRoadMatchedAnchors({
+      type: 'MultiLineString',
+      coordinates: geometry.coordinates,
+    }, samples)).toBeNull();
+    expect(filterDistantRoadMatchedAnchors({
+      ...geometry,
+      anchors: [geometry.anchors[0]!],
+    }, samples)).toBeNull();
+  });
+
+  test('keeps supported lines and reindexes after discarding an unanchored line', () => {
+    const filtered = filterDistantRoadMatchedAnchors({
+      type: 'MultiLineString',
+      coordinates: [
+        [[126.8, 37.2], [126.9, 37.3]],
+        geometry.coordinates[0]!,
+      ],
+      anchors: geometry.anchors.map((anchor) => ({ ...anchor, lineIndex: 1 })),
+    }, [
+      { observedAt: firstAt, latitude: 37.353191, longitude: 126.954678, speedKph: 30 },
+      { observedAt: secondAt, latitude: 37.353191, longitude: 126.954678, speedKph: 30 },
+    ]);
+
+    expect(filtered?.coordinates).toEqual(geometry.coordinates);
+    expect(filtered?.anchors).toEqual(geometry.anchors);
+  });
+
+  test('rejects an adjacent-road anchor during a repeated stop', () => {
+    const filtered = filterDistantRoadMatchedAnchors(geometry, [
+      { observedAt: firstAt, latitude: 37.353191, longitude: 126.954678, speedKph: 0 },
+      { observedAt: secondAt, latitude: 37.353191, longitude: 126.954678, speedKph: 0 },
+    ]);
+    expect(filtered).toBeNull();
+  });
+
+  test('keeps the same anchor for moving samples and nearby stop anchors', () => {
+    const moving = filterDistantRoadMatchedAnchors(geometry, [
+      { observedAt: firstAt, latitude: 37.353191, longitude: 126.954678, speedKph: 30 },
+      { observedAt: secondAt, latitude: 37.353191, longitude: 126.954678, speedKph: 30 },
+    ]);
+    expect(moving?.anchors).toEqual(geometry.anchors);
+
+    const nearbyGeometry = {
+      ...geometry,
+      coordinates: [[geometry.coordinates[0]![0]!, [126.95455, 37.35315] as [number, number]]],
+    };
+    const stopped = filterDistantRoadMatchedAnchors(nearbyGeometry, [
+      { observedAt: firstAt, latitude: 37.353191, longitude: 126.954678, speedKph: 0 },
+      { observedAt: secondAt, latitude: 37.353191, longitude: 126.954678, speedKph: 0 },
+    ]);
+    expect(stopped?.anchors).toEqual(nearbyGeometry.anchors);
+  });
+
+  test('rejects a distant anchor with ignition off even across a stale gap', () => {
+    const filtered = filterDistantRoadMatchedAnchors(geometry, [
+      { observedAt: secondAt, latitude: 37.353191, longitude: 126.954678, speedKph: 0, ignitionOn: false },
+    ]);
+    expect(filtered).toBeNull();
+  });
+
+  test('does not leave an untrusted road tail visible after its end anchor is rejected', () => {
+    const thirdAt = '2026-09-29T02:32:25.000Z';
+    const road = {
+      type: 'MultiLineString' as const,
+      coordinates: [[
+        [126.954678, 37.353000],
+        [126.954678, 37.353191],
+        [126.954389, 37.353053],
+      ]] as Array<Array<[number, number]>>,
+      anchors: [
+        { observedAt: firstAt, lineIndex: 0, coordinateIndex: 0 },
+        { observedAt: secondAt, lineIndex: 0, coordinateIndex: 1 },
+        { observedAt: thirdAt, lineIndex: 0, coordinateIndex: 2 },
+      ],
+    };
+    const filtered = filterDistantRoadMatchedAnchors(road, [
+      { observedAt: firstAt, latitude: 37.353000, longitude: 126.954678, speedKph: 30 },
+      { observedAt: secondAt, latitude: 37.353191, longitude: 126.954678, speedKph: 30 },
+      { observedAt: thirdAt, latitude: 37.353191, longitude: 126.954678, speedKph: 0, ignitionOn: false },
+    ]);
+
+    expect(filtered?.coordinates).toEqual([road.coordinates[0]!.slice(0, 2)]);
+    expect(filtered?.anchors).toEqual(road.anchors.slice(0, 2));
+    expect(road.coordinates[0]).toHaveLength(3);
   });
 });
 
