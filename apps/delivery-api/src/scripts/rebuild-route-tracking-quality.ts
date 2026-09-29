@@ -17,6 +17,7 @@ import {
   OsrmRouteTrackingRoadMatchProvider,
   type RouteTrackingRoadMatchClassifyingProvider,
 } from '../modules/route-tracking/route-tracking.road-match.js';
+import type { RouteTrackingSourceRangeV1 } from '../modules/route-tracking/route-tracking.types.js';
 import { enqueueRouteTrackingRoadMatch } from '../modules/route-tracking/route-tracking-road-match-job.repository.js';
 import {
   loadRouteTrackingEventWindow,
@@ -33,6 +34,7 @@ type RebuildArgs = {
   expectedCurrentDerivedHash?: string;
   expectedCurrentWatermark?: string;
   planHash?: string;
+  preserveExistingRoadCache: boolean;
   restore: boolean;
   routePlanId: string;
   shopDomain: string;
@@ -91,6 +93,8 @@ type TrackingSummary = {
 type BackupEnvelope = {
   backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1';
   allowUnmeasuredAccuracyInference?: boolean;
+  preserveExistingRoadCache?: boolean;
+  currentDerivedStateHash?: string;
   capturedAt: string;
   currentDerived: unknown;
   eventWindow: RebuildEventWindow;
@@ -121,6 +125,8 @@ export interface RouteTrackingQualityRebuildStore {
     expectedSourcePrefixDigest: string;
     expectedSourcePrefixPointCount: number;
     planHash: string;
+    preserveExistingRoadCache: boolean;
+    expectedCurrentDerivedStateHash?: string;
     roadMatchWrite: RebuildPlan['roadMatchWrite'];
   }): Promise<ApplyResult>;
   restoreDerived(input: {
@@ -149,6 +155,7 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
   let apply = false;
   let restore = false;
   let allowUnmeasuredAccuracyInference = false;
+  let preserveExistingRoadCache = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === undefined) continue;
@@ -165,6 +172,11 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
     if (arg === '--allow-unmeasured-accuracy-inference') {
       if (allowUnmeasuredAccuracyInference) throw new Error('Duplicate --allow-unmeasured-accuracy-inference flag.');
       allowUnmeasuredAccuracyInference = true;
+      continue;
+    }
+    if (arg === '--preserve-existing-road-cache') {
+      if (preserveExistingRoadCache) throw new Error('Duplicate --preserve-existing-road-cache flag.');
+      preserveExistingRoadCache = true;
       continue;
     }
     if (arg === '--help' || arg === '-h') throw new UsageRequestedError();
@@ -186,6 +198,7 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
     allowUnmeasuredAccuracyInference,
     appId: required(values, '--app-id'),
     apply,
+    preserveExistingRoadCache,
     restore,
     routePlanId: required(values, '--route-plan-id'),
     shopDomain: required(values, '--shop-domain'),
@@ -201,6 +214,15 @@ export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArg
   if (apply && restore) throw new Error('--apply and --restore are mutually exclusive.');
   if (allowUnmeasuredAccuracyInference && restore) {
     throw new Error('--allow-unmeasured-accuracy-inference is not used with --restore.');
+  }
+  if (preserveExistingRoadCache && restore) {
+    throw new Error('--preserve-existing-road-cache is not used with --restore.');
+  }
+  if (preserveExistingRoadCache && backupFile === undefined) {
+    throw new Error('--preserve-existing-road-cache requires a private --backup-file.');
+  }
+  if (preserveExistingRoadCache && allowUnmeasuredAccuracyInference) {
+    throw new Error('--preserve-existing-road-cache cannot be combined with --allow-unmeasured-accuracy-inference.');
   }
   if (allowUnmeasuredAccuracyInference && backupFile === undefined) {
     throw new Error('--allow-unmeasured-accuracy-inference requires a private --backup-file.');
@@ -232,6 +254,7 @@ export async function buildRouteTrackingQualityPlan(
   inspection: RebuildInspection,
   roadMatchProvider: RouteTrackingRoadMatchClassifyingProvider,
   allowUnmeasuredAccuracyInference = false,
+  preserveExistingRoadCache = false,
 ): Promise<RebuildPlan> {
   if (inspection.source.length === 0) throw new Error('No LOCATION_UPDATED source events were found for this route.');
   const document = buildRouteTrackingGeometryDocument(inspection.source);
@@ -240,13 +263,25 @@ export async function buildRouteTrackingQualityPlan(
   if (outcome.retryable) throw new Error('OSRM route-tracking match was incomplete or retryable; rebuild aborted.');
   const path = outcome.path;
   if (path === null) throw new Error('OSRM did not produce a usable route-tracking match.');
-  const roadMatchWrite = buildRouteTrackingRoadMatchCacheWrite(path);
+  const proposedRoadMatchWrite = buildRouteTrackingRoadMatchCacheWrite(path);
+  const roadMatchWrite = preserveExistingRoadCache
+    ? buildPreservedRouteTrackingRoadMatchWrite(
+        inspection.currentDerived,
+        proposedRoadMatchWrite,
+        document,
+        inspection.source,
+      )
+    : proposedRoadMatchWrite;
   const routeStateHash = hashCanonical(inspection.identity);
   const sourcePrefixDigest = digestRouteTrackingSource(inspection.source);
   const sourcePrefixLastKey = sourceKey(inspection.source.at(-1)!);
   const eventWindow = serializeEventWindow(inspection.eventWindow);
   const planPayload = {
     ...(allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
+    ...(preserveExistingRoadCache ? {
+      currentDerivedStateHash: routeTrackingDerivedStateHash(inspection.currentDerived),
+      preserveExistingRoadCache: true,
+    } : {}),
     eventWindow,
     identity: inspection.identity,
     proposedGeometry: createRouteTrackingGeometryWrite(inspection.identity.routePlanId, document),
@@ -305,7 +340,7 @@ export async function executeRouteTrackingQualityRebuild(input: {
 
   if (!input.args.apply) {
     const plan = await buildRouteTrackingQualityPlan(inspection, input.roadMatchProvider,
-      input.args.allowUnmeasuredAccuracyInference);
+      input.args.allowUnmeasuredAccuracyInference, input.args.preserveExistingRoadCache);
     if (input.args.allowUnmeasuredAccuracyInference) {
       assertUnmeasuredAccuracyInferenceGain(inspection.currentDerived, plan.roadMatchWrite);
     }
@@ -314,6 +349,10 @@ export async function executeRouteTrackingQualityRebuild(input: {
       backup = await writeBackupExclusive(input.args.backupFile, {
         backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
         ...(input.args.allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
+        ...(input.args.preserveExistingRoadCache ? {
+          currentDerivedStateHash: routeTrackingDerivedStateHash(inspection.currentDerived),
+          preserveExistingRoadCache: true,
+        } : {}),
         capturedAt: new Date().toISOString(),
         currentDerived: inspection.currentDerived,
         eventWindow: plan.eventWindow,
@@ -333,6 +372,16 @@ export async function executeRouteTrackingQualityRebuild(input: {
   if ((reviewedBackup.allowUnmeasuredAccuracyInference === true) !== input.args.allowUnmeasuredAccuracyInference) {
     throw new Error('Reviewed unmeasured-accuracy inference policy does not match this apply.');
   }
+  if ((reviewedBackup.preserveExistingRoadCache === true) !== input.args.preserveExistingRoadCache) {
+    throw new Error('Reviewed existing-road preservation policy does not match this apply.');
+  }
+  const reviewedDerivedStateHash = reviewedBackup.currentDerivedStateHash;
+  if (input.args.preserveExistingRoadCache) {
+    if (reviewedDerivedStateHash === undefined) {
+      throw new Error('Reviewed preservation backup is missing the current derived state hash.');
+    }
+    assertCurrentDerivedPreservationState(inspection.currentDerived, reviewedDerivedStateHash);
+  }
   assertIdentity(reviewedBackup.identity, input.args);
   assertEventWindow(inspection.eventWindow, reviewedBackup.eventWindow);
   if (hashCanonical(inspection.identity) !== reviewedBackup.routeStateHash) {
@@ -349,7 +398,7 @@ export async function executeRouteTrackingQualityRebuild(input: {
     ...inspection,
     identity: reviewedBackup.identity,
     source: approvedPrefix,
-  }, input.roadMatchProvider, input.args.allowUnmeasuredAccuracyInference);
+  }, input.roadMatchProvider, input.args.allowUnmeasuredAccuracyInference, input.args.preserveExistingRoadCache);
   if (reviewedBackup.planHash !== input.args.planHash || reviewedBackup.planHash !== plan.planHash) {
     throw new Error('Reviewed plan hash does not match the current approved source prefix and proposed output.');
   }
@@ -370,6 +419,10 @@ export async function executeRouteTrackingQualityRebuild(input: {
     expectedSourcePrefixDigest: reviewedBackup.sourcePrefixDigest,
     expectedSourcePrefixPointCount: reviewedBackup.sourcePrefixPointCount,
     planHash: reviewedBackup.planHash,
+    preserveExistingRoadCache: input.args.preserveExistingRoadCache,
+    ...(reviewedBackup.currentDerivedStateHash === undefined ? {} : {
+      expectedCurrentDerivedStateHash: reviewedBackup.currentDerivedStateHash,
+    }),
     roadMatchWrite: plan.roadMatchWrite,
   });
   return output(input.args, applied.before, applied.after, plan, {
@@ -435,6 +488,8 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
     expectedSourcePrefixDigest: string;
     expectedSourcePrefixPointCount: number;
     planHash: string;
+    preserveExistingRoadCache: boolean;
+    expectedCurrentDerivedStateHash?: string;
     roadMatchWrite: RebuildPlan['roadMatchWrite'];
   }): Promise<ApplyResult> {
     return this.prisma.$transaction(async (tx) => {
@@ -453,6 +508,13 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
       const geometryWrite = createRouteTrackingGeometryWrite(identity.routePlanId, document);
       const desired = { ...geometryWrite, ...input.roadMatchWrite };
       const current = await tx.routeTrackingGeometry.findUnique({ where: { routePlanId: identity.routePlanId } });
+      const expectedCurrentDerivedStateHash = input.expectedCurrentDerivedStateHash;
+      if (input.preserveExistingRoadCache) {
+        if (expectedCurrentDerivedStateHash === undefined) {
+          throw new Error('Preservation apply is missing the reviewed current derived state hash.');
+        }
+        assertCurrentDerivedPreservationState(current, expectedCurrentDerivedStateHash);
+      }
       if (input.allowUnmeasuredAccuracyInference) {
         assertUnmeasuredAccuracyInferenceGain(current, input.roadMatchWrite);
       }
@@ -476,11 +538,7 @@ export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQual
           where: { routePlanId: identity.routePlanId },
         });
       }
-      await tx.routeTrackingRoadMatchJob.updateMany(buildHistoricalRebuildJobSettlement(
-        identity.routePlanId,
-        document,
-        new Date(),
-      ));
+      await settleHistoricalRebuildJob(tx, identity.routePlanId, document, new Date());
       return {
         after: summarize(document, input.roadMatchWrite),
         before: summarizeDerived(current),
@@ -713,6 +771,20 @@ export function buildHistoricalRebuildJobSettlement(
   };
 }
 
+export async function settleHistoricalRebuildJob(
+  tx: Pick<Prisma.TransactionClient, 'routeTrackingRoadMatchJob'>,
+  routePlanId: string,
+  document: RouteTrackingGeometryDocumentV1,
+  now: Date,
+): Promise<void> {
+  const result = await tx.routeTrackingRoadMatchJob.updateMany(
+    buildHistoricalRebuildJobSettlement(routePlanId, document, now),
+  );
+  if (result.count !== 1) {
+    throw new Error('Historical rebuild road-match job is missing; derived write rolled back.');
+  }
+}
+
 export function buildRestoredRoadMatchJobSettlement(
   routePlanId: string,
   restored: { lastOccurredAt: Date; sourcePointCount: number },
@@ -780,6 +852,409 @@ export function digestRouteTrackingSource(source: RouteTrackingGeometryPositionI
 
 function sourceKey(position: RouteTrackingGeometryPositionInput): string {
   return `${position.occurredAt}\u0000${position.receivedAt}\u0000${position.eventId}`;
+}
+
+type PreservedRoadLine = {
+  countedByMatcher: boolean;
+  coordinates: Array<[number, number]>;
+  range: RouteTrackingSourceRangeV1;
+};
+
+type StrictRoadCache = {
+  coverage: 'korea' | 'ontario';
+  inferred: PreservedRoadLine[];
+  lastMatchedPosition: Prisma.JsonObject | typeof Prisma.JsonNull;
+  matched: PreservedRoadLine[];
+  matchedPointCount: number;
+  unmatched: RouteTrackingSourceRangeV1[];
+  uncertain: PreservedRoadLine[];
+};
+
+export function buildPreservedRouteTrackingRoadMatchWrite(
+  currentDerived: unknown,
+  proposedWrite: RebuildPlan['roadMatchWrite'],
+  document: RouteTrackingGeometryDocumentV1,
+  source: RouteTrackingGeometryPositionInput[],
+): RebuildPlan['roadMatchWrite'] {
+  if (source.length !== document.sourcePointCount || source.length < 2) {
+    throw new Error('Preservation rebuild raw-source cardinality does not match the geometry document.');
+  }
+  const current = readStrictRoadCache(currentDerived, source, 'existing');
+  const proposed = readStrictRoadCache(proposedWrite, source, 'proposed');
+  if (current.coverage !== proposed.coverage) {
+    throw new Error('Preservation rebuild coverage does not match the existing road cache.');
+  }
+
+  const trusted = [...current.matched, ...current.inferred];
+  assertDisjointTrustedEdges(trusted, 'existing');
+  const additions: PreservedRoadLine[] = [];
+  for (const candidate of [...proposed.matched, ...proposed.inferred]) {
+    if (candidate.range.interpolationLevel !== 0 && candidate.range.interpolationLevel !== 1) continue;
+    if ([...trusted, ...additions].some((line) => rangesShareSourceEdge(line.range, candidate.range))) continue;
+    additions.push(candidate);
+  }
+  if (additions.length === 0) {
+    throw new Error('Preservation rebuild found no new non-overlapping Level 0/1 road line.');
+  }
+
+  const matched = [...current.matched, ...additions.filter((line) => line.range.interpolationLevel === 0)];
+  const inferred = [...current.inferred, ...additions.filter((line) => line.range.interpolationLevel === 1)];
+  const mergedTrusted = [...matched, ...inferred];
+  assertDisjointTrustedEdges(mergedTrusted, 'merged');
+  const uncertain = proposed.uncertain.filter((line) => (
+    !mergedTrusted.some((trustedLine) => rangesShareSourceEdge(trustedLine.range, line.range))
+  ));
+  const unmatchedRanges = buildUncoveredSourceRanges(
+    source,
+    mergedTrusted,
+    [...proposed.unmatched, ...current.unmatched],
+  );
+  const matchedGeometry = roadGeometry(matched);
+  const inferredGeometry = roadGeometry(inferred);
+  const uncertainGeometry = roadGeometry(uncertain);
+  const embeddedMatched = embedPreservedMetadata(matchedGeometry, inferredGeometry, unmatchedRanges);
+  const embeddedUncertain = embedPreservedMetadata(uncertainGeometry, inferredGeometry, unmatchedRanges);
+  const allStoredLines = [...matched, ...inferred, ...uncertain];
+  const matchedPointCount = current.matchedPointCount
+    - pointCount(current.uncertain)
+    + pointCount(uncertain)
+    + pointCount(additions.filter((line) => line.countedByMatcher));
+  const lastInputOccurredAt = source.at(-1)!.occurredAt;
+  const watermarkHash = createHash('sha256')
+    .update(JSON.stringify(allStoredLines.map((line) => line.coordinates)))
+    .digest('hex')
+    .slice(0, 16);
+
+  return {
+    roadMatchedCoverage: current.coverage,
+    roadMatchedGeometry: embeddedMatched ?? Prisma.JsonNull,
+    roadMatchedLastInputOccurredAt: new Date(lastInputOccurredAt),
+    roadMatchedLastPosition: proposed.lastMatchedPosition,
+    roadMatchedPointCount: matchedPointCount,
+    roadMatchedSchemaVersion: 'route_tracking_road_match.v5',
+    roadMatchedSourcePointCount: source.length,
+    roadMatchedUncertainGeometry: embeddedUncertain ?? Prisma.JsonNull,
+    roadMatchedWatermark: [
+      'route_tracking_road_match.v1',
+      current.coverage,
+      source.length,
+      matchedPointCount,
+      lastInputOccurredAt,
+      watermarkHash,
+    ].join(':'),
+  };
+}
+
+function readStrictRoadCache(
+  value: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  label: 'existing' | 'proposed',
+): StrictRoadCache {
+  const record = isRecord(value) ? value : null;
+  if (record === null || record.roadMatchedSchemaVersion !== 'route_tracking_road_match.v5') {
+    throw new Error(`Preservation rebuild requires a valid v5 ${label} road cache.`);
+  }
+  const coverage = record.roadMatchedCoverage;
+  if (coverage !== 'korea' && coverage !== 'ontario') {
+    throw new Error(`Preservation rebuild ${label} coverage is invalid.`);
+  }
+  if (integerOrZero(record.roadMatchedSourcePointCount) !== source.length
+    || (label === 'existing' && integerOrZero(record.sourcePointCount) !== source.length)) {
+    throw new Error(`Preservation rebuild ${label} source cardinality does not match raw GPS.`);
+  }
+  const lastInput = isoOrNull(record.roadMatchedLastInputOccurredAt);
+  if (lastInput !== source.at(-1)!.occurredAt) {
+    throw new Error(`Preservation rebuild ${label} source watermark does not match raw GPS.`);
+  }
+  const matchedObject = nullableGeometryRecord(record.roadMatchedGeometry, `${label} matched`);
+  const uncertainObject = nullableGeometryRecord(record.roadMatchedUncertainGeometry, `${label} uncertain`);
+  const embeddedFromMatched = matchedObject?.inferredGeometry;
+  const embeddedFromUncertain = uncertainObject?.inferredGeometry;
+  if (embeddedFromMatched !== undefined && embeddedFromUncertain !== undefined
+    && hashCanonical(embeddedFromMatched) !== hashCanonical(embeddedFromUncertain)) {
+    throw new Error(`Preservation rebuild ${label} inferred geometry copies disagree.`);
+  }
+  const inferredObject = nullableGeometryRecord(embeddedFromMatched ?? embeddedFromUncertain ?? null, `${label} inferred`);
+  const inferredRanges = inferredObject?.sourceRanges ?? [];
+  const embeddedUnmatchedFromMatched = matchedObject?.unmatchedRanges;
+  const embeddedUnmatchedFromUncertain = uncertainObject?.unmatchedRanges;
+  if (embeddedUnmatchedFromMatched !== undefined && embeddedUnmatchedFromUncertain !== undefined
+    && hashCanonical(embeddedUnmatchedFromMatched) !== hashCanonical(embeddedUnmatchedFromUncertain)) {
+    throw new Error(`Preservation rebuild ${label} unmatched range copies disagree.`);
+  }
+  for (const container of [matchedObject, uncertainObject]) {
+    if (container === null) continue;
+    const embeddedRanges = container.inferredRanges ?? [];
+    if (!Array.isArray(embeddedRanges) || hashCanonical(embeddedRanges) !== hashCanonical(inferredRanges)) {
+      throw new Error(`Preservation rebuild ${label} inferred range copies disagree.`);
+    }
+  }
+  const matched = readStrictRoadLines(matchedObject, source, `${label} matched`, new Set([0]), true);
+  const inferred = readStrictRoadLines(inferredObject, source, `${label} inferred`, new Set([1]), false);
+  const uncertain = readStrictRoadLines(uncertainObject, source, `${label} uncertain`, new Set([2]), true);
+  const matchedPointCount = integerOrZero(record.roadMatchedPointCount);
+  markCountedInferredPrefix(inferred, matchedPointCount - pointCount(matched) - pointCount(uncertain), label);
+  return {
+    coverage,
+    inferred,
+    lastMatchedPosition: readStrictLastMatchedPosition(record.roadMatchedLastPosition, source, label),
+    matched,
+    matchedPointCount,
+    unmatched: readStrictDiagnosticRanges(
+      embeddedUnmatchedFromMatched ?? embeddedUnmatchedFromUncertain ?? [],
+      source,
+      `${label} unmatched`,
+    ),
+    uncertain,
+  };
+}
+
+function readStrictLastMatchedPosition(
+  value: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  label: 'existing' | 'proposed',
+): Prisma.JsonObject | typeof Prisma.JsonNull {
+  if (value === null || value === undefined || value instanceof Prisma.NullTypes.JsonNull) return Prisma.JsonNull;
+  if (!isRecord(value)) throw new Error(`Preservation rebuild ${label} last matched position is malformed.`);
+  const latitude = Number(value.latitude);
+  const longitude = Number(value.longitude);
+  const occurredAt = isoOrNull(value.occurredAt);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90
+    || !Number.isFinite(longitude) || longitude < -180 || longitude > 180
+    || occurredAt === null || !source.some((position) => position.occurredAt === occurredAt)) {
+    throw new Error(`Preservation rebuild ${label} last matched position does not match raw GPS time.`);
+  }
+  return { latitude, longitude, occurredAt };
+}
+
+function nullableGeometryRecord(value: unknown, label: string): Record<string, unknown> | null {
+  if (value === null || value === undefined || value instanceof Prisma.NullTypes.JsonNull) return null;
+  if (!isRecord(value) || value.type !== 'MultiLineString' || !Array.isArray(value.coordinates)) {
+    throw new Error(`Preservation rebuild ${label} geometry is malformed.`);
+  }
+  return value;
+}
+
+function readStrictRoadLines(
+  geometry: Record<string, unknown> | null,
+  source: RouteTrackingGeometryPositionInput[],
+  label: string,
+  allowedLevels: Set<number>,
+  countedByMatcher: boolean,
+): PreservedRoadLine[] {
+  if (geometry === null) return [];
+  const coordinates = geometry.coordinates as unknown[];
+  const ranges = geometry.sourceRanges;
+  if (!Array.isArray(ranges) || ranges.length !== coordinates.length) {
+    if (coordinates.length === 0 && (ranges === undefined || Array.isArray(ranges) && ranges.length === 0)) return [];
+    throw new Error(`Preservation rebuild ${label} line/range cardinality is invalid.`);
+  }
+  return coordinates.map((line, index) => {
+    if (!Array.isArray(line) || line.length < 2) {
+      throw new Error(`Preservation rebuild ${label} line ${index} is malformed.`);
+    }
+    const parsedCoordinates = line.map((coordinate) => {
+      if (!Array.isArray(coordinate) || coordinate.length < 2) {
+        throw new Error(`Preservation rebuild ${label} line ${index} has an invalid coordinate.`);
+      }
+      const longitude = Number(coordinate[0]);
+      const latitude = Number(coordinate[1]);
+      if (!Number.isFinite(longitude) || !Number.isFinite(latitude)
+        || longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) {
+        throw new Error(`Preservation rebuild ${label} line ${index} has an invalid coordinate.`);
+      }
+      return [longitude, latitude] as [number, number];
+    });
+    const range = readStrictSourceRange(ranges[index], source, `${label} line ${index}`);
+    if (!allowedLevels.has(range.interpolationLevel ?? -1)) {
+      throw new Error(`Preservation rebuild ${label} line ${index} has an invalid interpolation level.`);
+    }
+    return { countedByMatcher, coordinates: parsedCoordinates, range };
+  });
+}
+
+function markCountedInferredPrefix(
+  inferred: PreservedRoadLine[],
+  expectedPointCount: number,
+  label: string,
+): void {
+  if (!Number.isInteger(expectedPointCount) || expectedPointCount < 0) {
+    throw new Error(`Preservation rebuild ${label} matched point count is inconsistent with stored road lines.`);
+  }
+  let remaining = expectedPointCount;
+  for (const line of inferred) {
+    if (remaining === 0) break;
+    if (remaining < line.coordinates.length) {
+      throw new Error(`Preservation rebuild ${label} matched point count splits an inferred road line.`);
+    }
+    line.countedByMatcher = true;
+    remaining -= line.coordinates.length;
+  }
+  if (remaining !== 0) {
+    throw new Error(`Preservation rebuild ${label} matched point count exceeds stored road lines.`);
+  }
+}
+
+function pointCount(lines: PreservedRoadLine[]): number {
+  return lines.reduce((sum, line) => sum + line.coordinates.length, 0);
+}
+
+function readStrictSourceRange(
+  value: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  label: string,
+  allowPointRange = false,
+): RouteTrackingSourceRangeV1 {
+  if (!isRecord(value)) throw new Error(`Preservation rebuild ${label} source range is malformed.`);
+  const startSourceIndex = Number(value.startSourceIndex);
+  const endSourceIndex = Number(value.endSourceIndex);
+  if (!Number.isInteger(startSourceIndex) || !Number.isInteger(endSourceIndex)
+    || startSourceIndex < 0
+    || (allowPointRange ? endSourceIndex < startSourceIndex : endSourceIndex <= startSourceIndex)
+    || endSourceIndex >= source.length) {
+    throw new Error(`Preservation rebuild ${label} source range indexes are invalid.`);
+  }
+  const start = source[startSourceIndex];
+  const end = source[endSourceIndex];
+  if (start === undefined || end === undefined
+    || value.startEventId !== start.eventId || value.endEventId !== end.eventId
+    || isoOrNull(value.startOccurredAt) !== start.occurredAt || isoOrNull(value.endOccurredAt) !== end.occurredAt) {
+    throw new Error(`Preservation rebuild ${label} source identity does not match raw GPS.`);
+  }
+  const interpolationLevel = value.interpolationLevel;
+  if (interpolationLevel !== 0 && interpolationLevel !== 1 && interpolationLevel !== 2) {
+    throw new Error(`Preservation rebuild ${label} interpolation level is invalid.`);
+  }
+  const reason = value.reason;
+  if (reason !== undefined && reason !== null
+    && reason !== 'GPS_GAP' && reason !== 'IMPLAUSIBLE_JUMP' && reason !== 'LOW_ACCURACY'
+    && reason !== 'NO_MATCH' && reason !== 'OUT_OF_COVERAGE') {
+    throw new Error(`Preservation rebuild ${label} reason is invalid.`);
+  }
+  return {
+    endEventId: end.eventId,
+    endOccurredAt: end.occurredAt,
+    endSourceIndex,
+    interpolationLevel,
+    ...(reason === 'GPS_GAP' || reason === 'IMPLAUSIBLE_JUMP' || reason === 'LOW_ACCURACY'
+      || reason === 'NO_MATCH' || reason === 'OUT_OF_COVERAGE' ? { reason } : {}),
+    startEventId: start.eventId,
+    startOccurredAt: start.occurredAt,
+    startSourceIndex,
+  };
+}
+
+function readStrictDiagnosticRanges(
+  value: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  label: string,
+): RouteTrackingSourceRangeV1[] {
+  if (!Array.isArray(value)) throw new Error(`Preservation rebuild ${label} ranges are malformed.`);
+  return value.map((range, index) => {
+    const parsed = readStrictSourceRange(range, source, `${label} range ${index}`, true);
+    if (parsed.interpolationLevel !== 2 || parsed.reason === undefined) {
+      throw new Error(`Preservation rebuild ${label} range ${index} has invalid diagnostics.`);
+    }
+    return parsed;
+  });
+}
+
+function rangesShareSourceEdge(left: RouteTrackingSourceRangeV1, right: RouteTrackingSourceRangeV1): boolean {
+  return Math.max(left.startSourceIndex, right.startSourceIndex) < Math.min(left.endSourceIndex, right.endSourceIndex);
+}
+
+function assertDisjointTrustedEdges(lines: PreservedRoadLine[], label: string): void {
+  for (let left = 0; left < lines.length; left += 1) {
+    for (let right = left + 1; right < lines.length; right += 1) {
+      if (rangesShareSourceEdge(lines[left]!.range, lines[right]!.range)) {
+        throw new Error(`Preservation rebuild ${label} trusted source edges overlap.`);
+      }
+    }
+  }
+}
+
+function roadGeometry(lines: PreservedRoadLine[]): Prisma.JsonObject | null {
+  if (lines.length === 0) return null;
+  return {
+    coordinates: lines.map((line) => line.coordinates),
+    sourceRanges: lines.map((line) => line.range),
+    type: 'MultiLineString',
+  };
+}
+
+function embedPreservedMetadata(
+  geometry: Prisma.JsonObject | null,
+  inferredGeometry: Prisma.JsonObject | null,
+  unmatchedRanges: RouteTrackingSourceRangeV1[],
+): Prisma.JsonObject | null {
+  if (geometry === null && inferredGeometry === null && unmatchedRanges.length === 0) return null;
+  return {
+    ...(geometry ?? { coordinates: [], type: 'MultiLineString' }),
+    ...(inferredGeometry === null ? {} : {
+      inferredGeometry,
+      inferredRanges: inferredGeometry.sourceRanges,
+    }),
+    ...(unmatchedRanges.length === 0 ? {} : { unmatchedRanges }),
+  };
+}
+
+function buildUncoveredSourceRanges(
+  source: RouteTrackingGeometryPositionInput[],
+  trusted: PreservedRoadLine[],
+  diagnostics: RouteTrackingSourceRangeV1[],
+): RouteTrackingSourceRangeV1[] {
+  const coveredEdges = new Set<number>();
+  for (const line of trusted) {
+    for (let edge = line.range.startSourceIndex; edge < line.range.endSourceIndex; edge += 1) coveredEdges.add(edge);
+  }
+  const ranges: RouteTrackingSourceRangeV1[] = [];
+  let start: number | null = null;
+  let reason: NonNullable<RouteTrackingSourceRangeV1['reason']> | null = null;
+  for (let edge = 0; edge < source.length - 1; edge += 1) {
+    const edgeReason = diagnosticReasonForEdge(edge, diagnostics);
+    if (!coveredEdges.has(edge) && (start === null || reason !== edgeReason)) {
+      if (start !== null && reason !== null) ranges.push(sourceRange(source, start, edge, reason));
+      start = edge;
+      reason = edgeReason;
+    }
+    const atEnd = edge === source.length - 2;
+    if (start !== null && (coveredEdges.has(edge) || atEnd)) {
+      const end = coveredEdges.has(edge) ? edge : edge + 1;
+      ranges.push(sourceRange(source, start, end, reason ?? 'NO_MATCH'));
+      start = null;
+      reason = null;
+    }
+  }
+  return ranges;
+}
+
+function diagnosticReasonForEdge(
+  edge: number,
+  diagnostics: RouteTrackingSourceRangeV1[],
+): NonNullable<RouteTrackingSourceRangeV1['reason']> {
+  return diagnostics.find((range) => (
+    range.startSourceIndex <= edge + 1 && range.endSourceIndex >= edge
+  ))?.reason ?? 'NO_MATCH';
+}
+
+function sourceRange(
+  source: RouteTrackingGeometryPositionInput[],
+  startSourceIndex: number,
+  endSourceIndex: number,
+  reason: NonNullable<RouteTrackingSourceRangeV1['reason']>,
+): RouteTrackingSourceRangeV1 {
+  const start = source[startSourceIndex]!;
+  const end = source[endSourceIndex]!;
+  return {
+    endEventId: end.eventId,
+    endOccurredAt: end.occurredAt,
+    endSourceIndex,
+    interpolationLevel: 2,
+    reason,
+    startEventId: start.eventId,
+    startOccurredAt: start.occurredAt,
+    startSourceIndex,
+  };
 }
 
 function summarize(
@@ -914,6 +1389,12 @@ export function assertCurrentDerivedRestoreState(
   }
 }
 
+export function assertCurrentDerivedPreservationState(current: unknown, expectedDerivedStateHash: string): void {
+  if (routeTrackingDerivedStateHash(current) !== expectedDerivedStateHash) {
+    throw new Error('Current derived tracking state changed after review; preservation apply aborted.');
+  }
+}
+
 function normalizeDerivedField(key: string, value: unknown): unknown {
   if (key === 'lastLatitude' || key === 'lastLongitude') {
     const number = Number(value);
@@ -955,6 +1436,9 @@ function isBackupEnvelope(value: unknown): value is BackupEnvelope {
   return isRecord(value)
     && value.backupSchemaVersion === 'route_tracking_quality_rebuild_backup.v1'
     && (value.allowUnmeasuredAccuracyInference === undefined || typeof value.allowUnmeasuredAccuracyInference === 'boolean')
+    && (value.preserveExistingRoadCache === undefined || typeof value.preserveExistingRoadCache === 'boolean')
+    && (value.currentDerivedStateHash === undefined
+      || typeof value.currentDerivedStateHash === 'string' && isSha256(value.currentDerivedStateHash))
     && typeof value.planHash === 'string'
     && typeof value.routeStateHash === 'string'
     && typeof value.sourcePrefixDigest === 'string'
@@ -987,6 +1471,7 @@ function output(
     ok: true,
     ...scopeOutput(args),
     ...(args.allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
+    ...(args.preserveExistingRoadCache ? { preserveExistingRoadCache: true } : {}),
     planHash: plan.planHash,
     plannedRoadMatchedWatermark: plan.roadMatchWrite.roadMatchedWatermark,
     eventWindow: plan.eventWindow,
@@ -1124,7 +1609,7 @@ async function main(): Promise<void> {
 }
 
 function printUsage(): void {
-  process.stderr.write('Usage: node dist/scripts/rebuild-route-tracking-quality.js --app-id <app> --shop-domain <domain> --route-plan-id <uuid> [--backup-file <absolute-private-path>] [--allow-unmeasured-accuracy-inference] [--apply --plan-hash <sha256> --backup-sha256 <sha256> | --restore --backup-sha256 <sha256> --expected-current-derived-hash <sha256> --expected-current-watermark <watermark>]\n');
+  process.stderr.write('Usage: node dist/scripts/rebuild-route-tracking-quality.js --app-id <app> --shop-domain <domain> --route-plan-id <uuid> [--backup-file <absolute-private-path>] [--allow-unmeasured-accuracy-inference] [--preserve-existing-road-cache] [--apply --plan-hash <sha256> --backup-sha256 <sha256> | --restore --backup-sha256 <sha256> --expected-current-derived-hash <sha256> --expected-current-watermark <watermark>]\n');
 }
 
 function isMainModule(): boolean {
