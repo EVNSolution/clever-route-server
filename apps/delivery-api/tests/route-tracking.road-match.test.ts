@@ -797,6 +797,118 @@ describe('route tracking road matching', () => {
     expect(result?.inferredRanges).toEqual([]);
   });
 
+  test('bridges an explicit recorded GPS gap only between measured adjacent raw anchors', async () => {
+    const input = recordedGapInput();
+    const fetch = recordedGapFetch(input);
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
+      String(url).includes('/route/v1/driving/')
+    ))).toHaveLength(1);
+    expect(result.path?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ startSourceIndex: 6, endSourceIndex: 7 }),
+    ]);
+    expect(result.path?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1,
+      reason: 'GPS_GAP',
+      startSourceIndex: 3,
+      endSourceIndex: 4,
+    })]);
+    expect(result.path?.inferredGeometry?.coordinates).toEqual([recordedGapRoute(input)]);
+  });
+
+  test('does not bridge an explicit GPS gap across an unexamined raw fix', async () => {
+    const input = recordedGapInput();
+    input.samples.slice(4).forEach((sample) => { sample.sourceIndex! += 1; });
+    input.sourcePointCount += 1;
+    const rawEvidence = rawEvidenceFromDocument(input);
+    rawEvidence.splice(4, 0, {
+      accuracyMeters: 20,
+      driverId: 'driver-1',
+      eventId: 'filtered-event',
+      latitude: 43.66,
+      longitude: -79.39,
+      occurredAt: '2026-07-21T00:02:00.000Z',
+      receivedAt: '2026-07-21T00:02:01.000Z',
+      routePlanId: 'route-1',
+    });
+    const fetch = recordedGapFetch(input);
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidence);
+
+    expect(result.path?.inferredRanges).toEqual([]);
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
+      String(url).includes('/route/v1/driving/')
+    ))).toHaveLength(0);
+  });
+
+  test.each([
+    ['route ID', (raw: RouteTrackingGeometryPositionInput[]) => { raw[4]!.routePlanId = 'route-2'; }],
+    ['coordinate', (raw: RouteTrackingGeometryPositionInput[]) => { raw[4]!.longitude += 0.001; }],
+    ['time', (raw: RouteTrackingGeometryPositionInput[]) => { raw[4]!.occurredAt = '2026-07-21T00:05:05.000Z'; }],
+    ['accuracy', (raw: RouteTrackingGeometryPositionInput[]) => { raw[4]!.accuracyMeters = 30; }],
+  ] as const)('does not bridge an explicit GPS gap when raw %s differs from the retained anchor', async (_field, mutate) => {
+    const input = recordedGapInput();
+    const rawEvidence = rawEvidenceFromDocument(input);
+    mutate(rawEvidence);
+    const fetch = recordedGapFetch(input);
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidence);
+
+    expect(result.path?.inferredRanges).toEqual([]);
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
+      String(url).includes('/route/v1/driving/')
+    ))).toHaveLength(0);
+  });
+
+  test('keeps an explicit GPS gap disconnected when OSRM returns an equally supported alternative', async () => {
+    const input = recordedGapInput();
+    const fetch = recordedGapFetch(input, { ambiguous: true });
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect(result.path?.inferredRanges).toEqual([]);
+  });
+
+  test('rejects an explicit GPS gap route whose polyline exceeds its plausible distance and speed', async () => {
+    const input = recordedGapInput();
+    const fetch = recordedGapFetch(input, { dishonestGeometry: true });
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect(result.path?.inferredRanges).toEqual([]);
+  });
+
+  test('keeps an explicit GPS gap disconnected when anchor speed is implausible', async () => {
+    const input = recordedGapInput();
+    input.samples.slice(4).forEach((sample, offset) => {
+      sample.occurredAt = new Date(Date.parse('2026-07-21T00:01:50.000Z') + offset * 30_000).toISOString();
+      sample.receivedAt = new Date(Date.parse('2026-07-21T00:01:51.000Z') + offset * 30_000).toISOString();
+    });
+    const fetch = recordedGapFetch(input);
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect(result.path?.inferredRanges).toEqual([]);
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
+      String(url).includes('/route/v1/driving/')
+    ))).toHaveLength(0);
+  });
+
   test('rescues only an observed short NO_MATCH corridor between confident road anchors', async () => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
@@ -1417,6 +1529,78 @@ function observedNoMatchFetch(input: RouteTrackingGeometryDocumentV1, options: {
       })));
     }
     return Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(input.coordinates, { nullIndexes: [2, 3] }))));
+  });
+}
+
+function recordedGapInput(): RouteTrackingGeometryDocumentV1 {
+  const input = document([
+    [-79.4110, 43.6500],
+    [-79.4105, 43.6500],
+    [-79.4100, 43.6500],
+    [-79.4095, 43.6500],
+    [-79.3920, 43.6500],
+    [-79.3915, 43.6500],
+    [-79.3910, 43.6500],
+    [-79.3905, 43.6500],
+  ], { intervalMs: 30_000 });
+  input.samples.forEach((sample, index) => {
+    sample.accuracyMeters = index === 3 ? 2.12 : index === 4 ? 27.92 : 20;
+    sample.gapBefore = index === 4;
+    sample.sourceIndex = index;
+  });
+  input.samples.slice(4).forEach((sample, offset) => {
+    sample.occurredAt = new Date(Date.parse('2026-07-21T00:05:04.000Z') + offset * 30_000).toISOString();
+    sample.receivedAt = new Date(Date.parse('2026-07-21T00:05:05.000Z') + offset * 30_000).toISOString();
+  });
+  return input;
+}
+
+function recordedGapRoute(input: RouteTrackingGeometryDocumentV1): Array<[number, number]> {
+  return [
+    input.coordinates[3]!,
+    [-79.4005, 43.6504],
+    input.coordinates[4]!,
+  ];
+}
+
+function recordedGapFetch(
+  input: RouteTrackingGeometryDocumentV1,
+  options: { ambiguous?: boolean; dishonestGeometry?: boolean } = {},
+) {
+  return vi.fn((url: string) => {
+    if (url.includes('/route/v1/driving/')) {
+      const coordinates = options.dishonestGeometry
+        ? [
+            input.coordinates[3]!,
+            [-79.4095, 44.0000] as [number, number],
+            [-79.3920, 44.0000] as [number, number],
+            input.coordinates[4]!,
+          ]
+        : recordedGapRoute(input);
+      return Promise.resolve(new Response(JSON.stringify({
+        code: 'Ok',
+        routes: [
+          { distance: 1_500, duration: 200, geometry: { coordinates, type: 'LineString' } },
+          ...(options.ambiguous ? [{
+            distance: 1_550,
+            duration: 205,
+            geometry: {
+              coordinates: [coordinates[0], [-79.4005, 43.6496], coordinates.at(-1)],
+              type: 'LineString',
+            },
+          }] : []),
+        ],
+        waypoints: [
+          { location: input.coordinates[3] },
+          { location: input.coordinates[4] },
+        ],
+      })));
+    }
+    const requested = readRequestedCoordinates(url);
+    const isLeft = requested[0]?.[0] === input.coordinates[0]?.[0];
+    return Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(requested, {
+      nullIndexes: isLeft ? [2, 3] : [0, 1],
+    }))));
   });
 }
 
