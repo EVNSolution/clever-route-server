@@ -137,6 +137,23 @@ describe('Driver self-service routes', () => {
     }
   });
 
+  test('accepts the incomplete terminal history filter', async () => {
+    const { app, selfService } = await createAppHarness();
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'GET',
+        url: '/driver/routes?status=incomplete'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(selfService.listDriverRoutes).toHaveBeenCalledWith(expect.objectContaining({ status: 'incomplete' }));
+    } finally {
+      await app.close();
+    }
+  });
+
   test('maps malformed route history cursors to bad request instead of server errors', async () => {
     const { app, selfService } = await createAppHarness();
     selfService.listDriverRoutes.mockRejectedValueOnce(new DriverRouteHistoryCursorError('Invalid route history cursor'));

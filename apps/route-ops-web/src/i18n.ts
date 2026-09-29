@@ -314,6 +314,7 @@ export const routesCopy = {
     routeStatus: {
       CANCELLED: 'Cancelled',
       DRAFT: 'Draft',
+      INCOMPLETE: 'Incomplete',
       PUBLISHED: 'Published'
     },
     publishState: {
@@ -433,6 +434,7 @@ export const routesCopy = {
     routeStatus: {
       CANCELLED: '취소됨',
       DRAFT: '초안',
+      INCOMPLETE: '미완 종결',
       PUBLISHED: '게시됨'
     },
     publishState: {

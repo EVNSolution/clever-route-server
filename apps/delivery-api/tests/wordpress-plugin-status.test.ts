@@ -11,6 +11,7 @@ describe('WordPress plugin status DTO mapping', () => {
     expect(toWordPressRoutePlanStatus('READY')).toBe('published');
     expect(toWordPressRoutePlanStatus('IN_PROGRESS')).toBe('published');
     expect(toWordPressRoutePlanStatus('COMPLETED')).toBe('published');
+    expect(toWordPressRoutePlanStatus('INCOMPLETE')).toBe('published');
     expect(toWordPressRoutePlanStatus('DRAFT')).toBe('published');
     expect(toWordPressRoutePlanStatus('PUBLISHED')).toBe('published');
     expect(toWordPressRoutePlanStatus('CANCELLED')).toBe('cancelled');
@@ -29,7 +30,7 @@ describe('WordPress plugin status DTO mapping', () => {
 
   test('maps plugin status filters back to internal route plan enums', () => {
     expect(toInternalRoutePlanStatuses('published')).toEqual([
-      'READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED'
+      'READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED', 'INCOMPLETE'
     ]);
     expect(toInternalRoutePlanStatuses('in_progress')).toEqual(['IN_PROGRESS']);
     expect(toInternalRoutePlanStatuses('completed')).toEqual(['COMPLETED']);

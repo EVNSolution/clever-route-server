@@ -16,9 +16,10 @@ describe('route plan lifecycle', () => {
     }
   });
 
-  test('preserves active, completed, and cancelled execution states', () => {
+  test('preserves active and terminal execution states', () => {
     expect(toRouteExecutionStatus('IN_PROGRESS')).toBe('IN_PROGRESS');
     expect(toRouteExecutionStatus('COMPLETED')).toBe('COMPLETED');
+    expect(toRouteExecutionStatus('INCOMPLETE')).toBe('INCOMPLETE');
     expect(toRouteExecutionStatus('CANCELLED')).toBe('CANCELLED');
   });
 
@@ -41,9 +42,11 @@ describe('route plan lifecycle', () => {
     ])).toBe('IN_PROGRESS');
   });
 
-  test('keeps completed routes visible but excludes them from active session restoration', () => {
+  test('keeps terminal history visible but excludes it from active session restoration', () => {
     expect(ROUTE_DRIVER_VISIBLE_STATUSES).toContain('COMPLETED');
+    expect(ROUTE_DRIVER_VISIBLE_STATUSES).toContain('INCOMPLETE');
     expect(ROUTE_DRIVER_OPERATIONAL_STATUSES).not.toContain('COMPLETED');
+    expect(ROUTE_DRIVER_OPERATIONAL_STATUSES).not.toContain('INCOMPLETE');
     expect(ROUTE_ACTIVE_COMPATIBILITY_STATUSES).not.toContain('COMPLETED');
   });
 });

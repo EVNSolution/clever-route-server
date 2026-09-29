@@ -152,7 +152,7 @@ describe('PrismaDriverTokenAccessRepository', () => {
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         id: 'route-plan-id',
-        status: { in: ['READY', 'IN_PROGRESS', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'COMPLETED'] }
+        status: { in: ['READY', 'IN_PROGRESS', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'COMPLETED', 'INCOMPLETE'] }
       }
     }));
   });

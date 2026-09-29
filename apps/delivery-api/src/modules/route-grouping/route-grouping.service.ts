@@ -3624,7 +3624,7 @@ async function assertReferenceCopyOrdersUnlocked(tx: Tx, source: LoadedGrouping)
   const lockedStopIds = new Set(memberships
     .filter(({ routePlan }) => {
       const status = toRouteExecutionStatus(routePlan.status, routePlan.driverEvents);
-      return status === 'IN_PROGRESS' || status === 'COMPLETED';
+      return status === 'IN_PROGRESS' || status === 'COMPLETED' || status === 'INCOMPLETE';
     })
     .map(({ deliveryStopId }) => deliveryStopId));
   const orderIds = source.orders
@@ -5447,7 +5447,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
   };
 }
 
-function deriveGroupingDisplayStatus(group: {
+export function deriveGroupingDisplayStatus(group: {
   childVersions: Array<{
     routePlan: { driverEvents: Array<{ eventType: string }>; status: string } | null;
     status: string;
@@ -5460,7 +5460,11 @@ function deriveGroupingDisplayStatus(group: {
     .filter((child) => isOperationalCurrentChild(child))
     .map((child) => toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents));
   if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED')) return 'COMPLETED';
-  if (statuses.some((status) => status === 'IN_PROGRESS' || status === 'COMPLETED')) return 'IN_PROGRESS';
+  if (statuses.some((status) => status === 'IN_PROGRESS')) return 'IN_PROGRESS';
+  if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED' || status === 'INCOMPLETE')) {
+    return 'INCOMPLETE';
+  }
+  if (statuses.some((status) => status === 'COMPLETED' || status === 'INCOMPLETE')) return 'IN_PROGRESS';
   return 'READY';
 }
 

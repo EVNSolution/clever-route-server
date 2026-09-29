@@ -163,7 +163,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(109);
+    expect(migrations).toHaveLength(110);
+    expect(migrations).toContain('20260929120000_add_incomplete_route_plan_status');
     expect(migrations).toContain('20260910170000_link_driver_proof_media_delivery_stops');
     expect(migrations).toContain('20260907000000_restore_active_job_uniqueness');
     expect(migrations).toContain('20260907010000_dsv_driver_inquiries');
@@ -411,7 +412,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260921120000_driver_completion_assistance')).toBeLessThan(
       migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')
     );
-    expect(migrations.at(-1)).toBe('20260922155500_add_route_tracking_road_match_jobs');
+    expect(migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')).toBeLessThan(
+      migrations.indexOf('20260929120000_add_incomplete_route_plan_status')
+    );
+    expect(migrations.at(-1)).toBe('20260929120000_add_incomplete_route_plan_status');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {

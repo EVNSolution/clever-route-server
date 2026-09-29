@@ -457,7 +457,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(transactionOrder).toBeLessThan(sourceReadOrder);
   });
 
-  test.each(['IN_PROGRESS', 'COMPLETED', 'CANCELLED'])(
+  test.each(['IN_PROGRESS', 'COMPLETED', 'INCOMPLETE', 'CANCELLED'])(
     'blocks manual refresh before mutating an order shared with a %s route',
     async (routePlanStatus) => {
       const { prisma } = createPrismaHarness({

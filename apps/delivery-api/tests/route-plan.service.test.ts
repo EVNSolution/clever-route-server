@@ -403,7 +403,7 @@ describe('RoutePlanAdminService route geometry policy', () => {
     expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
   });
 
-  test.each(['IN_PROGRESS', 'COMPLETED', 'CANCELLED'])('blocks order-data refresh for %s routes', async (status) => {
+  test.each(['IN_PROGRESS', 'COMPLETED', 'INCOMPLETE', 'CANCELLED'])('blocks order-data refresh for %s routes', async (status) => {
     const terminalDetail = detailWithComputedSignature({
       ...baseDetail,
       routePlan: { ...baseDetail.routePlan, status }

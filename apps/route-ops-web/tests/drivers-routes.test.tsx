@@ -188,6 +188,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
     expect(formatRoutePlanStatus('DRAFT', 'ko-KR')).toBe('초안');
     expect(formatRoutePlanStatus('PUBLISHED', 'ko-KR')).toBe('게시됨');
+    expect(formatRoutePlanStatus('INCOMPLETE', 'ko-KR')).toBe('미완 종결');
   });
 
 
