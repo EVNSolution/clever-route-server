@@ -15,6 +15,8 @@ export const UVIS_ROAD_MATCH_MAX_POINTS = 16;
 export const UVIS_ROAD_MATCH_TIMEOUT_MS = 25_000;
 const SERVICE_TIMEZONE = 'Asia/Seoul';
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
+// A playback anchor should not hide raw GPS when the matched line misses it by a wide margin.
+const MAX_PLAYBACK_ANCHOR_DISTANCE_METERS = 600;
 const TRAIL_MATERIALIZATION_RETRY_DELAYS_MS = [60_000, 300_000, 900_000, 3_600_000] as const;
 
 export type UvisVehicleTrailMarker = {
@@ -655,6 +657,13 @@ function addRoadMatchedGeometryAnchors(
       previous,
     );
     if (nearest === null) continue;
+    const minimumCoordinateIndex = previous?.lineIndex === nearest.lineIndex ? previous.coordinateIndex : 0;
+    if (!isNearRoadMatchedAnchor(
+      geometry.coordinates[nearest.lineIndex]!,
+      [sample.longitude, sample.latitude],
+      nearest.coordinateIndex,
+      minimumCoordinateIndex,
+    )) continue;
     anchors.push({
       observedAt: sample.observedAt,
       lineIndex: nearest.lineIndex,
@@ -663,6 +672,67 @@ function addRoadMatchedGeometryAnchors(
     previous = nearest;
   }
   return anchors.length === 0 ? geometry : { ...geometry, anchors };
+}
+
+function isNearRoadMatchedAnchor(
+  line: Array<[number, number]>,
+  target: [number, number],
+  coordinateIndex: number,
+  minimumCoordinateIndex: number,
+): boolean {
+  const coordinate = line[coordinateIndex];
+  if (coordinate === undefined || coordinateIndex < minimumCoordinateIndex) return false;
+  const metersPerDegree = 2 * Math.PI * 6_371_000 / 360;
+  const longitudeScale = metersPerDegree * Math.cos(degreesToRadians(target[1]));
+  const anchorX = (coordinate[0] - target[0]) * longitudeScale;
+  const anchorY = (coordinate[1] - target[1]) * metersPerDegree;
+  const anchorDistanceSquared = anchorX ** 2 + anchorY ** 2;
+  const maxDistanceSquared = MAX_PLAYBACK_ANCHOR_DISTANCE_METERS ** 2;
+  if (anchorDistanceSquared <= maxDistanceSquared) return true;
+  for (const neighborIndex of [coordinateIndex - 1, coordinateIndex + 1]) {
+    if (neighborIndex < minimumCoordinateIndex) continue;
+    const neighbor = line[neighborIndex];
+    if (neighbor === undefined) continue;
+    const neighborX = (neighbor[0] - target[0]) * longitudeScale;
+    const neighborY = (neighbor[1] - target[1]) * metersPerDegree;
+    const neighborDistanceSquared = neighborX ** 2 + neighborY ** 2;
+    if (anchorDistanceSquared > neighborDistanceSquared + 1) continue;
+    const lengthSquared = (neighborX - anchorX) ** 2 + (neighborY - anchorY) ** 2;
+    const fraction = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1,
+      -(anchorX * (neighborX - anchorX) + anchorY * (neighborY - anchorY)) / lengthSquared,
+    ));
+    const projectedDistanceSquared = (anchorX + fraction * (neighborX - anchorX)) ** 2
+      + (anchorY + fraction * (neighborY - anchorY)) ** 2;
+    if (projectedDistanceSquared <= maxDistanceSquared) return true;
+  }
+  return false;
+}
+
+export function filterDistantRoadMatchedAnchors(
+  geometry: RouteTrackingRoadMatchedGeometryV1 | null,
+  samples: Array<Pick<UvisVehicleTrailSampleV1, 'latitude' | 'longitude' | 'observedAt'>>,
+): RouteTrackingRoadMatchedGeometryV1 | null {
+  if (geometry?.anchors === undefined) return geometry;
+  const samplesByTime = new Map<string, Array<Pick<UvisVehicleTrailSampleV1, 'latitude' | 'longitude' | 'observedAt'>>>();
+  for (const sample of samples) {
+    samplesByTime.set(sample.observedAt, [...(samplesByTime.get(sample.observedAt) ?? []), sample]);
+  }
+  let previous: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']>[number] | undefined;
+  const anchors = geometry.anchors.filter((anchor) => {
+    if (previous !== undefined && anchor.lineIndex < previous.lineIndex) return false;
+    const line = geometry.coordinates[anchor.lineIndex];
+    const minimumCoordinateIndex = previous?.lineIndex === anchor.lineIndex ? previous.coordinateIndex : 0;
+    const accepted = line !== undefined && (samplesByTime.get(anchor.observedAt) ?? [])
+      .some((sample) => isNearRoadMatchedAnchor(
+        line,
+        [sample.longitude, sample.latitude],
+        anchor.coordinateIndex,
+        minimumCoordinateIndex,
+      ));
+    if (accepted) previous = anchor;
+    return accepted;
+  });
+  return anchors.length === geometry.anchors.length ? geometry : { ...geometry, anchors };
 }
 
 function nearestRoadMatchedCoordinate(
@@ -757,7 +827,14 @@ function toDocumentSample(sample: TrailPoint): UvisVehicleTrailSampleV1 {
 function readTrailDocument(value: unknown): UvisVehicleTrailDocumentV1 | null {
   const object = objectOrNull(value);
   if (object?.schemaVersion !== UVIS_VEHICLE_TRAIL_SCHEMA_VERSION || !Array.isArray(object.segments)) return null;
-  return object as UvisVehicleTrailDocumentV1;
+  const document = object as UvisVehicleTrailDocumentV1;
+  return {
+    ...document,
+    segments: document.segments.map((segment) => ({
+      ...segment,
+      roadMatchedGeometry: filterDistantRoadMatchedAnchors(segment.roadMatchedGeometry, segment.samples),
+    })),
+  };
 }
 
 function uniquePoints(points: TrailPoint[]): TrailPoint[] {

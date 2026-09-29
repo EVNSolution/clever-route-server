@@ -510,6 +510,163 @@ describe('PrismaUvisVehicleTrailMaterializationRepository', () => {
     expect(document.segments[0]?.roadMatchedGeometry?.anchors?.map((anchor) => anchor.coordinateIndex)).toEqual([0, 2, 3]);
   });
 
+  test('does not anchor a backward GPS return to a distant later road coordinate', async () => {
+    const prisma = prismaMock([
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0100, 127.0000),
+      gpsSample('sample-2', '2026-08-03T23:52:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-3', '2026-08-03T23:53:00.000Z', 37.0200, 127.0000),
+    ]);
+    const matchedGeometry = {
+      type: 'MultiLineString' as const,
+      coordinates: [[[127, 37], [127, 37.01], [127, 37.02]]],
+    };
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    const document = await repository.materializeVehicleDay({
+      roadMatchProvider: { match: vi.fn().mockResolvedValue({ matchedGeometry, uncertainGeometry: null }) },
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(document.segments[0]?.samples).toHaveLength(4);
+    expect(document.segments[0]?.roadMatchedGeometry?.anchors?.map((anchor) => anchor.observedAt)).toEqual([
+      '2026-08-03T23:50:00.000Z',
+      '2026-08-03T23:51:00.000Z',
+      '2026-08-03T23:53:00.000Z',
+    ]);
+  });
+
+  test('leaves GPS samples far from the matched road available for raw trail playback', async () => {
+    const prisma = prismaMock([
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0010, 127.0000),
+      gpsSample('sample-2', '2026-08-03T23:52:00.000Z', 37.0025, 127.0000),
+      gpsSample('sample-3', '2026-08-03T23:53:00.000Z', 37.0500, 127.0000),
+    ]);
+    const matchedGeometry = {
+      type: 'MultiLineString' as const,
+      coordinates: [[[127, 37], [127, 37.001]]],
+    };
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    const document = await repository.materializeVehicleDay({
+      roadMatchProvider: { match: vi.fn().mockResolvedValue({ matchedGeometry, uncertainGeometry: null }) },
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(document.segments[0]?.samples).toHaveLength(4);
+    expect(document.segments[0]?.roadMatchedGeometry?.coordinates).toEqual(matchedGeometry.coordinates);
+    expect(document.segments[0]?.roadMatchedGeometry?.anchors?.map((anchor) => anchor.observedAt)).toEqual([
+      '2026-08-03T23:50:00.000Z',
+      '2026-08-03T23:51:00.000Z',
+      '2026-08-03T23:52:00.000Z',
+    ]);
+  });
+
+  test('anchors a GPS sample on the middle of a long matched road segment', async () => {
+    const prisma = prismaMock([
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0100, 127.0000),
+      gpsSample('sample-2', '2026-08-03T23:52:00.000Z', 37.0200, 127.0000),
+    ]);
+    const matchedGeometry = {
+      type: 'MultiLineString' as const,
+      coordinates: [[[127, 37], [127, 37.02]]],
+    };
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    const document = await repository.materializeVehicleDay({
+      roadMatchProvider: { match: vi.fn().mockResolvedValue({ matchedGeometry, uncertainGeometry: null }) },
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(document.segments[0]?.roadMatchedGeometry?.anchors?.map((anchor) => anchor.observedAt)).toEqual([
+      '2026-08-03T23:50:00.000Z',
+      '2026-08-03T23:51:00.000Z',
+      '2026-08-03T23:52:00.000Z',
+    ]);
+  });
+
+  test('filters distant anchors from an existing materialization when it is read', async () => {
+    const samples = [
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0100, 127.0000),
+      gpsSample('sample-2', '2026-08-03T23:52:00.000Z', 37.0500, 127.0000),
+      gpsSample('sample-3', '2026-08-03T23:53:00.000Z', 37.0000, 127.0000),
+    ];
+    const roadMatchedGeometry = {
+      type: 'MultiLineString',
+      coordinates: [[[127, 37], [127, 37.01]]],
+      anchors: samples.map((sample, coordinateIndex) => ({
+        coordinateIndex: Math.min(coordinateIndex, 1),
+        lineIndex: 0,
+        observedAt: sample.observedAt.toISOString(),
+      })),
+    };
+    const previousDocument = previousTrailDocument({
+      retryable: false,
+      roadMatchedGeometry,
+      roadMatchRetryable: false,
+      samples,
+    });
+    const prisma = prismaMock(samples, previousDocument);
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    const document = await repository.findDocument({
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(document?.segments[0]?.samples).toHaveLength(4);
+    expect(document?.segments[0]?.roadMatchedGeometry?.anchors?.map((anchor) => anchor.observedAt)).toEqual([
+      '2026-08-03T23:50:00.000Z',
+      '2026-08-03T23:51:00.000Z',
+    ]);
+    expect(roadMatchedGeometry.anchors).toHaveLength(4);
+  });
+
+  test('filters anchors that move backward across matched lines in a stored document', async () => {
+    const samples = [
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 38.0000, 128.0000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0000, 127.0000),
+    ];
+    const prisma = prismaMock(samples, previousTrailDocument({
+      retryable: false,
+      roadMatchedGeometry: {
+        type: 'MultiLineString',
+        coordinates: [
+          [[127, 37], [127, 37.01]],
+          [[128, 38], [128, 38.01]],
+        ],
+        anchors: [
+          { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-03T23:50:00.000Z' },
+          { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-03T23:51:00.000Z' },
+        ],
+      },
+      roadMatchRetryable: false,
+      samples,
+    }));
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    const document = await repository.findDocument({
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(document?.segments[0]?.samples).toHaveLength(2);
+    expect(document?.segments[0]?.roadMatchedGeometry?.anchors).toEqual([
+      { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-03T23:50:00.000Z' },
+    ]);
+  });
+
   test('sends chronological samples to OSRM when movement starts after a stationary interval', async () => {
     const prisma = prismaMock([
       gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),

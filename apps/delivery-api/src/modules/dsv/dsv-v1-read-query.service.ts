@@ -27,6 +27,7 @@ import {
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { dsvDestinationIdentitySqlAddress, dsvDestinationIdentitySqlText } from './dsv-destination-identity.js';
 import {
+  filterDistantRoadMatchedAnchors,
   UVIS_VEHICLE_TRAIL_SCHEMA_VERSION,
   type UvisVehicleTrailDocumentV1,
   type UvisVehicleTrailMarker,
@@ -2274,7 +2275,9 @@ function buildGpsTrailSegments(
     const enrichment = segmentTrailEnrichment(segment, materializedTrail);
     return {
       ...base,
-      ...(enrichment.roadMatchedGeometry === undefined ? {} : { roadMatchedGeometry: enrichment.roadMatchedGeometry }),
+      ...(enrichment.roadMatchedGeometry === undefined ? {} : {
+        roadMatchedGeometry: filterDistantRoadMatchedAnchors(enrichment.roadMatchedGeometry, base.samples),
+      }),
       ...(enrichment.trailMarker === undefined ? {} : { trailMarker: enrichment.trailMarker }),
     };
   });
