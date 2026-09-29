@@ -33,6 +33,7 @@ import {
   type UvisVehicleTrailMarker,
 } from '../uvis/uvis-vehicle-trail-materializer.js';
 import { buildUvisVehicleDailyRoute } from '../uvis/uvis-vehicle-daily-route.js';
+import { hasImplausibleGpsJump } from '../uvis/uvis-vehicle-trail-evidence.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 import {
   occurredAtWithinRouteTrackingEventWindow,
@@ -2268,7 +2269,9 @@ function splitGpsTrailSegments(samples: GpsTrailSampleRow[]): GpsTrailSampleRow[
   for (const sample of samples) {
     const current = segments[segments.length - 1] ?? null;
     const previous = current?.[current.length - 1] ?? null;
-    if (current === null || previous === null || previous.staleAfter.getTime() < sample.observedAt.getTime()) {
+    if (current === null || previous === null
+      || previous.staleAfter.getTime() < sample.observedAt.getTime()
+      || hasImplausibleGpsJump(previous, sample)) {
       segments.push([sample]);
     } else {
       current.push(sample);

@@ -2,8 +2,11 @@ import {
   filterDistantRoadMatchedAnchors,
   type UvisVehicleTrailDocumentV1,
 } from './uvis-vehicle-trail-materializer.js';
-
-const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
+import {
+  hasImplausibleGpsJump,
+  impliedSpeedMetersPerSecond,
+  MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND,
+} from './uvis-vehicle-trail-evidence.js';
 
 type DailyRouteSample = {
   latitude: number;
@@ -30,7 +33,7 @@ export type UvisVehicleDailyRoute = {
   }>;
   bridges: Array<{
     fromObservedAt: string;
-    reason: 'GPS_GAP' | 'NO_MATCH';
+    reason: 'GPS_GAP' | 'IMPLAUSIBLE_JUMP' | 'NO_MATCH';
     toObservedAt: string;
   }>;
   coordinates: Array<[number, number]>;
@@ -60,7 +63,8 @@ export function buildUvisVehicleDailyRoute(
     const current = prepared[index]!;
     const previousTrusted = trustedAnchors.get(previous.observedAt);
     const currentTrusted = trustedAnchors.get(current.observedAt);
-    const followsMatchedRoad = previousTrusted !== undefined
+    const implausibleJump = hasImplausibleGpsJump(previous, current);
+    const followsMatchedRoad = !implausibleJump && previousTrusted !== undefined
       && currentTrusted !== undefined
       && previousTrusted.segmentIndex === currentTrusted.segmentIndex
       && previousTrusted.lineIndex === currentTrusted.lineIndex
@@ -90,7 +94,7 @@ export function buildUvisVehicleDailyRoute(
         bridges.push(toBridge(previous, current));
       }
     } else {
-      const endpoint = readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current);
+      const endpoint = implausibleJump ? rawCoordinate(current) : readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current);
       coordinateIndex = appendCoordinate(coordinates, endpoint);
       bridges.push(toBridge(previous, current));
     }
@@ -136,26 +140,6 @@ function isIsolatedGpsJump(previous: PreparedSample, current: PreparedSample, ne
   return impliedSpeedMetersPerSecond(previous, current) > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
     && impliedSpeedMetersPerSecond(current, next) > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
     && impliedSpeedMetersPerSecond(previous, next) <= MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
-}
-
-function impliedSpeedMetersPerSecond(previous: PreparedSample, current: PreparedSample): number {
-  const elapsedSeconds = (current.observedAtMs - previous.observedAtMs) / 1000;
-  return elapsedSeconds > 0 ? distanceMeters(previous, current) / elapsedSeconds : Number.POSITIVE_INFINITY;
-}
-
-function distanceMeters(left: DailyRouteSample, right: DailyRouteSample): number {
-  const earthRadiusMeters = 6_371_000;
-  const latitudeDelta = degreesToRadians(right.latitude - left.latitude);
-  const longitudeDelta = degreesToRadians(right.longitude - left.longitude);
-  const leftLatitude = degreesToRadians(left.latitude);
-  const rightLatitude = degreesToRadians(right.latitude);
-  const haversine = Math.sin(latitudeDelta / 2) ** 2
-    + Math.cos(leftLatitude) * Math.cos(rightLatitude) * Math.sin(longitudeDelta / 2) ** 2;
-  return 2 * earthRadiusMeters * Math.asin(Math.min(1, Math.sqrt(haversine)));
-}
-
-function degreesToRadians(value: number): number {
-  return value * Math.PI / 180;
 }
 
 function readTrustedAnchors(trailDocument: UvisVehicleTrailDocumentV1 | null): Map<string, TrustedAnchor> {
@@ -213,6 +197,8 @@ function toBridge(
   return {
     fromObservedAt: previous.observedAt,
     toObservedAt: current.observedAt,
-    reason: Number.isFinite(staleAfterMs) && staleAfterMs < current.observedAtMs ? 'GPS_GAP' : 'NO_MATCH',
+    reason: Number.isFinite(staleAfterMs) && staleAfterMs < current.observedAtMs
+      ? 'GPS_GAP'
+      : hasImplausibleGpsJump(previous, current) ? 'IMPLAUSIBLE_JUMP' : 'NO_MATCH',
   };
 }

@@ -46,6 +46,7 @@ import {
   type DsvV1VehicleGpsTrailHistoryResult,
   type DsvV1VehicleTemperatureHistoryInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
+import { filterDistantRoadMatchedAnchors } from '../modules/uvis/uvis-vehicle-trail-materializer.js';
 import {
   DsvTimeConstraintCommandError,
   type DsvClearTimeConstraintInput,
@@ -737,7 +738,9 @@ function clipTrailSession(
   start: DsvV1LngLat,
   end: DsvV1LngLat,
 ): DsvV1CustomerTrailDto['segments'] {
-  const roadMatchedLines = segments.flatMap((segment) => segment.roadMatchedGeometry?.coordinates ?? []);
+  const roadMatchedLines = segments.flatMap((segment) =>
+    filterDistantRoadMatchedAnchors(segment.roadMatchedGeometry ?? null, segment.samples)?.coordinates ?? []
+  );
   return clipRoadMatchedTrailLines(roadMatchedLines, start, end);
 }
 

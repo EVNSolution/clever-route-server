@@ -10,6 +10,8 @@ Shopify location data.
 Query:
 
 - `serviceDate` optional `YYYY-MM-DD`; defaults to the tenant-local current date.
+- `includeDailyRoute=true` optionally includes a continuous daily `LineString` with
+  sample anchors and bridge reasons. The default response is unchanged.
 
 Response:
 
@@ -27,7 +29,8 @@ Response:
 - If no `ROUTE_STARTED` event exists, the session starts from route
   `scheduledStartAt`, route `departureTime`, or the shop planned departure time.
 - `segments[]` are split when the previous GPS sample's persisted `staleAfter`
-  is before the next sample's `observedAt`.
+  is before the next sample's `observedAt`, or the two raw coordinates imply
+  more than 55 m/s. Raw samples on both sides remain in the response.
 - `segments[].roadMatchedGeometry` is additive and optional. When present, it
   keeps the existing GeoJSON `MultiLineString` shape and may include
   `anchors: Array<{ observedAt: string; lineIndex: number; coordinateIndex:
@@ -36,6 +39,11 @@ Response:
   sample replay. Partially overlapping materialized lines are returned only when
   anchors allow clipping to the segment sample window; otherwise raw samples
   remain the fallback.
+- Road anchors more than 25 m from repeated stationary or ignition-off GPS
+  samples are discarded. Road lines without two retained anchors are omitted.
+- `dailyRoute.bridges[]` marks `GPS_GAP`, `IMPLAUSIBLE_JUMP`, or `NO_MATCH`.
+  The daily line retains raw endpoints across these bridges for continuity;
+  a bridge does not establish that the vehicle drove along the connecting line.
 - Completion does not force the GPS trail to stop. When depot coordinates are
   available, the endpoint continues through the first depot-return sample; when
   that is not available, it ends at the last valid UVIS GPS sample in the

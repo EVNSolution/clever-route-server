@@ -1343,6 +1343,44 @@ describe('PrismaDsvV1ReadQueryService', () => {
     ]);
   });
 
+  test('vehicle GPS history separates an impossible jump without dropping either raw endpoint', async () => {
+    const sampleTimes = [
+      '2026-08-03T23:29:00.000Z',
+      '2026-08-03T23:30:00.000Z',
+      '2026-08-03T23:31:00.000Z',
+      '2026-08-03T23:32:00.000Z',
+    ] as const;
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:20' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        gpsSample({ observedAt: sampleTimes[0], latitude: '37.2852230', longitude: '126.9492630', staleAfter: sampleTimes[2] }),
+        gpsSample({ observedAt: sampleTimes[1], latitude: '37.2852230', longitude: '126.9492630', staleAfter: sampleTimes[2] }),
+        gpsSample({ observedAt: sampleTimes[2], latitude: '37.2433950', longitude: '126.9506750', staleAfter: sampleTimes[3] }),
+        gpsSample({ observedAt: sampleTimes[3], latitude: '37.2423950', longitude: '126.9506750' }),
+      ])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      includeDailyRoute: true,
+      serviceDate: '2026-08-04',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(result.sessions.flatMap((session) => session.segments.map((segment) =>
+      segment.samples.map((sample) => sample.observedAt)
+    ))).toEqual([sampleTimes.slice(0, 2), sampleTimes.slice(2)]);
+    expect(result.dailyRoute?.bridges).toContainEqual({
+      fromObservedAt: sampleTimes[1],
+      toObservedAt: sampleTimes[2],
+      reason: 'IMPLAUSIBLE_JUMP',
+    });
+    expect(result.dailyRoute?.sourceSampleCount).toBe(4);
+  });
+
   test('vehicle GPS trail history keeps raw samples while removing anchors distant from their matched line', async () => {
     const materializedDocument = {
       generatedAt: '2026-08-04T01:00:00.000Z',
@@ -1406,16 +1444,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
 
     expect(result.sessions[0]?.segments).toEqual([{
-      roadMatchedGeometry: {
-        anchors: [
-          { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-03T23:32:00.000Z' },
-        ],
-        coordinates: [
-          [[127.0, 37.5], [127.1, 37.6]],
-          [[127.2, 37.7], [127.3, 37.8]],
-        ],
-        type: 'MultiLineString',
-      },
+      roadMatchedGeometry: null,
       samples: [
         expect.objectContaining({ observedAt: '2026-08-03T23:31:00.000Z' }),
         expect.objectContaining({ observedAt: '2026-08-03T23:32:00.000Z' }),
@@ -1563,7 +1592,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
           ],
           type: 'MultiLineString',
           coordinates: [
-            [[126.9, 37.4], [127.0, 37.5], [127.1, 37.6], [127.2, 37.7]],
+            [[126.9, 37.4], [127.0, 37.5], [127.01, 37.51], [127.02, 37.52]],
             [[127.3, 37.8], [127.4, 37.9]],
           ],
         },
@@ -1589,7 +1618,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:30' } })) },
       uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
         gpsSample({ latitude: '37.5000000', longitude: '127.0000000', observedAt: '2026-08-03T23:32:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
-        gpsSample({ observedAt: '2026-08-03T23:33:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
+        gpsSample({ latitude: '37.5100000', longitude: '127.0100000', observedAt: '2026-08-03T23:33:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
       ])) },
       uvisVehicleTrailMaterialization: { findUnique: vi.fn(() => Promise.resolve({ document: materializedDocument })) },
       vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-unassigned' })) },
@@ -1607,7 +1636,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
           { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-03T23:32:00.000Z' },
           { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-03T23:33:00.000Z' },
         ],
-        coordinates: [[[127.0, 37.5], [127.1, 37.6]]],
+        coordinates: [[[127.0, 37.5], [127.01, 37.51]]],
         type: 'MultiLineString',
       },
       samples: [

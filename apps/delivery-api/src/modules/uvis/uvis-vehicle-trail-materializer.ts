@@ -7,6 +7,11 @@ import type {
   RouteTrackingRoadMatchProvider,
 } from '../route-tracking/route-tracking.road-match.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
+import {
+  distanceMeters,
+  impliedSpeedMetersPerSecond,
+  MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND,
+} from './uvis-vehicle-trail-evidence.js';
 
 export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as const;
 export const UVIS_ROAD_MATCH_POLICY_VERSION = 'uvis_road_match.v2' as const;
@@ -14,9 +19,9 @@ export const UVIS_ROAD_MATCH_GPS_PRECISION_METERS = 75;
 export const UVIS_ROAD_MATCH_MAX_POINTS = 16;
 export const UVIS_ROAD_MATCH_TIMEOUT_MS = 25_000;
 const SERVICE_TIMEZONE = 'Asia/Seoul';
-const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
 // A playback anchor should not hide raw GPS when the matched line misses it by a wide margin.
 const MAX_PLAYBACK_ANCHOR_DISTANCE_METERS = 600;
+const MAX_STABLE_STOP_ANCHOR_DISTANCE_METERS = 25;
 const TRAIL_MATERIALIZATION_RETRY_DELAYS_MS = [60_000, 300_000, 900_000, 3_600_000] as const;
 
 export type UvisVehicleTrailMarker = {
@@ -106,7 +111,7 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
     serviceDate: string;
     shopId: string;
     vehicleId: string;
-  }): Promise<UvisVehicleTrailDocumentV1 | null> {
+  }, options: { filterRoadAnchors?: boolean } = {}): Promise<UvisVehicleTrailDocumentV1 | null> {
     const row = await this.prisma.uvisVehicleTrailMaterialization.findUnique({
       select: { document: true },
       where: {
@@ -118,7 +123,7 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
         },
       },
     });
-    return readTrailDocument(row?.document);
+    return readTrailDocument(row?.document, options.filterRoadAnchors !== false);
   }
 
   async materializeVehicleDay(input: {
@@ -154,7 +159,7 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
     });
     const points = sourceRows.flatMap(toTrailPoint);
     const detected = detectMovingSegments(points);
-    const previousDocument = await this.findDocument(input);
+    const previousDocument = await this.findDocument(input, { filterRoadAnchors: false });
     const materializedSegments: UvisVehicleTrailDocumentSegmentV1[] = [];
     let retryable = false;
 
@@ -561,7 +566,10 @@ async function matchRoadGeometry(
       ? await roadMatchProvider.matchWithStatus(document)
       : await matchWithoutStatus(roadMatchProvider, document);
     if (outcome.path !== null) {
-      const geometry = addRoadMatchedGeometryAnchors(outcome.path.matchedGeometry, preparedSamples);
+      const geometry = filterDistantRoadMatchedAnchors(
+        addRoadMatchedGeometryAnchors(outcome.path.matchedGeometry, preparedSamples),
+        preparedSamples,
+      );
       return {
         failureReason: outcome.retryable
           ? 'PARTIAL_TRANSIENT_FAILURE'
@@ -663,6 +671,7 @@ function addRoadMatchedGeometryAnchors(
       [sample.longitude, sample.latitude],
       nearest.coordinateIndex,
       minimumCoordinateIndex,
+      MAX_PLAYBACK_ANCHOR_DISTANCE_METERS,
     )) continue;
     anchors.push({
       observedAt: sample.observedAt,
@@ -679,6 +688,7 @@ function isNearRoadMatchedAnchor(
   target: [number, number],
   coordinateIndex: number,
   minimumCoordinateIndex: number,
+  maxDistanceMeters: number,
 ): boolean {
   const coordinate = line[coordinateIndex];
   if (coordinate === undefined || coordinateIndex < minimumCoordinateIndex) return false;
@@ -687,8 +697,9 @@ function isNearRoadMatchedAnchor(
   const anchorX = (coordinate[0] - target[0]) * longitudeScale;
   const anchorY = (coordinate[1] - target[1]) * metersPerDegree;
   const anchorDistanceSquared = anchorX ** 2 + anchorY ** 2;
-  const maxDistanceSquared = MAX_PLAYBACK_ANCHOR_DISTANCE_METERS ** 2;
+  const maxDistanceSquared = maxDistanceMeters ** 2;
   if (anchorDistanceSquared <= maxDistanceSquared) return true;
+  if (maxDistanceMeters === MAX_STABLE_STOP_ANCHOR_DISTANCE_METERS) return false;
   for (const neighborIndex of [coordinateIndex - 1, coordinateIndex + 1]) {
     if (neighborIndex < minimumCoordinateIndex) continue;
     const neighbor = line[neighborIndex];
@@ -710,15 +721,30 @@ function isNearRoadMatchedAnchor(
 
 export function filterDistantRoadMatchedAnchors(
   geometry: RouteTrackingRoadMatchedGeometryV1 | null,
-  samples: Array<Pick<UvisVehicleTrailSampleV1, 'latitude' | 'longitude' | 'observedAt'>>,
+  samples: Array<Pick<UvisVehicleTrailSampleV1, 'latitude' | 'longitude' | 'observedAt'>
+    & { ignitionOn?: boolean | null; speedKph?: number | null }>,
 ): RouteTrackingRoadMatchedGeometryV1 | null {
-  if (geometry?.anchors === undefined) return geometry;
-  const samplesByTime = new Map<string, Array<Pick<UvisVehicleTrailSampleV1, 'latitude' | 'longitude' | 'observedAt'>>>();
-  for (const sample of samples) {
+  if (geometry === null) return null;
+  const sourceAnchors = geometry.anchors ?? [];
+  const orderedSamples = [...samples].sort((left, right) => Date.parse(left.observedAt) - Date.parse(right.observedAt));
+  const stableStopTimes = new Set<string>();
+  for (let index = 1; index < orderedSamples.length; index += 1) {
+    const previousSample = orderedSamples[index - 1]!;
+    const currentSample = orderedSamples[index]!;
+    if (previousSample.speedKph !== null && previousSample.speedKph !== undefined
+      && currentSample.speedKph !== null && currentSample.speedKph !== undefined
+      && Math.max(previousSample.speedKph, currentSample.speedKph) <= 1
+      && distanceMeters(previousSample, currentSample) <= 30) {
+      stableStopTimes.add(previousSample.observedAt);
+      stableStopTimes.add(currentSample.observedAt);
+    }
+  }
+  const samplesByTime = new Map<string, typeof orderedSamples>();
+  for (const sample of orderedSamples) {
     samplesByTime.set(sample.observedAt, [...(samplesByTime.get(sample.observedAt) ?? []), sample]);
   }
   let previous: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']>[number] | undefined;
-  const anchors = geometry.anchors.filter((anchor) => {
+  const anchors = sourceAnchors.filter((anchor) => {
     if (previous !== undefined && anchor.lineIndex < previous.lineIndex) return false;
     const line = geometry.coordinates[anchor.lineIndex];
     const minimumCoordinateIndex = previous?.lineIndex === anchor.lineIndex ? previous.coordinateIndex : 0;
@@ -728,11 +754,32 @@ export function filterDistantRoadMatchedAnchors(
         [sample.longitude, sample.latitude],
         anchor.coordinateIndex,
         minimumCoordinateIndex,
+        (stableStopTimes.has(sample.observedAt)
+          || (sample.speedKph !== null && sample.speedKph !== undefined
+            && sample.speedKph <= 1 && sample.ignitionOn === false))
+          ? MAX_STABLE_STOP_ANCHOR_DISTANCE_METERS
+          : MAX_PLAYBACK_ANCHOR_DISTANCE_METERS,
       ));
     if (accepted) previous = anchor;
     return accepted;
-  });
-  return anchors.length === geometry.anchors.length ? geometry : { ...geometry, anchors };
+  }).map((anchor) => ({ ...anchor }));
+  const coordinates: RouteTrackingRoadMatchedGeometryV1['coordinates'] = [];
+  const boundedAnchors: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']> = [];
+  for (const [lineIndex, line] of geometry.coordinates.entries()) {
+    const accepted = anchors.filter((anchor) => anchor.lineIndex === lineIndex);
+    if (accepted.length < 2) continue;
+    const first = Math.min(...accepted.map((anchor) => anchor.coordinateIndex));
+    const last = Math.max(...accepted.map((anchor) => anchor.coordinateIndex));
+    if (last <= first) continue;
+    const nextLineIndex = coordinates.length;
+    coordinates.push(line.slice(first, last + 1));
+    boundedAnchors.push(...accepted.map((anchor) => ({
+      ...anchor,
+      coordinateIndex: anchor.coordinateIndex - first,
+      lineIndex: nextLineIndex,
+    })));
+  }
+  return coordinates.length === 0 ? null : { ...geometry, anchors: boundedAnchors, coordinates };
 }
 
 function nearestRoadMatchedCoordinate(
@@ -789,11 +836,6 @@ function isIsolatedGpsJump(previous: TrailPoint, current: TrailPoint, next: Trai
     && bypass <= MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
 }
 
-function impliedSpeedMetersPerSecond(previous: TrailPoint, current: TrailPoint): number {
-  const elapsedSeconds = (current.observedAtDate.getTime() - previous.observedAtDate.getTime()) / 1000;
-  return elapsedSeconds > 0 ? distanceMeters(previous, current) / elapsedSeconds : Number.POSITIVE_INFINITY;
-}
-
 function toTrailPoint(row: SourceSample): TrailPoint[] {
   const latitude = decimalToNumber(row.latitude);
   const longitude = decimalToNumber(row.longitude);
@@ -824,10 +866,11 @@ function toDocumentSample(sample: TrailPoint): UvisVehicleTrailSampleV1 {
   };
 }
 
-function readTrailDocument(value: unknown): UvisVehicleTrailDocumentV1 | null {
+function readTrailDocument(value: unknown, filterRoadAnchors: boolean): UvisVehicleTrailDocumentV1 | null {
   const object = objectOrNull(value);
   if (object?.schemaVersion !== UVIS_VEHICLE_TRAIL_SCHEMA_VERSION || !Array.isArray(object.segments)) return null;
   const document = object as UvisVehicleTrailDocumentV1;
+  if (!filterRoadAnchors) return document;
   return {
     ...document,
     segments: document.segments.map((segment) => ({
@@ -878,20 +921,6 @@ function decimalToNumber(value: Prisma.Decimal | number | string | null): number
   if (value === null) return null;
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function distanceMeters(
-  left: { latitude: number; longitude: number },
-  right: { latitude: number; longitude: number },
-): number {
-  const earthRadiusMeters = 6_371_000;
-  const leftLat = degreesToRadians(left.latitude);
-  const rightLat = degreesToRadians(right.latitude);
-  const deltaLat = degreesToRadians(right.latitude - left.latitude);
-  const deltaLng = degreesToRadians(right.longitude - left.longitude);
-  const a = Math.sin(deltaLat / 2) ** 2
-    + Math.cos(leftLat) * Math.cos(rightLat) * Math.sin(deltaLng / 2) ** 2;
-  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function degreesToRadians(value: number): number {

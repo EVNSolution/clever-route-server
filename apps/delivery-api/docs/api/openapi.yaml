@@ -584,9 +584,13 @@ paths:
           in: query
           required: false
           schema: { type: string, format: date }
+        - name: includeDailyRoute
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
       responses:
         '200':
-          description: Vehicle GPS trail sessions and stale-gap segments from UVIS vehicle GPS telemetry samples only.
+          description: Vehicle GPS trail sessions split at stale gaps and implausible raw jumps, with an optional daily route.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1VehicleGpsTrailHistoryEnvelope' }
@@ -7376,6 +7380,46 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DsvV1VehicleGpsTrailSession'
+        dailyRoute:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DsvV1VehicleDailyRoute'
+      additionalProperties: false
+    DsvV1VehicleDailyRoute:
+      type: object
+      description: Continuous daily line; bridge edges are unverified and do not prove travel along the connection.
+      required: [type, coordinates, anchors, bridges, sourceSampleCount]
+      properties:
+        type:
+          type: string
+          enum: [LineString]
+        coordinates:
+          type: array
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items: { type: number }
+        anchors:
+          type: array
+          items:
+            type: object
+            required: [observedAt, coordinateIndex]
+            properties:
+              observedAt: { type: string, format: date-time }
+              coordinateIndex: { type: integer, minimum: 0 }
+            additionalProperties: false
+        bridges:
+          type: array
+          items:
+            type: object
+            required: [fromObservedAt, toObservedAt, reason]
+            properties:
+              fromObservedAt: { type: string, format: date-time }
+              toObservedAt: { type: string, format: date-time }
+              reason: { type: string, enum: [GPS_GAP, IMPLAUSIBLE_JUMP, NO_MATCH] }
+            additionalProperties: false
+        sourceSampleCount: { type: integer, minimum: 2 }
       additionalProperties: false
     DsvV1DriverListPage:
       type: object
