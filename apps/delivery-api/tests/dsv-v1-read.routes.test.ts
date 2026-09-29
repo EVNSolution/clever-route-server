@@ -1359,7 +1359,15 @@ describe('DSV v1 read routes', () => {
     const { app, queryService } = await createHarness();
     const admin = signedCookie('dsv-shop:tomatonofood.com');
     const vehicleId = '77777777-7777-4777-8777-777777777777';
+    const dailyRoute = {
+      anchors: [{ coordinateIndex: 0, observedAt: '2026-08-04T01:16:00.000Z' }],
+      bridges: [],
+      coordinates: [[127, 37.5], [127.001, 37.501]] as Array<[number, number]>,
+      sourceSampleCount: 2,
+      type: 'LineString' as const,
+    };
     queryService.listVehicleGpsTrailHistory.mockResolvedValueOnce({
+      dailyRoute,
       serviceDate: '2026-08-04',
       sessions: [{
         completedAt: '2026-08-04T02:00:00.000Z',
@@ -1436,6 +1444,31 @@ describe('DSV v1 read routes', () => {
       expect(queryService.listVehicleGpsTrailHistory).toHaveBeenCalledWith(
         expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
         { serviceDate: '2026-08-04', vehicleId },
+      );
+
+      queryService.listVehicleGpsTrailHistory.mockResolvedValueOnce({
+        dailyRoute,
+        serviceDate: '2026-08-04',
+        sessions: [],
+        timezone: 'Asia/Seoul',
+        vehicleId,
+      });
+      const dailyResponse = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/vehicles/${vehicleId}/gps-trail-history?serviceDate=2026-08-04&includeDailyRoute=true`,
+      });
+      expect(dailyResponse.statusCode).toBe(200);
+      expectDsvV1Envelope(dailyResponse, {
+        dailyRoute,
+        serviceDate: '2026-08-04',
+        sessions: [],
+        timezone: 'Asia/Seoul',
+        vehicleId,
+      });
+      expect(queryService.listVehicleGpsTrailHistory).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        { includeDailyRoute: true, serviceDate: '2026-08-04', vehicleId },
       );
 
       const invalid = await app.inject({
@@ -1558,6 +1591,7 @@ describe('DSV v1 read routes', () => {
         { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-last', vehicleId: 'vehicle-1', vehicleLatitude: 37.5, vehicleLongitude: 126.92 },
       ]);
       queryService.listCustomerGpsTrailHistories.mockResolvedValueOnce([{
+        dailyRoute: null,
         serviceDate: '2026-08-09',
         sessions: [{
           completedAt: null,
@@ -2113,7 +2147,7 @@ function createQueryService(): MockQueryService {
       items: [],
       page: { currentPage: 1, hasMore: false, pageSize: 50, totalItems: 0, totalPages: 0 },
     })),
-    listVehicleGpsTrailHistory: vi.fn(() => Promise.resolve({ serviceDate: '2026-07-23', sessions: [], timezone: 'Asia/Seoul', vehicleId: 'vehicle-a' })),
+    listVehicleGpsTrailHistory: vi.fn(() => Promise.resolve({ dailyRoute: null, serviceDate: '2026-07-23', sessions: [], timezone: 'Asia/Seoul', vehicleId: 'vehicle-a' })),
     listVehicleTemperatureHistory: vi.fn(() => Promise.resolve({ samples: [], vehicleId: 'vehicle-a' })),
     listVehicles: vi.fn(() => Promise.resolve(list)),
     resolveTenantDates: vi.fn(() => Promise.resolve({
