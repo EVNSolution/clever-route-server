@@ -154,6 +154,7 @@ check('deploy script only stays deploy-critical without API artifact', ['scripts
 });
 
 for (const operationContractPath of [
+  'scripts/route-tracking-preservation-worker.sh',
   'scripts/ssm-route-ops-docker-cleanup.sh',
   'scripts/ssm-route-completion-invariant-mode.sh',
   'scripts/verify-route-completion-alarm.sh',

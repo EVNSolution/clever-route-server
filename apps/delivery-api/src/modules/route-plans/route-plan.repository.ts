@@ -653,8 +653,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
-      if (routePlan.status === 'CANCELLED') {
-        throw new RoutePlanPublishInvalidError('Cancelled routes cannot be published to drivers.');
+      if (routePlan.status === 'CANCELLED' || routePlan.status === 'INCOMPLETE') {
+        throw new RoutePlanPublishInvalidError('Cancelled or incomplete routes cannot be published to drivers.');
       }
 
       if (isRouteReadyStatus(routePlan.status) && routePlan.status !== 'READY') {
@@ -2290,7 +2290,7 @@ async function inProgressStopOrder(
   stops: ReturnType<typeof normalizeStopUpdateInputs>
 ): Promise<RoutePlanStopRecord[] | null> {
   let lifecycleEvents: Array<{ eventType: string }> = [];
-  if (!['IN_PROGRESS', 'COMPLETED', 'CANCELLED'].includes(routePlan.status)
+  if (!['IN_PROGRESS', 'COMPLETED', 'INCOMPLETE', 'CANCELLED'].includes(routePlan.status)
     && routePlan.driverId != null && (routePlan.driverEvents?.length ?? 0) > 0) {
     const latestEvent = await tx.driverEvent.findFirst({
       orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
@@ -2306,8 +2306,8 @@ async function inProgressStopOrder(
     if (latestEvent !== null) lifecycleEvents = [latestEvent];
   }
   const status = toRouteExecutionStatus(routePlan.status, lifecycleEvents);
-  if (status === 'COMPLETED' || status === 'CANCELLED') {
-    throw new RoutePlanStopUpdateInvalidError('Completed or cancelled route stops cannot be changed.');
+  if (status === 'COMPLETED' || status === 'INCOMPLETE' || status === 'CANCELLED') {
+    throw new RoutePlanStopUpdateInvalidError('Completed, incomplete, or cancelled route stops cannot be changed.');
   }
   if (status !== 'IN_PROGRESS') return null;
 

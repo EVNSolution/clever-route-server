@@ -117,6 +117,8 @@ enum RoutePlanStatus {
   ASSIGNED
   IN_PROGRESS
   COMPLETED
+  /// Historical terminal state for an ended route that still has unresolved stops.
+  INCOMPLETE
   READY
 }
 

@@ -206,7 +206,9 @@ export class PrismaCompletionAssistanceService {
         { routeGroupingChildVersions: { some: { driverId: { not: null }, createdAt: { gte: originalVersion?.createdAt ?? run.createdAt } } } }
       ] }
     }, select: { id: true } });
-    const invalid = overlappingAssignment !== null || route === null || route.status === 'CANCELLED' || route.shopId !== run.shopId || route.driverId !== run.driverId
+    const invalid = overlappingAssignment !== null || route === null
+      || route.status === 'CANCELLED' || route.status === 'INCOMPLETE'
+      || route.shopId !== run.shopId || route.driverId !== run.driverId
       || route.driver?.accountId !== run.accountId || route.assignmentGeneration !== run.assignmentGeneration
       || route.routeGroupingChildVersions.length !== 1 || route.routeGroupingChildVersions[0]?.id !== run.expectedRouteVersionId
       || !isDeepStrictEqual(ids, route.routeStops.map((stop) => stop.deliveryStopId).sort());

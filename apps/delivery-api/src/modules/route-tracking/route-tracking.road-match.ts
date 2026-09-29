@@ -35,6 +35,7 @@ const MAX_OSRM_MATCH_POINTS = 80;
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
 const EARTH_RADIUS_METERS = 6_371_000;
 const MAX_GAP_SUPPLEMENT_CANDIDATES = 64;
+const MAX_CONTINUOUS_NO_MATCH_WINDOW_POINTS = 20;
 const MAX_GAP_SUPPLEMENT_ELAPSED_MS = 120_000;
 const MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS = 50;
 const MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND = 40;
@@ -44,6 +45,8 @@ const MAX_GAP_SUPPLEMENT_DISTANCE_METERS = 750;
 const MAX_CONTEXTUAL_SUPPLEMENT_ACCURACY_METERS = 400;
 const MAX_CONTEXTUAL_SUPPLEMENT_DISTANCE_METERS = 3_000;
 const MAX_CONTEXTUAL_SUPPLEMENT_ELAPSED_MS = 10 * 60_000;
+const MAX_RECORDED_GAP_DISTANCE_METERS = 3_000;
+const MAX_RECORDED_GAP_ELAPSED_MS = 10 * 60_000;
 
 type FetchLike = (url: string, init: { method: 'GET'; redirect: 'error'; signal?: AbortSignal }) => Promise<Response>;
 
@@ -99,6 +102,7 @@ type GapSupplementCandidate = {
   endCoordinate: [number, number];
   elapsedSeconds: number;
   observedNoMatch?: boolean;
+  recordedGap?: boolean;
   range: RouteTrackingSourceRangeV1;
   samples: RouteTrackingGeometryDocumentV1['samples'];
   startCoordinate: [number, number];
@@ -187,7 +191,11 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     );
     retryable ||= supplementOutcome.retryable;
     const inferredLines: InferredLine[] = [
-      ...moderate.map(({ coordinates, sourceRange }) => ({ coordinates, sourceRange })),
+      ...moderate.map(({ coordinates, sourceRange }) => ({ coordinates, sourceRange }))
+        .sort((left, right) => (
+          left.sourceRange.startSourceIndex - right.sourceRange.startSourceIndex
+          || left.sourceRange.endSourceIndex - right.sourceRange.endSourceIndex
+        )),
       ...supplementOutcome.lines,
     ];
     const inferredGeometry = toInferredMultiLineString(inferredLines);
@@ -281,6 +289,26 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       retryable ||= batch.some((result) => result.retryable);
       inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
     }
+    const recordedGapCandidates = rawEvidence === undefined ? [] : buildRecordedGapSupplementCandidates(
+      document,
+      [
+        ...approvedLines,
+        ...inferred.map((line) => ({
+          confidence: 1,
+          coordinates: line.coordinates,
+          interpolationLevel: 1 as const,
+          sourceRange: line.sourceRange,
+        })),
+      ],
+      rawEvidence,
+    ).slice(0, MAX_GAP_SUPPLEMENT_CANDIDATES);
+    for (let offset = 0; offset < recordedGapCandidates.length; offset += 4) {
+      const batch = await Promise.all(recordedGapCandidates.slice(offset, offset + 4).map((candidate) => (
+        this.routeGapSupplement(baseUrl, candidate)
+      )));
+      retryable ||= batch.some((result) => result.retryable);
+      inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
+    }
     const contextualCandidates = buildContextualGapSupplementCandidates(
       document,
       confidentLines,
@@ -324,7 +352,34 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       retryable ||= batch.some((result) => result.retryable);
       inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
     }
-    return { lines: inferred, retryable };
+    const continuousNoMatchBudget = Math.max(0, MAX_GAP_SUPPLEMENT_CANDIDATES - observedCandidates.length);
+    const continuousNoMatchCandidates = rawEvidence === undefined ? [] : buildContinuousNoMatchCandidates(
+      document,
+      [
+        ...approvedLines,
+        ...inferred.map((line) => ({
+          confidence: 1,
+          coordinates: line.coordinates,
+          interpolationLevel: 1 as const,
+          sourceRange: line.sourceRange,
+        })),
+      ],
+      rawEvidence,
+    ).slice(0, continuousNoMatchBudget);
+    for (let offset = 0; offset < continuousNoMatchCandidates.length; offset += 4) {
+      const batch = await Promise.all(continuousNoMatchCandidates.slice(offset, offset + 4).map((candidate) => (
+        this.routeGapSupplement(baseUrl, candidate)
+      )));
+      retryable ||= batch.some((result) => result.retryable);
+      inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
+    }
+    return {
+      lines: inferred.sort((left, right) => (
+        left.sourceRange.startSourceIndex - right.sourceRange.startSourceIndex
+        || left.sourceRange.endSourceIndex - right.sourceRange.endSourceIndex
+      )),
+      retryable,
+    };
   }
 
   private async routeGapSupplement(
@@ -823,6 +878,89 @@ function isAlignedRawEvidence(
     ));
 }
 
+function buildRecordedGapSupplementCandidates(
+  document: RouteTrackingGeometryDocumentV1,
+  approvedLines: MatchedLine[],
+  rawEvidence: RouteTrackingGeometryPositionInput[],
+): GapSupplementCandidate[] {
+  const approvedRanges = approvedLines.map((line) => line.sourceRange);
+  return document.samples.slice(1).flatMap((rightSample, rightIndexOffset) => {
+    if (rightSample.gapBefore !== true) return [];
+    const leftIndex = rightIndexOffset;
+    const rightIndex = rightIndexOffset + 1;
+    const leftSample = document.samples[leftIndex]!;
+    const leftSourceIndex = leftSample.sourceIndex;
+    const rightSourceIndex = rightSample.sourceIndex;
+    if (
+      leftSourceIndex === undefined
+      || rightSourceIndex !== leftSourceIndex + 1
+      || approvedRanges.some((range) => (
+        range.startSourceIndex < rightSourceIndex && range.endSourceIndex > leftSourceIndex
+      ))
+      || typeof leftSample.driverId !== 'string'
+      || leftSample.driverId.trim() === ''
+      || rightSample.driverId !== leftSample.driverId
+      || !isMeasuredGapAnchor(leftSample.accuracyMeters)
+      || !isMeasuredGapAnchor(rightSample.accuracyMeters)
+    ) return [];
+    const leftRaw = rawEvidence[leftSourceIndex];
+    const rightRaw = rawEvidence[rightSourceIndex];
+    const startCoordinate = document.coordinates[leftIndex]!;
+    const endCoordinate = document.coordinates[rightIndex]!;
+    if (
+      leftRaw?.eventId !== leftSample.eventId
+      || rightRaw?.eventId !== rightSample.eventId
+      || leftRaw.driverId !== leftSample.driverId
+      || rightRaw.driverId !== leftSample.driverId
+      || leftRaw.routePlanId.trim() === ''
+      || rightRaw.routePlanId !== leftRaw.routePlanId
+      || !sameCoordinate([leftRaw.longitude, leftRaw.latitude], startCoordinate)
+      || !sameCoordinate([rightRaw.longitude, rightRaw.latitude], endCoordinate)
+      || leftRaw.occurredAt !== leftSample.occurredAt
+      || rightRaw.occurredAt !== rightSample.occurredAt
+      || leftRaw.receivedAt !== leftSample.receivedAt
+      || rightRaw.receivedAt !== rightSample.receivedAt
+      || leftRaw.accuracyMeters !== leftSample.accuracyMeters
+      || rightRaw.accuracyMeters !== rightSample.accuracyMeters
+    ) return [];
+    const elapsedSeconds = (Date.parse(rightSample.occurredAt) - Date.parse(leftSample.occurredAt)) / 1000;
+    const straightDistanceMeters = distanceBetweenCoordinatesMeters(startCoordinate, endCoordinate);
+    if (
+      !(elapsedSeconds > 0 && elapsedSeconds <= MAX_RECORDED_GAP_ELAPSED_MS / 1000)
+      || straightDistanceMeters < MIN_GAP_SUPPLEMENT_DISTANCE_METERS
+      || straightDistanceMeters > MAX_RECORDED_GAP_DISTANCE_METERS
+      || straightDistanceMeters / elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
+    ) return [];
+    return [{
+      contextual: true,
+      coordinates: [startCoordinate, endCoordinate],
+      elapsedSeconds,
+      endCoordinate,
+      range: {
+        endEventId: rightSample.eventId,
+        endOccurredAt: rightSample.occurredAt,
+        endSourceIndex: rightSourceIndex,
+        interpolationLevel: 1,
+        reason: 'GPS_GAP',
+        startEventId: leftSample.eventId,
+        startOccurredAt: leftSample.occurredAt,
+        startSourceIndex: leftSourceIndex,
+      },
+      recordedGap: true,
+      samples: [leftSample, rightSample],
+      startCoordinate,
+      straightDistanceMeters,
+    }];
+  });
+}
+
+function isMeasuredGapAnchor(accuracyMeters: number | null | undefined): accuracyMeters is number {
+  return typeof accuracyMeters === 'number'
+    && Number.isFinite(accuracyMeters)
+    && accuracyMeters >= 0
+    && accuracyMeters <= MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS;
+}
+
 function buildObservedNoMatchCandidates(
   document: RouteTrackingGeometryDocumentV1,
   confidentLines: MatchedLine[],
@@ -953,6 +1091,141 @@ function buildObservedNoMatchCandidates(
   });
 }
 
+function buildContinuousNoMatchCandidates(
+  document: RouteTrackingGeometryDocumentV1,
+  approvedLines: MatchedLine[],
+  rawEvidence: RouteTrackingGeometryPositionInput[],
+): GapSupplementCandidate[] {
+  const approvedRanges = approvedLines.map((line) => line.sourceRange);
+  const acquisitionBreaks = new Set(document.samples.flatMap((sample) => (
+    sample.gapBefore === true && sample.sourceIndex !== undefined ? [sample.sourceIndex] : []
+  )));
+  const unmatchedRanges = buildUnmatchedRanges(document, approvedLines)
+    .filter((range) => range.reason === 'NO_MATCH')
+    .sort((left, right) => (
+      (right.endSourceIndex - right.startSourceIndex) - (left.endSourceIndex - left.startSourceIndex)
+      || left.startSourceIndex - right.startSourceIndex
+    ));
+  const candidates: GapSupplementCandidate[] = [];
+
+  for (const unmatched of unmatchedRanges) {
+    // Short runs retain the existing null-tracepoint and matching-boundary safeguards.
+    if (unmatched.endSourceIndex - unmatched.startSourceIndex + 1 <= MAX_CONTINUOUS_NO_MATCH_WINDOW_POINTS) continue;
+    let startSourceIndex = unmatched.startSourceIndex;
+    while (startSourceIndex + 2 <= unmatched.endSourceIndex
+      && candidates.length < MAX_GAP_SUPPLEMENT_CANDIDATES) {
+      const maximumEndSourceIndex = Math.min(
+        unmatched.endSourceIndex,
+        startSourceIndex + MAX_CONTINUOUS_NO_MATCH_WINDOW_POINTS - 1,
+      );
+      let candidate: GapSupplementCandidate | null = null;
+      for (let endSourceIndex = maximumEndSourceIndex;
+        endSourceIndex >= startSourceIndex + 2;
+        endSourceIndex -= 1) {
+        candidate = buildContinuousNoMatchWindow(
+          rawEvidence,
+          startSourceIndex,
+          endSourceIndex,
+          acquisitionBreaks,
+          approvedRanges,
+        );
+        if (candidate !== null) break;
+      }
+      if (candidate === null) {
+        startSourceIndex += 1;
+        continue;
+      }
+      candidates.push(candidate);
+      // Adjacent accepted windows may share their measured endpoint, but never an interior source fix.
+      startSourceIndex = candidate.range.endSourceIndex;
+    }
+  }
+  return candidates;
+}
+
+function buildContinuousNoMatchWindow(
+  rawEvidence: RouteTrackingGeometryPositionInput[],
+  startSourceIndex: number,
+  endSourceIndex: number,
+  acquisitionBreaks: Set<number>,
+  approvedRanges: RouteTrackingSourceRangeV1[],
+): GapSupplementCandidate | null {
+  if (approvedRanges.some((range) => (
+    range.startSourceIndex < endSourceIndex && range.endSourceIndex > startSourceIndex
+  ))) return null;
+  for (let sourceIndex = startSourceIndex + 1; sourceIndex <= endSourceIndex; sourceIndex += 1) {
+    if (acquisitionBreaks.has(sourceIndex)) return null;
+  }
+  const raw = rawEvidence.slice(startSourceIndex, endSourceIndex + 1);
+  if (raw.length !== endSourceIndex - startSourceIndex + 1
+    || raw.length < 3
+    || raw.length > MAX_CONTINUOUS_NO_MATCH_WINDOW_POINTS) return null;
+  const first = raw[0]!;
+  const last = raw.at(-1)!;
+  if (typeof first.driverId !== 'string' || first.driverId.trim() === ''
+    || first.routePlanId.trim() === ''
+    || raw.some((position) => (
+      position.driverId !== first.driverId
+      || position.routePlanId !== first.routePlanId
+      || typeof position.accuracyMeters !== 'number'
+      || !Number.isFinite(position.accuracyMeters)
+      || position.accuracyMeters < 0
+      || position.accuracyMeters > ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters
+      || !Number.isFinite(position.latitude)
+      || !Number.isFinite(position.longitude)
+      || Math.abs(position.latitude) > 90
+      || Math.abs(position.longitude) > 180
+    ))
+    || raw.filter((position) => position.accuracyMeters! <= MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS).length < 3
+    || first.accuracyMeters! > MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS
+    || last.accuracyMeters! > MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS) return null;
+  const coordinates = raw.map((position): [number, number] => [position.longitude, position.latitude]);
+  if (raw.slice(1).some((position, index) => {
+    const previous = raw[index]!;
+    const elapsedMs = Date.parse(position.occurredAt) - Date.parse(previous.occurredAt);
+    return !(elapsedMs > 0)
+      || distanceBetweenCoordinatesMeters(coordinates[index]!, coordinates[index + 1]!)
+        / (elapsedMs / 1000) > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
+  })) return null;
+  const elapsedSeconds = (Date.parse(last.occurredAt) - Date.parse(first.occurredAt)) / 1000;
+  const startCoordinate = coordinates[0]!;
+  const endCoordinate = coordinates.at(-1)!;
+  const straightDistanceMeters = distanceBetweenCoordinatesMeters(startCoordinate, endCoordinate);
+  if (!(elapsedSeconds > 0 && elapsedSeconds <= MAX_GAP_SUPPLEMENT_ELAPSED_MS / 1000)
+    || straightDistanceMeters < MIN_GAP_SUPPLEMENT_DISTANCE_METERS
+    || straightDistanceMeters > MAX_GAP_SUPPLEMENT_DISTANCE_METERS
+    || straightDistanceMeters / elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND) return null;
+  const samples = raw.map((position, index) => ({
+    accuracyMeters: position.accuracyMeters!,
+    driverId: position.driverId,
+    eventId: position.eventId,
+    gapBefore: false,
+    occurredAt: position.occurredAt,
+    receivedAt: position.receivedAt,
+    sourceIndex: startSourceIndex + index,
+  }));
+  return {
+    contextual: true,
+    coordinates,
+    elapsedSeconds,
+    endCoordinate,
+    observedNoMatch: true,
+    range: {
+      endEventId: last.eventId,
+      endOccurredAt: last.occurredAt,
+      endSourceIndex,
+      interpolationLevel: 1,
+      reason: 'NO_MATCH',
+      startEventId: first.eventId,
+      startOccurredAt: first.occurredAt,
+      startSourceIndex,
+    },
+    samples,
+    startCoordinate,
+    straightDistanceMeters,
+  };
+}
+
 function isSourceIndexCovered(sourceIndex: number, ranges: RouteTrackingSourceRangeV1[]): boolean {
   return ranges.some((range) => sourceIndex >= range.startSourceIndex && sourceIndex <= range.endSourceIndex);
 }
@@ -979,7 +1252,7 @@ function selectGapSupplementRoute(
   const waypointLocations = object.waypoints.slice(0, 2).map((waypoint) => readCoordinatePair(objectOrNull(waypoint)?.location));
   const startWaypoint = waypointLocations[0];
   const endWaypoint = waypointLocations[1];
-  const maximumEndpointDisplacement = candidate.observedNoMatch ? 15 : 50;
+  const maximumEndpointDisplacement = candidate.observedNoMatch || candidate.recordedGap ? 15 : 50;
   if (
     waypointLocations.length !== 2
     || startWaypoint === null
@@ -989,17 +1262,22 @@ function selectGapSupplementRoute(
     || distanceBetweenCoordinatesMeters(candidate.startCoordinate, startWaypoint) > maximumEndpointDisplacement
     || distanceBetweenCoordinatesMeters(candidate.endCoordinate, endWaypoint) > maximumEndpointDisplacement
   ) return null;
-  const maxRoadDistance = candidate.contextual && !candidate.observedNoMatch
-    ? Math.min(5_000, candidate.straightDistanceMeters * 2 + 100)
-    : Math.min(1_250, candidate.straightDistanceMeters * 1.8 + 50);
+  let maxRoadDistance = Math.min(1_250, candidate.straightDistanceMeters * 1.8 + 50);
+  if (candidate.recordedGap) {
+    maxRoadDistance = Math.min(5_000, candidate.straightDistanceMeters * 1.6 + 100);
+  } else if (candidate.contextual && !candidate.observedNoMatch) {
+    maxRoadDistance = Math.min(5_000, candidate.straightDistanceMeters * 2 + 100);
+  }
   const maxRouteDuration = candidate.elapsedSeconds * 1.5 + (candidate.contextual && !candidate.observedNoMatch ? 30 : 15);
   const routes = object.routes.flatMap((route) => {
     const record = objectOrNull(route);
     const distance = Number(record?.distance);
     const duration = Number(record?.duration);
     const coordinates = readLineString(record?.geometry);
+    const geometryDistance = coordinates === null ? null : lineDistanceMeters(coordinates);
     if (
       coordinates === null
+      || geometryDistance === null
       || !Number.isFinite(distance)
       || !Number.isFinite(duration)
       || distance <= 0
@@ -1007,6 +1285,11 @@ function selectGapSupplementRoute(
       || distance > maxRoadDistance
       || distance / duration > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
       || distance / candidate.elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
+      || (candidate.recordedGap && (
+        geometryDistance > maxRoadDistance
+        || geometryDistance / duration > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
+        || geometryDistance / candidate.elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
+      ))
       || duration > maxRouteDuration
       || distanceBetweenCoordinatesMeters(coordinates[0]!, startWaypoint) > maximumEndpointDisplacement
       || distanceBetweenCoordinatesMeters(coordinates.at(-1)!, endWaypoint) > maximumEndpointDisplacement
@@ -1056,9 +1339,7 @@ function supportsContextualRoute(
   candidate: GapSupplementCandidate,
   routeCoordinates: Array<[number, number]>,
 ): boolean {
-  const routeLength = routeCoordinates.slice(1).reduce((sum, coordinate, index) => (
-    sum + distanceBetweenCoordinatesMeters(routeCoordinates[index]!, coordinate)
-  ), 0);
+  const routeLength = lineDistanceMeters(routeCoordinates);
   if (!(routeLength > 0)) return false;
   const projections = candidate.coordinates.map((coordinate) => projectCoordinateOntoLine(coordinate, routeCoordinates));
   if (projections.some((projection) => projection === null)) return false;
@@ -1086,6 +1367,12 @@ function supportsContextualRoute(
       > MAX_HARD_MATCH_SPEED_METERS_PER_SECOND) return false;
   }
   return true;
+}
+
+function lineDistanceMeters(coordinates: Array<[number, number]>): number {
+  return coordinates.slice(1).reduce((sum, coordinate, index) => (
+    sum + distanceBetweenCoordinatesMeters(coordinates[index]!, coordinate)
+  ), 0);
 }
 
 function projectCoordinateOntoLine(

@@ -5039,7 +5039,7 @@ paths:
           in: query
           required: false
           schema:
-            enum: [pending, active, completed]
+            enum: [pending, active, completed, incomplete]
             type: string
         - name: cursor
           in: query
@@ -9219,7 +9219,7 @@ components:
           type: string
           description: Valid IANA timezone. Server falls back to UTC rather than device-local time when route config is missing.
         status:
-          enum: [pending, active, completed]
+          enum: [pending, active, completed, incomplete]
           type: string
         stopCount:
           type: integer

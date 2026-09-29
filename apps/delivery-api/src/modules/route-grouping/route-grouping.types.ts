@@ -3,7 +3,7 @@ import type { DriverRoutePushResult } from './driver-push.provider.js';
 
 export type RoutePublicationResult = DriverRoutePushResult & { publishedAt: string | null };
 
-export type RouteGroupingDisplayStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+export type RouteGroupingDisplayStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'INCOMPLETE' | 'CANCELLED';
 export type RouteGroupingChildDisplayStatus = RouteGroupingDisplayStatus;
 export type RouteGroupingNotificationStatus = 'NOT_REQUIRED' | 'PENDING' | 'SENT' | 'FAILED';
 

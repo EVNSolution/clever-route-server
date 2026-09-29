@@ -8,7 +8,8 @@ state.
 The command is a dry-run unless `--apply` is present. Apply requires the plan hash
 and a mode-`0600` backup produced by a reviewed dry-run. The apply transaction takes
 the same route advisory lock as live ingestion, rechecks tenant and route state, and
-accepts only an unchanged reviewed source prefix plus a strictly append-only tail.
+requires the reviewed GPS source to remain unchanged. An appended GPS tail requires
+a new dry-run.
 OSRM calls happen before that transaction.
 
 ## Interpolation levels
@@ -82,8 +83,16 @@ background worker. OSRM confidence alone is not proof of the driven road.
 The opt-in pilot applies only when the current road cache has no accepted or
 inferred lines and the proposed rebuild adds at least one inferred line. Both
 dry-run and the locked apply transaction enforce this rule, so the pilot cannot
-replace an already recovered road path or publish a zero-gain candidate. Routes
-with existing road lines require a separate preservation-aware policy review.
+replace an already recovered road path or publish a zero-gain candidate.
+
+For routes with an existing road cache, `--preserve-existing-road-cache` is the
+explicit historical rebuild mode. It retains each existing Level 0 and Level 1
+line in full, and adds only new accepted or inferred lines whose source edges do
+not overlap an existing trusted line. Sharing an endpoint is allowed. It does
+not cut an existing line to fit a new OSRM result. Invalid source ranges, a
+coverage or source-version mismatch, or a changed derived cache aborts the
+operation. A route with no safe new line may correctly remain unchanged. This
+mode must not be combined with the unmeasured-accuracy pilot.
 
 Source semantics: [OSRM v26.5 Match API](https://github.com/Project-OSRM/osrm-backend/blob/v26.5.0/docs/http.md#match-service).
 
@@ -121,6 +130,10 @@ rows to force a refresh. Diagnose job status and provider reachability first.
 An algorithm-only release under the same cache schema does not refresh existing
 v5 rows. Historical recomputation must use the guarded per-route dry-run,
 backup, and apply procedure below, one route at a time with resource checks.
+The preservation flag is also per-route; deploying a new image does not
+automatically update existing completed or in-progress routes. Live worker
+refreshes after new GPS events are separate publications, so re-audit an
+in-progress route if tracking continues after a manual rebuild.
 
 Inspect the selected service day's level counts and the actual road shapes during
 replay. A larger feature count or zero acquisition gaps does not prove better
@@ -175,6 +188,13 @@ restore. Compare the candidate with a same-source default replay before apply;
 publish only actual additional inferred lines without losing existing accepted
 geometry. Keep the flag absent for other routes and all ordinary maintenance.
 
+For an existing road cache, add `--preserve-existing-road-cache` to **both**
+dry-run and apply. The reviewed backup and plan hash bind the mode and the
+current derived-state hash. Check the proposed source-edge additions, not just
+aggregate point or line counts. If OSRM is incomplete, a line overlaps existing
+trusted source edges, or the current cache changes before apply, keep the route
+unchanged and repeat the review when appropriate.
+
 `inferredLineCount` counts conservative road connections generated only to make a
 known tracking gap readable. These lines are not observed GPS, do not prove that
 the driver used that exact road, and must never be used as delivery-completion or
@@ -213,12 +233,104 @@ docker exec "${tracking_container}" node dist/scripts/rebuild-route-tracking-qua
   --apply
 ```
 
-New GPS events that arrived after dry-run are accepted only when they form an
-append-only tail. A changed prefix, out-of-order insertion, route or stop status
-change, tenant mismatch, or plan mismatch aborts without a database write. Apply
+New GPS events that arrive after dry-run, a changed prefix, out-of-order insertion,
+route or stop status change, tenant mismatch, or plan mismatch abort without a
+database write. Apply
 also creates a unique `*.prewrite-<timestamp>.json` snapshot inside the container
 while holding the lock. Copy that reported path to the private host directory and
 verify its SHA-256 immediately after apply.
+With `--preserve-existing-road-cache`, the apply transaction also compares the
+current derived-state hash with the reviewed backup under the same lock. A live
+worker refresh or any other derived change therefore requires a new dry-run.
+
+## Server-host batch preservation worker
+
+Use `scripts/route-tracking-preservation-worker.sh` when every eligible K-food
+historical route must be processed without moving GPS or OSRM work to an operator
+machine. Run it on the production server through AWS SSM. The API container reads
+the database and calls OSRM; the host script only serializes routes, verifies
+hashes, and maintains private evidence. Concurrency is fixed at one.
+
+The worker is deliberately tenant-locked to app `clever-route-kfood` and shop
+`7hrud1-xq.myshopify.com`. It selects `COMPLETED` routes and `IN_PROGRESS` routes
+whose route-tracking event window has already ended. A stale in-progress route is
+eligible for derived GPS repair, but the worker does not synthesize completion or
+change route/stop status. Status finalization requires its own audited policy.
+
+The deployed API image must already contain the reviewed preservation flag. The
+production host is not a Git checkout. Send the exact reviewed script content to
+`/tmp/route-tracking-preservation-worker.sh` with the same AWS SSM Run Command
+used to invoke it, set its mode to `0700`, and start or resume it on the host:
+
+```bash
+sudo env \
+  TRACKING_EXECUTE=1 \
+  TRACKING_APP_ID=clever-route-kfood \
+  TRACKING_SHOP_DOMAIN=7hrud1-xq.myshopify.com \
+  bash /tmp/route-tracking-preservation-worker.sh
+```
+
+The script discovers the running API container by its Compose service label, then
+by the exact production container name. Set `TRACKING_CONTAINER=<name-or-id>` only
+when that discovery is unavailable. An explicit absolute
+`TRACKING_COMPOSE_FILE` is the last fallback; the worker never depends on a
+relative repository path. `TRACKING_PRIVATE_DIR` may be changed only to another
+directory below `/srv/clever-route-server/private/`. Do not copy this directory
+to a workstation.
+
+The worker takes a tenant-wide `flock`, creates mode-`0600` logs and per-route
+files, performs a preservation dry-run, copies the reviewed backup from the
+container, and verifies both SHA-256 values before apply. The preservation CLI
+itself proves that at least one new non-overlapping trusted line exists. No-gain
+routes receive a `.done` checkpoint only after a separate read-only state audit.
+Every `.done` records the exact route/stop, event-window, source, derived-cache,
+and durable-job fingerprint. A later live publish, rollback, GPS change, route
+transition, or job change invalidates that checkpoint and causes a new dry-run.
+Retryable or incomplete OSRM
+results and known source/cache changes between review and apply are recorded as
+retryable or stale and skipped for that run, so a later invocation can re-plan
+them. Unexpected identity, cache-shape, backup, or apply failures stop the run.
+
+After each apply, the worker copies and verifies the locked prewrite snapshot and
+checks the raw source count, v5 cache input count and timestamp, reviewed
+watermark, durable job target, lease settlement, and unchanged route/stop state.
+Only then does it atomically create the route's `.done` checkpoint. A restart
+skips those checkpoints and continues the remaining routes. Review progress and
+results only in the root-owned private directory:
+
+```bash
+sudo find /srv/clever-route-server/private/route-tracking-preservation-worker/state \
+  -maxdepth 1 -type f -name '*.done' -print
+sudo sh -c \
+  'tail -n 100 /srv/clever-route-server/private/route-tracking-preservation-worker/logs/*.log'
+```
+
+The logs and JSON summaries contain route IDs and aggregate counts only. Raw or
+derived GPS coordinates remain inside the mode-`0600` backup files and must never
+be printed, committed, or attached to a ticket.
+
+### Interrupted apply recovery
+
+Immediately before each apply, the worker creates a route-specific
+`*.apply-pending` marker containing the reviewed plan, backup SHA-256, and
+pre-apply state fingerprint. It removes this marker only after the apply output,
+prewrite backup, post-audit, and fingerprinted `.done` checkpoint are durable.
+On restart, a pending marker prevents both no-gain completion and another apply.
+The only automatic recovery is the narrow case where a completed checkpoint
+already exists and its fingerprint still matches the live server state; this is
+the crash window after checkpoint creation and before marker removal.
+
+For any other pending marker, leave it in place and inspect that route's private
+reviewed backup, apply output/error, prewrite snapshot, and post-audit files. Do
+not infer success from an empty output file or from a no-gain replay. If the apply
+result and all post-apply invariants can be proven, record the audited live
+fingerprint in the existing checkpoint before removing the pending marker. If
+the outcome is ambiguous, use the reviewed backup and a complete apply result's
+`plannedRoadMatchedWatermark` plus `appliedDerivedStateHash` for the guarded
+restore procedure below. Remove the pending marker only after the restore and
+source/cache/job audit succeed. If no mutation occurred, independently reproduce
+the worker's read-only state fingerprint and require an exact match with
+`preApplyStateFingerprint` before removing the marker and restarting the worker.
 
 ## Verification and rollback
 
@@ -226,7 +338,7 @@ verify its SHA-256 immediately after apply.
 2. Confirm source point count and time range cover the intended tracking session.
 3. Confirm route status and every delivery-stop status are unchanged.
 4. Confirm the `LOCATION_UPDATED` source-event count and reviewed-prefix digest are
-   unchanged; later append-only events are expected while live tracking continues.
+   unchanged. A later GPS event requires a new dry-run before apply.
 5. Open the selected historical route and verify the map keeps only the planned
    route and a uniform GPS presentation. Confirm inferred and uncertain provenance
    remains distinguishable in the API/cache for diagnostics without creating extra

@@ -7,6 +7,7 @@ import {
   assertDraftSchedulePlanDates,
   assertLockedRoutePlanSuccessorPolicy,
   currentRouteBindingAuthorityState,
+  deriveGroupingDisplayStatus,
   PrismaRouteGroupingService,
   newChildRouteName,
   rebindCurrentOrdersToRouteVersion,
@@ -28,6 +29,22 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 describe('route grouping contracts', () => {
+  test('keeps a group operational while Ready children remain beside terminal children', () => {
+    const group = (statuses: string[]) => ({
+      childVersions: statuses.map((status) => ({
+        routePlan: { driverEvents: [], status },
+        status: 'CURRENT',
+        supersededAt: null
+      })),
+      status: 'READY'
+    });
+
+    expect(deriveGroupingDisplayStatus(group(['INCOMPLETE']))).toBe('INCOMPLETE');
+    expect(deriveGroupingDisplayStatus(group(['INCOMPLETE', 'COMPLETED']))).toBe('INCOMPLETE');
+    expect(deriveGroupingDisplayStatus(group(['INCOMPLETE', 'READY']))).toBe('IN_PROGRESS');
+    expect(deriveGroupingDisplayStatus(group(['COMPLETED', 'READY']))).toBe('IN_PROGRESS');
+  });
+
   test('requires a scheduled departure to fall on the route plan date in its local timezone', () => {
     const route = {
       branchId: null,

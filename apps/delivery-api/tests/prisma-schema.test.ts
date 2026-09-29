@@ -62,6 +62,10 @@ const readyRoutePlanStatusMigrationPath = new URL(
   '../prisma/migrations/20260716143000_add_ready_route_plan_status/migration.sql',
   import.meta.url
 );
+const incompleteRoutePlanStatusMigrationPath = new URL(
+  '../prisma/migrations/20260929120000_add_incomplete_route_plan_status/migration.sql',
+  import.meta.url
+);
 const readyRouteDefaultsMigrationPath = new URL(
   '../prisma/migrations/20260716143100_set_ready_route_defaults/migration.sql',
   import.meta.url
@@ -263,6 +267,16 @@ describe('Prisma schema', () => {
     expect(migration).toContain(`ALTER TYPE "RoutePlanStatus" ADD VALUE IF NOT EXISTS 'READY'`);
     expect(defaultsMigration).toContain('ALTER TABLE "route_plans" ALTER COLUMN "status" SET DEFAULT \'READY\'');
     expect(defaultsMigration).toContain('ALTER TABLE "route_groupings" ALTER COLUMN "status" SET DEFAULT \'READY\'');
+  });
+
+  test('defines Incomplete as an additive terminal route state', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(incompleteRoutePlanStatusMigrationPath, 'utf8');
+    const routePlanStatus = /enum RoutePlanStatus \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(routePlanStatus).toContain('INCOMPLETE');
+    expect(migration).toContain(`ALTER TYPE "RoutePlanStatus" ADD VALUE IF NOT EXISTS 'INCOMPLETE'`);
+    expect(migration).not.toMatch(/DELETE|DROP\s+(?:TABLE|TYPE|COLUMN)|UPDATE\s+"route_plans"/iu);
   });
 
   test('defines shop-level encrypted Shopify Admin API token storage', async () => {
