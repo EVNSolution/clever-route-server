@@ -1009,7 +1009,7 @@ function preservationWrite(
     roadMatchedCoverage: 'ontario',
     roadMatchedGeometry: embed(matched),
     roadMatchedLastInputOccurredAt: new Date(document.samples.at(-1)!.occurredAt),
-    roadMatchedLastPosition: null,
+    roadMatchedLastPosition: null as { latitude: number; longitude: number; occurredAt: string } | null,
     roadMatchedPointCount: [
       ...(lines.matched ?? []),
       ...(lines.inferred ?? []).slice(0, lines.matcherCountedInferred ?? lines.inferred?.length ?? 0),
@@ -1051,6 +1051,6 @@ function testGeometry(lines: ReturnType<typeof roadLine>[]) {
   return lines.length === 0 ? null : {
     coordinates: lines.map((line) => line.coordinates),
     sourceRanges: lines.map((line) => line.range),
-    type: 'MultiLineString',
+    type: 'MultiLineString' as const,
   };
 }
