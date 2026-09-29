@@ -412,7 +412,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260921120000_driver_completion_assistance')).toBeLessThan(
       migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')
     );
-    expect(migrations.at(-1)).toBe('20260922155500_add_route_tracking_road_match_jobs');
+    expect(migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')).toBeLessThan(
+      migrations.indexOf('20260929120000_add_incomplete_route_plan_status')
+    );
+    expect(migrations.at(-1)).toBe('20260929120000_add_incomplete_route_plan_status');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {

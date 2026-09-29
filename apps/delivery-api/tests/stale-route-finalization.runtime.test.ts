@@ -61,7 +61,8 @@ describe('StaleRouteFinalizationRuntime', () => {
     const runtime = new StaleRouteFinalizationRuntime({ processDue }, true);
 
     runtime.start();
-    await runtime.runOnce();
+    const running = runtime.runOnce();
+    await Promise.resolve();
     const closing = runtime.close();
     let closed = false;
     void closing.then(() => { closed = true; });
@@ -70,7 +71,7 @@ describe('StaleRouteFinalizationRuntime', () => {
     expect(processDue).toHaveBeenCalledTimes(1);
     expect(closed).toBe(false);
     finish();
-    await closing;
+    await Promise.all([running, closing]);
     expect(closed).toBe(true);
   });
 });
