@@ -32,6 +32,7 @@ import {
   type UvisVehicleTrailDocumentV1,
   type UvisVehicleTrailMarker,
 } from '../uvis/uvis-vehicle-trail-materializer.js';
+import { buildUvisVehicleDailyRoute } from '../uvis/uvis-vehicle-daily-route.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 import {
   occurredAtWithinRouteTrackingEventWindow,
@@ -131,6 +132,7 @@ export type DsvV1VehicleTemperatureHistoryResult = {
 };
 
 export type DsvV1VehicleGpsTrailHistoryInput = {
+  includeDailyRoute?: boolean;
   serviceDate?: string | null;
   vehicleId: string;
 };
@@ -170,6 +172,7 @@ export type DsvV1VehicleGpsTrailSession = {
 };
 
 export type DsvV1VehicleGpsTrailHistoryResult = {
+  dailyRoute?: ReturnType<typeof buildUvisVehicleDailyRoute>;
   serviceDate: string;
   sessions: DsvV1VehicleGpsTrailSession[];
   timezone: string;
@@ -1107,6 +1110,14 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       vehicleId: vehicle.id,
     });
     return {
+      ...(input.includeDailyRoute === true ? {
+        dailyRoute: buildUvisVehicleDailyRoute(validSamples.map((sample) => ({
+          latitude: sample.latitude,
+          longitude: sample.longitude,
+          observedAt: sample.observedAt.toISOString(),
+          staleAfter: sample.staleAfter.toISOString(),
+        })), materializedTrail),
+      } : {}),
       serviceDate,
       sessions: sortGpsTrailSessions([...sessions, ...uncoveredSessions]),
       timezone,
