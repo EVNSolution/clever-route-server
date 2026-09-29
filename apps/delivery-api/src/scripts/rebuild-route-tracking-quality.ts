@@ -870,6 +870,9 @@ type StrictRoadCache = {
   uncertain: PreservedRoadLine[];
 };
 
+type SourceIdentityIndex = Map<string, number[]>;
+type SourceRangeReadMode = 'remap-existing-legacy' | 'remap-existing-raw' | 'strict-proposed';
+
 export function buildPreservedRouteTrackingRoadMatchWrite(
   currentDerived: unknown,
   proposedWrite: RebuildPlan['roadMatchWrite'],
@@ -879,16 +882,29 @@ export function buildPreservedRouteTrackingRoadMatchWrite(
   if (source.length !== document.sourcePointCount || source.length < 2) {
     throw new Error('Preservation rebuild raw-source cardinality does not match the geometry document.');
   }
-  const current = readStrictRoadCache(currentDerived, source, 'existing');
-  const proposed = readStrictRoadCache(proposedWrite, source, 'proposed');
+  const sourceIdentityIndex = buildSourceIdentityIndex(source);
+  const current = readStrictRoadCache(
+    currentDerived,
+    source,
+    sourceIdentityIndex,
+    'existing',
+  );
+  const proposed = readStrictRoadCache(
+    proposedWrite,
+    source,
+    sourceIdentityIndex,
+    'proposed',
+  );
   if (current.coverage !== proposed.coverage) {
     throw new Error('Preservation rebuild coverage does not match the existing road cache.');
   }
 
   const trusted = [...current.matched, ...current.inferred];
+  const proposedTrusted = [...proposed.matched, ...proposed.inferred];
   assertDisjointTrustedEdges(trusted, 'existing');
+  assertDisjointTrustedEdges(proposedTrusted, 'proposed');
   const additions: PreservedRoadLine[] = [];
-  for (const candidate of [...proposed.matched, ...proposed.inferred]) {
+  for (const candidate of proposedTrusted) {
     if (candidate.range.interpolationLevel !== 0 && candidate.range.interpolationLevel !== 1) continue;
     if ([...trusted, ...additions].some((line) => rangesShareSourceEdge(line.range, candidate.range))) continue;
     additions.push(candidate);
@@ -897,8 +913,14 @@ export function buildPreservedRouteTrackingRoadMatchWrite(
     throw new Error('Preservation rebuild found no new non-overlapping Level 0/1 road line.');
   }
 
-  const matched = [...current.matched, ...additions.filter((line) => line.range.interpolationLevel === 0)];
-  const inferred = [...current.inferred, ...additions.filter((line) => line.range.interpolationLevel === 1)];
+  const matched = sortPreservedRoadLines([
+    ...current.matched,
+    ...additions.filter((line) => line.range.interpolationLevel === 0),
+  ]);
+  const inferred = sortPreservedRoadLines([
+    ...current.inferred,
+    ...additions.filter((line) => line.range.interpolationLevel === 1),
+  ]);
   const mergedTrusted = [...matched, ...inferred];
   assertDisjointTrustedEdges(mergedTrusted, 'merged');
   const uncertain = proposed.uncertain.filter((line) => (
@@ -948,6 +970,7 @@ export function buildPreservedRouteTrackingRoadMatchWrite(
 function readStrictRoadCache(
   value: unknown,
   source: RouteTrackingGeometryPositionInput[],
+  sourceIdentityIndex: SourceIdentityIndex,
   label: 'existing' | 'proposed',
 ): StrictRoadCache {
   const record = isRecord(value) ? value : null;
@@ -978,6 +1001,9 @@ function readStrictRoadCache(
   const inferredRanges = inferredObject?.sourceRanges ?? [];
   const embeddedUnmatchedFromMatched = matchedObject?.unmatchedRanges;
   const embeddedUnmatchedFromUncertain = uncertainObject?.unmatchedRanges;
+  const legacySampleMetadata = label === 'existing' && Array.isArray(record.sampleMetadata)
+    ? record.sampleMetadata
+    : [];
   if (embeddedUnmatchedFromMatched !== undefined && embeddedUnmatchedFromUncertain !== undefined
     && hashCanonical(embeddedUnmatchedFromMatched) !== hashCanonical(embeddedUnmatchedFromUncertain)) {
     throw new Error(`Preservation rebuild ${label} unmatched range copies disagree.`);
@@ -989,9 +1015,28 @@ function readStrictRoadCache(
       throw new Error(`Preservation rebuild ${label} inferred range copies disagree.`);
     }
   }
-  const matched = readStrictRoadLines(matchedObject, source, `${label} matched`, new Set([0]), true);
-  const inferred = readStrictRoadLines(inferredObject, source, `${label} inferred`, new Set([1]), false);
-  const uncertain = readStrictRoadLines(uncertainObject, source, `${label} uncertain`, new Set([2]), true);
+  const rangeReadMode = label === 'existing'
+    ? determineExistingSourceRangeReadMode(
+      matchedObject,
+      inferredObject,
+      uncertainObject,
+      embeddedUnmatchedFromMatched ?? embeddedUnmatchedFromUncertain ?? [],
+      source,
+      legacySampleMetadata,
+    )
+    : 'strict-proposed';
+  const matched = readStrictRoadLines(
+    matchedObject, source, sourceIdentityIndex, legacySampleMetadata,
+    `${label} matched`, new Set([0]), true, rangeReadMode,
+  );
+  const inferred = readStrictRoadLines(
+    inferredObject, source, sourceIdentityIndex, legacySampleMetadata,
+    `${label} inferred`, new Set([1]), false, rangeReadMode,
+  );
+  const uncertain = readStrictRoadLines(
+    uncertainObject, source, sourceIdentityIndex, legacySampleMetadata,
+    `${label} uncertain`, new Set([2]), true, rangeReadMode,
+  );
   const matchedPointCount = integerOrZero(record.roadMatchedPointCount);
   markCountedInferredPrefix(inferred, matchedPointCount - pointCount(matched) - pointCount(uncertain), label);
   return {
@@ -1003,7 +1048,10 @@ function readStrictRoadCache(
     unmatched: readStrictDiagnosticRanges(
       embeddedUnmatchedFromMatched ?? embeddedUnmatchedFromUncertain ?? [],
       source,
+      sourceIdentityIndex,
+      legacySampleMetadata,
       `${label} unmatched`,
+      rangeReadMode,
     ),
     uncertain,
   };
@@ -1038,9 +1086,12 @@ function nullableGeometryRecord(value: unknown, label: string): Record<string, u
 function readStrictRoadLines(
   geometry: Record<string, unknown> | null,
   source: RouteTrackingGeometryPositionInput[],
+  sourceIdentityIndex: SourceIdentityIndex,
+  legacySampleMetadata: unknown[],
   label: string,
   allowedLevels: Set<number>,
   countedByMatcher: boolean,
+  rangeReadMode: SourceRangeReadMode,
 ): PreservedRoadLine[] {
   if (geometry === null) return [];
   const coordinates = geometry.coordinates as unknown[];
@@ -1049,7 +1100,7 @@ function readStrictRoadLines(
     if (coordinates.length === 0 && (ranges === undefined || Array.isArray(ranges) && ranges.length === 0)) return [];
     throw new Error(`Preservation rebuild ${label} line/range cardinality is invalid.`);
   }
-  return coordinates.map((line, index) => {
+  const lines = coordinates.map((line, index) => {
     if (!Array.isArray(line) || line.length < 2) {
       throw new Error(`Preservation rebuild ${label} line ${index} is malformed.`);
     }
@@ -1065,12 +1116,17 @@ function readStrictRoadLines(
       }
       return [longitude, latitude] as [number, number];
     });
-    const range = readStrictSourceRange(ranges[index], source, `${label} line ${index}`);
+    const range = readStrictSourceRange(
+      ranges[index], source, sourceIdentityIndex, legacySampleMetadata,
+      `${label} line ${index}`, rangeReadMode,
+    );
     if (!allowedLevels.has(range.interpolationLevel ?? -1)) {
       throw new Error(`Preservation rebuild ${label} line ${index} has an invalid interpolation level.`);
     }
     return { countedByMatcher, coordinates: parsedCoordinates, range };
   });
+  assertMonotonicSourceRanges(lines.map((line) => line.range), label);
+  return lines;
 }
 
 function markCountedInferredPrefix(
@@ -1102,23 +1158,60 @@ function pointCount(lines: PreservedRoadLine[]): number {
 function readStrictSourceRange(
   value: unknown,
   source: RouteTrackingGeometryPositionInput[],
+  sourceIdentityIndex: SourceIdentityIndex,
+  legacySampleMetadata: unknown[],
   label: string,
+  rangeReadMode: SourceRangeReadMode,
   allowPointRange = false,
 ): RouteTrackingSourceRangeV1 {
   if (!isRecord(value)) throw new Error(`Preservation rebuild ${label} source range is malformed.`);
-  const startSourceIndex = Number(value.startSourceIndex);
-  const endSourceIndex = Number(value.endSourceIndex);
-  if (!Number.isInteger(startSourceIndex) || !Number.isInteger(endSourceIndex)
-    || startSourceIndex < 0
-    || (allowPointRange ? endSourceIndex < startSourceIndex : endSourceIndex <= startSourceIndex)
-    || endSourceIndex >= source.length) {
+  const storedStartSourceIndex = Number(value.startSourceIndex);
+  const storedEndSourceIndex = Number(value.endSourceIndex);
+  if (!Number.isInteger(storedStartSourceIndex) || !Number.isInteger(storedEndSourceIndex)
+    || storedStartSourceIndex < 0 || storedEndSourceIndex < storedStartSourceIndex) {
     throw new Error(`Preservation rebuild ${label} source range indexes are invalid.`);
+  }
+  const startOccurredAt = isoOrNull(value.startOccurredAt);
+  const endOccurredAt = isoOrNull(value.endOccurredAt);
+  if (typeof value.startEventId !== 'string' || typeof value.endEventId !== 'string'
+    || startOccurredAt === null || endOccurredAt === null) {
+    throw new Error(`Preservation rebuild ${label} source identity is malformed.`);
+  }
+  if (rangeReadMode !== 'strict-proposed') {
+    assertExistingEndpointProvenance(
+      rangeReadMode,
+      storedStartSourceIndex,
+      value.startEventId,
+      startOccurredAt,
+      source,
+      legacySampleMetadata,
+      `${label} start`,
+    );
+    assertExistingEndpointProvenance(
+      rangeReadMode,
+      storedEndSourceIndex,
+      value.endEventId,
+      endOccurredAt,
+      source,
+      legacySampleMetadata,
+      `${label} end`,
+    );
+  }
+  const startSourceIndex = rangeReadMode !== 'strict-proposed'
+    ? resolveUniqueSourceIdentityIndex(sourceIdentityIndex, value.startEventId, startOccurredAt, `${label} start`)
+    : storedStartSourceIndex;
+  const endSourceIndex = rangeReadMode !== 'strict-proposed'
+    ? resolveUniqueSourceIdentityIndex(sourceIdentityIndex, value.endEventId, endOccurredAt, `${label} end`)
+    : storedEndSourceIndex;
+  if ((allowPointRange ? endSourceIndex < startSourceIndex : endSourceIndex <= startSourceIndex)
+    || endSourceIndex >= source.length) {
+    throw new Error(`Preservation rebuild ${label} source range indexes are invalid after identity normalization.`);
   }
   const start = source[startSourceIndex];
   const end = source[endSourceIndex];
   if (start === undefined || end === undefined
     || value.startEventId !== start.eventId || value.endEventId !== end.eventId
-    || isoOrNull(value.startOccurredAt) !== start.occurredAt || isoOrNull(value.endOccurredAt) !== end.occurredAt) {
+    || startOccurredAt !== start.occurredAt || endOccurredAt !== end.occurredAt) {
     throw new Error(`Preservation rebuild ${label} source identity does not match raw GPS.`);
   }
   const interpolationLevel = value.interpolationLevel;
@@ -1147,16 +1240,155 @@ function readStrictSourceRange(
 function readStrictDiagnosticRanges(
   value: unknown,
   source: RouteTrackingGeometryPositionInput[],
+  sourceIdentityIndex: SourceIdentityIndex,
+  legacySampleMetadata: unknown[],
   label: string,
+  rangeReadMode: SourceRangeReadMode,
 ): RouteTrackingSourceRangeV1[] {
   if (!Array.isArray(value)) throw new Error(`Preservation rebuild ${label} ranges are malformed.`);
-  return value.map((range, index) => {
-    const parsed = readStrictSourceRange(range, source, `${label} range ${index}`, true);
+  const ranges = value.map((range, index) => {
+    const parsed = readStrictSourceRange(
+      range, source, sourceIdentityIndex, legacySampleMetadata,
+      `${label} range ${index}`, rangeReadMode, true,
+    );
     if (parsed.interpolationLevel !== 2 || parsed.reason === undefined) {
       throw new Error(`Preservation rebuild ${label} range ${index} has invalid diagnostics.`);
     }
     return parsed;
   });
+  assertMonotonicSourceRanges(ranges, label);
+  return ranges;
+}
+
+function buildSourceIdentityIndex(source: RouteTrackingGeometryPositionInput[]): SourceIdentityIndex {
+  const index: SourceIdentityIndex = new Map();
+  source.forEach((position, sourceIndex) => {
+    const key = sourceIdentityKey(position.eventId, position.occurredAt);
+    const matches = index.get(key);
+    if (matches === undefined) index.set(key, [sourceIndex]);
+    else matches.push(sourceIndex);
+  });
+  return index;
+}
+
+function sourceIdentityKey(eventId: string, occurredAt: string): string {
+  return `${eventId}\u0000${occurredAt}`;
+}
+
+function resolveUniqueSourceIdentityIndex(
+  sourceIdentityIndex: SourceIdentityIndex,
+  eventId: string,
+  occurredAt: string,
+  label: string,
+): number {
+  const matches = sourceIdentityIndex.get(sourceIdentityKey(eventId, occurredAt));
+  if (matches === undefined || matches.length === 0) {
+    throw new Error(`Preservation rebuild ${label} source identity is missing from raw GPS.`);
+  }
+  if (matches.length !== 1) {
+    throw new Error(`Preservation rebuild ${label} source identity is ambiguous in raw GPS.`);
+  }
+  return matches[0]!;
+}
+
+function assertExistingEndpointProvenance(
+  rangeReadMode: Exclude<SourceRangeReadMode, 'strict-proposed'>,
+  storedSourceIndex: number,
+  eventId: string,
+  occurredAt: string,
+  source: RouteTrackingGeometryPositionInput[],
+  legacySampleMetadata: unknown[],
+  label: string,
+): void {
+  const rawAtStoredIndex = source[storedSourceIndex];
+  const rawIdentityMatches = rawAtStoredIndex !== undefined
+    && rawAtStoredIndex.eventId === eventId
+    && rawAtStoredIndex.occurredAt === occurredAt;
+  const legacyAtStoredIndex = legacySampleMetadata[storedSourceIndex];
+  const legacyIdentityMatches = isRecord(legacyAtStoredIndex)
+    && legacyAtStoredIndex.eventId === eventId
+    && isoOrNull(legacyAtStoredIndex.occurredAt) === occurredAt;
+  const expectedIdentityMatches = rangeReadMode === 'remap-existing-raw'
+    ? rawIdentityMatches
+    : legacyIdentityMatches;
+  if (!expectedIdentityMatches) {
+    throw new Error(
+      `Preservation rebuild ${label} source identity does not match the selected existing-cache indexing mode.`,
+    );
+  }
+}
+
+function determineExistingSourceRangeReadMode(
+  matchedObject: Record<string, unknown> | null,
+  inferredObject: Record<string, unknown> | null,
+  uncertainObject: Record<string, unknown> | null,
+  unmatchedRanges: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  legacySampleMetadata: unknown[],
+): Exclude<SourceRangeReadMode, 'strict-proposed'> {
+  const rangeContainers = [
+    matchedObject?.sourceRanges,
+    inferredObject?.sourceRanges,
+    uncertainObject?.sourceRanges,
+    unmatchedRanges,
+  ];
+  let endpointCount = 0;
+  let allRaw = true;
+  let allLegacy = true;
+  for (const container of rangeContainers) {
+    if (!Array.isArray(container)) continue;
+    for (const value of container) {
+      if (!isRecord(value)) {
+        throw new Error('Preservation rebuild existing source range is malformed.');
+      }
+      const startOccurredAt = isoOrNull(value.startOccurredAt);
+      const endOccurredAt = isoOrNull(value.endOccurredAt);
+      const startSourceIndex = Number(value.startSourceIndex);
+      const endSourceIndex = Number(value.endSourceIndex);
+      if (typeof value.startEventId !== 'string' || typeof value.endEventId !== 'string'
+        || startOccurredAt === null || endOccurredAt === null
+        || !Number.isInteger(startSourceIndex) || !Number.isInteger(endSourceIndex)
+        || startSourceIndex < 0 || endSourceIndex < startSourceIndex) {
+        throw new Error('Preservation rebuild existing source range identity or indexes are malformed.');
+      }
+      endpointCount += 2;
+      allRaw = allRaw
+        && endpointIdentityMatches(source[startSourceIndex], value.startEventId, startOccurredAt)
+        && endpointIdentityMatches(source[endSourceIndex], value.endEventId, endOccurredAt);
+      allLegacy = allLegacy
+        && endpointIdentityMatches(legacySampleMetadata[startSourceIndex], value.startEventId, startOccurredAt)
+        && endpointIdentityMatches(legacySampleMetadata[endSourceIndex], value.endEventId, endOccurredAt);
+    }
+  }
+  if (endpointCount === 0 || allRaw) return 'remap-existing-raw';
+  if (allLegacy) return 'remap-existing-legacy';
+  throw new Error(
+    'Preservation rebuild existing source identity indexes mix raw and legacy compact provenance.',
+  );
+}
+
+function endpointIdentityMatches(value: unknown, eventId: string, occurredAt: string): boolean {
+  return isRecord(value)
+    && value.eventId === eventId
+    && isoOrNull(value.occurredAt) === occurredAt;
+}
+
+function assertMonotonicSourceRanges(ranges: RouteTrackingSourceRangeV1[], label: string): void {
+  for (let index = 1; index < ranges.length; index += 1) {
+    const previous = ranges[index - 1]!;
+    const current = ranges[index]!;
+    if (current.startSourceIndex < previous.startSourceIndex
+      || current.endSourceIndex < previous.endSourceIndex) {
+      throw new Error(`Preservation rebuild ${label} source range endpoints are nonmonotonic.`);
+    }
+  }
+}
+
+function sortPreservedRoadLines(lines: PreservedRoadLine[]): PreservedRoadLine[] {
+  return [...lines].sort((left, right) => (
+    left.range.startSourceIndex - right.range.startSourceIndex
+    || left.range.endSourceIndex - right.range.endSourceIndex
+  ));
 }
 
 function rangesShareSourceEdge(left: RouteTrackingSourceRangeV1, right: RouteTrackingSourceRangeV1): boolean {

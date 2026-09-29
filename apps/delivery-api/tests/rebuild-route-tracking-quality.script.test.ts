@@ -287,6 +287,291 @@ describe('route tracking quality rebuild script', () => {
     });
   });
 
+  test('normalizes existing simplified-cache range indexes from unique raw event identities', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({
+      inferred: [roadLine(2, 3, 1, [[-79.38, 43.62], [-79.37, 43.63]])],
+      matched: [roadLine(1, 2, 0, [[-79.39, 43.61], [-79.38, 43.62]])],
+      unmatched: [sourceDiagnostic(3, 4, 'LOW_ACCURACY')],
+      uncertain: [roadLine(4, 5, 2, [[-79.36, 43.64], [-79.35, 43.65]])],
+    }, document) as Record<string, unknown>;
+    const existingMatched = current.roadMatchedGeometry as {
+      inferredGeometry: { sourceRanges: Array<Record<string, unknown>> };
+      sourceRanges: Array<Record<string, unknown>>;
+      unmatchedRanges: Array<Record<string, unknown>>;
+    };
+    const existingUncertain = current.roadMatchedUncertainGeometry as {
+      sourceRanges: Array<Record<string, unknown>>;
+    };
+    current.sampleMetadata = source.slice(1).map(({ eventId, occurredAt }) => ({ eventId, occurredAt }));
+    Object.assign(existingMatched.sourceRanges[0]!, { startSourceIndex: 0, endSourceIndex: 1 });
+    Object.assign(existingMatched.inferredGeometry.sourceRanges[0]!, { startSourceIndex: 1, endSourceIndex: 2 });
+    Object.assign(existingUncertain.sourceRanges[0]!, { startSourceIndex: 3, endSourceIndex: 4 });
+    Object.assign(existingMatched.unmatchedRanges[0]!, { startSourceIndex: 2, endSourceIndex: 3 });
+    const proposed = preservationWrite({
+      matched: [roadLine(0, 1, 0, [[-79.4, 43.6], [-79.39, 43.61]])],
+    }, document);
+
+    const merged = buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source);
+    const matched = merged.roadMatchedGeometry as {
+      coordinates: unknown[];
+      inferredGeometry: { coordinates: unknown[]; sourceRanges: Array<Record<string, unknown>> };
+      sourceRanges: Array<Record<string, unknown>>;
+      unmatchedRanges: Array<Record<string, unknown>>;
+    };
+
+    expect(matched.coordinates).toEqual([
+      [[-79.4, 43.6], [-79.39, 43.61]],
+      [[-79.39, 43.61], [-79.38, 43.62]],
+    ]);
+    expect(matched.sourceRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ startSourceIndex: 1, endSourceIndex: 2 }),
+    ]);
+    expect(matched.inferredGeometry.coordinates).toEqual([
+      [[-79.38, 43.62], [-79.37, 43.63]],
+    ]);
+    expect(matched.inferredGeometry.sourceRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 2, endSourceIndex: 3 }),
+    ]);
+    expect(matched.unmatchedRanges).toContainEqual(expect.objectContaining({
+      startSourceIndex: 3,
+      reason: 'LOW_ACCURACY',
+    }));
+  });
+
+  test('keeps proposed full-raw source indexes strict', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({ matched: [roadLine(4, 5, 0)] }, document);
+    const proposed = preservationWrite({ matched: [roadLine(0, 1, 0)] }, document) as Record<string, unknown>;
+    const range = (proposed.roadMatchedGeometry as { sourceRanges: Array<Record<string, unknown>> }).sourceRanges[0]!;
+    Object.assign(range, { startSourceIndex: 1, endSourceIndex: 2 });
+
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source))
+      .toThrow('source identity does not match raw GPS');
+  });
+
+  test('rejects an existing remap without raw-index or legacy-sample provenance', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({ matched: [roadLine(2, 3, 0)] }, document) as Record<string, unknown>;
+    const range = (current.roadMatchedGeometry as { sourceRanges: Array<Record<string, unknown>> }).sourceRanges[0]!;
+    Object.assign(range, { startSourceIndex: 0, endSourceIndex: 1 });
+    const proposed = preservationWrite({ matched: [roadLine(4, 5, 0)] }, document);
+
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source))
+      .toThrow('mix raw and legacy compact provenance');
+  });
+
+  test('rejects mixed raw and legacy indexing within one existing range', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({ matched: [roadLine(0, 2, 0)] }, document) as Record<string, unknown>;
+    const range = (current.roadMatchedGeometry as { sourceRanges: Array<Record<string, unknown>> }).sourceRanges[0]!;
+    Object.assign(range, { startSourceIndex: 0, endSourceIndex: 1 });
+    current.sampleMetadata = [
+      { eventId: source[5]!.eventId, occurredAt: source[5]!.occurredAt },
+      { eventId: source[2]!.eventId, occurredAt: source[2]!.occurredAt },
+    ];
+    const proposed = preservationWrite({ matched: [roadLine(3, 4, 0)] }, document);
+
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source))
+      .toThrow('mix raw and legacy compact provenance');
+  });
+
+  test('rejects mixed raw and legacy indexing across existing ranges', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({
+      matched: [roadLine(0, 1, 0), roadLine(3, 4, 0)],
+    }, document) as Record<string, unknown>;
+    const ranges = (current.roadMatchedGeometry as { sourceRanges: Array<Record<string, unknown>> }).sourceRanges;
+    Object.assign(ranges[1]!, { startSourceIndex: 2, endSourceIndex: 3 });
+    current.sampleMetadata = [
+      { eventId: source[5]!.eventId, occurredAt: source[5]!.occurredAt },
+      { eventId: source[5]!.eventId, occurredAt: source[5]!.occurredAt },
+      { eventId: source[3]!.eventId, occurredAt: source[3]!.occurredAt },
+      { eventId: source[4]!.eventId, occurredAt: source[4]!.occurredAt },
+    ];
+    const proposed = preservationWrite({ matched: [roadLine(4, 5, 0)] }, document);
+
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source))
+      .toThrow('mix raw and legacy compact provenance');
+  });
+
+  test('remaps a compact point diagnostic under the cache-wide legacy mode', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({
+      matched: [roadLine(1, 2, 0)],
+      unmatched: [sourceDiagnostic(4, 4, 'LOW_ACCURACY')],
+    }, document) as Record<string, unknown>;
+    const geometry = current.roadMatchedGeometry as {
+      sourceRanges: Array<Record<string, unknown>>;
+      unmatchedRanges: Array<Record<string, unknown>>;
+    };
+    current.sampleMetadata = source.slice(1, 5).map(({ eventId, occurredAt }) => ({ eventId, occurredAt }));
+    Object.assign(geometry.sourceRanges[0]!, { startSourceIndex: 0, endSourceIndex: 1 });
+    Object.assign(geometry.unmatchedRanges[0]!, { startSourceIndex: 3, endSourceIndex: 3 });
+    const proposed = preservationWrite({ matched: [roadLine(2, 3, 0)] }, document);
+
+    const merged = buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source);
+    const matched = merged.roadMatchedGeometry as { unmatchedRanges: Array<Record<string, unknown>> };
+    expect(matched.unmatchedRanges).toContainEqual(expect.objectContaining({
+      reason: 'LOW_ACCURACY',
+      startSourceIndex: 3,
+      endSourceIndex: 5,
+    }));
+  });
+
+  test('keeps proposed point diagnostics on strict full-raw indexes', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({ matched: [roadLine(0, 1, 0)] }, document);
+    const proposed = preservationWrite({
+      matched: [roadLine(1, 2, 0)],
+      unmatched: [sourceDiagnostic(4, 4, 'LOW_ACCURACY')],
+    }, document) as Record<string, unknown>;
+    const unmatched = (proposed.roadMatchedGeometry as { unmatchedRanges: Array<Record<string, unknown>> })
+      .unmatchedRanges[0]!;
+    Object.assign(unmatched, { startSourceIndex: 3, endSourceIndex: 3 });
+
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source))
+      .toThrow('source identity does not match raw GPS');
+  });
+
+  test('rejects ambiguous, reversed, and nonmonotonic existing identity remaps', () => {
+    const ambiguousSource = preservationSource();
+    ambiguousSource[2] = {
+      ...ambiguousSource[2]!,
+      eventId: ambiguousSource[1]!.eventId,
+      occurredAt: ambiguousSource[1]!.occurredAt,
+    };
+    const ambiguousDocument = buildRouteTrackingGeometryDocument(ambiguousSource);
+    const ambiguous = preservationCache({ matched: [roadLine(0, 1, 0)] }, ambiguousDocument);
+    const ambiguousProposed = preservationWrite({ matched: [roadLine(3, 4, 0)] }, ambiguousDocument);
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(
+      ambiguous, ambiguousProposed as never, ambiguousDocument, ambiguousSource,
+    )).toThrow('source identity is ambiguous in raw GPS');
+
+    const document = preservationDocument();
+    const source = preservationSource();
+    const reversed = preservationCache({ matched: [roadLine(2, 3, 0)] }, document) as Record<string, unknown>;
+    const reversedRange = (reversed.roadMatchedGeometry as { sourceRanges: Array<Record<string, unknown>> })
+      .sourceRanges[0]!;
+    Object.assign(reversedRange, {
+      startSourceIndex: 0,
+      endSourceIndex: 1,
+      startEventId: source[3]!.eventId,
+      startOccurredAt: source[3]!.occurredAt,
+      endEventId: source[2]!.eventId,
+      endOccurredAt: source[2]!.occurredAt,
+    });
+    reversed.sampleMetadata = [
+      { eventId: source[3]!.eventId, occurredAt: source[3]!.occurredAt },
+      { eventId: source[2]!.eventId, occurredAt: source[2]!.occurredAt },
+    ];
+    const proposed = preservationWrite({ matched: [roadLine(4, 5, 0)] }, document);
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(reversed, proposed as never, document, source))
+      .toThrow('invalid after identity normalization');
+
+    const nonmonotonic = preservationCache({
+      matched: [roadLine(2, 3, 0), roadLine(0, 1, 0)],
+    }, document);
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(nonmonotonic, proposed as never, document, source))
+      .toThrow('source range endpoints are nonmonotonic');
+  });
+
+  test('rejects overlapping trusted edges in the proposed full-raw cache', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({ matched: [roadLine(4, 5, 0)] }, document);
+    const proposed = preservationWrite({
+      matched: [roadLine(0, 2, 0), roadLine(1, 3, 0)],
+    }, document);
+
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source))
+      .toThrow('proposed trusted source edges overlap');
+  });
+
+  test('remaps many consecutive compact uncertain ranges without changing their coordinates or point count', () => {
+    const source = Array.from({ length: 118 }, (_value, index) => ({
+      ...position(index),
+      latitude: 43.6 + index / 10_000,
+      longitude: -79.4 + index / 10_000,
+    }));
+    const document = buildRouteTrackingGeometryDocument(source);
+    const line = (startSourceIndex: number, endSourceIndex: number, interpolationLevel: 0 | 1 | 2) => ({
+      coordinates: [
+        [source[startSourceIndex]!.longitude, source[startSourceIndex]!.latitude],
+        [source[endSourceIndex]!.longitude, source[endSourceIndex]!.latitude],
+      ] as Array<[number, number]>,
+      range: {
+        endEventId: source[endSourceIndex]!.eventId,
+        endOccurredAt: source[endSourceIndex]!.occurredAt,
+        endSourceIndex,
+        interpolationLevel,
+        startEventId: source[startSourceIndex]!.eventId,
+        startOccurredAt: source[startSourceIndex]!.occurredAt,
+        startSourceIndex,
+      },
+    });
+    const existingUncertainLines = Array.from({ length: 57 }, (_value, index) => (
+      line(index * 2 + 2, index * 2 + 4, 2)
+    ));
+    const current = preservationCache({
+      matched: [line(0, 2, 0)],
+      uncertain: existingUncertainLines,
+    }, document) as Record<string, unknown>;
+    current.sampleMetadata = Array.from({ length: 59 }, (_value, index) => ({
+      eventId: source[index * 2]!.eventId,
+      occurredAt: source[index * 2]!.occurredAt,
+    }));
+    const existingMatchedRanges = (current.roadMatchedGeometry as {
+      sourceRanges: Array<Record<string, unknown>>;
+    }).sourceRanges;
+    const existingUncertain = current.roadMatchedUncertainGeometry as {
+      coordinates: unknown[];
+      sourceRanges: Array<Record<string, unknown>>;
+    };
+    Object.assign(existingMatchedRanges[0]!, { startSourceIndex: 0, endSourceIndex: 1 });
+    existingUncertain.sourceRanges.forEach((range, index) => {
+      Object.assign(range, { startSourceIndex: index + 1, endSourceIndex: index + 2 });
+    });
+    const proposedUncertainLines = Array.from({ length: 57 }, (_value, index) => (
+      line(index * 2 + 2, index * 2 + 4, 2)
+    ));
+    const proposed = preservationWrite({
+      matched: [line(116, 117, 0)],
+      uncertain: proposedUncertainLines,
+    }, document);
+
+    const merged = buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source);
+    const mergedMatched = merged.roadMatchedGeometry as { coordinates: unknown[] };
+    const mergedUncertain = merged.roadMatchedUncertainGeometry as {
+      coordinates: unknown[];
+      sourceRanges: Array<Record<string, unknown>>;
+    };
+
+    expect(mergedMatched.coordinates).toEqual([
+      line(0, 2, 0).coordinates,
+      line(116, 117, 0).coordinates,
+    ]);
+    expect(mergedUncertain.coordinates).toEqual(proposedUncertainLines.map((candidate) => candidate.coordinates));
+    expect(mergedUncertain.sourceRanges).toHaveLength(57);
+    expect(mergedUncertain.sourceRanges[0]).toEqual(expect.objectContaining({
+      startSourceIndex: 2,
+      endSourceIndex: 4,
+    }));
+    expect(mergedUncertain.sourceRanges.at(-1)).toEqual(expect.objectContaining({
+      startSourceIndex: 114,
+      endSourceIndex: 116,
+    }));
+    expect(merged.roadMatchedPointCount).toBe(118);
+  });
+
   test('fails closed for malformed cache cardinality and raw-source identity mismatch', () => {
     const document = preservationDocument();
     const source = preservationSource();
