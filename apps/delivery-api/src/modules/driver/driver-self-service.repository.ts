@@ -465,6 +465,7 @@ function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHisto
 function toHistoryStatus(routePlan: RouteProgressRecord): DriverRouteHistoryStatus {
   const executionStatus = toRouteExecutionStatus(routePlan.status);
   if (executionStatus === 'COMPLETED') return 'completed';
+  if (executionStatus === 'INCOMPLETE') return 'incomplete';
   if (executionStatus === 'IN_PROGRESS') return 'active';
   if (hasRouteCompleted(routePlan)) return 'completed';
   if (hasRouteStarted(routePlan)) return 'active';

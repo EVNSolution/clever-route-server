@@ -163,7 +163,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(109);
+    expect(migrations).toHaveLength(110);
+    expect(migrations).toContain('20260929120000_add_incomplete_route_plan_status');
     expect(migrations).toContain('20260910170000_link_driver_proof_media_delivery_stops');
     expect(migrations).toContain('20260907000000_restore_active_job_uniqueness');
     expect(migrations).toContain('20260907010000_dsv_driver_inquiries');

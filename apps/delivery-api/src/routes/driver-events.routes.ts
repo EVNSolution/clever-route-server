@@ -2452,7 +2452,7 @@ function readOptionalDriverRouteHistoryStatus(value: unknown): DriverRouteHistor
   }
 
   const status = readRequiredString(value);
-  if (status === 'pending' || status === 'active' || status === 'completed') {
+  if (status === 'pending' || status === 'active' || status === 'completed' || status === 'incomplete') {
     return status;
   }
 

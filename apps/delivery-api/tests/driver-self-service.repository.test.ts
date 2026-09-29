@@ -12,6 +12,29 @@ const nextRoutePlanId = '22222222-2222-4222-8222-222222222222';
 const anyStringMatcher: unknown = expect.any(String);
 
 describe('PrismaDriverSelfServiceRepository', () => {
+  test('keeps incomplete routes inspectable as terminal driver history', async () => {
+    const { prisma } = createPrismaHarness({ routePlans: [routePlanRecord({
+      driverEvents: [{ eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-05-19T08:00:00.000Z') }],
+      status: 'INCOMPLETE'
+    })] });
+    const repository = new PrismaDriverSelfServiceRepository(prisma as never);
+
+    const result = await repository.listDriverRoutes({
+      cursor: null,
+      driverId: 'driver-id',
+      from: null,
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
+      status: 'incomplete',
+      to: null
+    });
+
+    expect(result.routes).toEqual([expect.objectContaining({ routePlanId, status: 'incomplete' })]);
+    expect(prisma.routePlan.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: routePlanWhereMatcher({ status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] } })
+    }));
+  });
+
   test('lists route history only for the token driver and shop with date/status filters', async () => {
     const { prisma } = createPrismaHarness({ routePlans: [routePlanRecord()] });
     const repository = new PrismaDriverSelfServiceRepository(prisma as never);

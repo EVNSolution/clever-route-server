@@ -92,7 +92,12 @@ export class PrismaDriverRouteOrderService implements DriverRouteOrderServiceCon
         where: { id: input.routePlanId, shopId: input.shopId }
       });
       if (routePlan === null || routePlan.driverId !== input.driverId) throw new DriverRouteOrderError('ROUTE_SCOPE_REJECTED');
-      if (routePlan.status === 'COMPLETED' || routePlan.status === 'CANCELLED' || routePlan.driverEvents.length > 0) {
+      if (
+        routePlan.status === 'COMPLETED'
+        || routePlan.status === 'INCOMPLETE'
+        || routePlan.status === 'CANCELLED'
+        || routePlan.driverEvents.length > 0
+      ) {
         throw new DriverRouteOrderError('ROUTE_COMPLETED');
       }
 

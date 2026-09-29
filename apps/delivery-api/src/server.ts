@@ -19,6 +19,8 @@ import { loadDriverAuthDependencies } from './modules/driver/driver-auth.depende
 import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
 import { createCustomerDeliveryNotificationRuntime } from './modules/route-plans/customer-delivery-notification.runtime.js';
+import { StaleRouteFinalizationRuntime } from './modules/route-plans/stale-route-finalization.runtime.js';
+import { PrismaStaleRouteFinalizationService } from './modules/route-plans/stale-route-finalization.service.js';
 import { loadAdminOrdersRuntime } from './modules/shopify/order-sync.dependencies.js';
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
 import { loadShopifyWebhookRuntime } from './modules/shopify/webhook.dependencies.js';
@@ -165,6 +167,11 @@ const routeTrackingRoadMatchRuntime = createRouteTrackingRoadMatchRuntime({
   logger: app.log,
   prisma
 });
+const staleRouteFinalizationRuntime = new StaleRouteFinalizationRuntime(
+  new PrismaStaleRouteFinalizationService(prisma),
+  process.env.KFOOD_STALE_ROUTE_FINALIZATION_ENABLED === 'true',
+  app.log
+);
 const emailSenderConfigured = typeof process.env.BREVO_API_KEY === 'string' && process.env.BREVO_API_KEY.trim() !== '';
 const emailHealthRuntime = new EmailRuntimeHealthRuntime(
   prisma,
@@ -196,6 +203,7 @@ try {
   await adminNotificationRuntime.start();
   await customerDeliveryNotificationRuntime.start();
   routeTrackingRoadMatchRuntime.start();
+  staleRouteFinalizationRuntime.start();
   emailHealthRuntime.start();
   driverOperationalHealthRuntime?.start();
   completionAssistanceRuntime?.start();
@@ -211,6 +219,7 @@ try {
     adminNotificationRuntime.close(),
     customerDeliveryNotificationRuntime.close(),
     routeTrackingRoadMatchRuntime.close(),
+    staleRouteFinalizationRuntime.close(),
     emailHealthRuntime.close(),
     driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
     completionAssistanceRuntime?.close() ?? Promise.resolve(),
@@ -230,6 +239,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         adminNotificationRuntime.close(),
         customerDeliveryNotificationRuntime.close(),
         routeTrackingRoadMatchRuntime.close(),
+        staleRouteFinalizationRuntime.close(),
         emailHealthRuntime.close(),
         driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
         completionAssistanceRuntime?.close() ?? Promise.resolve(),

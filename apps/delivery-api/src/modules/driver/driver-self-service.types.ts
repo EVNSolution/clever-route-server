@@ -4,7 +4,7 @@ export type DriverSelfServiceScopeInput = {
   shopId: string;
 };
 
-export type DriverRouteHistoryStatus = 'pending' | 'active' | 'completed';
+export type DriverRouteHistoryStatus = 'pending' | 'active' | 'completed' | 'incomplete';
 
 export type ListDriverRoutesInput = DriverSelfServiceScopeInput & {
   cursor: string | null;

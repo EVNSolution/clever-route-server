@@ -1098,13 +1098,13 @@ describe('PrismaRoutePlanRepository', () => {
     expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'READY')).toBe(true);
   });
 
-  test('rejects the legacy publish endpoint only for cancelled routes', async () => {
+  test.each(['CANCELLED', 'INCOMPLETE'])('rejects the legacy publish endpoint for %s routes', async (status) => {
     const { prisma } = createPrismaHarness();
     prisma.routePlan.findFirst.mockResolvedValueOnce({
       _count: { routeStops: 0 },
       driverId: null,
       id: 'route-plan-id',
-      status: 'CANCELLED'
+      status
     });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
