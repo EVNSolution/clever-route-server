@@ -249,7 +249,7 @@ describe('route tracking quality rebuild script', () => {
       inferred: [roadLine(4, 5, 1, [[-79.36, 43.64], [-79.35, 43.65]])],
       matcherCountedInferred: 0,
       matched: [
-        roadLine(0, 2, 0, [[-79.4, 43.6], [-79.38, 43.62]]),
+        roadLine(0, 1, 0, [[-79.4, 43.6], [-79.39, 43.61]]),
         roadLine(1, 2, 0, [[-79.39, 43.61], [-79.38, 43.62]]),
       ],
       unmatched: [sourceDiagnostic(2, 3, 'LOW_ACCURACY')],
@@ -444,12 +444,12 @@ describe('route tracking quality rebuild script', () => {
 
   test('rejects ambiguous, reversed, and nonmonotonic existing identity remaps', () => {
     const ambiguousSource = preservationSource();
+    const ambiguousDocument = buildRouteTrackingGeometryDocument(ambiguousSource);
     ambiguousSource[2] = {
       ...ambiguousSource[2]!,
       eventId: ambiguousSource[1]!.eventId,
       occurredAt: ambiguousSource[1]!.occurredAt,
     };
-    const ambiguousDocument = buildRouteTrackingGeometryDocument(ambiguousSource);
     const ambiguous = preservationCache({ matched: [roadLine(0, 1, 0)] }, ambiguousDocument);
     const ambiguousProposed = preservationWrite({ matched: [roadLine(3, 4, 0)] }, ambiguousDocument);
     expect(() => buildPreservedRouteTrackingRoadMatchWrite(
@@ -498,7 +498,7 @@ describe('route tracking quality rebuild script', () => {
 
   test('remaps many consecutive compact uncertain ranges without changing their coordinates or point count', () => {
     const source = Array.from({ length: 118 }, (_value, index) => ({
-      ...position(index),
+      ...position(index, new Date(Date.parse('2026-09-17T13:00:00.000Z') + index * 1000).toISOString()),
       latitude: 43.6 + index / 10_000,
       longitude: -79.4 + index / 10_000,
     }));
@@ -603,7 +603,6 @@ describe('route tracking quality rebuild script', () => {
     const source = preservationSource();
     const current = preservationCache({ matched: [roadLine(0, 3, 0)] }, document);
     const proposed = preservationWrite({
-      inferred: [roadLine(1, 2, 1)],
       matched: [roadLine(0, 3, 0)],
     }, document);
     expect(() => buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source))
