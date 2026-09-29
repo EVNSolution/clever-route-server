@@ -9,6 +9,7 @@ import type {
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 
 export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as const;
+export const UVIS_ROAD_MATCH_POLICY_VERSION = 'uvis_road_match.v2' as const;
 export const UVIS_ROAD_MATCH_GPS_PRECISION_METERS = 75;
 export const UVIS_ROAD_MATCH_MAX_POINTS = 16;
 export const UVIS_ROAD_MATCH_TIMEOUT_MS = 25_000;
@@ -26,6 +27,9 @@ export type UvisVehicleTrailMarker = {
 export type UvisVehicleTrailDocumentSegmentV1 = {
   endedAt: string;
   roadMatchFailureReason?: UvisVehicleTrailRoadMatchFailureReason | null;
+  // Records the last attempted policy; retained geometry may come from an older result.
+  roadMatchPolicyVersion?: string;
+  roadMatchRetainedPrefix?: boolean;
   roadMatchedGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
   roadMatchRetryable?: boolean;
   samples: UvisVehicleTrailSampleV1[];
@@ -162,11 +166,23 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
             geometry: reusableSegment.roadMatchedGeometry,
             retryable: false,
           };
+      const previousGeometry = roadMatch.geometry === null
+        ? findPreviousRoadGeometry(previousDocument, documentSamples)
+        : null;
+      const hasRetainedGeometry = previousGeometry !== null;
       retryable ||= roadMatch.retryable;
       materializedSegments.push({
         endedAt: segment.samples.at(-1)!.observedAt,
         roadMatchFailureReason: roadMatch.failureReason,
-        roadMatchedGeometry: roadMatch.geometry,
+        ...(reusableSegment === null
+          ? input.roadMatchProvider === undefined
+            ? {}
+            : { roadMatchPolicyVersion: UVIS_ROAD_MATCH_POLICY_VERSION }
+          : reusableSegment.roadMatchPolicyVersion === undefined
+            ? {}
+            : { roadMatchPolicyVersion: reusableSegment.roadMatchPolicyVersion }),
+        ...(hasRetainedGeometry ? { roadMatchRetainedPrefix: true } : {}),
+        roadMatchedGeometry: roadMatch.geometry ?? previousGeometry,
         roadMatchRetryable: roadMatch.retryable,
         samples: documentSamples,
         startedAt: segment.samples[0]!.observedAt,
@@ -187,7 +203,11 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
       vehicleId: input.vehicleId,
     };
 
-    const finalizedAt = input.finalizing === true && !retryable ? now : null;
+    const finalizedAt = input.finalizing === true
+      && !retryable
+      && !materializedSegments.some((segment) => segment.roadMatchRetainedPrefix === true)
+      ? now
+      : null;
     const finalizedAtUpdate = input.finalizing === true ? { finalizedAt } : {};
     await this.prisma.uvisVehicleTrailMaterialization.upsert({
       create: {
@@ -584,7 +604,23 @@ function findReusableSegment(
   return previousDocument.segments.find((segment) => (
     sampleSignature(segment.samples) === signature
     && !isPreviousSegmentRetryable(previousDocument, segment)
+    && segment.roadMatchRetainedPrefix !== true
+    && (segment.roadMatchedGeometry !== null
+      || segment.roadMatchPolicyVersion === UVIS_ROAD_MATCH_POLICY_VERSION)
   )) ?? null;
+}
+
+function findPreviousRoadGeometry(
+  previousDocument: UvisVehicleTrailDocumentV1 | null,
+  samples: UvisVehicleTrailSampleV1[],
+): RouteTrackingRoadMatchedGeometryV1 | null {
+  if (previousDocument === null) return null;
+  const previousSegment = previousDocument.segments.find((segment) => (
+    segment.roadMatchedGeometry !== null
+    && segment.samples.length <= samples.length
+    && sampleSignature(segment.samples) === sampleSignature(samples.slice(0, segment.samples.length))
+  ));
+  return previousSegment?.roadMatchedGeometry ?? null;
 }
 
 function isPreviousSegmentRetryable(
