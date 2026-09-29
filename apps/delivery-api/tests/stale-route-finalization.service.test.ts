@@ -41,7 +41,7 @@ describe('PrismaStaleRouteFinalizationService', () => {
         id: 'route-id',
         shopId: 'shop-id',
         status: 'IN_PROGRESS'
-      })
+      }) as unknown
     });
   });
 
@@ -111,7 +111,7 @@ describe('PrismaStaleRouteFinalizationService', () => {
           { planDate: { gt: new Date('2026-09-17T00:00:00.000Z') } },
           { id: { gt: 'route-id' }, planDate: new Date('2026-09-17T00:00:00.000Z') }
         ]
-      })
+      }) as unknown
     }));
   });
 });
