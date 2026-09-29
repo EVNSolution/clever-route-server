@@ -287,6 +287,174 @@ describe('route tracking quality rebuild script', () => {
     });
   });
 
+  test('keeps matcher-counted inferred lines before nonmonotonic supplemental lines across repeated merges', () => {
+    const source = Array.from({ length: 16 }, (_value, index) => ({
+      ...position(index),
+      latitude: 43.6 + index / 10_000,
+      longitude: -79.4 + index / 10_000,
+    }));
+    const document = buildRouteTrackingGeometryDocument(source);
+    const line = (startSourceIndex: number, endSourceIndex: number) => ({
+      coordinates: [
+        [source[startSourceIndex]!.longitude, source[startSourceIndex]!.latitude],
+        [source[endSourceIndex]!.longitude, source[endSourceIndex]!.latitude],
+      ] as Array<[number, number]>,
+      range: {
+        endEventId: source[endSourceIndex]!.eventId,
+        endOccurredAt: source[endSourceIndex]!.occurredAt,
+        endSourceIndex,
+        interpolationLevel: 1 as const,
+        startEventId: source[startSourceIndex]!.eventId,
+        startOccurredAt: source[startSourceIndex]!.occurredAt,
+        startSourceIndex,
+      },
+    });
+    const current = preservationCache({
+      inferred: [line(6, 7), line(8, 9), line(2, 3)],
+      matcherCountedInferred: 2,
+      matched: [roadLine(0, 1, 0)],
+    }, document);
+    const proposed = preservationWrite({
+      inferred: [line(10, 11), line(4, 5)],
+      matcherCountedInferred: 1,
+    }, document);
+
+    const first = buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source);
+    const firstGeometry = first.roadMatchedGeometry as {
+      inferredGeometry: {
+        coordinates: unknown[];
+        sourceRanges: Array<{ startSourceIndex: number; endSourceIndex: number }>;
+      };
+    };
+    expect(firstGeometry.inferredGeometry.sourceRanges.map((range) => [
+      range.startSourceIndex,
+      range.endSourceIndex,
+    ])).toEqual([[6, 7], [8, 9], [10, 11], [2, 3], [4, 5]]);
+    expect(firstGeometry.inferredGeometry.coordinates).toEqual([
+      line(6, 7).coordinates,
+      line(8, 9).coordinates,
+      line(10, 11).coordinates,
+      line(2, 3).coordinates,
+      line(4, 5).coordinates,
+    ]);
+    expect(first.roadMatchedPointCount).toBe(8);
+
+    const repeatedCurrent = {
+      ...first,
+      routePlanId: scope.routePlanId,
+      sampleMetadata: document.samples,
+      sourcePointCount: source.length,
+    };
+    const repeatedProposed = preservationWrite({
+      inferred: [line(12, 13)],
+      matcherCountedInferred: 1,
+    }, document);
+    const second = buildPreservedRouteTrackingRoadMatchWrite(
+      repeatedCurrent,
+      repeatedProposed as never,
+      document,
+      source,
+    );
+    const secondGeometry = second.roadMatchedGeometry as {
+      inferredGeometry: {
+        coordinates: unknown[];
+        sourceRanges: Array<{ startSourceIndex: number; endSourceIndex: number }>;
+      };
+    };
+    const secondRanges = secondGeometry.inferredGeometry.sourceRanges;
+    expect(secondRanges.map((range) => [range.startSourceIndex, range.endSourceIndex]))
+      .toEqual([[6, 7], [8, 9], [10, 11], [12, 13], [2, 3], [4, 5]]);
+    expect(secondGeometry.inferredGeometry.coordinates).toEqual([
+      line(6, 7).coordinates,
+      line(8, 9).coordinates,
+      line(10, 11).coordinates,
+      line(12, 13).coordinates,
+      line(2, 3).coordinates,
+      line(4, 5).coordinates,
+    ]);
+    expect(second.roadMatchedPointCount).toBe(10);
+    for (let left = 0; left < secondRanges.length; left += 1) {
+      for (let right = left + 1; right < secondRanges.length; right += 1) {
+        expect(Math.max(secondRanges[left]!.startSourceIndex, secondRanges[right]!.startSourceIndex))
+          .toBeGreaterThanOrEqual(Math.min(secondRanges[left]!.endSourceIndex, secondRanges[right]!.endSourceIndex));
+      }
+    }
+  });
+
+  test('rejects nonmonotonic matcher-counted inferred prefixes in existing and proposed caches', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const nonmonotonicCounted = [roadLine(4, 5, 1), roadLine(2, 3, 1)];
+    const validProposed = preservationWrite({ matched: [roadLine(3, 4, 0)] }, document);
+    const invalidExisting = preservationCache({
+      inferred: nonmonotonicCounted,
+      matcherCountedInferred: 2,
+      matched: [roadLine(0, 1, 0)],
+    }, document);
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(
+      invalidExisting,
+      validProposed as never,
+      document,
+      source,
+    )).toThrow('existing inferred matcher-counted source range endpoints are nonmonotonic');
+
+    const validExisting = preservationCache({ matched: [roadLine(0, 1, 0)] }, document);
+    const invalidProposed = preservationWrite({
+      inferred: nonmonotonicCounted,
+      matcherCountedInferred: 2,
+    }, document);
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(
+      validExisting,
+      invalidProposed as never,
+      document,
+      source,
+    )).toThrow('proposed inferred matcher-counted source range endpoints are nonmonotonic');
+  });
+
+  test('rejects nonmonotonic inferred supplement suffixes in existing and proposed caches', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const nonmonotonicSupplements = [roadLine(1, 2, 1), roadLine(4, 5, 1), roadLine(2, 3, 1)];
+    const validProposed = preservationWrite({ matched: [roadLine(3, 4, 0)] }, document);
+    const invalidExisting = preservationCache({
+      inferred: nonmonotonicSupplements,
+      matcherCountedInferred: 1,
+      matched: [roadLine(0, 1, 0)],
+    }, document);
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(
+      invalidExisting,
+      validProposed as never,
+      document,
+      source,
+    )).toThrow('existing inferred supplemental source range endpoints are nonmonotonic');
+
+    const validExisting = preservationCache({ matched: [roadLine(0, 1, 0)] }, document);
+    const invalidProposed = preservationWrite({
+      inferred: nonmonotonicSupplements,
+      matcherCountedInferred: 1,
+    }, document);
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(
+      validExisting,
+      invalidProposed as never,
+      document,
+      source,
+    )).toThrow('proposed inferred supplemental source range endpoints are nonmonotonic');
+  });
+
+  test('still rejects overlapping inferred edges when inferred ranges are not source ordered', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({
+      inferred: [roadLine(3, 5, 1), roadLine(2, 4, 1)],
+      matcherCountedInferred: 1,
+      matched: [roadLine(0, 1, 0)],
+    }, document);
+    const proposed = preservationWrite({ matched: [roadLine(1, 2, 0)] }, document);
+
+    expect(() => buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source))
+      .toThrow('existing trusted source edges overlap');
+  });
+
   test('normalizes existing simplified-cache range indexes from unique raw event identities', () => {
     const document = preservationDocument();
     const source = preservationSource();

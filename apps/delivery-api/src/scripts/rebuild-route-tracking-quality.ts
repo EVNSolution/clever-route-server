@@ -917,7 +917,7 @@ export function buildPreservedRouteTrackingRoadMatchWrite(
     ...current.matched,
     ...additions.filter((line) => line.range.interpolationLevel === 0),
   ]);
-  const inferred = sortPreservedRoadLines([
+  const inferred = sortPreservedInferredRoadLines([
     ...current.inferred,
     ...additions.filter((line) => line.range.interpolationLevel === 1),
   ]);
@@ -1027,18 +1027,19 @@ function readStrictRoadCache(
     : 'strict-proposed';
   const matched = readStrictRoadLines(
     matchedObject, source, sourceIdentityIndex, legacySampleMetadata,
-    `${label} matched`, new Set([0]), true, rangeReadMode,
+    `${label} matched`, new Set([0]), true, true, rangeReadMode,
   );
   const inferred = readStrictRoadLines(
     inferredObject, source, sourceIdentityIndex, legacySampleMetadata,
-    `${label} inferred`, new Set([1]), false, rangeReadMode,
+    `${label} inferred`, new Set([1]), false, false, rangeReadMode,
   );
   const uncertain = readStrictRoadLines(
     uncertainObject, source, sourceIdentityIndex, legacySampleMetadata,
-    `${label} uncertain`, new Set([2]), true, rangeReadMode,
+    `${label} uncertain`, new Set([2]), true, true, rangeReadMode,
   );
   const matchedPointCount = integerOrZero(record.roadMatchedPointCount);
   markCountedInferredPrefix(inferred, matchedPointCount - pointCount(matched) - pointCount(uncertain), label);
+  assertMonotonicInferredGroups(inferred, `${label} inferred`);
   return {
     coverage,
     inferred,
@@ -1091,6 +1092,7 @@ function readStrictRoadLines(
   label: string,
   allowedLevels: Set<number>,
   countedByMatcher: boolean,
+  requireMonotonicRanges: boolean,
   rangeReadMode: SourceRangeReadMode,
 ): PreservedRoadLine[] {
   if (geometry === null) return [];
@@ -1125,7 +1127,7 @@ function readStrictRoadLines(
     }
     return { countedByMatcher, coordinates: parsedCoordinates, range };
   });
-  assertMonotonicSourceRanges(lines.map((line) => line.range), label);
+  if (requireMonotonicRanges) assertMonotonicSourceRanges(lines.map((line) => line.range), label);
   return lines;
 }
 
@@ -1153,6 +1155,19 @@ function markCountedInferredPrefix(
 
 function pointCount(lines: PreservedRoadLine[]): number {
   return lines.reduce((sum, line) => sum + line.coordinates.length, 0);
+}
+
+function assertMonotonicInferredGroups(inferred: PreservedRoadLine[], label: string): void {
+  const firstSupplementIndex = inferred.findIndex((line) => !line.countedByMatcher);
+  const prefixLength = firstSupplementIndex === -1 ? inferred.length : firstSupplementIndex;
+  assertMonotonicSourceRanges(
+    inferred.slice(0, prefixLength).map((line) => line.range),
+    `${label} matcher-counted`,
+  );
+  assertMonotonicSourceRanges(
+    inferred.slice(prefixLength).map((line) => line.range),
+    `${label} supplemental`,
+  );
 }
 
 function readStrictSourceRange(
@@ -1387,6 +1402,14 @@ function assertMonotonicSourceRanges(ranges: RouteTrackingSourceRangeV1[], label
 function sortPreservedRoadLines(lines: PreservedRoadLine[]): PreservedRoadLine[] {
   return [...lines].sort((left, right) => (
     left.range.startSourceIndex - right.range.startSourceIndex
+    || left.range.endSourceIndex - right.range.endSourceIndex
+  ));
+}
+
+function sortPreservedInferredRoadLines(lines: PreservedRoadLine[]): PreservedRoadLine[] {
+  return [...lines].sort((left, right) => (
+    Number(right.countedByMatcher) - Number(left.countedByMatcher)
+    || left.range.startSourceIndex - right.range.startSourceIndex
     || left.range.endSourceIndex - right.range.endSourceIndex
   ));
 }
