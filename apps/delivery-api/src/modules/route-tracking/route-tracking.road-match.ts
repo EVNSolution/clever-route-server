@@ -35,6 +35,7 @@ const MAX_OSRM_MATCH_POINTS = 80;
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
 const EARTH_RADIUS_METERS = 6_371_000;
 const MAX_GAP_SUPPLEMENT_CANDIDATES = 64;
+const MAX_CONTINUOUS_NO_MATCH_WINDOW_POINTS = 20;
 const MAX_GAP_SUPPLEMENT_ELAPSED_MS = 120_000;
 const MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS = 50;
 const MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND = 40;
@@ -190,7 +191,11 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     );
     retryable ||= supplementOutcome.retryable;
     const inferredLines: InferredLine[] = [
-      ...moderate.map(({ coordinates, sourceRange }) => ({ coordinates, sourceRange })),
+      ...moderate.map(({ coordinates, sourceRange }) => ({ coordinates, sourceRange }))
+        .sort((left, right) => (
+          left.sourceRange.startSourceIndex - right.sourceRange.startSourceIndex
+          || left.sourceRange.endSourceIndex - right.sourceRange.endSourceIndex
+        )),
       ...supplementOutcome.lines,
     ];
     const inferredGeometry = toInferredMultiLineString(inferredLines);
@@ -347,7 +352,34 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       retryable ||= batch.some((result) => result.retryable);
       inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
     }
-    return { lines: inferred, retryable };
+    const continuousNoMatchBudget = Math.max(0, MAX_GAP_SUPPLEMENT_CANDIDATES - observedCandidates.length);
+    const continuousNoMatchCandidates = rawEvidence === undefined ? [] : buildContinuousNoMatchCandidates(
+      document,
+      [
+        ...approvedLines,
+        ...inferred.map((line) => ({
+          confidence: 1,
+          coordinates: line.coordinates,
+          interpolationLevel: 1 as const,
+          sourceRange: line.sourceRange,
+        })),
+      ],
+      rawEvidence,
+    ).slice(0, continuousNoMatchBudget);
+    for (let offset = 0; offset < continuousNoMatchCandidates.length; offset += 4) {
+      const batch = await Promise.all(continuousNoMatchCandidates.slice(offset, offset + 4).map((candidate) => (
+        this.routeGapSupplement(baseUrl, candidate)
+      )));
+      retryable ||= batch.some((result) => result.retryable);
+      inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
+    }
+    return {
+      lines: inferred.sort((left, right) => (
+        left.sourceRange.startSourceIndex - right.sourceRange.startSourceIndex
+        || left.sourceRange.endSourceIndex - right.sourceRange.endSourceIndex
+      )),
+      retryable,
+    };
   }
 
   private async routeGapSupplement(
@@ -1057,6 +1089,141 @@ function buildObservedNoMatchCandidates(
       straightDistanceMeters,
     }];
   });
+}
+
+function buildContinuousNoMatchCandidates(
+  document: RouteTrackingGeometryDocumentV1,
+  approvedLines: MatchedLine[],
+  rawEvidence: RouteTrackingGeometryPositionInput[],
+): GapSupplementCandidate[] {
+  const approvedRanges = approvedLines.map((line) => line.sourceRange);
+  const acquisitionBreaks = new Set(document.samples.flatMap((sample) => (
+    sample.gapBefore === true && sample.sourceIndex !== undefined ? [sample.sourceIndex] : []
+  )));
+  const unmatchedRanges = buildUnmatchedRanges(document, approvedLines)
+    .filter((range) => range.reason === 'NO_MATCH')
+    .sort((left, right) => (
+      (right.endSourceIndex - right.startSourceIndex) - (left.endSourceIndex - left.startSourceIndex)
+      || left.startSourceIndex - right.startSourceIndex
+    ));
+  const candidates: GapSupplementCandidate[] = [];
+
+  for (const unmatched of unmatchedRanges) {
+    // Short runs retain the existing null-tracepoint and matching-boundary safeguards.
+    if (unmatched.endSourceIndex - unmatched.startSourceIndex + 1 <= MAX_CONTINUOUS_NO_MATCH_WINDOW_POINTS) continue;
+    let startSourceIndex = unmatched.startSourceIndex;
+    while (startSourceIndex + 2 <= unmatched.endSourceIndex
+      && candidates.length < MAX_GAP_SUPPLEMENT_CANDIDATES) {
+      const maximumEndSourceIndex = Math.min(
+        unmatched.endSourceIndex,
+        startSourceIndex + MAX_CONTINUOUS_NO_MATCH_WINDOW_POINTS - 1,
+      );
+      let candidate: GapSupplementCandidate | null = null;
+      for (let endSourceIndex = maximumEndSourceIndex;
+        endSourceIndex >= startSourceIndex + 2;
+        endSourceIndex -= 1) {
+        candidate = buildContinuousNoMatchWindow(
+          rawEvidence,
+          startSourceIndex,
+          endSourceIndex,
+          acquisitionBreaks,
+          approvedRanges,
+        );
+        if (candidate !== null) break;
+      }
+      if (candidate === null) {
+        startSourceIndex += 1;
+        continue;
+      }
+      candidates.push(candidate);
+      // Adjacent accepted windows may share their measured endpoint, but never an interior source fix.
+      startSourceIndex = candidate.range.endSourceIndex;
+    }
+  }
+  return candidates;
+}
+
+function buildContinuousNoMatchWindow(
+  rawEvidence: RouteTrackingGeometryPositionInput[],
+  startSourceIndex: number,
+  endSourceIndex: number,
+  acquisitionBreaks: Set<number>,
+  approvedRanges: RouteTrackingSourceRangeV1[],
+): GapSupplementCandidate | null {
+  if (approvedRanges.some((range) => (
+    range.startSourceIndex < endSourceIndex && range.endSourceIndex > startSourceIndex
+  ))) return null;
+  for (let sourceIndex = startSourceIndex + 1; sourceIndex <= endSourceIndex; sourceIndex += 1) {
+    if (acquisitionBreaks.has(sourceIndex)) return null;
+  }
+  const raw = rawEvidence.slice(startSourceIndex, endSourceIndex + 1);
+  if (raw.length !== endSourceIndex - startSourceIndex + 1
+    || raw.length < 3
+    || raw.length > MAX_CONTINUOUS_NO_MATCH_WINDOW_POINTS) return null;
+  const first = raw[0]!;
+  const last = raw.at(-1)!;
+  if (typeof first.driverId !== 'string' || first.driverId.trim() === ''
+    || first.routePlanId.trim() === ''
+    || raw.some((position) => (
+      position.driverId !== first.driverId
+      || position.routePlanId !== first.routePlanId
+      || typeof position.accuracyMeters !== 'number'
+      || !Number.isFinite(position.accuracyMeters)
+      || position.accuracyMeters < 0
+      || position.accuracyMeters > ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters
+      || !Number.isFinite(position.latitude)
+      || !Number.isFinite(position.longitude)
+      || Math.abs(position.latitude) > 90
+      || Math.abs(position.longitude) > 180
+    ))
+    || raw.filter((position) => position.accuracyMeters! <= MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS).length < 3
+    || first.accuracyMeters! > MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS
+    || last.accuracyMeters! > MAX_GAP_SUPPLEMENT_ANCHOR_ACCURACY_METERS) return null;
+  const coordinates = raw.map((position): [number, number] => [position.longitude, position.latitude]);
+  if (raw.slice(1).some((position, index) => {
+    const previous = raw[index]!;
+    const elapsedMs = Date.parse(position.occurredAt) - Date.parse(previous.occurredAt);
+    return !(elapsedMs > 0)
+      || distanceBetweenCoordinatesMeters(coordinates[index]!, coordinates[index + 1]!)
+        / (elapsedMs / 1000) > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
+  })) return null;
+  const elapsedSeconds = (Date.parse(last.occurredAt) - Date.parse(first.occurredAt)) / 1000;
+  const startCoordinate = coordinates[0]!;
+  const endCoordinate = coordinates.at(-1)!;
+  const straightDistanceMeters = distanceBetweenCoordinatesMeters(startCoordinate, endCoordinate);
+  if (!(elapsedSeconds > 0 && elapsedSeconds <= MAX_GAP_SUPPLEMENT_ELAPSED_MS / 1000)
+    || straightDistanceMeters < MIN_GAP_SUPPLEMENT_DISTANCE_METERS
+    || straightDistanceMeters > MAX_GAP_SUPPLEMENT_DISTANCE_METERS
+    || straightDistanceMeters / elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND) return null;
+  const samples = raw.map((position, index) => ({
+    accuracyMeters: position.accuracyMeters!,
+    driverId: position.driverId,
+    eventId: position.eventId,
+    gapBefore: false,
+    occurredAt: position.occurredAt,
+    receivedAt: position.receivedAt,
+    sourceIndex: startSourceIndex + index,
+  }));
+  return {
+    contextual: true,
+    coordinates,
+    elapsedSeconds,
+    endCoordinate,
+    observedNoMatch: true,
+    range: {
+      endEventId: last.eventId,
+      endOccurredAt: last.occurredAt,
+      endSourceIndex,
+      interpolationLevel: 1,
+      reason: 'NO_MATCH',
+      startEventId: first.eventId,
+      startOccurredAt: first.occurredAt,
+      startSourceIndex,
+    },
+    samples,
+    startCoordinate,
+    straightDistanceMeters,
+  };
 }
 
 function isSourceIndexCovered(sourceIndex: number, ranges: RouteTrackingSourceRangeV1[]): boolean {

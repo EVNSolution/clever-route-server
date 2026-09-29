@@ -176,7 +176,7 @@ try {
     },
     where: {
       shop: { appId: process.env.TRACKING_APP_ID, shopDomain: process.env.TRACKING_SHOP_DOMAIN },
-      status: { in: ['COMPLETED', 'IN_PROGRESS'] },
+      status: { in: ['COMPLETED', 'INCOMPLETE', 'IN_PROGRESS'] },
     },
   });
   const now = new Date();
@@ -185,7 +185,7 @@ try {
     const eventWindow = await loadRouteTrackingEventWindow(prisma, route.id);
     if (eventWindow === null) throw new Error(`event window unavailable for route ${route.id}`);
     const staleInProgress = route.status === 'IN_PROGRESS' && eventWindow.endExclusive <= now;
-    if (route.status !== 'COMPLETED' && !staleInProgress) continue;
+    if (route.status !== 'COMPLETED' && route.status !== 'INCOMPLETE' && !staleInProgress) continue;
     const geometry = route.trackingGeometry;
     if (geometry === null || geometry.sourcePointCount < 2) {
       throw new Error(`eligible route ${route.id} has no rebuildable tracking geometry`);
@@ -429,7 +429,7 @@ try:
     end = datetime.fromisoformat(end_text.replace('Z', '+00:00'))
 except (AttributeError, ValueError):
     raise SystemExit(1)
-if status != 'COMPLETED' and not (status == 'IN_PROGRESS' and end <= datetime.now(timezone.utc)):
+if status not in ('COMPLETED', 'INCOMPLETE') and not (status == 'IN_PROGRESS' and end <= datetime.now(timezone.utc)):
     raise SystemExit(1)
 if sys.argv[5]:
     with open(sys.argv[5], encoding='utf-8') as handle:

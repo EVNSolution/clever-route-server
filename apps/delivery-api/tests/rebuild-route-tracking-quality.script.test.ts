@@ -381,6 +381,26 @@ describe('route tracking quality rebuild script', () => {
     }
   });
 
+  test('preserves an earlier GPS gap supplement after a later matcher-counted inferred prefix', () => {
+    const document = preservationDocument();
+    const source = preservationSource();
+    const current = preservationCache({ matched: [roadLine(0, 1, 0)] }, document);
+    const proposed = preservationWrite({
+      inferred: [roadLine(4, 5, 1), roadLine(2, 3, 1)],
+      matcherCountedInferred: 1,
+      unmatched: [sourceDiagnostic(2, 3, 'GPS_GAP')],
+    }, document);
+
+    const merged = buildPreservedRouteTrackingRoadMatchWrite(current, proposed as never, document, source);
+    const geometry = merged.roadMatchedGeometry as {
+      inferredGeometry: { sourceRanges: Array<{ startSourceIndex: number; endSourceIndex: number }> };
+    };
+    expect(geometry.inferredGeometry.sourceRanges.map(({ startSourceIndex, endSourceIndex }) => [
+      startSourceIndex, endSourceIndex,
+    ])).toEqual([[4, 5], [2, 3]]);
+    expect(merged.roadMatchedPointCount).toBe(4);
+  });
+
   test('rejects nonmonotonic matcher-counted inferred prefixes in existing and proposed caches', () => {
     const document = preservationDocument();
     const source = preservationSource();
