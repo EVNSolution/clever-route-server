@@ -11,6 +11,8 @@ import {
 export const ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS = 90;
 const ROUTE_TRACKING_GEOMETRY_SCHEMA_VERSION = 'route_tracking_geometry.v1';
 const EARTH_RADIUS_METERS = 6_371_000;
+// Keep simplified GPS legs below the road matcher's 1,250 m hard distance ceiling.
+const MAX_SIMPLIFIED_GPS_LEG_METERS = 750;
 
 export type RouteTrackingGeometrySampleV1 = {
   accuracyMeters?: number | null;
@@ -202,6 +204,7 @@ function appendRouteTrackingGeometryPositionMutable(
     && previousSample?.gapBefore !== true
     && coordinates.length >= 2
     && anchorElapsedMs <= 60_000
+    && distanceBetweenCoordinatesMeters(coordinates.at(-2)!, coordinate) <= MAX_SIMPLIFIED_GPS_LEG_METERS
     && headingChangeDegrees <= 20
     && distancePointToSegmentMeters(
       coordinates.at(-1)!,
@@ -256,6 +259,12 @@ function retainSimplifiedSegment(
   retained.add(start);
   retained.add(end);
   if (end - start <= 1) return;
+  if (distanceBetweenCoordinatesMeters(coordinates[start]!, coordinates[end]!) > MAX_SIMPLIFIED_GPS_LEG_METERS) {
+    const middle = Math.floor((start + end) / 2);
+    retainSimplifiedSegment(coordinates, start, middle, retained);
+    retainSimplifiedSegment(coordinates, middle, end, retained);
+    return;
+  }
   let furthestIndex = -1;
   let furthestDistance = 0;
   for (let index = start + 1; index < end; index += 1) {
@@ -588,6 +597,14 @@ function distancePointToSegmentMeters(
   const closestX = projectedStart[0] + ratio * deltaX;
   const closestY = projectedStart[1] + ratio * deltaY;
   return Math.hypot(projectedPoint[0] - closestX, projectedPoint[1] - closestY);
+}
+
+function distanceBetweenCoordinatesMeters(left: [number, number], right: [number, number]): number {
+  const latitudeDelta = toRadians(right[1] - left[1]);
+  const longitudeDelta = toRadians(right[0] - left[0]);
+  const halfChord = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(toRadians(left[1])) * Math.cos(toRadians(right[1])) * Math.sin(longitudeDelta / 2) ** 2;
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(halfChord)));
 }
 
 function finiteCoordinate(value: unknown): number | null {

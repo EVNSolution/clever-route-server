@@ -87,6 +87,31 @@ describe('route tracking geometry projection', () => {
     expect(geometry.samples.map((sample) => sample.eventId)).toEqual(['event-1', 'event-3']);
   });
 
+  test('retains enough dense straight GPS fixes for bounded OSRM match legs', () => {
+    const positions = Array.from({ length: 39 }, (_, index) => position({
+      accuracyMeters: 4,
+      eventId: `highway-${index}`,
+      latitude: 43.65,
+      longitude: -79.4 + index * 0.002,
+      occurredAt: new Date(Date.parse('2026-09-12T16:49:00.000Z') + index * 9_000).toISOString()
+    }));
+    const rebuilt = buildRouteTrackingGeometryDocument(positions);
+    const streamed = positions.reduce(appendRouteTrackingGeometryPosition, {
+      coordinates: [], samples: [], sourcePointCount: 0
+    });
+
+    for (const geometry of [rebuilt, streamed]) {
+      expect(geometry.sourcePointCount).toBe(39);
+      expect(geometry.samples[0]?.eventId).toBe('highway-0');
+      expect(geometry.samples.at(-1)?.eventId).toBe('highway-38');
+      expect(geometry.coordinates.length).toBeGreaterThan(4);
+      for (let index = 1; index < geometry.coordinates.length; index += 1) {
+        const longitudeDelta = geometry.coordinates[index]![0] - geometry.coordinates[index - 1]![0];
+        expect(longitudeDelta * 111_320 * Math.cos(43.65 * Math.PI / 180)).toBeLessThanOrEqual(750);
+      }
+    }
+  });
+
   test('does not simplify across a delayed GPS gap', () => {
     const beforeGap = buildRouteTrackingGeometryDocument([
       position({ eventId: 'event-1', latitude: 37.5, longitude: 126.9, occurredAt: '2026-07-21T00:00:00.000Z' }),
