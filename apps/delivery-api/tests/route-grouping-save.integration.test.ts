@@ -1027,9 +1027,10 @@ describeDatabase('route grouping save database regressions', () => {
     };
     const results = await Promise.allSettled([dispatch(firstId), dispatch(secondId)]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-    const rejected = results.find((result) => result.status === 'rejected')!;
+    const rejected = results.find((result) => result.status === 'rejected');
+    if (rejected === undefined) throw new Error('Expected one rejected overlapping Dispatch');
     expect(rejected.reason).toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
-    const winner = results[0]!.status === 'fulfilled' ? firstId : secondId;
+    const winner = results[0].status === 'fulfilled' ? firstId : secondId;
     const loser = winner === firstId ? secondId : firstId;
     const order = await prisma.order.findUniqueOrThrow({ where: { id: orders[0]!.id } });
     expect(String((rejected.reason as Error).message)).toContain(order.name);
