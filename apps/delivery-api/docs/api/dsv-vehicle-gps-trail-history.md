@@ -44,6 +44,15 @@ Response:
 - `dailyRoute.bridges[]` marks `GPS_GAP`, `IMPLAUSIBLE_JUMP`, or `NO_MATCH`.
   The daily line retains raw endpoints across these bridges for continuity;
   a bridge does not establish that the vehicle drove along the connecting line.
+- An `IMPLAUSIBLE_JUMP` bridge can additionally contain `inferredTunnel` when
+  frozen, inconsistent UVIS GPS is bracketed at normal sample cadence by
+  progressing road anchors on the reviewed, one-way Hongjimun–Jeongneung
+  eastbound tunnel corridor and its audited east exit approach. This
+  separate LineString is an **inferred candidate for a dotted display**, from
+  the first frozen sample to the next valid sample. It is not raw GPS or proof
+  of the exact travel time or road driven. Other tunnels and ambiguous cases
+  keep the original bridge without inferred geometry. The corridor is a
+  2026-09-30 OpenStreetMap snapshot (© OpenStreetMap contributors, ODbL 1.0).
 - Completion does not force the GPS trail to stop. When depot coordinates are
   available, the endpoint continues through the first depot-return sample; when
   that is not available, it ends at the last valid UVIS GPS sample in the

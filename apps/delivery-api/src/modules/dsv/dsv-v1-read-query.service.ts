@@ -1113,9 +1113,11 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     return {
       ...(input.includeDailyRoute === true ? {
         dailyRoute: buildUvisVehicleDailyRoute(validSamples.map((sample) => ({
+          ignitionOn: sample.ignitionOn,
           latitude: sample.latitude,
           longitude: sample.longitude,
           observedAt: sample.observedAt.toISOString(),
+          speedKph: decimalToNumber(sample.speedKph),
           staleAfter: sample.staleAfter.toISOString(),
         })), materializedTrail),
       } : {}),

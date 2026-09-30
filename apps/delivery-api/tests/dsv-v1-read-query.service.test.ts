@@ -1381,6 +1381,74 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(result.dailyRoute?.sourceSampleCount).toBe(4);
   });
 
+  test('vehicle GPS history passes ignition and invalid frozen speed into the separate tunnel candidate', async () => {
+    const coordinates: Array<[number, number]> = [
+      [126.95278, 37.59617],
+      ...Array.from({ length: 6 }, () => [126.95625, 37.59583] as [number, number]),
+      [126.99562, 37.60977],
+      [127.0065, 37.60675],
+    ];
+    const times = coordinates.map((_, index) =>
+      new Date(Date.parse('2026-09-29T22:37:58.000Z') + index * 60_000).toISOString()
+    );
+    const rows = coordinates.map(([longitude, latitude], index) => gpsSample({
+      ignitionOn: true,
+      latitude: String(latitude),
+      longitude: String(longitude),
+      observedAt: times[index]!,
+      speedKph: index > 1 && index < 7 ? '255' : '40',
+      staleAfter: new Date(Date.parse(times[index]!) + 60_000).toISOString(),
+    }));
+    const anchors = [0, 1, 7, 8].map((index) => ({
+      observedAt: times[index],
+      lineIndex: index < 7 ? 0 : 1,
+      coordinateIndex: index === 0 || index === 7 ? 0 : 1,
+    }));
+    const document = {
+      schemaVersion: 'uvis_vehicle_trail.v1',
+      segments: [{
+        endedAt: times[8],
+        roadMatchedGeometry: {
+          anchors,
+          type: 'MultiLineString',
+          coordinates: [
+            [[126.952756, 37.5961346], [126.9562349, 37.5958118]],
+            [[126.9956786, 37.6097365], [127.0064424, 37.6068035]],
+          ],
+        },
+        samples: rows.map((row) => ({
+          distanceTodayKm: null,
+          ignitionOn: row.ignitionOn,
+          latitude: Number(row.latitude),
+          longitude: Number(row.longitude),
+          observedAt: row.observedAt.toISOString(),
+          speedKph: Number(row.speedKph),
+          staleAfter: row.staleAfter.toISOString(),
+        })),
+        startedAt: times[0],
+        trailMarker: { kind: 'START', latitude: coordinates[0]![1], longitude: coordinates[0]![0], observedAt: times[0] },
+      }],
+    };
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '07:30' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve(rows)) },
+      uvisVehicleTrailMaterialization: { findUnique: vi.fn(() => Promise.resolve({ document })) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-09-30T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      includeDailyRoute: true,
+      serviceDate: '2026-09-30',
+      vehicleId: 'vehicle-a',
+    });
+
+    const bridge = result.dailyRoute?.bridges.find((item) => item.reason === 'IMPLAUSIBLE_JUMP');
+    expect(bridge?.inferredTunnel?.corridorId).toBe('seoul-hongjimun-jeongneung-eastbound');
+  });
+
   test('vehicle GPS trail history keeps raw samples while removing anchors distant from their matched line', async () => {
     const materializedDocument = {
       generatedAt: '2026-08-04T01:00:00.000Z',
