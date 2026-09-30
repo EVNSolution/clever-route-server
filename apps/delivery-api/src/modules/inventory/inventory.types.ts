@@ -16,6 +16,7 @@ export type InventoryOrderDto = {
   deliveryDate: string | null;
   driveTimeMinutes?: number | null;
   eta?: string | null;
+  estimatedArrivalAt?: string | null;
   financialStatus: string | null;
   id: string;
   items: OrderItemDto[];
@@ -27,6 +28,7 @@ export type InventoryOrderDto = {
   shopifyPaymentStatus: string | null;
   phone: string | null;
   processedAt: string | null;
+  processedAtInstant?: string | null;
   recipientName: string | null;
   routeStop?: InventoryRouteStopDto | null;
   stopTimeMinutes?: number | null;
@@ -36,6 +38,7 @@ export type InventoryOrderDto = {
 export type InventoryRouteStopDto = {
   driveTimeMinutes: number | null;
   eta: string | null;
+  estimatedArrivalAt?: string | null;
   orderId: string;
   sequence: number;
   stopTimeMinutes: number | null;
@@ -47,6 +50,8 @@ export type InventoryLinkedRouteDto = {
   id: string;
   name: string;
   startTime: string | null;
+  scheduledStartAt?: string | null;
+  scheduledStartTimeZone?: string | null;
   stops: InventoryRouteStopDto[];
 };
 
