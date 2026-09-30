@@ -41,6 +41,28 @@ const standaloneRoutePlanCopy = {
 };
 
 describe('Admin route group routes', () => {
+  test('forwards the optional atomic initial-route request and rejects malformed keys', async () => {
+    const { createGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    const payload = { name: 'Friday v2', orderIds: ['order-1'], planDate: '2026-09-11', initialRoute: { requestId } };
+    try {
+      const response = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload, url: '/admin/route-groups' });
+      expect(response.statusCode).toBe(201);
+      expect(createGrouping).toHaveBeenCalledWith(expect.objectContaining(payload));
+      createGrouping.mockClear();
+      for (const initialRoute of [true, {}, { requestId: 'not-a-uuid' }]) {
+        const invalid = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { ...payload, initialRoute }, url: '/admin/route-groups' });
+        expect(invalid.statusCode).toBe(400);
+      }
+      expect(createGrouping).not.toHaveBeenCalled();
+      const legacy = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { name: 'legacy', orderIds: ['order-1'] }, url: '/admin/route-groups' });
+      expect(legacy.statusCode).toBe(201);
+      expect(createGrouping.mock.calls[0]?.[0].initialRoute).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
   test('copies a standalone route through the route-plan resource', async () => {
     const { copyStandaloneRoutePlan, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });

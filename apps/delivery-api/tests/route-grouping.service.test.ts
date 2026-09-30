@@ -1330,16 +1330,18 @@ describe('route grouping contracts', () => {
     expect(nextRouteIdxBody).not.toContain('routeGroupingChildVersion.aggregate');
   });
 
-  test('keeps a new route group childless until the first route is explicitly added', () => {
+  test('keeps legacy creation separate from the opt-in atomic initial route', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const start = source.indexOf('async createGrouping(');
-    const end = source.indexOf('async getGrouping(', start);
+    const end = source.indexOf('async copyGrouping(', start);
     const createGroupingBody = source.slice(start, end);
 
     expect(createGroupingBody).not.toContain('const routeIdx = await nextGlobalRouteIdx');
     expect(createGroupingBody).not.toContain('createDraftChildRoutePlan');
     expect(createGroupingBody).toContain('routeGroupingVersion.create');
     expect(createGroupingBody).toContain('createRouteGroupingInventory');
+    expect(createGroupingBody).toContain('if (input.initialRoute !== undefined)');
+    expect(createGroupingBody).toContain('this.saveDraftInTransaction(tx, {');
   });
 
   test('allows an order to participate in more than one route group', () => {

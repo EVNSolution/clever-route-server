@@ -158,7 +158,11 @@ describe('route membership mutation authority', () => {
     expect(bindingAuthority).toContain('order.currentRouteVersionId === null');
     expect(bindingAuthority).toContain("return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH'");
     // Draft partition discovery also reads membership; actual child mutations still require CURRENT authority.
-    expect(source.match(/readCurrentChildAssignments\(/gu)).toHaveLength(4);
+    expect(source.match(/readCurrentChildAssignments\(/gu)).toHaveLength(5);
+    const copy = source.slice(source.indexOf('async copyGrouping('), source.indexOf('async copyStandaloneRoutePlan('));
+    expect(copy).toContain("input.mode === 'VIRTUAL' && sourceChildren.length > 0");
+    expect(copy).toContain('readCurrentChildAssignments(source, child)');
+    expect(copy).toContain('createDraftChildRoutePlan(tx, loadedCopy');
     const partition = source.slice(source.indexOf('function assertDraftOrderPartition('), source.indexOf('function assertDraftRoutePlanEnvelope('));
     expect(partition).toContain('readCurrentChildAssignments(group, child)');
     const childDto = source.slice(source.indexOf('function toChildDto('), source.indexOf('function readChildRouteGeometry('));

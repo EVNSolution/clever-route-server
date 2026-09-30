@@ -605,16 +605,27 @@ function readCreateGroupingPayload(value: unknown): {
   dateRangeEnd?: string;
   dateRangeStart?: string;
   depot?: RoutePlanDepotInput;
+  initialRoute?: { requestId: string };
   name: string;
   orderIds: string[];
   planDate?: string;
 } {
   const object = requireObject(value);
+  let initialRoute: { requestId: string } | undefined;
+  if (object.initialRoute !== undefined) {
+    const initial = requireObject(object.initialRoute);
+    const requestId = requireNonEmptyString(initial.requestId).toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
+      throw new BadRouteGroupPayloadError('initialRoute.requestId must be a UUID v4');
+    }
+    initialRoute = { requestId };
+  }
   return {
     ...optionalDateField(object, 'planDate'),
     ...optionalDateField(object, 'dateRangeStart'),
     ...optionalDateField(object, 'dateRangeEnd'),
     ...(object.depot === undefined ? {} : { depot: readDepot(object.depot) }),
+    ...(initialRoute === undefined ? {} : { initialRoute }),
     name: requireNonEmptyString(object.name),
     orderIds: readStringArray(object.orderIds)
   };

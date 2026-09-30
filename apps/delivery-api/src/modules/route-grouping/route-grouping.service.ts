@@ -396,6 +396,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
       if (shop === null) throw new RouteGroupingValidationError(['shop not found']);
+      if (input.initialRoute !== undefined) {
+        const requestId = input.initialRoute.requestId;
+        await lockRouteGroupingDraftSave(tx, requestId);
+        const existing = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: requestId } });
+        if (existing !== null) {
+          if (existing.shopId !== shop.id || existing.name !== input.name
+            || formatDateOnly(existing.planDate) !== formatDateOnly(dateRange.planDate)
+            || !sameStringSequence(existing.orders.map(({ orderId }) => orderId), orderIds)) {
+            throw new RouteGroupingConflictError('initial route request changed; start a new request');
+          }
+          return existing.id;
+        }
+      }
       if (hasValidDepotCoordinates(input.depot)) {
         await tx.shop.update({
           data: {
@@ -421,6 +434,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const orderedFacts = orderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is typeof facts[number] => fact !== undefined);
       const grouping = await tx.routeGrouping.create({
         data: {
+          ...(input.initialRoute === undefined ? {} : { id: input.initialRoute.requestId }),
           createdBy: input.createdBy,
           dateRangeEnd: dateRange.end,
           dateRangeStart: dateRange.start,
@@ -456,6 +470,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         orderIds,
         shopId: shop.id
       });
+      if (input.initialRoute !== undefined) {
+        const saved = await this.saveDraftInTransaction(tx, {
+          appId: input.appId,
+          groupingId: grouping.id,
+          mode: 'MANUAL_ORDER',
+          routes: [{ branchId: null, label: input.name, orderIds, routePlanId: null,
+            routeKey: `initial:${grouping.id}`, tempId: grouping.id }],
+          shopDomain: input.shopDomain
+        }, { materializeUnassignedRoutes: true, initialRouteName: input.name });
+        if (saved === null || saved.children.length !== 1 || saved.children[0]?.routePlanId === null) {
+          throw new RouteGroupingValidationError(['initial route was not created']);
+        }
+      }
       return grouping.id;
     });
     const detail = await this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
@@ -504,8 +531,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         },
         select: { id: true }
       });
-      await tx.routeGroupingVersion.create({
-        data: { actor: input.actor, groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 }
+      const copyVersion = await tx.routeGroupingVersion.create({
+        data: { actor: input.actor, groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 },
+        select: { id: true }
       });
 
       const copiedMemberships = input.mode === 'REFERENCE'
@@ -525,6 +553,29 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         orderIds: copiedMemberships.map((membership) => membership.orderId),
         shopId: source.shopId
       });
+      const sourceChildren = source.childVersions.filter(isOperationalCurrentChild);
+      // Reference copies share source orders and retain the existing membership-only contract.
+      if (input.mode === 'VIRTUAL' && sourceChildren.length > 0) {
+        const loadedCopy = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: copy.id } });
+        if (loadedCopy === null) throw new RouteGroupingValidationError(['copied grouping not found']);
+        const copiedAssignmentBySequence = new Map(loadedCopy.orders.map((assignment) => [assignment.sourceSequence, assignment]));
+        const orderedChildren = sourceChildren.sort((a, b) =>
+          (readChildSnapshot(a.snapshot).sortOrder ?? 0) - (readChildSnapshot(b.snapshot).sortOrder ?? 0));
+        for (const [index, child] of orderedChildren.entries()) {
+          const assignments = readCurrentChildAssignments(source, child).map((assignment) => {
+            const copied = copiedAssignmentBySequence.get(assignment.sourceSequence);
+            if (copied === undefined) throw new RouteGroupingValidationError(['copied route order not found']);
+            return copied;
+          });
+          const routeIdx = await nextGlobalRouteIdx(tx, source.shopId);
+          await createDraftChildRoutePlan(tx, loadedCopy, {
+            assignments, color: readChildSnapshot(child.snapshot).color, driverId: null,
+            groupingVersionId: copyVersion.id, name: child.routePlan?.name ?? childRouteSlotName(child),
+            optimized: null, preserveName: true, routeIdx, sortOrder: index + 1
+          });
+        }
+        await recomputeAssignments(tx, copy.id);
+      }
       return copy.id;
     });
     if (groupingId === null) return null;
@@ -1595,7 +1646,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   async saveDraftInTransaction(
     tx: Tx,
     input: SaveRouteGroupingDraftInput,
-    options: { materializeUnassignedRoutes?: boolean } = {}
+    options: { initialRouteName?: string; materializeUnassignedRoutes?: boolean } = {}
   ): Promise<RouteGroupingDetailDto | null> {
     const routes = normalizeDraftRoutes(input.routes);
     const deletedRoutePlanIds = normalizeExplicitDraftIds(input.deletedRoutePlanIds ?? [], 'deletedRoutePlanIds');
@@ -1822,8 +1873,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         color: route.color,
         driverId,
         groupingVersionId: currentGroupingVersion.id,
-        name: newChildRouteName(route.label, routeIdx),
+        name: options.initialRouteName ?? newChildRouteName(route.label, routeIdx),
         optimized: null,
+        preserveName: options.initialRouteName !== undefined,
         routeIdx,
         scheduledStartAt: route.scheduledStartAt,
         scheduledStartTimeZone: route.scheduledStartTimeZone,
@@ -4681,6 +4733,7 @@ async function createDraftChildRoutePlan(
     groupingVersionId: string;
     name: string;
     optimized: RouteGroupingDraftRouteInput['optimized'] | null;
+    preserveName?: boolean;
     routeIdx: number | undefined;
     scheduledStartAt?: string | null | undefined;
     scheduledStartTimeZone?: string | null | undefined;
@@ -4689,7 +4742,8 @@ async function createDraftChildRoutePlan(
   }
 ): Promise<{ id: string; name: string }> {
   const depot = readDepotFromShop(group);
-  const name = stripGeneratedChildRouteVersion(input.name.trim() || `#${input.routeIdx ?? input.sortOrder ?? 1}`);
+  const requestedName = input.name.trim() || `#${input.routeIdx ?? input.sortOrder ?? 1}`;
+  const name = input.preserveName === true ? requestedName : stripGeneratedChildRouteVersion(requestedName);
   const isStoreReviewData = await resolveRouteStoreReviewData(
     tx,
     group.shopId,

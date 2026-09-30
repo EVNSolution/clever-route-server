@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
 import {
   DriverEventAssignmentChangedError,
@@ -10,7 +10,7 @@ import {
 } from '../src/modules/driver/driver-event.repository.js';
 import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
-import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
+import { PrismaRouteGroupingService, rebindCurrentOrdersToRouteVersion } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import { PrismaOrderQueryRepository } from '../src/modules/shopify/order-query.repository.js';
 
@@ -827,6 +827,142 @@ describeDatabase('route grouping save database regressions', () => {
 
     await expect(createGrouping('valid create', orders.map(({ id }) => id)))
       .resolves.toMatchObject({ totalOrders: 2 });
+  });
+
+  test('creates one named Friday route, replays the request, then saves and reloads a split', async () => {
+    const orders = await Promise.all(Array.from({ length: 41 }, () => seedOrder({
+      deliveryDate: new Date('2026-09-11T00:00:00.000Z'), routeScopeKey: 'friday-delivery'
+    })));
+    const input = {
+      appId, createdBy: 'integration', initialRoute: { requestId: randomUUID() },
+      name: '금요일 전체 배송 v2', orderIds: orders.map(({ id }) => id), planDate: '2026-09-11', shopDomain
+    };
+    const [created, replayed] = await Promise.all([service.createGrouping(input), service.createGrouping(input)]);
+    expect(replayed.id).toBe(created.id);
+    expect(created.children).toHaveLength(1);
+    expect(created.children[0]?.routePlan).toMatchObject({ name: input.name, status: 'READY', stopsCount: 41 });
+    expect(created.children[0]?.orderIds).toEqual(input.orderIds);
+    const child = created.children[0]!;
+    const saved = await service.saveDraft({
+      appId, expectedUpdatedAt: created.updatedAt, groupingId: created.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [
+        { branchId: null, expectedChildUpdatedAt: child.updatedAt, expectedRoutePlanUpdatedAt: child.routePlan!.updatedAt,
+          label: input.name, orderIds: input.orderIds.slice(0, 18), routePlanId: child.routePlanId },
+        draftRoute('Friday remaining', input.orderIds.slice(18)), draftRoute('Friday empty', [])
+      ]
+    });
+    const reread = await service.getGrouping({ appId, groupingId: created.id, shopDomain });
+    expect(reread).toEqual(saved);
+    expect(reread?.children.map(({ stopsCount }) => stopsCount).sort((a, b) => a - b)).toEqual([0, 18, 23]);
+    const copy = await service.copyGrouping({
+      actor: 'integration', appId, expectedUpdatedAt: reread!.updatedAt,
+      groupingId: created.id, mode: 'VIRTUAL', shopDomain
+    });
+    expect(copy?.children.map(({ stopsCount }) => stopsCount).sort((a, b) => a - b)).toEqual([0, 18, 23]);
+    expect(await prisma.routeGrouping.count({ where: { id: input.initialRoute.requestId } })).toBe(1);
+  }, 30_000);
+
+  test('initial route failure rolls back the group and can be retried with the same request', async () => {
+    const orders = await seedOrders(2);
+    const input = { appId, createdBy: 'integration', initialRoute: { requestId: randomUUID() },
+      name: 'atomic failure', orderIds: orders.map(({ id }) => id), planDate: '2026-09-10', shopDomain };
+    const before = await prisma.routePlan.count({ where: { shopId } });
+    const save = vi.spyOn(service, 'saveDraftInTransaction').mockRejectedValueOnce(new Error('fixture materialization failure'));
+    await expect(service.createGrouping(input)).rejects.toThrow('fixture materialization failure');
+    save.mockRestore();
+    expect(await prisma.routeGrouping.count({ where: { id: input.initialRoute.requestId } })).toBe(0);
+    expect(await prisma.routePlan.count({ where: { shopId } })).toBe(before);
+    const created = await service.createGrouping(input);
+    expect(created.children).toHaveLength(1);
+    await expect(service.createGrouping({ ...input, name: 'changed request' })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+  });
+
+  test('Copy preserves route partitions, titles and unassigned orders while resetting execution settings', async () => {
+    const orders = await seedOrders(4);
+    const driverAccount = await prisma.driverAccount.create({ data: { phone: `copy-${randomUUID()}` } });
+    driverAccountIds.push(driverAccount.id);
+    const driver = await prisma.driver.create({ data: {
+      accountId: driverAccount.id, authSubject: `copy-${randomUUID()}`, displayName: 'Copy source driver', shopId
+    } });
+    const grouping = await createGrouping('Copy partition source', orders.slice(0, 3).map(({ id }) => id));
+    const saved = await service.saveDraft({
+      appId, groupingId: grouping.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [
+        { ...draftRoute('first', [orders[1]!.id, orders[0]!.id]), driverId: driver.id,
+          scheduledStartAt: '2026-09-10T13:00:00.000Z', scheduledStartTimeZone: 'UTC' },
+        draftRoute('second', [orders[2]!.id]), draftRoute('empty', [])
+      ]
+    });
+    await prisma.routePlan.update({ where: { id: saved!.children[0]!.routePlanId! }, data: { name: 'Merchant title v2' } });
+    const source = await service.updateGroupingOrders({
+      addOrderIds: [orders[3]!.id], appId, groupingId: grouping.id, shopDomain
+    });
+    const sourceRoutes = await prisma.routePlan.findMany({ where: { id: { in: source!.children.map((child) => child.routePlanId!) } } });
+    const copy = await service.copyGrouping({
+      actor: 'integration', appId, expectedUpdatedAt: source!.updatedAt,
+      groupingId: grouping.id, mode: 'VIRTUAL', shopDomain
+    });
+    expect(copy!.name).toBe(`${source!.name} Copy`);
+    expect(copy!.children.map((child) => child.routePlan!.name)).toEqual(source!.children.map((child) => child.routePlan!.name));
+    const sourceSequence = new Map(source!.assignments.map((order) => [order.orderId, order.sourceSequence]));
+    const copySequence = new Map(copy!.assignments.map((order) => [order.orderId, order.sourceSequence]));
+    expect(copy!.children.map((child) => child.orderIds.map((id) => copySequence.get(id))))
+      .toEqual(source!.children.map((child) => child.orderIds.map((id) => sourceSequence.get(id))));
+    expect(copy!.assignments).toHaveLength(4);
+    expect(copy!.children.flatMap((child) => child.orderIds)).toHaveLength(3);
+    expect(copy!.children.every((child) => child.driverId === null)).toBe(true);
+    const copiedRoutes = await prisma.routePlan.findMany({ where: { id: { in: copy!.children.map((child) => child.routePlanId!) } } });
+    expect(copiedRoutes.every((route) => route.driverId === null && route.vehicleId === null)).toBe(true);
+    expect(copiedRoutes.every((route) => !JSON.stringify(route.constraints).includes('2026-09-10T13:00'))).toBe(true);
+    expect(await service.getGrouping({ appId, groupingId: grouping.id, shopDomain })).toEqual(source);
+    expect(await prisma.routePlan.findMany({ where: { id: { in: sourceRoutes.map((route) => route.id) } } })).toEqual(sourceRoutes);
+    const reference = await service.copyGrouping({ actor: 'integration', appId, expectedUpdatedAt: source!.updatedAt,
+      groupingId: source!.id, mode: 'REFERENCE', shopDomain });
+    expect(reference!.children).toHaveLength(0);
+    expect(reference!.assignments.map((assignment) => assignment.orderId))
+      .toEqual(source!.assignments.map((assignment) => assignment.orderId));
+    const boundSourceRoute = source!.children.find((child) => child.orderIds.length > 0)!;
+    const sourceChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+      where: { groupingId: source!.id, routePlanId: boundSourceRoute.routePlanId, status: 'CURRENT' }
+    });
+    await expect(prisma.$transaction((tx) => rebindCurrentOrdersToRouteVersion(tx, {
+      groupingId: reference!.id, nextRouteVersionId: sourceChild.id,
+      orderIds: boundSourceRoute.orderIds, shopId
+    }))).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+    expect(await service.getGrouping({ appId, groupingId: grouping.id, shopDomain })).toEqual(source);
+    const legacy = await createGrouping('legacy without children', [orders[3]!.id]);
+    const legacyCopy = await service.copyGrouping({ actor: 'integration', appId,
+      expectedUpdatedAt: legacy.updatedAt, groupingId: legacy.id, mode: 'VIRTUAL', shopDomain });
+    expect(legacyCopy!.children).toHaveLength(0);
+    expect(legacyCopy!.assignments).toHaveLength(1);
+  });
+
+  test('Copy failure rolls back its group, virtual orders, inventory and child routes', async () => {
+    const orders = await seedOrders(2);
+    const group = await createGrouping('Copy rollback source', orders.map(({ id }) => id));
+    const source = await service.saveDraft({ appId, groupingId: group.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [draftRoute('Copy rollback child', orders.map(({ id }) => id))] });
+    const counts = async () => Promise.all([
+      prisma.routeGrouping.count({ where: { shopId } }), prisma.order.count({ where: { shopId } }),
+      prisma.inventory.count({ where: { shopId } }), prisma.routePlan.count({ where: { shopId } })
+    ]);
+    const before = await counts();
+    await prisma.$executeRawUnsafe(`CREATE FUNCTION kfood_copy_fixture_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.name = 'Copy rollback child' THEN RAISE EXCEPTION 'fixture copy failure'; END IF; RETURN NEW; END $$`);
+    await prisma.$executeRawUnsafe(`CREATE TRIGGER kfood_copy_fixture_failure BEFORE INSERT ON route_plans
+      FOR EACH ROW EXECUTE FUNCTION kfood_copy_fixture_failure()`);
+    try {
+      await expect(service.copyGrouping({ actor: 'integration', appId, expectedUpdatedAt: source!.updatedAt,
+        groupingId: source!.id, mode: 'VIRTUAL', shopDomain })).rejects.toThrow('fixture copy failure');
+    } finally {
+      await prisma.$executeRawUnsafe('DROP TRIGGER kfood_copy_fixture_failure ON route_plans');
+      await prisma.$executeRawUnsafe('DROP FUNCTION kfood_copy_fixture_failure()');
+    }
+    expect(await counts()).toEqual(before);
+    expect(await service.getGrouping({ appId, groupingId: source!.id, shopDomain })).toEqual(source);
+    const retry = await service.copyGrouping({ actor: 'integration', appId, expectedUpdatedAt: source!.updatedAt,
+      groupingId: source!.id, mode: 'VIRTUAL', shopDomain });
+    expect(retry!.children).toHaveLength(1);
   });
 
   function createGrouping(name: string, orderIds: string[]) {
