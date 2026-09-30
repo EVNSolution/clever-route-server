@@ -7418,6 +7418,24 @@ components:
               fromObservedAt: { type: string, format: date-time }
               toObservedAt: { type: string, format: date-time }
               reason: { type: string, enum: [GPS_GAP, IMPLAUSIBLE_JUMP, NO_MATCH] }
+              inferredTunnel:
+                type: object
+                description: Dotted-display candidate on a reviewed unbranched tunnel corridor; not observed GPS or confirmed travel.
+                required: [type, coordinates, corridorId, fromObservedAt, toObservedAt, source]
+                properties:
+                  type: { type: string, enum: [LineString] }
+                  coordinates:
+                    type: array
+                    items:
+                      type: array
+                      minItems: 2
+                      maxItems: 2
+                      items: { type: number }
+                  corridorId: { type: string }
+                  fromObservedAt: { type: string, format: date-time }
+                  toObservedAt: { type: string, format: date-time }
+                  source: { type: string, enum: [CURATED_OSM_TUNNEL_CORRIDOR] }
+                additionalProperties: false
             additionalProperties: false
         sourceSampleCount: { type: integer, minimum: 2 }
       additionalProperties: false
