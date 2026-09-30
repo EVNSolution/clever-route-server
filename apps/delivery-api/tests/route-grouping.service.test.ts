@@ -332,6 +332,24 @@ describe('route grouping contracts', () => {
     expect(lockedTx.routeGrouping.create).toHaveBeenCalledOnce();
   });
 
+  test.each(['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED', 'EN_ROUTE'] as const)('Virtual and standalone Copy preserve terminal outcomes but reset active execution (%s)', async (status) => {
+    const source = copySourceFixture('SHOPIFY');
+    source.orders[0]!.deliveryStop.status = status;
+    const tx = copyTransactionHarness(source);
+    tx.order.create.mockResolvedValue({ deliveryStops: [{ id: 'stop-virtual' }], id: 'order-virtual' });
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+    vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-copy' } as never);
+    await service.copyGrouping({ actor: 'admin', expectedUpdatedAt: source.updatedAt.toISOString(), groupingId: source.id, mode: 'VIRTUAL', shopDomain: 'tenant.example' });
+    const expected = status === 'EN_ROUTE' ? 'PENDING' : status;
+    expect(tx.order.create.mock.calls[0]?.[0]).toMatchObject({ data: { deliveryStops: { create: { status: expected } } } });
+    expect(source.orders[0]!.deliveryStop.status).toBe(status);
+
+    const standaloneTx = standaloneCopyTransactionHarness({}, status);
+    const standaloneService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof standaloneTx) => unknown) => operation(standaloneTx)) } as never, new FakeDriverPushProvider());
+    await standaloneService.copyStandaloneRoutePlan({ actor: 'admin', expectedRoutePlanUpdatedAt: '2026-09-09T12:00:00.000Z', routePlanId: 'route-source', shopDomain: 'tenant.example' });
+    expect(standaloneTx.order.create.mock.calls[0]?.[0]).toMatchObject({ data: { deliveryStops: { create: { status: expected } } } });
+  });
+
   test('VIRTUAL copy creates independent CUSTOM ids with normalized navigation fields only', async () => {
     const source = copySourceFixture('SHOPIFY');
     const tx = copyTransactionHarness(source);
@@ -2325,7 +2343,7 @@ function standaloneCopyTransactionHarness(lockedOverrides: Partial<{
   currentRouteVersionId: string | null;
   status: string;
   updatedAt: Date;
-}> = {}) {
+}> = {}, sourceStopStatus = 'PENDING') {
   const source = {
     constraints: {
       departureTime: '08:30',
@@ -2406,6 +2424,7 @@ function standaloneCopyTransactionHarness(lockedOverrides: Partial<{
         province: 'ON',
         recipientName: 'Receiving',
         serviceMinutes: 12,
+        status: sourceStopStatus,
         timeWindowEnd: new Date('2026-09-09T16:00:00.000Z'),
         timeWindowStart: new Date('2026-09-09T14:00:00.000Z')
       },

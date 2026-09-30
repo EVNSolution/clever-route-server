@@ -1715,6 +1715,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           throw new RoutePlanStopUpdateInvalidError('Grouped route membership snapshot is malformed.');
         }
         await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: currentGroupingChild.id,
           driverId: currentGroupingChild.driverId,
           groupingId: currentGroupingChild.groupingId,

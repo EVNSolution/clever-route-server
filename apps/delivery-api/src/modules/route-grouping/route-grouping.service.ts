@@ -1,6 +1,6 @@
 import { assertRouteDispatchOwnership, claimRouteExecutionProjection, hasDispatchReservation, withoutDispatchReservation } from '../route-plans/route-execution-ownership.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { DriverEventType, type DriverRouteNotificationStatus, type Prisma, type PrismaClient } from '@prisma/client';
+import { DriverEventType, type DeliveryStopStatus, type DriverRouteNotificationStatus, type Prisma, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type {
   DriverPushProvider,
@@ -309,6 +309,7 @@ export async function replaceCurrentRouteGroupingChildVersion(
     groupingVersionId: string;
     notificationStatus: DriverRouteNotificationStatus;
     orderIds: string[];
+    planning?: boolean;
     publishedAt: Date | null;
     routePlanId: string | null;
     shopId: string;
@@ -342,7 +343,7 @@ export async function replaceCurrentRouteGroupingChildVersion(
   await rebindCurrentOrdersToRouteVersion(prisma, {
     groupingId: input.groupingId,
     nextRouteVersionId: nextChild.id,
-    planning: true,
+    planning: input.planning ?? false,
     orderIds: input.orderIds,
     shopId: input.shopId
   });
@@ -1322,6 +1323,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
         const snapshot = readChildSnapshot(child.snapshot);
         await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: child.id,
           driverId: lockedRoutePlan.driverId ?? child.driverId,
           groupingId: group.id,
@@ -1593,6 +1595,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             routeDetailsChanged
           });
           const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
+            planning: true,
             currentChildId: targetChild.id,
             driverId,
             groupingId: group.id,
@@ -1831,6 +1834,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routeDetailsChanged
         });
         const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: targetChild.id,
           driverId,
           groupingId: group.id,
@@ -2260,6 +2264,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: candidate.routePlanId } });
           await createChildRouteGeometryCache(tx, candidate.routePlanId, authoritativeCandidate);
           await replaceCurrentRouteGroupingChildVersion(tx, {
+            planning: true,
             currentChildId: currentChild.id,
             driverId: authoritativeCandidate.driverId,
             groupingId: loaded.id,
@@ -3461,6 +3466,7 @@ async function invalidateCustomStopChildRoutes(tx: Tx, groupingId: string, deliv
     await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
     const snapshot = readChildSnapshot(child.snapshot);
     await replaceCurrentRouteGroupingChildVersion(tx, {
+      planning: true,
       currentChildId: child.id,
       driverId: lockedRoutePlan.driverId ?? child.driverId,
       groupingId: loaded.id,
@@ -3687,6 +3693,11 @@ async function lockRouteGroupingCopySource(tx: Tx, groupingId: string, shopId: s
   `;
 }
 
+function virtualCopyStopStatus(status: DeliveryStopStatus): DeliveryStopStatus {
+  return status === 'DELIVERED' || status === 'FAILED' || status === 'SKIPPED' || status === 'CANCELLED'
+    ? status : 'PENDING';
+}
+
 async function createVirtualCopyMemberships(
   tx: Tx,
   source: LoadedGrouping,
@@ -3730,6 +3741,7 @@ async function createVirtualCopyMemberships(
             province: sourceStop.province,
             recipientName: sourceStop.recipientName,
             serviceMinutes: sourceStop.serviceMinutes,
+            status: virtualCopyStopStatus(sourceStop.status),
             timeWindowEnd: sourceStop.timeWindowEnd,
             timeWindowStart: sourceStop.timeWindowStart
           }
@@ -3810,7 +3822,7 @@ async function createStandaloneVirtualOrderCopy(
           province: sourceStop.province,
           recipientName: sourceStop.recipientName,
           serviceMinutes: sourceStop.serviceMinutes,
-          status: 'PENDING',
+          status: virtualCopyStopStatus(sourceStop.status),
           timeWindowEnd: sourceStop.timeWindowEnd,
           timeWindowStart: sourceStop.timeWindowStart
         }
@@ -4466,6 +4478,7 @@ async function appendGroupingOrdersToChildRoute(
   });
   await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
   await replaceCurrentRouteGroupingChildVersion(tx, {
+    planning: true,
     currentChildId: targetChild.id,
     driverId: lockedRoutePlan.driverId ?? targetChild.driverId,
     groupingId: group.id,

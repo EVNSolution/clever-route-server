@@ -998,6 +998,26 @@ describeDatabase('route grouping save database regressions', () => {
     expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: orders[0]!.deliveryStopId } })).status).toBe('DELIVERED');
   });
 
+  test('Virtual Copy retains terminal outcomes and resets only active execution on its independent identities', async () => {
+    const orders = await seedOrders(5);
+    const sourceGroup = await materializedGroup('Virtual terminal source', orders.map((order) => order.id));
+    const statuses = ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED', 'EN_ROUTE'] as const;
+    for (const [index, status] of statuses.entries()) {
+      await prisma.deliveryStop.update({ where: { id: orders[index]!.deliveryStopId }, data: { status } });
+    }
+    const source = await service.getGrouping({ appId, groupingId: sourceGroup.id, shopDomain });
+    const copy = await service.copyGrouping({ actor: 'integration', appId, groupingId: sourceGroup.id,
+      expectedUpdatedAt: source!.updatedAt, mode: 'VIRTUAL', shopDomain });
+    const cloned = await prisma.order.findMany({ where: { ownedRouteGroupingId: copy!.id }, include: { deliveryStops: true } });
+    for (const [index, status] of statuses.entries()) {
+      const original = await prisma.order.findUniqueOrThrow({ where: { id: orders[index]!.id } });
+      const duplicate = cloned.find((order) => order.name === original.name)!;
+      expect(duplicate.id).not.toBe(orders[index]!.id);
+      expect(duplicate.deliveryStops[0]!.status).toBe(status === 'EN_ROUTE' ? 'PENDING' : status);
+    }
+    expect(await service.getGrouping({ appId, groupingId: sourceGroup.id, shopDomain })).toEqual(source);
+  });
+
   test('Reference planning remains available while the source is in progress; Dispatch still rejects its active orders', async () => {
     const order = await seedOrder();
     const source = await materializedGroup('Active source', [order.id]);
