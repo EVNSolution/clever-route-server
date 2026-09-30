@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { safeErrorCode } from '../security/safe-telemetry-redaction.js';
-import { assertRoutePlanExecutionOwnership, RouteExecutionConflictError } from '../route-plans/route-execution-ownership.js';
+import { assertRouteDispatchOwnership, claimRouteExecutionProjection, RouteExecutionConflictError } from '../route-plans/route-execution-ownership.js';
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
 import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tracking.geometry.js';
@@ -168,8 +168,8 @@ export class DriverEventRouteNotInProgressError extends Error {
 }
 
 export class DriverEventExecutionConflictError extends RouteExecutionConflictError {
-  constructor(conflictingRoutePlanId: string, deliveryStopId: string) {
-    super(conflictingRoutePlanId, deliveryStopId);
+  constructor(conflictingRoutePlanId: string, deliveryStopId: string, message?: string) {
+    super(conflictingRoutePlanId, deliveryStopId, message);
     this.name = 'DriverEventExecutionConflictError';
   }
 }
@@ -1398,6 +1398,7 @@ async function applyDriverEventStateTransition(
 
   if (input.eventType === 'ROUTE_STARTED') {
     const routePlanId = requireRoutePlanId(input);
+    await claimRouteExecutionProjection(prisma, { routePlanId, shopId });
     await prisma.routePlan.updateMany({
       data: { status: 'IN_PROGRESS' },
       where: {
@@ -1931,11 +1932,18 @@ async function requireStartableOwnedRoutePlan(
   if (routePlan === null) {
     throw new DriverEventScopeError('Completed or unavailable routes cannot be started');
   }
-  await assertRoutePlanExecutionOwnership(prisma, {
-    createConflictError: (conflict) => new DriverEventExecutionConflictError(conflict.routePlanId, conflict.deliveryStopId),
-    routePlanId: input.routePlanId,
-    shopId: input.shopId
-  });
+  const stops = await prisma.routePlanStop.findMany({ select: { deliveryStopId: true }, where: { routePlanId: input.routePlanId } });
+  try {
+    await assertRouteDispatchOwnership(prisma, {
+      deliveryStopIds: stops.map((stop) => stop.deliveryStopId),
+      routePlanId: input.routePlanId, shopId: input.shopId
+    });
+  } catch (error) {
+    if (error instanceof RouteExecutionConflictError) {
+      throw new DriverEventExecutionConflictError(error.conflictingRoutePlanId, error.deliveryStopId, error.message);
+    }
+    throw error;
+  }
 }
 
 async function requireOwnedRoutePlan(

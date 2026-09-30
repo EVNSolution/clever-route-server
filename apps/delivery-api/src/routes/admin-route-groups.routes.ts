@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
 
 import {
   logRejectedAdminSessionToken,
@@ -605,16 +606,27 @@ function readCreateGroupingPayload(value: unknown): {
   dateRangeEnd?: string;
   dateRangeStart?: string;
   depot?: RoutePlanDepotInput;
+  initialRoute?: { requestId: string };
   name: string;
   orderIds: string[];
   planDate?: string;
 } {
   const object = requireObject(value);
+  let initialRoute: { requestId: string } | undefined;
+  if (object.initialRoute !== undefined) {
+    const initial = requireObject(object.initialRoute);
+    const requestId = requireNonEmptyString(initial.requestId).toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
+      throw new BadRouteGroupPayloadError('initialRoute.requestId must be a UUID v4');
+    }
+    initialRoute = { requestId };
+  }
   return {
     ...optionalDateField(object, 'planDate'),
     ...optionalDateField(object, 'dateRangeStart'),
     ...optionalDateField(object, 'dateRangeEnd'),
     ...(object.depot === undefined ? {} : { depot: readDepot(object.depot) }),
+    ...(initialRoute === undefined ? {} : { initialRoute }),
     name: requireNonEmptyString(object.name),
     orderIds: readStringArray(object.orderIds)
   };
@@ -931,6 +943,7 @@ function readGenerateChildRoutesPayload(value: unknown): { confirmRisk?: boolean
 }
 
 function sendRouteGroupingError(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof RouteExecutionConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
   if (error instanceof CustomOrderReferenceCopyNotAllowedError) return reply.code(400).send(errorResponse(error.code, error.message));
   if (error instanceof RouteGroupingBranchLockConflictError) return reply.code(409).send({ data: { orderIds: error.orderIds }, error: { code: error.code, message: error.message } });
   if (error instanceof RouteGroupingCopyLockedError) return reply.code(409).send({ data: { orderIds: error.orderIds }, error: { code: error.code, message: error.message } });
@@ -946,6 +959,7 @@ function sendRouteGroupingError(reply: FastifyReply, error: unknown): FastifyRep
 }
 
 function getRouteGroupingErrorLogCode(error: unknown): string {
+  if (error instanceof RouteExecutionConflictError) return error.code;
   if (error instanceof CustomOrderReferenceCopyNotAllowedError) return error.code;
   if (error instanceof RouteGroupingBranchLockConflictError) return error.code;
   if (error instanceof RouteGroupingCopyLockedError) return error.code;

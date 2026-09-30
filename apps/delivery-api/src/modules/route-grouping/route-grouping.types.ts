@@ -176,6 +176,7 @@ export type CreateRouteGroupingInput = {
   dateRangeEnd?: string;
   dateRangeStart?: string;
   depot?: RoutePlanDepotInput | undefined;
+  initialRoute?: { requestId: string };
   name: string;
   orderIds: string[];
   planDate?: string;

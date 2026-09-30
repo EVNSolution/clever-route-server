@@ -1953,6 +1953,9 @@ function createPrismaHarness(input: {
   Object.assign(prisma, {
     $queryRaw: vi.fn((query: unknown) => {
       const text = sqlText(query);
+      if (text.includes('SELECT DISTINCT s.')) {
+        return Promise.resolve(input.conflictingRoutePlanStop === undefined || input.conflictingRoutePlanStop === null ? [] : [{ ...input.conflictingRoutePlanStop, orderId: 'order-id', orderName: '#1001', routeName: 'Other route' }]);
+      }
       if (text.includes('information_schema.columns')) {
         operations.push(text.includes("table_name = 'driver_events'")
           ? 'schema:driver_events'

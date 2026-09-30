@@ -3099,6 +3099,9 @@ function registerRouteOpsAppRoutes(
             });
             return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
           } catch (error) {
+            if (error instanceof RouteExecutionConflictError) {
+              throw new WooCommerceOnboardingError(error.code, error.message, 409);
+            }
             if (error instanceof RoutePlanPublishInvalidError) {
               throw new WooCommerceOnboardingError(
                 error.code,
@@ -4870,6 +4873,9 @@ function requireRouteGroupingService(
 }
 
 function toRouteGroupingHttpError(error: unknown): Error {
+  if (error instanceof RouteExecutionConflictError) {
+    return createRouteOpsHttpError(error.code, error.message, 409);
+  }
   if (error instanceof RouteGroupingBranchLockConflictError) {
     return createRouteOpsHttpError(error.code, error.message, 409);
   }

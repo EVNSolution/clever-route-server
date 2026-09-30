@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
+import { RouteExecutionConflictError } from '../src/modules/route-plans/route-execution-ownership.js';
 import { buildApp } from '../src/app.js';
 import { RouteOptimizationJobActiveError } from '../src/modules/route-plans/route-optimization-job.types.js';
 import {
@@ -78,6 +79,20 @@ describe('Admin route plan routes', () => {
     } finally {
       await app.close();
     }
+  });
+
+  test('returns the safe conflict explanation without publishing or notifying any part of the route', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    const message = '배차할 수 없습니다. 주문 #1001 (경로: Friday North)이 이미 배차되어 있습니다.';
+    publishRoutePlan.mockRejectedValueOnce(new RouteExecutionConflictError('other-route', 'stop-1', message));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+    try {
+      const response = await app.inject({ headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever' },
+        method: 'POST', url: '/admin/route-plans/route-plan-id/publish' });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ data: null, error: { code: 'ROUTE_EXECUTION_CONFLICT', message } });
+      expect(recordChildRoutePublished).not.toHaveBeenCalled();
+    } finally { await app.close(); }
   });
 
   test('reports driver notification failure without disguising it as sent', async () => {

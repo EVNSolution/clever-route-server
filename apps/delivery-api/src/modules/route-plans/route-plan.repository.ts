@@ -1,3 +1,4 @@
+import { assertRouteDispatchOwnership, claimRouteExecutionProjection } from './route-execution-ownership.js';
 import { DriverEventType, Prisma, type PrismaClient } from '@prisma/client';
 import {
   ITEM_REVIEW_REASONS,
@@ -642,6 +643,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
+      await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${input.routePlanId}::uuid AND "shopId" = ${shop.id}::uuid FOR UPDATE`;
       const routePlan = (await tx.routePlan.findFirst({
         include: routePlanInclude(),
         where: {
@@ -653,16 +655,23 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
-      if (routePlan.status === 'CANCELLED' || routePlan.status === 'INCOMPLETE') {
+      if (routePlan.status === 'CANCELLED' || routePlan.status === 'INCOMPLETE' || routePlan.status === 'COMPLETED') {
         throw new RoutePlanPublishInvalidError('Cancelled or incomplete routes cannot be published to drivers.');
       }
 
-      if (isRouteReadyStatus(routePlan.status) && routePlan.status !== 'READY') {
-        await tx.routePlan.update({
-          data: { status: 'READY' },
-          where: { id: routePlan.id }
-        });
-      }
+      await assertRouteDispatchOwnership(tx, {
+        deliveryStopIds: (routePlan.routeStops ?? []).map((stop) => stop.deliveryStopId),
+        routePlanId: routePlan.id, shopId: shop.id
+      });
+      await claimRouteExecutionProjection(tx, { routePlanId: routePlan.id, shopId: shop.id });
+      const constraints = toJson(routePlan.constraints ?? {}) as Prisma.InputJsonObject;
+      await tx.routePlan.update({
+        data: {
+          constraints: { ...constraints, cleverDispatchReservedAt: constraints.cleverDispatchReservedAt ?? new Date().toISOString() },
+          ...(isRouteReadyStatus(routePlan.status) ? { status: 'READY' as const } : {})
+        },
+        where: { id: routePlan.id }
+      });
 
       return true;
     });
@@ -1667,10 +1676,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
       const orderedOrders = normalizedStops.map((stop) => ordersByGid.get(stop.shopifyOrderGid)!);
       if (currentGroupingChild !== null) {
-        const boundOrderIds = (await tx.order.findMany({
-          select: { id: true },
-          where: { currentRouteVersionId: currentGroupingChild.id }
-        })).map(({ id }) => id);
+        const boundOrderIds = (routePlan.routeStops ?? []).map((stop) => stop.deliveryStop.orderId);
         const nextOrderIds = orderedOrders.map((order) => order.id);
         if (!sameUniqueStringSet(boundOrderIds, nextOrderIds)) {
           throw new RoutePlanStopUpdateInvalidError('Grouped route optimization cannot add or remove route membership.');
@@ -1709,6 +1715,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           throw new RoutePlanStopUpdateInvalidError('Grouped route membership snapshot is malformed.');
         }
         await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: currentGroupingChild.id,
           driverId: currentGroupingChild.driverId,
           groupingId: currentGroupingChild.groupingId,

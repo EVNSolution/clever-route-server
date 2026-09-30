@@ -229,6 +229,9 @@ export function registerAdminRoutePlanRoutes(
           error: null
         });
       } catch (error) {
+        if (error instanceof RouteExecutionConflictError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
         if (error instanceof RoutePlanPublishInvalidError) {
           return reply.code(400).send(errorResponse(error.code, error.message));
         }
