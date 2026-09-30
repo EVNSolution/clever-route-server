@@ -8,6 +8,11 @@ export const HONGJIMUN_JEONGNEUNG_EASTBOUND = {
   westPortalIndex: 11,
   eastPortalIndex: 38,
   reviewedEndIndex: 48,
+  decisionIndex: null,
+  decisionMarginMeters: 0,
+  entryApproachMeters: 120,
+  maxRawAnchorMeters: 50,
+  maxExitRawCorridorMeters: 50,
   coordinates: [
     [126.9511256, 37.5954462],
     [126.9515004, 37.5956165],
@@ -86,3 +91,49 @@ export const HONGJIMUN_JEONGNEUNG_EASTBOUND = {
     [127.0090720, 37.6056715],
   ] as Array<[number, number]>,
 } as const;
+
+// Directed Seoul Ring Expressway snapshot through the Suam and Suri tunnels.
+// © OpenStreetMap contributors, ODbL 1.0. Checked 2026-09-30.
+// Ways: 86163369, 50209382, 50209387, 546511392, 546511391,
+// 361041149, 58794137, 58794131, 58794139 (openstreetmap.org/way/<id>).
+// The Sanbon IC motorway link diverges at index 17. A candidate needs an
+// observed exit on the mainline beyond that decision and later mainline travel.
+export const SUAM_SURI_EASTBOUND = {
+  id: 'seoul-suam-suri-eastbound',
+  westPortalIndex: 8,
+  eastPortalIndex: 14,
+  reviewedEndIndex: 20,
+  decisionIndex: 17,
+  decisionMarginMeters: 100,
+  entryApproachMeters: 450,
+  maxRawAnchorMeters: 75,
+  maxExitRawCorridorMeters: 15,
+  coordinates: [
+    [126.8778841, 37.3688895],
+    [126.8783033, 37.3689671],
+    [126.8792648, 37.3691156],
+    [126.8802450, 37.3692304],
+    [126.8811677, 37.3693097],
+    [126.8820994, 37.3693881],
+    [126.8836404, 37.3695030],
+    [126.8848502, 37.3696286],
+    [126.8862861, 37.3698251],
+    [126.8998493, 37.3716324],
+    [126.9022609, 37.3719514],
+    [126.9036956, 37.3721412],
+    [126.9053488, 37.3723579],
+    [126.9057744, 37.3724170],
+    [126.9264516, 37.3751596],
+    [126.9274754, 37.3752923],
+    [126.9303258, 37.3756666],
+    [126.9321945, 37.3759068],
+    [126.9334181, 37.3760601],
+    [126.9346949, 37.3762519],
+    [126.9355957, 37.3763828],
+  ] as Array<[number, number]>,
+} as const;
+
+export const REVIEWED_TUNNEL_CORRIDORS = [
+  HONGJIMUN_JEONGNEUNG_EASTBOUND,
+  SUAM_SURI_EASTBOUND,
+] as const;
