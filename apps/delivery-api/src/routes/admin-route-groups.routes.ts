@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
 
 import {
   logRejectedAdminSessionToken,
@@ -942,6 +943,7 @@ function readGenerateChildRoutesPayload(value: unknown): { confirmRisk?: boolean
 }
 
 function sendRouteGroupingError(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof RouteExecutionConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
   if (error instanceof CustomOrderReferenceCopyNotAllowedError) return reply.code(400).send(errorResponse(error.code, error.message));
   if (error instanceof RouteGroupingBranchLockConflictError) return reply.code(409).send({ data: { orderIds: error.orderIds }, error: { code: error.code, message: error.message } });
   if (error instanceof RouteGroupingCopyLockedError) return reply.code(409).send({ data: { orderIds: error.orderIds }, error: { code: error.code, message: error.message } });
@@ -957,6 +959,7 @@ function sendRouteGroupingError(reply: FastifyReply, error: unknown): FastifyRep
 }
 
 function getRouteGroupingErrorLogCode(error: unknown): string {
+  if (error instanceof RouteExecutionConflictError) return error.code;
   if (error instanceof CustomOrderReferenceCopyNotAllowedError) return error.code;
   if (error instanceof RouteGroupingBranchLockConflictError) return error.code;
   if (error instanceof RouteGroupingCopyLockedError) return error.code;

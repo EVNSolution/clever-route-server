@@ -989,7 +989,7 @@ describeDatabase('route grouping save database regressions', () => {
     const copiedRoute = copy!.children[0]!;
     const split = await service.saveDraft({ appId, groupingId: copy!.id, mode: 'MANUAL_ORDER', shopDomain,
       routes: [{ ...draftRoute('copied existing', [orders[0]!.id]), routePlanId: copiedRoute.routePlanId,
-        routeKey: `route:${copiedRoute.routePlanId}`, tempId: undefined }, draftRoute('copied split', [orders[1]!.id])] });
+        routeKey: `route:${copiedRoute.routePlanId}` }, draftRoute('copied split', [orders[1]!.id])] });
     expect(split!.children.find((child) => child.routePlanId === copiedRoute.routePlanId)?.orderIds).toEqual([orders[0]!.id]);
     expect(split!.children.filter((child) => child.routePlanId !== copiedRoute.routePlanId).map((child) => child.orderIds)).toEqual([[orders[1]!.id]]);
     expect(await service.getGrouping({ appId, groupingId: copy!.id, shopDomain })).toEqual(split);
@@ -1009,7 +1009,7 @@ describeDatabase('route grouping save database regressions', () => {
     expect(copy!.children[0]!.orderIds).toEqual([order.id]);
     const saved = await service.saveDraft({ appId, groupingId: copy!.id, mode: 'MANUAL_ORDER', shopDomain,
       routes: [{ ...draftRoute('Saved while active', [order.id]), routePlanId: copy!.children[0]!.routePlanId,
-        routeKey: `route:${copy!.children[0]!.routePlanId}`, tempId: undefined }] });
+        routeKey: `route:${copy!.children[0]!.routePlanId}` }] });
     await expect(routePlans.publishRoutePlan({ appId, routePlanId: saved!.children[0]!.routePlanId!, shopDomain }))
       .rejects.toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
     expect(await service.getGrouping({ appId, groupingId: source.id, shopDomain })).toEqual(activeSource);

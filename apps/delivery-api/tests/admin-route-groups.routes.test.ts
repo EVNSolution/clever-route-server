@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { RouteExecutionConflictError } from '../src/modules/route-plans/route-execution-ownership.js';
 import { CustomOrderReferenceCopyNotAllowedError, RouteGroupingBranchLockConflictError, RouteGroupingCopyLockedError, RouteGroupingDeleteBlockedError } from '../src/modules/route-grouping/route-grouping.types.js';
 import type { AdminRouteGroupDependencies } from '../src/routes/admin-route-groups.routes.js';
 
@@ -765,6 +766,25 @@ describe('Admin route group routes', () => {
         shopDomain: 'example.myshopify.com'
       });
       expect(generateChildRoutes).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns an execution conflict in the existing draft Save error envelope', async () => {
+    const { dependencies, saveDraft } = createDependencyHarness();
+    const message = '이미 배차되었거나 배송 중인 주문: #fixture (경로: Fixture route).';
+    saveDraft.mockRejectedValueOnce(new RouteExecutionConflictError('fixture-route', 'fixture-stop', message));
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'PATCH',
+        payload: { mode: 'MANUAL_ORDER', routes: [{ orderIds: ['order-1'], routePlanId: 'route-plan-1' }] },
+        url: '/admin/route-groups/route-group-id/draft'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ data: null, error: { code: 'ROUTE_EXECUTION_CONFLICT', message } });
+      expect(saveDraft).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }

@@ -4873,6 +4873,9 @@ function requireRouteGroupingService(
 }
 
 function toRouteGroupingHttpError(error: unknown): Error {
+  if (error instanceof RouteExecutionConflictError) {
+    return createRouteOpsHttpError(error.code, error.message, 409);
+  }
   if (error instanceof RouteGroupingBranchLockConflictError) {
     return createRouteOpsHttpError(error.code, error.message, 409);
   }
