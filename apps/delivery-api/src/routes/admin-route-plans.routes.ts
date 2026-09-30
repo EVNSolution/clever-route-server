@@ -52,8 +52,10 @@ import type {
   RouteTrackingStreamHub
 } from '../modules/route-tracking/route-tracking.stream.js';
 import type { PrismaRouteOperationalStateService, RouteOperationalStateV1 } from '../modules/route-tracking/route-operational-state.service.js';
+import { OriginalObservationsError, type OriginalObservationsService } from '../modules/route-tracking/original-observations.service.js';
 
 export type AdminRoutePlanDependencies = {
+  originalObservationsService?: OriginalObservationsService;
   operationalStateService?: Pick<PrismaRouteOperationalStateService, 'get' | 'getMany'>;
   routeGroupingService?: Pick<RouteGroupingService, 'recordChildRoutePublished'>;
   routePlanService: RoutePlanService;
@@ -66,6 +68,39 @@ export function registerAdminRoutePlanRoutes(
   app: FastifyInstance,
   dependencies: AdminRoutePlanDependencies
 ): void {
+  app.get<{ Params: { routePlanId: string }; Querystring: unknown }>(
+    '/admin/route-plans/:routePlanId/tracking/original-observations',
+    async (request, reply) => {
+      reply.header('Cache-Control', 'no-store');
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log, surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.originalObservationsService === undefined) {
+        return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Original observations are unavailable'));
+      }
+      try {
+        const data = await dependencies.originalObservationsService.get({
+          appId: authenticated.appId, shopDomain: authenticated.shopDomain,
+          routePlanId: request.params.routePlanId, query: request.query
+        });
+        // Access facts only: no coordinates, cursor, request window, raw source IDs or payload.
+        request.log.info({ event: 'original_observations_read', outcome: data === null ? 'NOT_FOUND' : 'ALLOWED',
+          returned: data?.page.returned ?? 0 }, 'Original observation access');
+        if (data === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+        return reply.code(200).send({ data, error: null });
+      } catch (error) {
+        if (error instanceof OriginalObservationsError) {
+          const status = error.code === 'ASSIGNMENT_CHANGED' ? 409 : error.code === 'READ_TIMEOUT' ? 503 : 400;
+          return reply.code(status).send(errorResponse(error.code, originalObservationsErrorMessage(error.code)));
+        }
+        throw error;
+      }
+    }
+  );
+
   app.post<{ Body: unknown }>('/admin/route-plans', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
@@ -835,6 +870,15 @@ export function registerAdminRoutePlanRoutes(
       }
     }
   );
+}
+
+function originalObservationsErrorMessage(code: OriginalObservationsError['code']): string {
+  switch (code) {
+    case 'INVALID_QUERY': return 'Use a valid route UUID, UTC from/to window of at most 24 hours and limit 1..500.';
+    case 'INVALID_CURSOR': return 'Invalid or expired cursor; restart the original observation read.';
+    case 'ASSIGNMENT_CHANGED': return 'Route assignment changed; restart the original observation read.';
+    case 'READ_TIMEOUT': return 'Original observation read timed out; retry with a smaller window.';
+  }
 }
 
 async function routePlanExistsForAdmin(

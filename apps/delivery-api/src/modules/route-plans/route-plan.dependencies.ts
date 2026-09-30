@@ -16,6 +16,7 @@ import { PrismaRoutePlanRepository } from './route-plan.repository.js';
 import { RoutePlanAdminService } from './route-plan.service.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
 import { PrismaRouteTrackingService } from '../route-tracking/route-tracking.service.js';
+import { PrismaOriginalObservationsService } from '../route-tracking/original-observations.service.js';
 import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
 import { PrismaDriverSyncHealthService } from '../driver/driver-sync-health.service.js';
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
@@ -52,6 +53,9 @@ export function loadAdminRoutePlanDependencies(input: {
     ),
     ...(input.routeGroupingService === undefined ? {} : { routeGroupingService: input.routeGroupingService }),
     routeTrackingService: new PrismaRouteTrackingService(input.prisma),
+    originalObservationsService: new PrismaOriginalObservationsService(
+      input.prisma, new Map(appCredentials.map(({ appId, clientSecret }) => [appId, clientSecret]))
+    ),
     operationalStateService: new PrismaRouteOperationalStateService(input.prisma, syncHealthService, input.operationalAlertRepository),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })

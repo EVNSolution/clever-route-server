@@ -347,6 +347,9 @@ function serializeRequestForLog(request: FastifyRequest): {
 
 export function redactSensitiveUrl(value: string): string {
   const path = pathname(value);
+  if (/^\/admin\/route-plans\/[^/]+\/tracking\/original-observations\/?$/u.test(path)) {
+    return '/admin/route-plans/[redacted]/tracking/original-observations';
+  }
   if (dsvDispatchLoadListPaths.has(path) || path === dsvDispatchDiagnosticPath) return path;
   if (isDsvPasswordResetPath(path)) return path;
   if (value.startsWith('/driver/route-map-preview/')) {
