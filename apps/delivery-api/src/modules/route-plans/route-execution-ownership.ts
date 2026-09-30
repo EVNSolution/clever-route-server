@@ -63,6 +63,10 @@ export async function assertRouteDispatchOwnership(
       AND NOT EXISTS (SELECT 1 FROM driver_events e WHERE e."routePlanId" = r.id
         AND e."shopId" = r."shopId" AND e."eventType" = 'ROUTE_COMPLETED')
       AND (r.status = 'IN_PROGRESS' OR r.constraints->>'cleverDispatchReservedAt' IS NOT NULL
+        OR (EXISTS (SELECT 1 FROM driver_events e WHERE e."routePlanId" = r.id
+          AND e."shopId" = r."shopId" AND e."eventType" = 'ROUTE_STARTED')
+          AND NOT EXISTS (SELECT 1 FROM driver_events e WHERE e."routePlanId" = r.id
+            AND e."shopId" = r."shopId" AND e."eventType" = 'ROUTE_PAUSED'))
         OR EXISTS (SELECT 1 FROM route_grouping_child_versions c WHERE c."routePlanId" = r.id
           AND c."shopId" = r."shopId" AND c.status = 'CURRENT' AND c."supersededAt" IS NULL AND c."publishedAt" IS NOT NULL)
         OR EXISTS (SELECT 1 FROM driver_route_notification_attempts n WHERE n."routePlanId" = r.id

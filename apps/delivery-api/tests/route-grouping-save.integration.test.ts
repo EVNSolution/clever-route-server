@@ -1027,7 +1027,7 @@ describeDatabase('route grouping save database regressions', () => {
     };
     const results = await Promise.allSettled([dispatch(firstId), dispatch(secondId)]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-    const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+    const rejected = results.find((result) => result.status === 'rejected')!;
     expect(rejected.reason).toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
     const winner = results[0]!.status === 'fulfilled' ? firstId : secondId;
     const loser = winner === firstId ? secondId : firstId;
@@ -1071,6 +1071,49 @@ describeDatabase('route grouping save database regressions', () => {
     expect((starts.find((result) => result.status === 'rejected') as PromiseRejectedResult).reason)
       .toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
   }, 30_000);
+
+  test('legacy started events reserve execution until completion', async () => {
+    const order = await seedOrder();
+    const source = await materializedGroup('Legacy started route', [order.id]);
+    const target = await materializedGroup('Legacy overlapping plan', [order.id]);
+    const sourceId = source.children[0]!.routePlanId!;
+    const targetId = target.children[0]!.routePlanId!;
+    await prisma.driverEvent.create({ data: {
+      eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-09-10T12:00:00.000Z'),
+      payload: { source: 'legacy execution fixture' }, routePlanId: sourceId, shopId
+    } });
+    await expect(routePlans.publishRoutePlan({ appId, routePlanId: targetId, shopDomain }))
+      .rejects.toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+    await expect(startRoute(targetId)).rejects.toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+    await prisma.driverEvent.create({ data: {
+      eventType: 'ROUTE_COMPLETED', occurredAt: new Date('2026-09-10T13:00:00.000Z'),
+      payload: { source: 'legacy execution fixture' }, routePlanId: sourceId, shopId
+    } });
+    await expect(routePlans.publishRoutePlan({ appId, routePlanId: targetId, shopDomain })).resolves.toBeDefined();
+  });
+
+  test('adding a reserved order to an already dispatched route rejects the whole Save without changing either plan', async () => {
+    const orders = await seedOrders(2);
+    const source = await materializedGroup('Save reservation owner', [orders[0]!.id]);
+    const group = await createGrouping('Save reservation target', orders.map((order) => order.id));
+    const target = (await service.saveDraft({ appId, groupingId: group.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [draftRoute('Save reservation target', [orders[1]!.id])] }))!;
+    const sourceId = source.children[0]!.routePlanId!;
+    const targetId = target.children[0]!.routePlanId!;
+    await routePlans.publishRoutePlan({ appId, routePlanId: sourceId, shopDomain });
+    await routePlans.publishRoutePlan({ appId, routePlanId: targetId, shopDomain });
+    const sourceBefore = await service.getGrouping({ appId, groupingId: source.id, shopDomain });
+    const targetBefore = await service.getGrouping({ appId, groupingId: group.id, shopDomain });
+    const pointerBefore = await prisma.order.findUniqueOrThrow({ where: { id: orders[0]!.id } });
+    await expect(service.saveDraft({ appId, groupingId: group.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [{ ...draftRoute('Save reservation target', orders.map((order) => order.id)),
+        routeKey: `routePlan:${targetId}`, routePlanId: targetId }] }))
+      .rejects.toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+    expect(await service.getGrouping({ appId, groupingId: source.id, shopDomain })).toEqual(sourceBefore);
+    expect(await service.getGrouping({ appId, groupingId: group.id, shopDomain })).toEqual(targetBefore);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orders[0]!.id } })).currentRouteVersionId)
+      .toBe(pointerBefore.currentRouteVersionId);
+  });
 
   async function materializedGroup(name: string, orderIds: string[]) {
     const account = await prisma.driverAccount.create({ data: { phone: `execution-${randomUUID()}` } });
