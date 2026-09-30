@@ -311,10 +311,10 @@ describe('route grouping contracts', () => {
     });
     expect(tx.order.create).not.toHaveBeenCalled();
     expect(tx.routeGroupingVersion.create).toHaveBeenCalledOnce();
-    expect(tx.routePlan.create).not.toHaveBeenCalled();
+    expect(tx.routePlan.create).toHaveBeenCalledOnce();
   });
 
-  test('REFERENCE copy rejects CUSTOM membership and started route locks before creating a group', async () => {
+  test('REFERENCE copy rejects CUSTOM membership but permits planning from started routes before creating a group', async () => {
     const customSource = copySourceFixture('CUSTOM');
     const customTx = copyTransactionHarness(customSource);
     const customService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof customTx) => unknown) => operation(customTx)) } as never, new FakeDriverPushProvider());
@@ -326,9 +326,10 @@ describe('route grouping contracts', () => {
     const lockedTx = copyTransactionHarness(lockedSource);
     lockedTx.routePlanStop.findMany.mockResolvedValue([{ deliveryStopId: 'stop-source', routePlan: { driverEvents: [], status: 'IN_PROGRESS' } }]);
     const lockedService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof lockedTx) => unknown) => operation(lockedTx)) } as never, new FakeDriverPushProvider());
+    vi.spyOn(lockedService, 'getGrouping').mockResolvedValue({ id: 'group-copy' } as never);
     await expect(lockedService.copyGrouping({ actor: 'admin', expectedUpdatedAt: lockedSource.updatedAt.toISOString(), groupingId: lockedSource.id, mode: 'REFERENCE', shopDomain: 'tenant.example' }))
-      .rejects.toMatchObject({ code: 'ROUTE_GROUPING_COPY_LOCKED', orderIds: ['order-source'] });
-    expect(lockedTx.routeGrouping.create).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ id: 'group-copy' });
+    expect(lockedTx.routeGrouping.create).toHaveBeenCalledOnce();
   });
 
   test('VIRTUAL copy creates independent CUSTOM ids with normalized navigation fields only', async () => {
@@ -2300,18 +2301,22 @@ function copyTransactionHarness(source: ReturnType<typeof copySourceFixture>) {
     },
     order: {
       create: vi.fn().mockResolvedValue({ deliveryStops: [{ id: 'stop-virtual' }], id: 'order-virtual' }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       findMany: vi.fn((input: { where: { id: { in: string[] } } }) => Promise.resolve(
         input.where.id.in.map((id) => ({ id, orderItems: [] }))
       ))
     },
     routeGrouping: {
       create: vi.fn().mockResolvedValue({ id: 'group-copy' }),
-      findFirst: vi.fn().mockResolvedValue(source)
+      findFirst: vi.fn().mockResolvedValue(source),
+      findUnique: vi.fn().mockResolvedValue({ ...source, id: 'group-copy' })
     },
-    routeGroupingOrder: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    routeGroupingOrder: { createMany: vi.fn().mockResolvedValue({ count: 1 }), findMany: vi.fn().mockResolvedValue(source.orders), update: vi.fn().mockResolvedValue({}) },
+    routeGroupingPolygon: { findMany: vi.fn().mockResolvedValue([]) },
+    routeGroupingChildVersion: { create: vi.fn().mockResolvedValue({ id: 'child-copy' }) },
     routeGroupingVersion: { create: vi.fn().mockResolvedValue({ id: 'version-copy' }) },
-    routePlan: { create: vi.fn() },
-    routePlanStop: { findMany: vi.fn().mockResolvedValue([]) },
+    routePlan: { create: vi.fn().mockResolvedValue({ id: 'route-copy', name: 'Source Group Copy' }) },
+    routePlanStop: { createMany: vi.fn().mockResolvedValue({ count: 1 }), findMany: vi.fn().mockResolvedValue([]) },
     shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
   };
 }

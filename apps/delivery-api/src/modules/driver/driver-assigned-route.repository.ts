@@ -50,6 +50,7 @@ type AssignedRoutePlanRecord = {
   metrics: unknown;
   name: string;
   planDate: Date;
+  routeGroupingChildVersions?: Array<{ id: string; driverId: string | null; routePlanId: string | null; status: string; supersededAt: Date | null }>;
   routeStops: AssignedRoutePlanStopRecord[];
   driverEvents: Array<{ createdAt: Date }>;
   shop: {
@@ -152,6 +153,10 @@ type AssignedRoutePlanStopRecord = {
 };
 
 const assignedRouteInclude = {
+  routeGroupingChildVersions: {
+    select: { id: true, driverId: true, routePlanId: true, status: true, supersededAt: true },
+    where: { status: 'CURRENT', supersededAt: null },
+  },
   driverEvents: {
     orderBy: { createdAt: 'asc' },
     select: { createdAt: true },
@@ -380,6 +385,17 @@ function toAssignedRouteResult(
 }
 
 function resolveRouteVersionId(routePlan: AssignedRoutePlanRecord): string | null {
+  if (routePlan.routeGroupingChildVersions !== undefined) {
+    const children = routePlan.routeGroupingChildVersions;
+    if (children.length === 0) return null;
+    const child = children[0]!;
+    if (children.length !== 1 || child.driverId !== routePlan.driverId
+      || child.routePlanId !== routePlan.id || child.status !== 'CURRENT' || child.supersededAt !== null) {
+      throw new DriverAssignedRouteVersionError();
+    }
+    return child.id;
+  }
+  // Compatibility for legacy repository projections without route-local versions.
   const versions = routePlan.routeStops.map(({ deliveryStop: { order } }) => order.currentRouteVersion);
   const versionIds = new Set(routePlan.routeStops.map(({ deliveryStop: { order } }) => order.currentRouteVersionId));
   if (versionIds.size === 1 && versionIds.has(null) && versions.every((version) => version === null)) return null;

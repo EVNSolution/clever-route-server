@@ -8,6 +8,7 @@ import {
   DriverEventRouteVersionMismatchError,
   PrismaDriverEventRepository
 } from '../src/modules/driver/driver-event.repository.js';
+import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
 import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import { PrismaRouteGroupingService, rebindCurrentOrdersToRouteVersion } from '../src/modules/route-grouping/route-grouping.service.js';
@@ -722,7 +723,7 @@ describeDatabase('route grouping save database regressions', () => {
       mode: 'MANUAL_ORDER',
       routes: [draftRoute('competing-owner', [order.id])],
       shopDomain
-    })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+    })).resolves.toMatchObject({ children: [expect.objectContaining({ orderIds: [order.id] })] });
     await expect(prisma.order.findUniqueOrThrow({
       select: { currentRouteVersionId: true },
       where: { id: order.id }
@@ -918,7 +919,7 @@ describeDatabase('route grouping save database regressions', () => {
     expect(await prisma.routePlan.findMany({ where: { id: { in: sourceRoutes.map((route) => route.id) } } })).toEqual(sourceRoutes);
     const reference = await service.copyGrouping({ actor: 'integration', appId, expectedUpdatedAt: source!.updatedAt,
       groupingId: source!.id, mode: 'REFERENCE', shopDomain });
-    expect(reference!.children).toHaveLength(0);
+    expect(reference!.children.map((child) => child.orderIds)).toEqual(source!.children.map((child) => child.orderIds));
     expect(reference!.assignments.map((assignment) => assignment.orderId))
       .toEqual(source!.assignments.map((assignment) => assignment.orderId));
     const boundSourceRoute = source!.children.find((child) => child.orderIds.length > 0)!;
@@ -933,7 +934,7 @@ describeDatabase('route grouping save database regressions', () => {
     const legacy = await createGrouping('legacy without children', [orders[3]!.id]);
     const legacyCopy = await service.copyGrouping({ actor: 'integration', appId,
       expectedUpdatedAt: legacy.updatedAt, groupingId: legacy.id, mode: 'VIRTUAL', shopDomain });
-    expect(legacyCopy!.children).toHaveLength(0);
+    expect(legacyCopy!.children).toHaveLength(1);
     expect(legacyCopy!.assignments).toHaveLength(1);
   });
 
@@ -973,6 +974,124 @@ describeDatabase('route grouping save database regressions', () => {
       orderIds,
       planDate: '2026-09-10',
       shopDomain
+    });
+  }
+
+  test('Reference Copy saves and splits real-order plans without resetting terminal state or changing the source', async () => {
+    const orders = await seedOrders(2);
+    const sourceGroup = await materializedGroup('Reference terminal source', orders.map((order) => order.id));
+    await prisma.deliveryStop.update({ where: { id: orders[0]!.deliveryStopId }, data: { status: 'DELIVERED' } });
+    const source = await service.getGrouping({ appId, groupingId: sourceGroup.id, shopDomain });
+    const sourcePlans = await prisma.routePlan.findMany({ where: { id: { in: source!.children.map((child) => child.routePlanId!) } } });
+    const copy = await service.copyGrouping({ actor: 'integration', appId, expectedUpdatedAt: source!.updatedAt,
+      groupingId: source!.id, mode: 'REFERENCE', shopDomain });
+    expect(copy!.children).toHaveLength(1);
+    const copiedRoute = copy!.children[0]!;
+    const split = await service.saveDraft({ appId, groupingId: copy!.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [{ ...draftRoute('copied existing', [orders[0]!.id]), routePlanId: copiedRoute.routePlanId,
+        routeKey: `route:${copiedRoute.routePlanId}`, tempId: undefined }, draftRoute('copied split', [orders[1]!.id])] });
+    expect(split!.children.find((child) => child.routePlanId === copiedRoute.routePlanId)?.orderIds).toEqual([orders[0]!.id]);
+    expect(split!.children.filter((child) => child.routePlanId !== copiedRoute.routePlanId).map((child) => child.orderIds)).toEqual([[orders[1]!.id]]);
+    expect(await service.getGrouping({ appId, groupingId: copy!.id, shopDomain })).toEqual(split);
+    expect(await service.getGrouping({ appId, groupingId: source!.id, shopDomain })).toEqual(source);
+    expect(await prisma.routePlan.findMany({ where: { id: { in: sourcePlans.map((plan) => plan.id) } } })).toEqual(sourcePlans);
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: orders[0]!.deliveryStopId } })).status).toBe('DELIVERED');
+  });
+
+  test('Reference planning remains available while the source is in progress; Dispatch still rejects its active orders', async () => {
+    const order = await seedOrder();
+    const source = await materializedGroup('Active source', [order.id]);
+    const sourceRouteId = source.children[0]!.routePlanId!;
+    await startRoute(sourceRouteId);
+    const activeSource = await service.getGrouping({ appId, groupingId: source.id, shopDomain });
+    const copy = await service.copyGrouping({ actor: 'integration', appId,
+      expectedUpdatedAt: activeSource!.updatedAt, groupingId: source.id, mode: 'REFERENCE', shopDomain });
+    expect(copy!.children[0]!.orderIds).toEqual([order.id]);
+    const saved = await service.saveDraft({ appId, groupingId: copy!.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [{ ...draftRoute('Saved while active', [order.id]), routePlanId: copy!.children[0]!.routePlanId,
+        routeKey: `route:${copy!.children[0]!.routePlanId}`, tempId: undefined }] });
+    await expect(routePlans.publishRoutePlan({ appId, routePlanId: saved!.children[0]!.routePlanId!, shopDomain }))
+      .rejects.toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+    expect(await service.getGrouping({ appId, groupingId: source.id, shopDomain })).toEqual(activeSource);
+  });
+
+  test('concurrent overlapping Dispatch has one winner; partial conflict rejects all publication and notifications', async () => {
+    const orders = await seedOrders(2);
+    const first = await materializedGroup('Dispatch first', [orders[0]!.id]);
+    const second = await materializedGroup('Dispatch second', orders.map((order) => order.id));
+    const firstId = first.children[0]!.routePlanId!;
+    const secondId = second.children[0]!.routePlanId!;
+    const dispatch = async (routePlanId: string) => {
+      await routePlans.publishRoutePlan({ appId, routePlanId, shopDomain });
+      return service.recordChildRoutePublished({ routePlanId, shopDomain });
+    };
+    const results = await Promise.allSettled([dispatch(firstId), dispatch(secondId)]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+    const winner = results[0]!.status === 'fulfilled' ? firstId : secondId;
+    const loser = winner === firstId ? secondId : firstId;
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: orders[0]!.id } });
+    expect(String((rejected.reason as Error).message)).toContain(order.name);
+    expect(String((rejected.reason as Error).message)).toContain(winner === firstId ? 'Dispatch first' : 'Dispatch second');
+    expect((await prisma.routePlan.findUniqueOrThrow({ where: { id: loser } })).constraints).not.toHaveProperty('cleverDispatchReservedAt');
+    expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({ where: { routePlanId: loser, status: 'CURRENT' } })).publishedAt).toBeNull();
+    expect(await prisma.driverRouteNotificationAttempt.count({ where: { routePlanId: loser } })).toBe(0);
+    await expect(dispatch(winner)).resolves.toBeDefined();
+    await expect(startRoute(loser)).rejects.toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+    await expect(startRoute(winner)).resolves.toMatchObject({ duplicate: false });
+    await prisma.routePlan.update({ where: { id: winner }, data: { status: 'CANCELLED' } });
+    await expect(dispatch(loser)).resolves.toBeDefined();
+  }, 30_000);
+
+  test('concurrent Start/Dispatch and overlapping Starts serialize execution while preserving route-local driver versions', async () => {
+    const order = await seedOrder();
+    const first = await materializedGroup('Start first', [order.id]);
+    const second = await materializedGroup('Start second', [order.id]);
+    const firstId = first.children[0]!.routePlanId!;
+    const secondId = second.children[0]!.routePlanId!;
+    const driverReads = new PrismaDriverAssignedRouteRepository(prisma);
+    for (const routePlanId of [firstId, secondId]) {
+      const plan = await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } });
+      const child = await prisma.routeGroupingChildVersion.findFirstOrThrow({ where: { routePlanId, status: 'CURRENT' } });
+      expect(await driverReads.getAssignedRoute({ driverId: plan.driverId!, routeContext: routePlanId, shopDomain, shopId }))
+        .toMatchObject({ status: 'ASSIGNED_ROUTE', route: { id: routePlanId, routeVersionId: child.id } });
+    }
+    const race = await Promise.allSettled([
+      startRoute(firstId), routePlans.publishRoutePlan({ appId, routePlanId: secondId, shopDomain })
+    ]);
+    expect(race.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect((race.find((result) => result.status === 'rejected') as PromiseRejectedResult).reason)
+      .toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+    await prisma.routePlan.updateMany({ where: { id: { in: [firstId, secondId] } }, data: { status: 'COMPLETED' } });
+    const third = await materializedGroup('Start third', [order.id]);
+    const fourth = await materializedGroup('Start fourth', [order.id]);
+    const starts = await Promise.allSettled([startRoute(third.children[0]!.routePlanId!), startRoute(fourth.children[0]!.routePlanId!)]);
+    expect(starts.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect((starts.find((result) => result.status === 'rejected') as PromiseRejectedResult).reason)
+      .toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+  }, 30_000);
+
+  async function materializedGroup(name: string, orderIds: string[]) {
+    const account = await prisma.driverAccount.create({ data: { phone: `execution-${randomUUID()}` } });
+    driverAccountIds.push(account.id);
+    const driver = await prisma.driver.create({ data: {
+      accountId: account.id, authSubject: `execution-${randomUUID()}`, displayName: 'Fixture driver', shopId
+    } });
+    const group = await createGrouping(name, orderIds);
+    return (await service.saveDraft({ appId, groupingId: group.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [{ ...draftRoute(name, orderIds), driverId: driver.id }] }))!;
+  }
+
+  async function startRoute(routePlanId: string) {
+    const plan = await prisma.routePlan.findUniqueOrThrow({ where: { id: routePlanId } });
+    const child = await prisma.routeGroupingChildVersion.findFirstOrThrow({ where: { routePlanId, status: 'CURRENT', supersededAt: null } });
+    return new PrismaDriverEventRepository(prisma).recordDriverEvent({
+      assignmentGeneration: plan.assignmentGeneration.toString(), attemptId: null,
+      clientEventId: randomUUID(), deliveryStopId: null, driverContractVersion: 2,
+      driverId: plan.driverId!, eventType: 'ROUTE_STARTED', expectedRouteVersionId: child.id,
+      latitude: null, longitude: null, occurredAt: new Date('2026-09-10T12:15:00.000Z'),
+      payload: { source: 'isolated execution policy fixture' }, routePlanId, shopDomain, shopId
     });
   }
 
