@@ -1,5 +1,5 @@
 import { distanceMeters, hasImplausibleGpsJump } from './uvis-vehicle-trail-evidence.js';
-import { HONGJIMUN_JEONGNEUNG_EASTBOUND } from './uvis-tunnel-corridor.js';
+import { REVIEWED_TUNNEL_CORRIDORS } from './uvis-tunnel-corridor.js';
 
 type TunnelSample = {
   ignitionOn?: boolean | null;
@@ -8,6 +8,7 @@ type TunnelSample = {
   observedAt: string;
   observedAtMs: number;
   speedKph?: number | null;
+  staleAfter: string;
 };
 
 type Projection = {
@@ -17,7 +18,17 @@ type Projection = {
   segmentIndex: number;
 };
 
+export type TunnelRoadAnchor = {
+  coordinate: [number, number];
+  coordinateIndex: number;
+  lineIndex: number;
+  segmentIndex: number;
+};
+
+type Corridor = (typeof REVIEWED_TUNNEL_CORRIDORS)[number];
+
 export type InferredTunnelBridge = {
+  confirmedByObservedAt: string;
   corridorId: string;
   coordinates: Array<[number, number]>;
   fromObservedAt: string;
@@ -26,89 +37,114 @@ export type InferredTunnelBridge = {
   type: 'LineString';
 };
 
-const corridor = HONGJIMUN_JEONGNEUNG_EASTBOUND;
-const cumulativeMeters = corridor.coordinates.map((coordinate, index) => (
-  index === 0 ? 0 : distanceMeters(
-    toPoint(corridor.coordinates[index - 1]!),
-    toPoint(coordinate),
-  )
-));
-for (let index = 1; index < cumulativeMeters.length; index += 1) {
-  cumulativeMeters[index] = cumulativeMeters[index]! + cumulativeMeters[index - 1]!;
-}
+const corridors = REVIEWED_TUNNEL_CORRIDORS.map((corridor) => {
+  const cumulativeMeters = corridor.coordinates.map((coordinate, index) => (
+    index === 0 ? 0 : distanceMeters(toPoint(corridor.coordinates[index - 1]!), toPoint(coordinate))
+  ));
+  for (let index = 1; index < cumulativeMeters.length; index += 1) {
+    cumulativeMeters[index] = cumulativeMeters[index]! + cumulativeMeters[index - 1]!;
+  }
+  return { corridor, cumulativeMeters };
+});
 
-// The curated corridor is one-way and has no highway branch between these portals.
-// Do not extend this inference to other tunnels without a separately reviewed corridor.
-export function inferUnbranchedTunnelBridge(
+// A later observed, road-anchored position resolves the exit choice before inference.
+export function inferReviewedTunnelBridge(
   samples: readonly TunnelSample[],
   jumpIndex: number,
-  anchorFor: (sample: TunnelSample) => [number, number] | null,
+  anchorFor: (sample: TunnelSample) => TunnelRoadAnchor | null,
 ): InferredTunnelBridge | null {
   const exit = samples[jumpIndex];
   const frozen = samples[jumpIndex - 1];
-  const after = samples[jumpIndex + 1];
-  if (exit === undefined || frozen === undefined || after === undefined
+  if (exit === undefined || frozen === undefined || exit.ignitionOn !== true
     || !hasImplausibleGpsJump(frozen, exit)) return null;
 
   let firstFrozenIndex = jumpIndex - 1;
   while (firstFrozenIndex > 0) {
     const earlier = samples[firstFrozenIndex - 1]!;
     const later = samples[firstFrozenIndex]!;
-    const intervalMs = later.observedAtMs - earlier.observedAtMs;
-    if (intervalMs < 30_000 || intervalMs > 90_000
-      || distanceMeters(earlier, frozen) > 10) break;
+    if (!freshCadence(earlier, later, 90_000) || distanceMeters(earlier, frozen) > 10) break;
     firstFrozenIndex -= 1;
   }
   const firstFrozen = samples[firstFrozenIndex]!;
   const before = samples[firstFrozenIndex - 1];
   const frozenRun = samples.slice(firstFrozenIndex, jumpIndex);
   const elapsedMs = exit.observedAtMs - firstFrozen.observedAtMs;
+  const witness = downstreamWitness(samples, jumpIndex);
   if (before === undefined || frozenRun.length < 4 || elapsedMs < 180_000 || elapsedMs > 600_000
+    || witness === null
     || frozenRun.some((sample) => sample.ignitionOn !== true)
     || frozenRun.slice(1).filter((sample) => (sample.speedKph ?? 0) >= 200).length < 2
-    || !nearbyTime(before, firstFrozen) || !nearbyTime(frozen, exit) || !nearbyTime(exit, after)
-    || hasImplausibleGpsJump(before, firstFrozen) || hasImplausibleGpsJump(exit, after)) return null;
+    || !freshCadence(before, firstFrozen) || !freshCadence(frozen, exit)
+    || hasImplausibleGpsJump(before, firstFrozen)) return null;
 
-  const selected = [before, firstFrozen, exit, after];
-  const projections: Projection[] = [];
-  const anchorProjections: Projection[] = [];
-  for (const sample of selected) {
-    const anchor = anchorFor(sample);
-    if (anchor === null || distanceMeters(sample, toPoint(anchor)) > 50) return null;
-    const projection = project([sample.longitude, sample.latitude]);
-    const anchorProjection = project(anchor);
-    if (projection.distanceMeters > 50 || anchorProjection.distanceMeters > 35) return null;
-    projections.push(projection);
-    anchorProjections.push(anchorProjection);
-  }
-  const [beforeProjection, entryProjection, exitProjection, afterProjection] = projections as [
-    Projection, Projection, Projection, Projection,
-  ];
-  const [beforeAnchor, entryAnchor, exitAnchor, afterAnchor] = anchorProjections as [
-    Projection, Projection, Projection, Projection,
-  ];
+  const beforeAnchor = anchorFor(before);
+  const entryAnchor = anchorFor(firstFrozen);
+  const exitAnchor = anchorFor(exit);
+  const witnessAnchor = anchorFor(witness);
+  if (beforeAnchor === null || entryAnchor === null || exitAnchor === null || witnessAnchor === null
+    || !progressesOnMatchedLine(beforeAnchor, entryAnchor)
+    || !progressesOnMatchedLine(exitAnchor, witnessAnchor)
+    || distanceMeters(toPoint(beforeAnchor.coordinate), toPoint(entryAnchor.coordinate)) < 50
+    || distanceMeters(toPoint(exitAnchor.coordinate), toPoint(witnessAnchor.coordinate)) < 50) return null;
+
+  const candidates = corridors.flatMap(({ corridor, cumulativeMeters }) => {
+    const inferred = inferOnCorridor({
+      anchors: [beforeAnchor, entryAnchor, exitAnchor, witnessAnchor],
+      corridor,
+      cumulativeMeters,
+      elapsedMs,
+      samples: [before, firstFrozen, exit, witness],
+    });
+    return inferred === null ? [] : [inferred];
+  });
+  return candidates.length === 1 ? candidates[0]! : null;
+}
+
+function inferOnCorridor(input: {
+  anchors: [TunnelRoadAnchor, TunnelRoadAnchor, TunnelRoadAnchor, TunnelRoadAnchor];
+  corridor: Corridor;
+  cumulativeMeters: number[];
+  elapsedMs: number;
+  samples: [TunnelSample, TunnelSample, TunnelSample, TunnelSample];
+}): InferredTunnelBridge | null {
+  const { anchors, corridor, cumulativeMeters, elapsedMs, samples } = input;
+  const [before, entry, exit, witness] = samples;
+  if (samples.some((sample, index) =>
+    distanceMeters(sample, toPoint(anchors[index]!.coordinate)) > corridor.maxRawAnchorMeters
+  )) return null;
+
+  const entryProjection = project([entry.longitude, entry.latitude], corridor, cumulativeMeters);
+  const entryAnchorProjection = project(anchors[1].coordinate, corridor, cumulativeMeters);
+  const exitProjection = project([exit.longitude, exit.latitude], corridor, cumulativeMeters);
+  const exitAnchorProjection = project(anchors[2].coordinate, corridor, cumulativeMeters);
+  if (entryProjection.distanceMeters > 50 || entryAnchorProjection.distanceMeters > 35
+    || exitProjection.distanceMeters > corridor.maxExitRawCorridorMeters
+    || exitAnchorProjection.distanceMeters > 35) return null;
+
   const westPortal = cumulativeMeters[corridor.westPortalIndex]!;
   const eastPortal = cumulativeMeters[corridor.eastPortalIndex]!;
   const reviewedEnd = cumulativeMeters[corridor.reviewedEndIndex]!;
+  const minimumExit = corridor.decisionIndex === null ? eastPortal : Math.max(
+    eastPortal,
+    cumulativeMeters[corridor.decisionIndex]! + corridor.decisionMarginMeters,
+  );
   const roadMeters = exitProjection.positionMeters - entryProjection.positionMeters;
-  const directMeters = distanceMeters(firstFrozen, exit);
-  if (beforeProjection.positionMeters + 50 >= entryProjection.positionMeters
-    || beforeAnchor.positionMeters + 50 >= entryAnchor.positionMeters
-    || entryProjection.positionMeters < westPortal - 120
+  const directMeters = distanceMeters(entry, exit);
+  if (entryProjection.positionMeters < westPortal - corridor.entryApproachMeters
     || entryProjection.positionMeters > westPortal + 120
-    || entryAnchor.positionMeters < westPortal - 120
-    || entryAnchor.positionMeters > westPortal + 120
-    || exitProjection.positionMeters < eastPortal
+    || entryAnchorProjection.positionMeters < westPortal - corridor.entryApproachMeters
+    || entryAnchorProjection.positionMeters > westPortal + 120
+    || exitProjection.positionMeters < minimumExit
     || exitProjection.positionMeters > reviewedEnd
-    || exitAnchor.positionMeters < eastPortal
-    || exitAnchor.positionMeters > reviewedEnd
-    || afterProjection.positionMeters < exitProjection.positionMeters + 50
-    || afterAnchor.positionMeters < exitAnchor.positionMeters + 50
+    || exitAnchorProjection.positionMeters < minimumExit
+    || exitAnchorProjection.positionMeters > reviewedEnd
     || roadMeters < 3_000 || roadMeters > directMeters * 1.35
-    || roadMeters / (elapsedMs / 1000) > 35) return null;
+    || roadMeters / (elapsedMs / 1000) > 35
+    || distanceMeters(before, entry) < 50
+    || distanceMeters(exit, witness) < 50) return null;
 
   const coordinates: Array<[number, number]> = [
-    [firstFrozen.longitude, firstFrozen.latitude],
+    [entry.longitude, entry.latitude],
     entryProjection.coordinate,
   ];
   for (let index = entryProjection.segmentIndex + 1; index <= exitProjection.segmentIndex; index += 1) {
@@ -116,21 +152,48 @@ export function inferUnbranchedTunnelBridge(
   }
   coordinates.push(exitProjection.coordinate, [exit.longitude, exit.latitude]);
   return {
+    confirmedByObservedAt: witness.observedAt,
     corridorId: corridor.id,
     coordinates: deduplicate(coordinates),
-    fromObservedAt: firstFrozen.observedAt,
+    fromObservedAt: entry.observedAt,
     source: 'CURATED_OSM_TUNNEL_CORRIDOR',
     toObservedAt: exit.observedAt,
     type: 'LineString',
   };
 }
 
-function nearbyTime(before: TunnelSample, after: TunnelSample): boolean {
-  const elapsedMs = after.observedAtMs - before.observedAtMs;
-  return elapsedMs >= 30_000 && elapsedMs <= 120_000;
+function downstreamWitness(samples: readonly TunnelSample[], jumpIndex: number): TunnelSample | null {
+  const exit = samples[jumpIndex]!;
+  let previous = exit;
+  for (let index = jumpIndex + 1; index <= Math.min(jumpIndex + 3, samples.length - 1); index += 1) {
+    const current = samples[index]!;
+    if (!freshCadence(previous, current) || current.ignitionOn !== true) return null;
+    if (distanceMeters(exit, current) <= 10) {
+      if ((current.speedKph ?? 0) < 200) return null;
+      previous = current;
+      continue;
+    }
+    return (current.speedKph === null || current.speedKph === undefined || current.speedKph < 200)
+      && distanceMeters(exit, current) >= 50 && !hasImplausibleGpsJump(exit, current)
+      ? current : null;
+  }
+  return null;
 }
 
-function project(point: [number, number]): Projection {
+function progressesOnMatchedLine(before: TunnelRoadAnchor, after: TunnelRoadAnchor): boolean {
+  return before.segmentIndex === after.segmentIndex
+    && before.lineIndex === after.lineIndex
+    && after.coordinateIndex > before.coordinateIndex;
+}
+
+function freshCadence(before: TunnelSample, after: TunnelSample, maximumMs = 120_000): boolean {
+  const elapsedMs = after.observedAtMs - before.observedAtMs;
+  const staleAfterMs = Date.parse(before.staleAfter);
+  return elapsedMs >= 30_000 && elapsedMs <= maximumMs
+    && Number.isFinite(staleAfterMs) && staleAfterMs >= after.observedAtMs;
+}
+
+function project(point: [number, number], corridor: Corridor, cumulativeMeters: number[]): Projection {
   const metersPerLongitude = 111_195 * Math.cos(37.6 * Math.PI / 180);
   const metersPerLatitude = 111_195;
   const x = point[0] * metersPerLongitude;

@@ -7,7 +7,7 @@ import {
   impliedSpeedMetersPerSecond,
   MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND,
 } from './uvis-vehicle-trail-evidence.js';
-import { inferUnbranchedTunnelBridge, type InferredTunnelBridge } from './uvis-tunnel-bridge.js';
+import { inferReviewedTunnelBridge, type InferredTunnelBridge } from './uvis-tunnel-bridge.js';
 
 type DailyRouteSample = {
   ignitionOn?: boolean | null;
@@ -101,10 +101,19 @@ export function buildUvisVehicleDailyRoute(
       const endpoint = implausibleJump ? rawCoordinate(current) : readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current);
       coordinateIndex = appendCoordinate(coordinates, endpoint);
       const bridge = toBridge(previous, current);
-      const inferredTunnel = bridge.reason === 'IMPLAUSIBLE_JUMP' ? inferUnbranchedTunnelBridge(
+      const inferredTunnel = bridge.reason === 'IMPLAUSIBLE_JUMP' ? inferReviewedTunnelBridge(
         prepared,
         index,
-        (sample) => readAnchorCoordinate(trustedAnchors.get(sample.observedAt)),
+        (sample) => {
+          const anchor = trustedAnchors.get(sample.observedAt);
+          const coordinate = readAnchorCoordinate(anchor);
+          return anchor === undefined || coordinate === null ? null : {
+            coordinate,
+            coordinateIndex: anchor.coordinateIndex,
+            lineIndex: anchor.lineIndex,
+            segmentIndex: anchor.segmentIndex,
+          };
+        },
       ) : null;
       bridges.push(inferredTunnel === null ? bridge : { ...bridge, inferredTunnel });
     }

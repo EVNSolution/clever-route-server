@@ -130,6 +130,21 @@ describe('buildUvisVehicleDailyRoute', () => {
     expect(bridge?.inferredTunnel?.coordinates).toContainEqual([126.9921619, 37.6096480]);
     expect(route?.coordinates).not.toContainEqual([126.9721756, 37.6058116]);
 
+    const afterAt120Seconds = samples.map((item, index) => index === 7
+      ? { ...item, staleAfter: new Date(Date.parse(item.observedAt) + 120_000).toISOString() }
+      : index === 8 ? { ...item, observedAt: new Date(Date.parse(item.observedAt) + 60_000).toISOString() }
+        : item);
+    const afterAt120SecondsDocument = trailDocument(afterAt120Seconds, [
+      [beforeAnchor, frozenAnchor], [exitAnchor, afterAnchor],
+    ], afterAt120Seconds.map((item, index) => ({
+      observedAt: item.observedAt,
+      lineIndex: index < 7 ? 0 : 1,
+      coordinateIndex: index === 0 || index === 7 ? 0 : 1,
+    })));
+    expect(buildUvisVehicleDailyRoute(afterAt120Seconds, afterAt120SecondsDocument)?.bridges.find((item) =>
+      item.fromObservedAt === times[6]
+    )?.inferredTunnel?.corridorId).toBe('seoul-hongjimun-jeongneung-eastbound');
+
     const stationary = samples.map((item, index) => ({ ...item, speedKph: index > 1 && index < 7 ? 0 : item.speedKph }));
     expect(buildUvisVehicleDailyRoute(stationary, document)?.bridges.find((item) =>
       item.reason === 'IMPLAUSIBLE_JUMP'
@@ -184,6 +199,109 @@ describe('buildUvisVehicleDailyRoute', () => {
     expect(buildUvisVehicleDailyRoute(offCorridor, offCorridorDocument)?.bridges.find((item) =>
       item.reason === 'IMPLAUSIBLE_JUMP'
     )?.inferredTunnel).toBeUndefined();
+  });
+
+  test('waits for a later mainline witness before inferring the reviewed Suam–Suri tunnel gap', () => {
+    const before: [number, number] = [126.8718553, 37.3684129];
+    const frozen: [number, number] = [126.88213, 37.36940];
+    const exit: [number, number] = [126.93495, 37.37628];
+    const witness: [number, number] = [126.964, 37.38165];
+    const exitAnchor: [number, number] = [126.9355957, 37.3763828];
+    const times = Array.from({ length: 8 }, (_, index) =>
+      new Date(Date.parse('2026-09-30T01:46:54.000Z') + index * 60_000).toISOString()
+    );
+    const samples = [before, frozen, frozen, frozen, frozen, exit, exit, witness]
+      .map(([longitude, latitude], index) => ({
+        ...sample(times[index]!, latitude, longitude),
+        ignitionOn: true,
+        speedKph: index === 6 || (index >= 2 && index <= 4) ? 255 : 70,
+      }));
+    const anchors = [0, 1, 5, 6, 7].map((index) => ({
+      observedAt: times[index]!,
+      lineIndex: index < 5 ? 0 : 1,
+      coordinateIndex: index === 0 || index === 5 || index === 6 ? 0 : 1,
+    }));
+    const document = trailDocument(samples, [
+      [before, [126.8820994, 37.3693881]],
+      [exitAnchor, witness],
+    ], anchors);
+    const tunnelBridge = (source = samples, trail = document) =>
+      buildUvisVehicleDailyRoute(source, trail)?.bridges.find((item) => item.fromObservedAt === times[4]);
+
+    expect(tunnelBridge(samples.slice(0, 6))?.inferredTunnel).toBeUndefined();
+    expect(tunnelBridge(samples.slice(0, 7))?.inferredTunnel).toBeUndefined();
+    expect(tunnelBridge()).toMatchObject({
+      reason: 'IMPLAUSIBLE_JUMP',
+      inferredTunnel: {
+        confirmedByObservedAt: times[7],
+        corridorId: 'seoul-suam-suri-eastbound',
+        fromObservedAt: times[1],
+        toObservedAt: times[5],
+      },
+    });
+    expect(tunnelBridge()?.inferredTunnel?.coordinates).toContainEqual([126.8998493, 37.3716324]);
+    expect(tunnelBridge()?.inferredTunnel?.coordinates).toContainEqual([126.9264516, 37.3751596]);
+    expect(buildUvisVehicleDailyRoute(samples, document)?.coordinates).not.toContainEqual([126.8998493, 37.3716324]);
+
+    const stopped = samples.map((item, index) => ({ ...item, speedKph: index >= 2 && index <= 4 ? 0 : item.speedKph }));
+    expect(tunnelBridge(stopped)?.inferredTunnel).toBeUndefined();
+    const ignitionOff = samples.map((item, index) => ({ ...item, ignitionOn: index === 3 ? false : item.ignitionOn }));
+    expect(tunnelBridge(ignitionOff)?.inferredTunnel).toBeUndefined();
+    const noRepeatSignal = samples.map((item, index) => ({ ...item, speedKph: index === 6 ? 0 : item.speedKph }));
+    expect(tunnelBridge(noRepeatSignal)?.inferredTunnel).toBeUndefined();
+    const staleAfterExit = samples.map((item, index) => index === 5
+      ? { ...item, staleAfter: item.observedAt } : item);
+    expect(tunnelBridge(staleAfterExit)?.inferredTunnel).toBeUndefined();
+    const staleBeforeEntry = samples.map((item, index) => index === 0
+      ? { ...item, staleAfter: item.observedAt } : item);
+    expect(tunnelBridge(staleBeforeEntry)?.inferredTunnel).toBeUndefined();
+    const staleFrozenHeartbeat = samples.map((item, index) => index === 2
+      ? { ...item, staleAfter: item.observedAt } : item);
+    expect(tunnelBridge(staleFrozenHeartbeat)?.inferredTunnel).toBeUndefined();
+    const invalidMovingWitness = samples.map((item, index) => index === 7
+      ? { ...item, speedKph: 255 } : item);
+    expect(tunnelBridge(invalidMovingWitness)?.inferredTunnel).toBeUndefined();
+
+    const slowFrozenHeartbeat = samples.map((item, index) => index === 2
+      ? { ...item, staleAfter: new Date(Date.parse(item.observedAt) + 120_000).toISOString() }
+      : index >= 3 ? {
+        ...item,
+        observedAt: new Date(Date.parse(item.observedAt) + 60_000).toISOString(),
+        staleAfter: new Date(Date.parse(item.staleAfter) + 60_000).toISOString(),
+      } : item);
+    const slowHeartbeatDocument = trailDocument(slowFrozenHeartbeat, [
+      [before, [126.8820994, 37.3693881]], [exitAnchor, witness],
+    ], anchors.map((anchor, index) => ({ ...anchor, observedAt: slowFrozenHeartbeat[[0, 1, 5, 6, 7][index]!]!.observedAt })));
+    expect(buildUvisVehicleDailyRoute(slowFrozenHeartbeat, slowHeartbeatDocument)?.bridges.find((item) =>
+      item.reason === 'IMPLAUSIBLE_JUMP'
+    )?.inferredTunnel).toBeUndefined();
+
+    const nearWitness: [number, number] = [126.93565, 37.3764];
+    const nearAnchor: [number, number] = [126.9356057, 37.3763838];
+    const adjacentAnchorSamples = samples.map((item, index) => index === 7
+      ? { ...item, longitude: nearWitness[0], latitude: nearWitness[1] } : item);
+    const adjacentAnchorDocument = trailDocument(adjacentAnchorSamples, [
+      [before, [126.8820994, 37.3693881]], [exitAnchor, nearAnchor],
+    ], anchors);
+    expect(tunnelBridge(adjacentAnchorSamples, adjacentAnchorDocument)?.inferredTunnel).toBeUndefined();
+
+    const beforeDecision: [number, number] = [126.9303258, 37.3756666];
+    const branchSamples = samples.map((item, index) => index === 5 || index === 6
+      ? { ...item, longitude: beforeDecision[0], latitude: beforeDecision[1] } : item);
+    const branchDocument = trailDocument(branchSamples, [
+      [before, [126.8820994, 37.3693881]], [beforeDecision, witness],
+    ], anchors);
+    expect(tunnelBridge(branchSamples, branchDocument)?.inferredTunnel).toBeUndefined();
+
+    const distantAnchor: [number, number] = [126.9361, 37.3765];
+    const distantDocument = trailDocument(samples, [
+      [before, [126.8820994, 37.3693881]], [distantAnchor, witness],
+    ], anchors);
+    expect(tunnelBridge(samples, distantDocument)?.inferredTunnel).toBeUndefined();
+
+    const stale = samples.map((item, index) => index === 4 ? { ...item, staleAfter: item.observedAt } : item);
+    expect(tunnelBridge(stale)?.reason).toBe('GPS_GAP');
+    expect(tunnelBridge(stale)?.inferredTunnel).toBeUndefined();
   });
 
   test('uses distinct raw endpoints when trusted anchors collapse the whole path to one point', () => {
