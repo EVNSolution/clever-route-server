@@ -1,3 +1,4 @@
+import { projectVisibleDsvGrouping } from '../modules/dsv/dsv-test-visibility.js';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
 
@@ -52,7 +53,11 @@ export function registerAdminRouteGroupRoutes(
         shopDomain: authenticated.shopDomain,
         ...query
       });
-      return reply.code(200).send({ data: { routeGroups }, error: null });
+      const visibleGroups = routeGroups.flatMap(group => {
+        const visible = projectVisibleDsvGrouping(authenticated, group);
+        return visible === null ? [] : [visible];
+      });
+      return reply.code(200).send({ data: { routeGroups: visibleGroups }, error: null });
     } catch (error) {
       return sendRouteGroupingError(reply, error);
     }
@@ -160,8 +165,9 @@ export function registerAdminRouteGroupRoutes(
       groupingId: request.params.routeGroupId,
       shopDomain: authenticated.shopDomain
     });
-    if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
-    return reply.code(200).send({ data: { routeGroup }, error: null });
+    const visibleGroup = routeGroup === null ? null : projectVisibleDsvGrouping(authenticated, routeGroup);
+    if (visibleGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
+    return reply.code(200).send({ data: { routeGroup: visibleGroup }, error: null });
   });
 
   app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/stops/custom', async (request, reply) => {

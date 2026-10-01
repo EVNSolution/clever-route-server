@@ -1,3 +1,4 @@
+import { visibleDsvNotificationWhere } from '../dsv/dsv-test-visibility.js';
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { normalizeShopDomain } from '../commerce/commerce-connection.repository.js';
@@ -179,6 +180,7 @@ export class PrismaAdminNotificationRepository {
     const includeRead = input.includeRead !== false;
     const where: Prisma.AdminNotificationWhereInput = {
       shopId: shop.id,
+      ...visibleDsvNotificationWhere(shop.id),
       ...(includeRead ? {} : { readAt: null }),
     };
     const [notifications, unreadCount] = await Promise.all([
@@ -189,7 +191,7 @@ export class PrismaAdminNotificationRepository {
         where,
       }),
       this.prisma.adminNotification.count({
-        where: { shopId: shop.id, readAt: null },
+        where: { shopId: shop.id, readAt: null, ...visibleDsvNotificationWhere(shop.id) },
       }),
     ]);
 

@@ -1,3 +1,4 @@
+import { visibleDsvOrderWhere, visibleDsvRouteWhere } from './dsv-test-visibility.js';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
@@ -50,7 +51,7 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
           updatedAt: true,
         },
         take: 50,
-        where: { shopId: shop.id, sellerOrder: { isStoreReviewData: false } },
+        where: { shopId: shop.id, sellerOrder: { isStoreReviewData: false, ...visibleDsvOrderWhere(shop.id) } },
       }),
       this.prisma.driverRouteNotificationAttempt.findMany({
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
@@ -67,7 +68,7 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
           shopId: shop.id,
           status: { in: ['FAILED', 'SKIPPED'] },
           OR: [{ driverId: null }, { driver: { is: { isStoreReviewData: false } } }],
-          routePlan: { isStoreReviewData: false },
+          routePlan: { isStoreReviewData: false, ...visibleDsvRouteWhere(shop.id) },
         },
       }),
       this.prisma.order.findMany({
@@ -77,6 +78,7 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
         where: {
           currentRouteVersionId: null,
           deliveryStatus: 'CANCELLED',
+          ...visibleDsvOrderWhere(shop.id),
           shopId: shop.id,
           isStoreReviewData: false,
         },

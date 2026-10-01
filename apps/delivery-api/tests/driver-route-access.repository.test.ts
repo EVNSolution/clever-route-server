@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../src/modules/dsv/dsv-test-visibility.js';
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
@@ -47,6 +48,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routePlanId,
+        AND: [visibleDsvRouteWhere()],
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -490,6 +492,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routePlanId,
+        AND: [visibleDsvRouteWhere()],
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     }));
@@ -546,6 +549,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       },
       take: 3,
       where: {
+        ...visibleDsvRouteWhere(),
         OR: [
           { status: 'IN_PROGRESS' },
           {

@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import { DriverEventType, Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
@@ -79,6 +80,7 @@ export class PrismaDriverSelfServiceRepository {
             ...(input.to === null ? {} : { lte: input.to })
           },
           shopId: scoped.shop.id,
+          ...visibleDsvRouteWhere(scoped.shop.id),
           status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] },
           ...(cursor === null ? {} : {
             OR: [
@@ -346,6 +348,7 @@ export class PrismaDriverSelfServiceRepository {
         driverId: input.driverId,
         planDate: { gte: start, lt: end },
         shopId: scoped.shop.id,
+          ...visibleDsvRouteWhere(scoped.shop.id),
         status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });

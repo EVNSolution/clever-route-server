@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere, isVisibleDsvRoute } from '../dsv/dsv-test-visibility.js';
 import type { PrismaClient } from '@prisma/client';
 import {
   ROUTE_DRIVER_OPERATIONAL_STATUSES,
@@ -101,6 +102,7 @@ export class PrismaDriverRouteAccessRepository {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routeContext,
+        AND: [visibleDsvRouteWhere()],
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -123,7 +125,10 @@ export class PrismaDriverRouteAccessRepository {
       }
     });
 
-    const routes = routePlans.flatMap((routePlan): DriverRouteAccessInvitedRoute[] => {
+    const visiblePlans = routePlans.filter(plan => isVisibleDsvRoute({ shopDomain: plan.shop.shopDomain }, plan.id));
+    // An existing excluded route must not cause a presentation read to manufacture a new standby route.
+    if (routePlans.length > 0 && visiblePlans.length === 0) return { status: 'NOT_FOUND' };
+    const routes = visiblePlans.flatMap((routePlan): DriverRouteAccessInvitedRoute[] => {
       const result = mapRoutePlan(routePlan, { accountId, routeContext: routePlan.id });
       return result.status === 'INVITED' ? [result] : [];
     });
@@ -264,6 +269,7 @@ export class PrismaDriverRouteAccessRepository {
       select: routePlanSelect,
       take: 3,
       where: {
+        ...visibleDsvRouteWhere(),
         OR: [
           { status: 'IN_PROGRESS' },
           {

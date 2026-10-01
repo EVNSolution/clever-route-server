@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import {
@@ -238,6 +239,7 @@ export class PrismaDriverAssignedRouteRepository {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         routeStops: { some: {} },
         shopId: input.shopId,
+        ...visibleDsvRouteWhere(input.shopId),
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
