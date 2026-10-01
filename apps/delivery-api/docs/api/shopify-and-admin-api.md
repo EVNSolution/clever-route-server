@@ -143,6 +143,39 @@ Common errors:
 Accepts a Shopify order snapshot collected by the embedded/admin app, maps it to
 canonical delivery orders/stops, and returns the canonical rows plus sync counts.
 
+Shopify runtime synchronization reads `clever_route/app_preferences` from the
+authenticated shop/app's `currentAppInstallation` (or
+`tomatono_route/app_preferences` only when the modern metafield is absent).
+`shop.ianaTimezone` determines the shop-local cutoff, received date, and delivery
+window UTC conversion, including daylight saving time. A saved preference's old
+timezone or a browser-supplied `deliveryCycle` cannot override the current shop
+timezone. Depot and customer delivery coordinates retain their existing roles.
+These reads follow Shopify's [Shop IANA timezone contract](https://shopify.dev/docs/api/admin-graphql/2026-07/objects/Shop)
+and [current app installation contract](https://shopify.dev/docs/api/admin-graphql/2026-07/queries/currentAppInstallation).
+The optional request `deliveryCycle` remains accepted for compatibility; the
+server-resolved installation settings are authoritative in the Shopify runtime.
+
+Webhook and pull/reconciliation queries fetch these settings together with the
+orders. Snapshots use the matching app/shop offline token through the existing
+token service. An unconfigured installation uses Monday 23:59 in its shop zone,
+matching the app default. Missing/invalid shop timezone, malformed settings, or
+lookup failures do not silently use the historical Tuesday-midnight fallback.
+Snapshot settings failures return `503 SHOPIFY_DELIVERY_SETTINGS_UNAVAILABLE`
+before order writes; webhook and reconciliation failures remain retryable and do
+not advance their successful processing/cursor state.
+
+Existing manual corrections and Shopify schedules with non-cancelled route
+membership or an assigned/active/completed delivery stop are preserved during
+source resync, including the date, batch range and UTC time window. Cancellation,
+address problems, notes and payment changes still synchronize. A cancelled route
+alone does not freeze an otherwise unassigned order's schedule.
+
+Persisted schedule timezone metadata takes precedence for protected schedules.
+When older rows have no timezone metadata, the current verified shop zone is
+recorded with `current_shop` provenance; it does not establish the historical
+zone or reinterpret existing UTC windows. This is not a historical delivery-date
+repair; already scheduled orders require a separately reviewed correction plan.
+
 Request:
 
 ```http
@@ -225,7 +258,15 @@ field issues can be returned as warnings when rows are skipped.
 
 ## GET `/admin/orders`
 
-Lists canonical orders for the authenticated shop. Supported query filters:
+Lists canonical orders for the authenticated shop.
+
+Canonical rows expose source order `note`, source customer profile `customerNote`
+(when present), and `deliveryInstructions` from the delivery stop as separate
+fields. Empty strings and explicit nulls represent cleared source notes and must
+not revive an older fallback. The server does not expose the full `rawPayload`
+or fetch Shopify on each list request. Free-text notes do not assign delivery dates.
+
+Supported query filters:
 
 - `readiness`: `READY_TO_PLAN`, `NEEDS_REVIEW`, `SKIPPED`
 - `planned`: `true`, `false`

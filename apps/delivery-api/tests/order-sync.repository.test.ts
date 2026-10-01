@@ -566,7 +566,10 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       shopDomain: 'example.myshopify.com',
       syncReason: 'manual_refresh',
       synced: {
-        ...syncedOrder({ updatedAtShopify: new Date('2026-05-08T13:00:00.000Z') }),
+        ...syncedOrder({
+          sourcePlatform: 'WOOCOMMERCE',
+          updatedAtShopify: new Date('2026-05-08T13:00:00.000Z')
+        }),
         deliveryFact: syncedDeliveryFact()
       }
     });
@@ -628,6 +631,428 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(prisma.deliveryStop.upsert).toHaveBeenCalledWith(expect.objectContaining({
       update: sourceCoordinateMatcher
     }));
+  });
+
+  test.each(['READY', 'PUBLISHED', 'IN_PROGRESS', 'COMPLETED'])(
+    'preserves an existing Shopify route schedule in %s while refreshing other source fields',
+    async (routePlanStatus) => {
+      const existing = routedExistingOrder(routePlanStatus);
+      const routedFacts: Array<Record<string, unknown>> = [
+        canonicalDeliveryFactWithUtcTorontoWindow()
+      ];
+      routedFacts[0] = {
+        ...routedFacts[0],
+        deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+        planningGroupKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00|Mississauga',
+        routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+        timeWindowEnd: new Date('2026-05-09T01:00:00.000Z'),
+        timeWindowStart: new Date('2026-05-08T21:00:00.000Z')
+      };
+      existing.deliveryFacts = routedFacts;
+      existing.rawPayload = {
+        ...(existing.rawPayload as Record<string, unknown>),
+        cleverManualPaymentStatus: 'PENDING'
+      };
+      const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+      const repository = createOrderSyncRepository(prisma);
+      const incoming = syncedOrder({
+        rawPayload: {
+          ...syncedOrder().order.rawPayload,
+          deliveryBatchEndDate: '2026-05-16',
+          deliveryBatchStartDate: '2026-05-14',
+          deliveryDate: '2026-05-15',
+          note: 'Updated source note',
+          normalizedPaymentStatus: 'PAID_CONFIRMED',
+          planningGroupKey: '2026-05-15|DELIVERY|||Toronto',
+          routeScopeKey: '2026-05-15|DELIVERY||',
+          serviceType: 'DELIVERY',
+          timeWindowEnd: null,
+          timeWindowStart: null
+        }
+      });
+
+      await repository.upsertOrderWithDeliveryStop({
+        shopDomain: 'example.myshopify.com',
+        synced: {
+          ...incoming,
+          deliveryFact: {
+            ...syncedDeliveryFact(),
+            deliveryDate: '2026-05-15',
+            deliverySession: 'DAY',
+            planningGroupKey: '2026-05-15|DELIVERY|||Toronto',
+            routeScopeKey: '2026-05-15|DELIVERY||',
+            serviceType: 'DELIVERY',
+            sourcePlatform: 'SHOPIFY',
+            timeWindowEnd: null,
+            timeWindowStart: null
+          },
+          deliveryStop: {
+            ...incoming.deliveryStop!,
+            deliveryDate: '2026-05-15',
+            timeWindowEnd: null,
+            timeWindowStart: null
+          }
+        }
+      });
+
+      const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+      const stopCall = prisma.deliveryStop.upsert.mock.calls[0];
+      const orderCall = prisma.order.upsert.mock.calls[0];
+      if (factCall === undefined || stopCall === undefined || orderCall === undefined) {
+        throw new Error('expected protected schedule writes');
+      }
+      const factUpdate = (factCall[0] as { update: Record<string, unknown> }).update;
+      const stopUpdate = (stopCall[0] as { update: Record<string, unknown> }).update;
+      const orderUpdate = (orderCall[0] as { update: Record<string, unknown> }).update;
+      expect(factUpdate).toMatchObject({
+        deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+        routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+        serviceType: 'EVENING_DELIVERY'
+      });
+      expect(factUpdate.mappingDiagnostics).toMatchObject({
+        shopifyRouteScheduleGuard: {
+          reason: 'existing_route_schedule',
+          routePlans: [{ id: 'route-plan-id', status: routePlanStatus }]
+        }
+      });
+      expect(stopUpdate).toMatchObject({
+        deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+        timeWindowEnd: new Date('2026-05-09T01:00:00.000Z'),
+        timeWindowStart: new Date('2026-05-08T21:00:00.000Z')
+      });
+      expect(orderUpdate.rawPayload).toEqual(expect.objectContaining({
+        deliveryDate: '2026-05-08',
+        deliveryBatchEndDate: '2026-05-09',
+        deliveryBatchStartDate: '2026-05-07',
+        cleverManualPaymentStatus: 'PENDING',
+        note: 'Updated source note',
+        normalizedPaymentStatus: 'PAID_CONFIRMED',
+        routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00'
+      }));
+    }
+  );
+
+  test('does not clear a routed Shopify stop when a refresh omits the shipping address', async () => {
+    const existing = routedExistingOrder('PUBLISHED');
+    existing.deliveryFacts = [canonicalDeliveryFactWithUtcTorontoWindow()];
+    const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+    const incoming = syncedOrder({ sourcePlatform: 'SHOPIFY' });
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...incoming,
+        deliveryFact: {
+          ...syncedDeliveryFact(),
+          batchEligible: false,
+          readiness: 'NEEDS_REVIEW',
+          reviewReasons: ['missing_address', 'missing_coordinates'],
+          sourcePlatform: 'SHOPIFY'
+        },
+        deliveryStop: null
+      }
+    });
+
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected routed fact write');
+    expect((factCall[0] as { update: Record<string, unknown> }).update).toMatchObject({
+      batchEligible: false,
+      readiness: 'NEEDS_REVIEW',
+      reviewReasons: ['missing_address', 'missing_coordinates']
+    });
+  });
+
+  test('recomputes cancellation health without replacing a protected route schedule', async () => {
+    const existing = routedExistingOrder('PUBLISHED');
+    existing.deliveryFacts = [canonicalDeliveryFactWithUtcTorontoWindow()];
+    const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+    const incoming = syncedOrder({
+      cancelledAt: new Date('2026-05-09T12:00:00.000Z'),
+      sourcePlatform: 'SHOPIFY'
+    });
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...incoming,
+        deliveryFact: {
+          ...syncedDeliveryFact(),
+          batchEligible: false,
+          deliveryDate: '2026-06-05',
+          readiness: 'NEEDS_REVIEW',
+          reviewReasons: ['cancelled_order'],
+          sourcePlatform: 'SHOPIFY'
+        },
+        deliveryStop: { ...incoming.deliveryStop!, deliveryDate: '2026-06-05' }
+      }
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected cancelled fact write');
+    expect((factCall[0] as { update: Record<string, unknown> }).update).toMatchObject({
+      batchEligible: false,
+      deliveryDate: new Date('2026-05-29T00:00:00.000Z'),
+      readiness: 'NEEDS_REVIEW',
+      reviewReasons: ['cancelled_order']
+    });
+  });
+
+  test('keeps the protected schedule timezone when the shop timezone later changes', async () => {
+    const existing = routedExistingOrder('PUBLISHED');
+    const existingFact = {
+      ...canonicalDeliveryFactWithUtcTorontoWindow(),
+      deliveryDate: new Date('2026-07-17T00:00:00.000Z'),
+      mappingDiagnostics: {
+        deliveryDateSource: 'LINE_ITEM_DATE_RANGE',
+        deliveryTimeZone: 'Asia/Seoul'
+      },
+      planningGroupKey: '2026-07-17|EVENING_DELIVERY|17:00|21:00|Mississauga',
+      routeScopeKey: '2026-07-17|EVENING_DELIVERY|17:00|21:00',
+      timeWindowEnd: new Date('2026-07-17T12:00:00.000Z'),
+      timeWindowStart: new Date('2026-07-17T08:00:00.000Z')
+    };
+    existing.deliveryFacts = [existingFact];
+    existing.rawPayload = {
+      ...(existing.rawPayload as Record<string, unknown>),
+      deliveryDate: '2026-07-17',
+      deliveryDateSource: 'LINE_ITEM_DATE_RANGE',
+      deliveryTimeZone: 'Asia/Seoul',
+      planningGroupKey: '2026-07-17|EVENING_DELIVERY|17:00|21:00|Mississauga',
+      routeScopeKey: '2026-07-17|EVENING_DELIVERY|17:00|21:00'
+    };
+    existing.deliveryStops = [{
+      ...(existing.deliveryStops[0] as Record<string, unknown>),
+      deliveryDate: new Date('2026-07-17T00:00:00.000Z'),
+      timeWindowEnd: new Date('2026-07-17T12:00:00.000Z'),
+      timeWindowStart: new Date('2026-07-17T08:00:00.000Z')
+    }];
+    const firstHarness = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const firstRepository = createOrderSyncRepository(firstHarness.prisma);
+    const incoming = syncedOrder({ sourcePlatform: 'SHOPIFY' });
+
+    await firstRepository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...incoming,
+        deliveryTimeZone: 'America/Vancouver',
+        deliveryFact: {
+          ...syncedDeliveryFact(),
+          deliveryDate: '2026-07-24',
+          mappingDiagnostics: { deliveryTimeZone: 'America/Vancouver' },
+          sourcePlatform: 'SHOPIFY'
+        },
+        deliveryStop: { ...incoming.deliveryStop!, deliveryDate: '2026-07-24' }
+      }
+    });
+
+    const factCall = firstHarness.prisma.orderDeliveryFact.upsert.mock.calls[0];
+    const stopCall = firstHarness.prisma.deliveryStop.upsert.mock.calls[0];
+    const orderCall = firstHarness.prisma.order.upsert.mock.calls[0];
+    if (factCall === undefined || stopCall === undefined || orderCall === undefined) {
+      throw new Error('expected protected timezone writes');
+    }
+    const factUpdate = (factCall[0] as { update: Record<string, unknown> }).update;
+    const stopUpdate = (stopCall[0] as { update: Record<string, unknown> }).update;
+    const rawPayload = (orderCall[0] as { update: { rawPayload: Record<string, unknown> } }).update.rawPayload;
+    expect(factUpdate.mappingDiagnostics).toMatchObject({
+      deliveryDateSource: 'LINE_ITEM_DATE_RANGE',
+      deliveryTimeZone: 'Asia/Seoul',
+      deliveryTimeZoneProvenance: 'persisted_schedule'
+    });
+    expect(rawPayload).toMatchObject({
+      deliveryDateSource: 'LINE_ITEM_DATE_RANGE',
+      deliveryTimeZone: 'Asia/Seoul',
+      deliveryTimeZoneProvenance: 'persisted_schedule'
+    });
+
+    const secondHarness = createPrismaHarness({
+      existingOrder: {
+        ...existing,
+        deliveryFacts: [{ ...existingFact, ...factUpdate }],
+        deliveryStops: [{ ...(existing.deliveryStops[0] as Record<string, unknown>), ...stopUpdate }],
+        rawPayload
+      },
+      routeStopCount: 0
+    });
+    const secondRepository = createOrderSyncRepository(secondHarness.prisma);
+    await secondRepository.patchCanonicalOrder({
+      actor: 'dispatcher',
+      orderId: 'order-id',
+      patch: { timeWindowEnd: '22:00', timeWindowStart: '18:00' },
+      shopDomain: 'example.myshopify.com'
+    });
+    const manualFactCall = secondHarness.prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (manualFactCall === undefined) throw new Error('expected manual fact write');
+    const manualFactUpdate = (manualFactCall[0] as { update: Record<string, unknown> }).update;
+    expect(manualFactUpdate.timeWindowStart).toEqual(new Date('2026-07-17T09:00:00.000Z'));
+    expect(manualFactUpdate.timeWindowEnd).toEqual(new Date('2026-07-17T13:00:00.000Z'));
+  });
+
+  test('preserves a delivered Shopify schedule after route membership is removed', async () => {
+    const existing = routedExistingOrder('COMPLETED', { routePlanStops: [] });
+    existing.deliveryFacts = [canonicalDeliveryFactWithUtcTorontoWindow()];
+    (existing.deliveryStops[0] as Record<string, unknown>).status = 'DELIVERED';
+    const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+    const incoming = syncedOrder({ sourcePlatform: 'SHOPIFY' });
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...incoming,
+        deliveryTimeZone: 'America/Vancouver',
+        deliveryFact: {
+          ...syncedDeliveryFact(),
+          deliveryDate: '2026-06-05',
+          mappingDiagnostics: { deliveryTimeZone: 'America/Vancouver' },
+          sourcePlatform: 'SHOPIFY'
+        },
+        deliveryStop: {
+          ...incoming.deliveryStop!,
+          deliveryDate: '2026-06-05'
+        }
+      }
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected protected fact write');
+    const factUpdate = (factCall[0] as { update: Record<string, unknown> }).update;
+    expect(factUpdate.deliveryDate).toEqual(new Date('2026-05-29T00:00:00.000Z'));
+    expect(factUpdate.mappingDiagnostics).toMatchObject({
+      deliveryTimeZone: 'America/Vancouver',
+      deliveryTimeZoneProvenance: 'current_shop',
+      shopifyRouteScheduleGuard: {
+        reason: 'existing_route_schedule',
+        routePlans: [],
+        stopStatus: 'DELIVERED'
+      }
+    });
+  });
+
+  test('reconstructs a protected fact from a delivered legacy stop without freezing health', async () => {
+    const existing = routedExistingOrder('COMPLETED', { routePlanStops: [] });
+    existing.deliveryFacts = [];
+    (existing.deliveryStops[0] as Record<string, unknown>).status = 'DELIVERED';
+    const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+    const incoming = syncedOrder();
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...incoming,
+        deliveryFact: {
+          ...syncedDeliveryFact(),
+          batchEligible: false,
+          deliveryDate: '2026-06-05',
+          readiness: 'NEEDS_REVIEW',
+          reviewReasons: ['missing_address'],
+          sourcePlatform: 'SHOPIFY'
+        },
+        deliveryStop: { ...incoming.deliveryStop!, deliveryDate: '2026-06-05' }
+      }
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    const stopCall = prisma.deliveryStop.upsert.mock.calls[0];
+    if (factCall === undefined || stopCall === undefined) {
+      throw new Error('expected reconstructed legacy schedule writes');
+    }
+    expect((factCall[0] as { update: Record<string, unknown> }).update).toMatchObject({
+      batchEligible: false,
+      deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+      readiness: 'NEEDS_REVIEW',
+      reviewReasons: ['missing_address'],
+      timeWindowEnd: new Date('2026-05-09T01:00:00.000Z'),
+      timeWindowStart: new Date('2026-05-08T21:00:00.000Z')
+    });
+    expect((stopCall[0] as { update: Record<string, unknown> }).update).toMatchObject({
+      deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+      timeWindowEnd: new Date('2026-05-09T01:00:00.000Z'),
+      timeWindowStart: new Date('2026-05-08T21:00:00.000Z')
+    });
+  });
+
+  test.each([null, 'EVENING_DELIVERY'] as const)('keeps unknown legacy local schedule metadata unknown with service type %s', async (serviceType) => {
+    const existing = routedExistingOrder('COMPLETED', { routePlanStops: [] });
+    existing.deliveryFacts = [];
+    existing.rawPayload = serviceType === null ? {} : { serviceType };
+    (existing.deliveryStops[0] as Record<string, unknown>).status = 'DELIVERED';
+    const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const incoming = syncedOrder({ sourcePlatform: 'SHOPIFY' });
+
+    await createOrderSyncRepository(prisma).upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...incoming,
+        deliveryTimeZone: 'Asia/Seoul',
+        deliveryFact: {
+          ...syncedDeliveryFact(),
+          deliveryDate: '2026-06-05',
+          mappingDiagnostics: { deliveryTimeZone: 'Asia/Seoul' },
+          sourcePlatform: 'SHOPIFY'
+        },
+        deliveryStop: { ...incoming.deliveryStop!, deliveryDate: '2026-06-05' },
+        order: { ...incoming.order, rawPayload: { ...incoming.order.rawPayload, deliveryTimeZone: 'Asia/Seoul' } }
+      }
+    });
+
+    const factUpdate = (prisma.orderDeliveryFact.upsert.mock.calls[0]?.[0] as { update: Record<string, unknown> }).update;
+    const stopUpdate = (prisma.deliveryStop.upsert.mock.calls[0]?.[0] as { update: Record<string, unknown> }).update;
+    const orderUpdate = (prisma.order.upsert.mock.calls[0]?.[0] as { update: Record<string, unknown> }).update;
+    for (const update of [factUpdate, stopUpdate]) {
+      expect(update).toMatchObject({
+        deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+        timeWindowEnd: new Date('2026-05-09T01:00:00.000Z'),
+        timeWindowStart: new Date('2026-05-08T21:00:00.000Z')
+      });
+    }
+    expect(factUpdate).toMatchObject({
+      deliverySession: null, planningGroupKey: null, routeScopeKey: null, serviceType,
+      mappingDiagnostics: { deliveryTimeZone: 'Asia/Seoul', deliveryTimeZoneProvenance: 'current_shop' }
+    });
+    expect(orderUpdate.rawPayload).toMatchObject({
+      deliveryTimeZone: 'Asia/Seoul', deliveryTimeZoneProvenance: 'current_shop',
+      planningGroupKey: null, routeScopeKey: null, timeWindowEnd: null, timeWindowStart: null
+    });
+  });
+
+  test('does not protect a schedule from a cancelled-only route membership', async () => {
+    const existing = routedExistingOrder('CANCELLED');
+    (existing.deliveryStops[0] as Record<string, unknown>).status = 'CANCELLED';
+    existing.deliveryFacts = [{
+      ...canonicalDeliveryFactWithUtcTorontoWindow(),
+      deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+      planningGroupKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00|Mississauga',
+      routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+      timeWindowEnd: new Date('2026-05-09T01:00:00.000Z'),
+      timeWindowStart: new Date('2026-05-08T21:00:00.000Z')
+    }];
+    const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+    const incoming = syncedOrder();
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...incoming,
+        deliveryFact: {
+          ...syncedDeliveryFact(),
+          deliveryDate: '2026-06-05',
+          sourcePlatform: 'SHOPIFY'
+        },
+        deliveryStop: { ...incoming.deliveryStop!, deliveryDate: '2026-06-05' }
+      }
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected cancelled-route fact write');
+    const factUpdate = (factCall[0] as { update: Record<string, unknown> }).update;
+    expect(factUpdate.deliveryDate).toEqual(new Date('2026-06-05T00:00:00.000Z'));
+    expect(factUpdate.mappingDiagnostics).not.toHaveProperty('shopifyRouteScheduleGuard');
   });
 
   test('reads source-created and source-updated store-local dates from raw payload', async () => {
@@ -1122,7 +1547,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
       synced: {
-        ...syncedOrder({ updatedAtShopify: new Date('2026-05-08T13:00:00.000Z') }),
+        ...syncedOrder({ sourcePlatform: 'WOOCOMMERCE', updatedAtShopify: new Date('2026-05-08T13:00:00.000Z') }),
         deliveryFact: syncedDeliveryFact()
       }
     });
@@ -1285,6 +1710,79 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     }));
   });
 
+  test('preserves an explicitly cleared Shopify delivery date during ordinary source refresh', async () => {
+    const existingRecord = canonicalOrderRecord(0);
+    const existingFact = {
+      ...canonicalDeliveryFactWithUtcTorontoWindow(),
+      batchEligible: false,
+      deliveryDate: null,
+      deliveryDateWeekday: null,
+      deliveryDateWeekdayVerified: false,
+      mappingDiagnostics: {
+        routeOpsCorrections: {
+          fields: {
+            deliveryDate: {
+              actor: 'dispatcher',
+              correctedAt: '2026-05-08T14:00:00.000Z',
+              source: 'operator_metadata_patch'
+            }
+          },
+          version: 1
+        }
+      },
+      planningGroupKey: null,
+      readiness: 'NEEDS_REVIEW',
+      reviewReasons: ['missing_delivery_date', 'missing_route_scope'],
+      routeScopeKey: null
+    };
+    const existingStop = {
+      ...(existingRecord.deliveryStops as Array<Record<string, unknown>>)[0],
+      deliveryDate: null,
+      timeWindowEnd: null,
+      timeWindowStart: null
+    };
+    const { prisma } = createPrismaHarness({
+      existingOrder: {
+        ...existingRecord,
+        deliveryFacts: [existingFact],
+        deliveryStops: [existingStop],
+        id: 'order-id',
+        updatedAtShopify: new Date('2026-05-07T12:00:00.000Z')
+      },
+      routeStopCount: 0
+    });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...syncedOrder({
+          rawPayload: {
+            ...syncedOrder().order.rawPayload,
+            deliveryDate: '2026-05-15',
+            note: 'Source note still refreshes'
+          },
+          sourcePlatform: 'SHOPIFY'
+        }),
+        deliveryFact: { ...syncedDeliveryFact(), sourcePlatform: 'SHOPIFY' }
+      }
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    const stopCall = prisma.deliveryStop.upsert.mock.calls[0];
+    const orderCall = prisma.order.upsert.mock.calls[0];
+    if (factCall === undefined || stopCall === undefined || orderCall === undefined) {
+      throw new Error('expected corrected schedule writes');
+    }
+    expect((factCall[0] as { update: Record<string, unknown> }).update.deliveryDate).toBeNull();
+    expect((stopCall[0] as { update: Record<string, unknown> }).update.deliveryDate).toBeNull();
+    expect((orderCall[0] as { update: Record<string, unknown> }).update.rawPayload)
+      .toEqual(expect.objectContaining({
+        deliveryDate: null,
+        note: 'Source note still refreshes'
+      }));
+  });
+
   test('keeps coordinate-only correction needing review when no delivery fact exists', async () => {
     const { prisma } = createPrismaHarness({
       existingOrder: {
@@ -1372,6 +1870,98 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     });
     expect(factUpdate.timeWindowStart).toEqual(new Date('2026-05-29T21:00:00.000Z'));
     expect(factUpdate.timeWindowEnd).toEqual(new Date('2026-05-30T01:00:00.000Z'));
+  });
+
+  test.each([
+    ['Asia/Seoul', '2026-01-16', '2026-01-16T08:00:00.000Z'],
+    ['America/Vancouver', '2026-07-17', '2026-07-18T00:00:00.000Z'],
+    ['America/Toronto', '2026-01-16', '2026-01-16T22:00:00.000Z'],
+    ['America/Toronto', '2026-07-17', '2026-07-17T21:00:00.000Z']
+  ])(
+    'converts store-local delivery windows in %s to UTC',
+    async (deliveryTimeZone, deliveryDate, expectedStart) => {
+      const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+      const repository = createOrderSyncRepository(prisma);
+      const base = syncedOrder({ sourcePlatform: 'SHOPIFY' });
+
+      await repository.upsertOrderWithDeliveryStop({
+        shopDomain: 'example.myshopify.com',
+        synced: {
+          ...base,
+          deliveryTimeZone,
+          deliveryFact: {
+            ...syncedDeliveryFact(),
+            deliveryDate,
+            sourcePlatform: 'SHOPIFY',
+            timeWindowEnd: '21:00',
+            timeWindowStart: '17:00'
+          },
+          deliveryStop: {
+            ...base.deliveryStop!,
+            deliveryDate,
+            timeWindowEnd: '21:00',
+            timeWindowStart: '17:00'
+          }
+        }
+      });
+
+      const stopCall = prisma.deliveryStop.upsert.mock.calls[0];
+      const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+      if (stopCall === undefined || factCall === undefined) {
+        throw new Error('expected schedule writes');
+      }
+      expect((stopCall[0] as { update: Record<string, unknown> }).update.timeWindowStart)
+        .toEqual(new Date(expectedStart));
+      expect((factCall[0] as { update: Record<string, unknown> }).update.timeWindowStart)
+        .toEqual(new Date(expectedStart));
+    }
+  );
+
+  test('rejects an explicit invalid delivery timezone before schedule writes', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+
+    await expect(repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...syncedOrder({ sourcePlatform: 'SHOPIFY' }),
+        deliveryTimeZone: 'Invalid/Timezone',
+        deliveryFact: { ...syncedDeliveryFact(), sourcePlatform: 'SHOPIFY' }
+      }
+    })).rejects.toThrow('Invalid delivery timezone: Invalid/Timezone');
+    expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+    expect(prisma.orderDeliveryFact.upsert).not.toHaveBeenCalled();
+  });
+
+  test('reuses the persisted delivery timezone for manual metadata patches', async () => {
+    const existingOrder = {
+      ...canonicalOrderRecord(0),
+      deliveryFacts: [{
+        ...canonicalDeliveryFactWithUtcTorontoWindow(),
+        mappingDiagnostics: { deliveryTimeZone: 'Asia/Seoul' }
+      }],
+      id: 'order-id',
+      updatedAtShopify: new Date('2026-05-07T12:00:00.000Z')
+    };
+    const { prisma } = createPrismaHarness({ existingOrder, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.patchCanonicalOrder({
+      actor: 'dispatcher',
+      orderId: 'order-id',
+      patch: { timeWindowEnd: '21:00', timeWindowStart: '17:00' },
+      shopDomain: 'example.myshopify.com'
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    const stopCall = prisma.deliveryStop.upsert.mock.calls[0];
+    if (factCall === undefined || stopCall === undefined) {
+      throw new Error('expected manual schedule writes');
+    }
+    expect((factCall[0] as { update: Record<string, unknown> }).update.timeWindowStart)
+      .toEqual(new Date('2026-05-29T08:00:00.000Z'));
+    expect((stopCall[0] as { update: Record<string, unknown> }).update.timeWindowEnd)
+      .toEqual(new Date('2026-05-29T12:00:00.000Z'));
   });
 
   test('clears time-window review blockers when operator patches a coherent manual window', async () => {
