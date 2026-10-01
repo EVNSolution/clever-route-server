@@ -7,6 +7,7 @@ import { ShopTokenService } from './shop-token.service.js';
 import { ShopifySessionTokenVerifier } from './session-token-verifier.js';
 import { loadShopifyTokenExchangeTimeoutMs, ShopifyTokenExchangeClient } from './token-exchange.client.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from './shopify-api-version.js';
+import { ShopifyTokenBrokerVerifier } from './token-broker-auth.js';
 import type { ShopifyAuthDependencies } from '../../routes/shopify-auth.routes.js';
 
 export type ShopifyAuthRuntimeEnv = ShopifyAppCredentialsEnv &
@@ -31,9 +32,16 @@ export function loadShopifyAuthDependencies(
 
   const apiVersion = readOptional(input.env.SHOPIFY_API_VERSION) ?? DEFAULT_SHOPIFY_ADMIN_API_VERSION;
   const repository = new PrismaShopTokenRepository(input.prisma);
+  const tokenExchangeClient = new ShopifyTokenExchangeClient({
+    appCredentials,
+    ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+    timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS)
+  });
   const shopTokenService = new ShopTokenService({
     encryptionKey: loadTokenEncryptionKey(encryptionKey),
-    repository
+    repository,
+    tokenExchangeClient,
+    tokenRefreshClient: tokenExchangeClient
   });
 
   return {
@@ -43,11 +51,7 @@ export function loadShopifyAuthDependencies(
       : { orderReconciliationService: input.orderReconciliationService }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials }),
     shopTokenService,
-    tokenExchangeClient: new ShopifyTokenExchangeClient(
-      input.fetchImpl === undefined
-        ? { appCredentials, timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS) }
-        : { appCredentials, fetchImpl: input.fetchImpl, timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS) }
-    )
+    tokenBrokerVerifier: new ShopifyTokenBrokerVerifier({ appCredentials })
   };
 }
 

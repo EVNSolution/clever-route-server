@@ -52,6 +52,11 @@ Shopify into CLEVER; there is no order/customer write-back path.
 
 ## POST `/shopify/auth/token-exchange`
 
+Token acquisition and renewal now use the shared
+[Shopify offline token authority](shopify-token-authority.md). This public
+compatibility endpoint returns metadata only and reuses a healthy canonical
+token; it does not issue a new token on every request.
+
 Exchanges a Shopify App Bridge session token for an Admin API token and stores
 only encrypted token material plus metadata.
 

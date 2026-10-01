@@ -19,6 +19,9 @@ describe('loadShopifyAuthDependencies', () => {
         new Response(
           JSON.stringify({
             access_token: 'shpat_access_token',
+            expires_in: 3_600,
+            refresh_token: 'shprt_refresh_token',
+            refresh_token_expires_in: 7_776_000,
             scope: 'read_orders'
           }),
           { headers: { 'content-type': 'application/json' }, status: 200 }
@@ -46,25 +49,19 @@ describe('loadShopifyAuthDependencies', () => {
     expect(verified.appId).toBe('clever');
     expect(verified.shopDomain).toBe('example.myshopify.com');
 
-    await expect(
-      dependencies.tokenExchangeClient.exchangeSessionTokenForOfflineToken({
+    const token = await dependencies.shopTokenService.getOfflineToken({
         sessionToken: 'session-token',
+        apiVersion: dependencies.apiVersion,
         shopDomain: 'example.myshopify.com'
-      })
-    ).resolves.toEqual({
+      });
+    expect(token).toMatchObject({
       accessToken: 'shpat_access_token',
-      expiresIn: null,
-      refreshToken: null,
-      refreshTokenExpiresIn: null,
-      scope: 'read_orders'
-    });
-
-    await dependencies.shopTokenService.storeAdminApiToken({
-      accessToken: 'shpat_access_token',
-      apiVersion: dependencies.apiVersion,
+      appId: 'clever',
       shopDomain: 'example.myshopify.com',
       tokenScopes: ['read_orders']
     });
+    expect(token?.accessTokenExpiresAt).toBeInstanceOf(Date);
+    expect(token?.refreshTokenExpiresAt).toBeInstanceOf(Date);
 
     const upsertCall = shop.upsert.mock.calls[0];
     expect(upsertCall).toBeDefined();
@@ -87,6 +84,9 @@ describe('loadShopifyAuthDependencies', () => {
         new Response(
           JSON.stringify({
             access_token: 'shpat_dev_access_token',
+            expires_in: 3_600,
+            refresh_token: 'shprt_dev_refresh_token',
+            refresh_token_expires_in: 7_776_000,
             scope: 'read_orders'
           }),
           { headers: { 'content-type': 'application/json' }, status: 200 }
@@ -116,8 +116,9 @@ describe('loadShopifyAuthDependencies', () => {
     const verified = dependencies.sessionTokenVerifier.verify(sessionToken, {});
     expect(verified.appId).toBe('clever-route-dev');
 
-    await dependencies.tokenExchangeClient.exchangeSessionTokenForOfflineToken({
+    await dependencies.shopTokenService.getOfflineToken({
       appId: verified.appId,
+      apiVersion: dependencies.apiVersion,
       sessionToken,
       shopDomain: verified.shopDomain
     });
@@ -130,14 +131,6 @@ describe('loadShopifyAuthDependencies', () => {
     const body = firstFetchCall[1]?.body as URLSearchParams;
     expect(body.get('client_id')).toBe('dev-client-id');
     expect(body.get('client_secret')).toBe('dev-shared-secret');
-
-    await dependencies.shopTokenService.storeAdminApiToken({
-      appId: verified.appId,
-      accessToken: 'shpat_dev_access_token',
-      apiVersion: dependencies.apiVersion,
-      shopDomain: verified.shopDomain,
-      tokenScopes: ['read_orders']
-    });
 
     const upsertCall = shop.upsert.mock.calls[0];
     expect(upsertCall).toBeDefined();

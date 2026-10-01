@@ -2225,7 +2225,7 @@ paths:
   /shopify/auth/token-exchange:
     post:
       tags: [Shopify Embedded Admin]
-      summary: Exchange a Shopify session token and store Admin API token metadata
+      summary: Ensure a canonical Shopify offline token and return metadata only
       operationId: exchangeShopifySessionToken
       x-source-file: src/routes/shopify-auth.routes.ts
       security:
@@ -2242,7 +2242,7 @@ paths:
                   shopDomain: example.myshopify.com
       responses:
         '200':
-          description: Token material was exchanged and stored without exposing plaintext tokens.
+          description: Canonical token was reused, refreshed or acquired without exposing plaintext tokens.
           content:
             application/json:
               schema:
@@ -2264,6 +2264,57 @@ paths:
                     error:
                       code: SHOPIFY_TOKEN_EXCHANGE_FAILED
                       message: Shopify token exchange failed
+  /shopify/auth/offline-token:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Obtain the canonical offline token for a trusted app server
+      description: |
+        Server-to-server only. HMAC-SHA256 binds the canonical JSON body, timestamp,
+        method and path using the app client secret. Timestamp tolerance is 60 seconds.
+        Browser session tokens alone cannot authorize this endpoint. The response
+        contains an access token and an opaque refresh routing marker; the real
+        Shopify refresh credential never leaves the Delivery API.
+      operationId: obtainShopifyOfflineToken
+      x-source-file: src/routes/shopify-auth.routes.ts
+      security:
+        - ShopifyTokenBrokerHmac: []
+      parameters:
+        - in: header
+          name: x-clever-token-timestamp
+          required: true
+          schema: { type: string, pattern: '^\d{10}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [clientId, shopDomain, operation]
+              properties:
+                clientId: { type: string }
+                shopDomain: { type: string }
+                operation: { type: string, enum: [exchange, refresh] }
+                sessionToken:
+                  type: string
+                  description: Required for exchange; forbidden for refresh.
+      responses:
+        '200':
+          description: Canonical offline access with remaining lifetimes, always Cache-Control no-store.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, scope, refresh_token]
+                properties:
+                  access_token: { type: string }
+                  scope: { type: string }
+                  expires_in: { type: integer, minimum: 0 }
+                  refresh_token: { type: string, enum: [clever-route-managed-v1] }
+                  refresh_token_expires_in: { type: integer, minimum: 0 }
+        '401': { description: Invalid authority proof or merchant reauthorization required. }
+        '429': { description: Source IP exceeded the per-process request limit. }
+        '502': { description: Token authority temporarily unavailable. }
   /shopify/webhooks:
     post:
       tags: [Shopify Webhooks]
@@ -5536,6 +5587,11 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
 components:
   securitySchemes:
+    ShopifyTokenBrokerHmac:
+      type: apiKey
+      in: header
+      name: x-clever-token-signature
+      description: App-server HMAC; see shopify-token-authority.md for canonical signing input.
     DsvSessionCookie:
       type: apiKey
       in: cookie
