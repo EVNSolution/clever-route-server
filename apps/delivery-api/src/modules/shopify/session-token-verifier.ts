@@ -3,6 +3,7 @@ import { DEFAULT_SHOPIFY_APP_ID, normalizeShopifyAppId } from './shopify-app-sco
 
 export type VerifiedShopifySession = {
   appId: string;
+  issuedAt: Date;
   shopDomain: string;
   subject: string;
 };
@@ -132,7 +133,7 @@ export function verifyShopifySessionToken(
     }
   }
 
-  return { appId: credential.appId, shopDomain, subject };
+  return { appId: credential.appId, issuedAt: new Date(notBefore * 1_000), shopDomain, subject };
 }
 
 function normalizeCredentials(

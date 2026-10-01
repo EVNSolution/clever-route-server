@@ -25,7 +25,7 @@ afterEach(() => {
 
 describe('Shopify delivery settings runtime dependencies', () => {
   test('uses the requested app and shop token for currentAppInstallation settings', async () => {
-    const { prisma, shopFindUnique, transaction } = createPrismaHarness({ appId: 'clever-route-dev' });
+    const { prisma, shopFindUnique, transaction, orderWrite } = createPrismaHarness({ appId: 'clever-route-dev' });
     const fetchImpl = vi.fn((input: string | URL | Request, init?: RequestInit) => {
       void input;
       void init;
@@ -74,7 +74,8 @@ describe('Shopify delivery settings runtime dependencies', () => {
     expect(requestBody.query.indexOf('namespace: "clever_route"')).toBeLessThan(
       requestBody.query.indexOf('namespace: "tomatono_route"')
     );
-    expect(transaction).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(orderWrite).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -131,7 +132,7 @@ describe('Shopify delivery settings runtime dependencies', () => {
 
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(orderWrite).not.toHaveBeenCalled();
-    expect(transaction).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledTimes(withEncryptionKey ? 1 : 0);
   });
 
   test.each([
@@ -179,7 +180,7 @@ describe('Shopify delivery settings runtime dependencies', () => {
       expect(response.body).not.toContain('private upstream failure');
       expect(response.body).not.toContain('UNAUTHORIZED');
       expect(orderWrite).not.toHaveBeenCalled();
-      expect(transaction).not.toHaveBeenCalled();
+      expect(transaction).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }
@@ -209,9 +210,12 @@ function createPrismaHarness(options: { appId?: string; withToken?: boolean } = 
     if ('adminAccessTokenCiphertext' in args.select) return Promise.resolve(token);
     return Promise.resolve({ id: 'shop-record-id' });
   });
-  const transaction = vi.fn(() => Promise.reject(new Error('Unexpected transaction')));
-  const prisma = {
-    $transaction: transaction,
+  const tx = {
+    $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
+    shopifyShopRedactionTombstone: {
+      findUnique: vi.fn(() => Promise.resolve(null)),
+      updateMany: orderWrite
+    },
     order: {
       create: orderWrite,
       update: orderWrite,
@@ -224,7 +228,9 @@ function createPrismaHarness(options: { appId?: string; withToken?: boolean } = 
       updateMany: orderWrite,
       upsert: orderWrite
     }
-  } as unknown as PrismaClient;
+  };
+  const transaction = vi.fn((callback: (client: typeof tx) => Promise<unknown>) => callback(tx));
+  const prisma = { ...tx, $transaction: transaction } as unknown as PrismaClient;
   return { orderWrite, prisma, shopFindUnique, transaction };
 }
 

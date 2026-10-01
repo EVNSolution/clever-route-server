@@ -261,7 +261,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   if (options.shopifyAuth !== undefined) {
-    registerShopifyAuthRoutes(app, options.shopifyAuth);
+    const shopifyAuth = options.shopifyAuth;
+    await app.register(async (shopifyAuthApp) => {
+      await shopifyAuthApp.register(rateLimit, { global: false });
+      registerShopifyAuthRoutes(shopifyAuthApp, shopifyAuth);
+    });
   }
 
   if (options.shopifyWebhook !== undefined) {

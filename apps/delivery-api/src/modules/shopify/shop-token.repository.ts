@@ -54,7 +54,10 @@ type ShopDelegate = {
 };
 
 type PrismaLikeClient = {
-  $transaction<T>(callback: (tx: ShopTokenWriteClient) => Promise<T>): Promise<T>;
+  $transaction<T>(
+    callback: (tx: ShopTokenWriteClient) => Promise<T>,
+    options?: { maxWait?: number; timeout?: number }
+  ): Promise<T>;
   shop: ShopDelegate;
 };
 
@@ -70,6 +73,16 @@ type ShopTokenWriteClient = {
       where: { appId: string; redactedAt: { lt: Date }; reinstalledAt: null; shopDomain: string };
     }): Promise<{ count: number }>;
   };
+};
+
+export type LockedShopTokenContext = {
+  row: ShopTokenRow | null;
+  tombstone: { redactedAt: Date; reinstalledAt: Date | null } | null;
+  updateRefreshedShopToken(
+    input: EncryptedShopTokenInput,
+    expected: Pick<ShopTokenRow, 'adminAccessTokenCiphertext' | 'installedAt' | 'tokenIssuedAt'>
+  ): Promise<ShopTokenRow | null>;
+  upsertShopToken(input: EncryptedShopTokenInput): Promise<ShopTokenRow>;
 };
 
 const SHOP_TOKEN_SELECT: Record<keyof ShopTokenRow, true> = {
@@ -89,6 +102,11 @@ const SHOP_TOKEN_SELECT: Record<keyof ShopTokenRow, true> = {
   updatedAt: true
 };
 
+const SHOP_TOKEN_AUTHORITY_TRANSACTION_OPTIONS = {
+  maxWait: 135_000,
+  timeout: 255_000
+} as const;
+
 export class PrismaShopTokenRepository {
   constructor(private readonly prisma: PrismaLikeClient) {
     if (typeof prisma.$transaction !== 'function') {
@@ -106,6 +124,41 @@ export class PrismaShopTokenRepository {
   }
 
   async upsertShopToken(input: EncryptedShopTokenInput): Promise<ShopTokenRow> {
+    return this.withLockedShopToken(input, (locked) => locked.upsertShopToken(input));
+  }
+
+  async withLockedShopToken<T>(
+    input: { appId?: string | undefined; shopDomain: string },
+    work: (context: LockedShopTokenContext) => Promise<T>
+  ): Promise<T> {
+    const appId = normalizeShopifyAppId(input.appId);
+    return this.prisma.$transaction(async (tx) => {
+      await lockShopifyShopPrivacyIdentity(tx as never, { appId, shopDomain: input.shopDomain });
+      const row = await tx.shop.findUnique({
+        select: SHOP_TOKEN_SELECT,
+        where: { appId_shopDomain: { appId, shopDomain: input.shopDomain } }
+      });
+      const tombstone = await tx.shopifyShopRedactionTombstone.findUnique({
+        where: { appId_shopDomain: { appId, shopDomain: input.shopDomain } }
+      });
+
+      return work({
+        row,
+        tombstone,
+        updateRefreshedShopToken: (tokenInput, expected) =>
+          this.updateRefreshedShopTokenWithinLock(tx, tokenInput, expected),
+        upsertShopToken: (tokenInput) =>
+          this.upsertShopTokenWithinLock(tx, tokenInput, row, tombstone)
+      });
+    }, SHOP_TOKEN_AUTHORITY_TRANSACTION_OPTIONS);
+  }
+
+  private async upsertShopTokenWithinLock(
+    tx: ShopTokenWriteClient,
+    input: EncryptedShopTokenInput,
+    existing: ShopTokenRow | null,
+    tombstone: { redactedAt: Date; reinstalledAt: Date | null } | null
+  ): Promise<ShopTokenRow> {
     const now = new Date();
     const create: ShopTokenRow = {
       adminAccessTokenCiphertext: input.adminAccessTokenCiphertext,
@@ -137,72 +190,76 @@ export class PrismaShopTokenRepository {
       updatedAt: now
     };
 
-    const upsert = (shop: ShopDelegate) => shop.upsert({
+    if (existing !== null && existing.uninstalledAt !== null && input.installedAt !== undefined) {
+      update.installedAt = input.installedAt;
+    }
+
+    const upsert = () => tx.shop.upsert({
       create,
       update,
       where: appScopedShopWhere({ appId: input.appId, shopDomain: input.shopDomain })
     });
-    return this.prisma.$transaction(async (tx) => {
-      await lockShopifyShopPrivacyIdentity(tx as never, { appId: create.appId, shopDomain: create.shopDomain });
-      const tombstone = await tx.shopifyShopRedactionTombstone.findUnique({
-        where: { appId_shopDomain: { appId: create.appId, shopDomain: create.shopDomain } }
-      });
-      if (tombstone?.reinstalledAt === null) {
-        if (create.installedAt.getTime() <= tombstone.redactedAt.getTime()) {
-          throw new ShopTokenInstallSupersededError();
-        }
-        const reactivated = await tx.shopifyShopRedactionTombstone.updateMany({
-          data: { reinstalledAt: create.installedAt },
-          where: {
-            appId: create.appId,
-            redactedAt: { lt: create.installedAt },
-            reinstalledAt: null,
-            shopDomain: create.shopDomain
-          }
-        });
-        if (reactivated.count !== 1) throw new ShopTokenInstallSupersededError();
-      } else if (
-        tombstone?.reinstalledAt !== undefined
-        && create.installedAt.getTime() < tombstone.reinstalledAt.getTime()
-      ) {
+    if (tombstone?.reinstalledAt === null) {
+      if (create.installedAt.getTime() <= tombstone.redactedAt.getTime()) {
         throw new ShopTokenInstallSupersededError();
       }
-      return upsert(tx.shop);
-    });
+      const reactivated = await tx.shopifyShopRedactionTombstone.updateMany({
+        data: { reinstalledAt: create.installedAt },
+        where: {
+          appId: create.appId,
+          redactedAt: { lt: create.installedAt },
+          reinstalledAt: null,
+          shopDomain: create.shopDomain
+        }
+      });
+      if (reactivated.count !== 1) throw new ShopTokenInstallSupersededError();
+    } else if (
+      tombstone?.reinstalledAt !== undefined
+      && create.installedAt.getTime() < tombstone.reinstalledAt.getTime()
+    ) {
+      throw new ShopTokenInstallSupersededError();
+    }
+    return upsert();
   }
 
   async updateRefreshedShopToken(
     input: EncryptedShopTokenInput,
     expected: Pick<ShopTokenRow, 'adminAccessTokenCiphertext' | 'installedAt' | 'tokenIssuedAt'>
   ): Promise<ShopTokenRow | null> {
+    return this.withLockedShopToken(input, (locked) =>
+      locked.updateRefreshedShopToken(input, expected));
+  }
+
+  private async updateRefreshedShopTokenWithinLock(
+    tx: ShopTokenWriteClient,
+    input: EncryptedShopTokenInput,
+    expected: Pick<ShopTokenRow, 'adminAccessTokenCiphertext' | 'installedAt' | 'tokenIssuedAt'>
+  ): Promise<ShopTokenRow | null> {
     const appId = normalizeShopifyAppId(input.appId);
-    return this.prisma.$transaction(async (tx) => {
-      await lockShopifyShopPrivacyIdentity(tx as never, { appId, shopDomain: input.shopDomain });
-      await tx.shop.updateMany({
-        data: {
-          adminAccessTokenCiphertext: input.adminAccessTokenCiphertext,
-          adminAccessTokenExpiresAt: input.adminAccessTokenExpiresAt,
-          adminRefreshTokenCiphertext: input.adminRefreshTokenCiphertext,
-          adminRefreshTokenExpiresAt: input.adminRefreshTokenExpiresAt,
-          apiVersion: input.apiVersion,
-          shopifyShopGid: input.shopifyShopGid,
-          tokenIssuedAt: input.tokenIssuedAt,
-          tokenScopes: input.tokenScopes,
-          updatedAt: new Date()
-        },
-        where: {
-          adminAccessTokenCiphertext: expected.adminAccessTokenCiphertext,
-          appId,
-          installedAt: expected.installedAt,
-          shopDomain: input.shopDomain,
-          tokenIssuedAt: expected.tokenIssuedAt,
-          uninstalledAt: null
-        }
-      });
-      return tx.shop.findUnique({
-        select: SHOP_TOKEN_SELECT,
-        where: { appId_shopDomain: { appId, shopDomain: input.shopDomain } }
-      });
+    await tx.shop.updateMany({
+      data: {
+        adminAccessTokenCiphertext: input.adminAccessTokenCiphertext,
+        adminAccessTokenExpiresAt: input.adminAccessTokenExpiresAt,
+        adminRefreshTokenCiphertext: input.adminRefreshTokenCiphertext,
+        adminRefreshTokenExpiresAt: input.adminRefreshTokenExpiresAt,
+        apiVersion: input.apiVersion,
+        shopifyShopGid: input.shopifyShopGid,
+        tokenIssuedAt: input.tokenIssuedAt,
+        tokenScopes: input.tokenScopes,
+        updatedAt: new Date()
+      },
+      where: {
+        adminAccessTokenCiphertext: expected.adminAccessTokenCiphertext,
+        appId,
+        installedAt: expected.installedAt,
+        shopDomain: input.shopDomain,
+        tokenIssuedAt: expected.tokenIssuedAt,
+        uninstalledAt: null
+      }
+    });
+    return tx.shop.findUnique({
+      select: SHOP_TOKEN_SELECT,
+      where: { appId_shopDomain: { appId, shopDomain: input.shopDomain } }
     });
   }
 }

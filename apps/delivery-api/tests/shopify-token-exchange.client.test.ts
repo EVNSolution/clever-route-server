@@ -1,6 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { ShopifyTokenExchangeClient } from '../src/modules/shopify/token-exchange.client.js';
+import {
+  ShopifyTokenExchangeClient,
+  ShopifyTokenRefreshRejectedError
+} from '../src/modules/shopify/token-exchange.client.js';
 
 describe('ShopifyTokenExchangeClient', () => {
   test('requests an expiring offline access token using Shopify token exchange', async () => {
@@ -75,6 +78,9 @@ describe('ShopifyTokenExchangeClient', () => {
         new Response(
           JSON.stringify({
             access_token: 'shpat_dev_access_token',
+            expires_in: 3_600,
+            refresh_token: 'shprt_dev_refresh_token',
+            refresh_token_expires_in: 7_776_000,
             scope: 'read_orders'
           }),
           { headers: { 'content-type': 'application/json' }, status: 200 }
@@ -154,6 +160,39 @@ describe('ShopifyTokenExchangeClient', () => {
     expect(body.get('refresh_token')).toBe('shprt_old_refresh_token');
   });
 
+  test.each([
+    ['missing refresh token', { refresh_token: undefined }],
+    ['empty refresh token', { refresh_token: '' }],
+    ['missing access expiry', { expires_in: undefined }],
+    ['null access expiry', { expires_in: null }],
+    ['zero access expiry', { expires_in: 0 }],
+    ['negative access expiry', { expires_in: -1 }],
+    ['missing refresh expiry', { refresh_token_expires_in: undefined }],
+    ['null refresh expiry', { refresh_token_expires_in: null }],
+    ['zero refresh expiry', { refresh_token_expires_in: 0 }],
+    ['empty scope', { scope: '' }]
+  ] as const)('rejects a successful refresh response with %s', async (_label, override) => {
+    const client = new ShopifyTokenExchangeClient({
+      clientId: 'client-id-123',
+      clientSecret: 'shared-secret-456',
+      fetchImpl: () => Promise.resolve(new Response(JSON.stringify({
+        access_token: 'shpat_refreshed_access_token',
+        expires_in: 3_600,
+        refresh_token: 'shprt_refreshed_refresh_token',
+        refresh_token_expires_in: 7_776_000,
+        scope: 'read_orders',
+        ...override
+      }), { status: 200 }))
+    });
+
+    const failure = client.refreshOfflineToken({
+      refreshToken: 'shprt_old_refresh_token',
+      shopDomain: 'example.myshopify.com'
+    });
+    await expect(failure).rejects.toThrow(/Shopify token refresh response/u);
+    await expect(failure).rejects.not.toBeInstanceOf(ShopifyTokenRefreshRejectedError);
+  });
+
   test('raises an exchange error when Shopify rejects the token exchange', async () => {
     const client = new ShopifyTokenExchangeClient({
       clientId: 'client-id-123',
@@ -168,6 +207,58 @@ describe('ShopifyTokenExchangeClient', () => {
         shopDomain: 'example.myshopify.com'
       })
     ).rejects.toThrow('Shopify token exchange failed');
+  });
+
+  test('rejects a successful expiring exchange response with an incomplete rotating pair', async () => {
+    const client = new ShopifyTokenExchangeClient({
+      clientId: 'client-id-123',
+      clientSecret: 'shared-secret-456',
+      fetchImpl: () => Promise.resolve(new Response(JSON.stringify({
+        access_token: 'shpat_access_token',
+        expires_in: 3_600,
+        scope: 'read_orders'
+      }), { status: 200 }))
+    });
+
+    await expect(client.exchangeSessionTokenForOfflineToken({
+      sessionToken: 'valid-session-token',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toThrow('Shopify token exchange response missing refresh_token');
+  });
+
+  test.each([
+    [400, 'invalid_grant'],
+    [401, 'invalid_request']
+  ] as const)('classifies terminal refresh rejection %i %s for safe session exchange fallback', async (status, error) => {
+    const client = new ShopifyTokenExchangeClient({
+      clientId: 'client-id-123',
+      clientSecret: 'shared-secret-456',
+      fetchImpl: () => Promise.resolve(new Response(JSON.stringify({ error }), { status }))
+    });
+
+    await expect(client.refreshOfflineToken({
+      refreshToken: 'retired-refresh-token',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toEqual(new ShopifyTokenRefreshRejectedError(status, error));
+  });
+
+  test.each([
+    [400, 'temporarily_unavailable'],
+    [401, undefined],
+    [429, 'invalid_grant']
+  ] as const)('does not classify ambiguous refresh failure %i %s as terminal', async (status, error) => {
+    const client = new ShopifyTokenExchangeClient({
+      clientId: 'client-id-123',
+      clientSecret: 'shared-secret-456',
+      fetchImpl: () => Promise.resolve(new Response(JSON.stringify({ error }), { status }))
+    });
+
+    const failure = client.refreshOfflineToken({
+      refreshToken: 'still-canonical-refresh-token',
+      shopDomain: 'example.myshopify.com'
+    });
+    await expect(failure).rejects.toThrow('Shopify token refresh failed');
+    await expect(failure).rejects.not.toBeInstanceOf(ShopifyTokenRefreshRejectedError);
   });
 
   test.each(['exchange', 'refresh'] as const)('bounds abort-ignoring %s requests with a stable timeout', async (operation) => {
