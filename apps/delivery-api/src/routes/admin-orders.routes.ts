@@ -21,6 +21,7 @@ import {
 } from '../modules/shopify/order-sync.repository.js';
 import type { ShopifyOrderNode } from '../modules/shopify/order-sync.mapper.js';
 import type { DeliveryCycleConfig } from '../modules/shopify/order-delivery-scope.js';
+import { ShopifyDeliverySettingsError } from '../modules/shopify/order-delivery-settings.js';
 import type { SyncOrdersSnapshotInput, SyncOrdersSnapshotResult } from '../modules/shopify/order-sync.service.js';
 import {
   InvalidOrdersCursorError,
@@ -206,6 +207,9 @@ export function registerAdminOrdersRoutes(
     } catch (error) {
       if (error instanceof OrderSyncRouteLockedError) {
         return reply.code(409).send(errorResponse(error.code, error.message));
+      }
+      if (error instanceof ShopifyDeliverySettingsError) {
+        return reply.code(503).send(errorResponse(error.code, error.message));
       }
       throw error;
     }

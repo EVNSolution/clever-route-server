@@ -182,8 +182,12 @@ function createHarness(input: {
       request: <TData>(request: ShopifyAdminGraphqlRequest, options?: { signal?: AbortSignal }): Promise<TData> => {
         graphqlRequests.push(request);
         if (options?.signal !== undefined) graphqlSignals.push(options.signal);
-        if (input.graphqlResponse !== undefined) return input.graphqlResponse as Promise<TData>;
-        return Promise.resolve({ node: input.graphqlNode === undefined ? orderNode() : input.graphqlNode } as TData);
+        return (input.graphqlResponse ?? Promise.resolve({ node: input.graphqlNode === undefined ? orderNode() : input.graphqlNode }))
+          .then((data) => ({
+            ...data,
+            shop: { ianaTimezone: 'America/Toronto' },
+            currentAppInstallation: { metafield: null, legacyMetafield: null },
+          } as TData));
       }
     }),
     orderRepository: { upsertOrderWithDeliveryStop },

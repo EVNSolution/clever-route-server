@@ -1,6 +1,7 @@
 import type { ShopifyAdminGraphqlClient } from './admin-graphql.client.js';
 import type { ShopifyOrderNode } from './order-sync.mapper.js';
 import { mapShopifyOrderNodeToDeliveryInputs } from './order-sync.mapper.js';
+import { readShopifyDeliveryCycle } from './order-delivery-settings.js';
 import { buildOrderByIdQuery } from './order-sync.query.js';
 import type {
   UpsertOrderWithDeliveryStopInput,
@@ -216,7 +217,7 @@ export class ShopifyOrderWebhookProcessor {
     await this.options.orderRepository.upsertOrderWithDeliveryStop({
       appId: input.appId,
       shopDomain: input.shopDomain,
-      synced: mapShopifyOrderNodeToDeliveryInputs(data.node),
+      synced: mapShopifyOrderNodeToDeliveryInputs(data.node, { deliveryCycle: readShopifyDeliveryCycle(data) }),
       webhookClaim: { eventId: input.eventId, leaseToken: input.leaseToken }
     });
   }

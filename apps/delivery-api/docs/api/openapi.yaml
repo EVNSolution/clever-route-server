@@ -2341,6 +2341,17 @@ paths:
                       message: Invalid order sync payload
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Shopify installation delivery settings or shop timezone are unavailable; no snapshot orders are written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                data: null
+                error:
+                  code: SHOPIFY_DELIVERY_SETTINGS_UNAVAILABLE
+                  message: Shopify delivery settings or shop timezone are unavailable; retry synchronization.
   /admin/orders:
     get:
       tags: [Shopify Embedded Admin]
@@ -7898,6 +7909,20 @@ components:
       type: object
       required: [source, reason, orders]
       properties:
+        deliveryCycle:
+          description: Legacy snapshot hint; the Shopify runtime uses server-resolved installation settings and shop.ianaTimezone.
+          type: object
+          required: [cutoffWeekday, cutoffTime, timeZone]
+          properties:
+            cutoffWeekday:
+              type: string
+              enum: [SUNDAY, MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY]
+            cutoffTime:
+              type: string
+              pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+            timeZone:
+              type: string
+              description: IANA timezone identifier.
         source:
           const: clever-app-orders
         reason:
@@ -8061,6 +8086,21 @@ components:
             - 'null'
         name:
           type: string
+        note:
+          description: Source commerce order note. Empty string represents an explicit source-side clear.
+          type:
+            - string
+            - 'null'
+        customerNote:
+          description: Source customer profile note when supplied by the commerce source. This is distinct from delivery stop instructions.
+          type:
+            - string
+            - 'null'
+        deliveryInstructions:
+          description: Instructions attached to the canonical delivery stop.
+          type:
+            - string
+            - 'null'
         readiness:
           $ref: '#/components/schemas/CanonicalOrderReadiness'
         planningStatus:

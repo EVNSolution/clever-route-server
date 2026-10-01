@@ -67,6 +67,8 @@ describe('ShopifyOrderReconciliationService', () => {
         request: <TData>(request: ShopifyAdminGraphqlRequest): Promise<TData> => {
           requests.push(request);
           return Promise.resolve({
+            shop: { ianaTimezone: 'America/Toronto' },
+            currentAppInstallation: { metafield: null, legacyMetafield: null },
             orders: {
               nodes: [
                 {
@@ -184,6 +186,8 @@ function serviceHarness(input: {
     graphqlClientFactory: () => ({
       request: <TData>(): Promise<TData> =>
         Promise.resolve({
+          shop: { ianaTimezone: 'America/Toronto' },
+          currentAppInstallation: { metafield: null, legacyMetafield: null },
           orders: {
             nodes: [
               {
