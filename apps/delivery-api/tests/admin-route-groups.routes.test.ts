@@ -42,6 +42,23 @@ const standaloneRoutePlanCopy = {
 };
 
 describe('Admin route group routes', () => {
+  test('Copy forwards an optional logical UUID and rejects malformed keys before invoking the service', async () => {
+    const { copyGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    try {
+      const payload = { expectedUpdatedAt: routeGroup.updatedAt, mode: 'REFERENCE', requestId };
+      const valid = await app.inject({ method: 'POST', url: '/admin/route-groups/source/copies', headers: { authorization: 'Bearer fixture' }, payload });
+      expect(valid.statusCode).toBe(201);
+      expect(copyGrouping).toHaveBeenCalledWith(expect.objectContaining({ requestId, mode: 'REFERENCE' }));
+      copyGrouping.mockClear();
+      for (const bad of ['', 'not-a-uuid', null, 123]) {
+        const invalid = await app.inject({ method: 'POST', url: '/admin/route-groups/source/copies', headers: { authorization: 'Bearer fixture' }, payload: { ...payload, requestId: bad } });
+        expect(invalid.statusCode).toBe(400);
+      }
+      expect(copyGrouping).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
   test('forwards the optional atomic initial-route request and rejects malformed keys', async () => {
     const { createGrouping, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });

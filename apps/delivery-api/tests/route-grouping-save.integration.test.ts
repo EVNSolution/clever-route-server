@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import { PrismaClient } from '@prisma/client';
+import Fastify from 'fastify';
+import { registerAdminOrdersRoutes } from '../src/routes/admin-orders.routes.js';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
 import {
@@ -976,6 +978,125 @@ describeDatabase('route grouping save database regressions', () => {
       shopDomain
     });
   }
+
+  test.each(['REFERENCE', 'VIRTUAL'] as const)('%s Copy request replay/concurrency creates one resource, while a new attempt creates another', async (mode) => {
+    const orders = await seedOrders(2);
+    const source = await service.createGrouping({ appId, createdBy: 'integration', initialRoute: { requestId: randomUUID() },
+      name: 'idempotent Copy source', orderIds: orders.map(({ id }) => id), planDate: '2026-09-10', shopDomain });
+    await prisma.deliveryStop.update({ where: { id: orders[0]!.deliveryStopId }, data: { status: 'DELIVERED' } });
+    const requestId = randomUUID();
+    const input = { actor: 'integration', appId, expectedUpdatedAt: source.updatedAt, groupingId: source.id, mode, requestId, shopDomain };
+    const counts = async () => Promise.all([prisma.routeGrouping.count({ where: { shopId } }), prisma.order.count({ where: { shopId } }), prisma.inventory.count({ where: { shopId } })]);
+    const before = await counts();
+    const [first, duplicate, concurrent] = await Promise.all([service.copyGrouping(input), service.copyGrouping(input), service.copyGrouping(input)]);
+    expect(first!.id).toBe(requestId);
+    expect(duplicate!.id).toBe(requestId);
+    expect(concurrent!.id).toBe(requestId);
+    const after = await counts();
+    expect(after).toEqual([before[0] + 1, before[1] + (mode === 'VIRTUAL' ? 2 : 0), before[2] + 1]);
+    expect((await service.copyGrouping({ ...input, requestId: randomUUID() }))!.id).not.toBe(requestId);
+    for (const changed of [{ mode: mode === 'VIRTUAL' ? 'REFERENCE' as const : 'VIRTUAL' as const }, { actor: 'other' },
+      { expectedUpdatedAt: '2000-01-01T00:00:00Z' }, { groupingId: first!.id }]) {
+      await expect(service.copyGrouping({ ...input, ...changed })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+    }
+    const foreign = await prisma.shop.create({ data: { appId, shopDomain: `copy-foreign-${randomUUID()}.myshopify.com` } });
+    try {
+      await expect(service.copyGrouping({ ...input, shopDomain: foreign.shopDomain })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+    } finally { await prisma.shop.delete({ where: { id: foreign.id } }); }
+    const sourceBefore = await service.getGrouping({ appId, groupingId: source.id, shopDomain });
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: orders[0]!.deliveryStopId } })).status).toBe('DELIVERED');
+    await prisma.routeGrouping.update({ where: { id: source.id }, data: { name: 'source edited after Copy' } });
+    expect((await service.copyGrouping(input))!.id).toBe(requestId);
+    expect((await service.getGrouping({ appId, groupingId: source.id, shopDomain }))!.children).toEqual(sourceBefore!.children);
+    const copiedStops = await prisma.deliveryStop.findMany({ where: { orderId: { in: first!.children.flatMap(({ orderIds }) => orderIds) } } });
+    expect(copiedStops.some(({ status }) => status === 'DELIVERED')).toBe(true);
+  });
+
+  test.each(['REFERENCE', 'VIRTUAL'] as const)('%s Copy failure rolls back its request identity and same-key retry succeeds', async (mode) => {
+    const orders = await seedOrders(2);
+    const source = await service.createGrouping({ appId, createdBy: 'integration', initialRoute: { requestId: randomUUID() },
+      name: 'idempotency rollback fixture', orderIds: orders.map(({ id }) => id), planDate: '2026-09-10', shopDomain });
+    const input = { actor: 'integration', appId, expectedUpdatedAt: source.updatedAt, groupingId: source.id, mode, requestId: randomUUID(), shopDomain };
+    const before = await prisma.order.count({ where: { shopId } });
+    await prisma.$executeRawUnsafe(`CREATE FUNCTION copy_retry_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.name = 'idempotency rollback fixture' THEN RAISE EXCEPTION 'copy retry fixture'; END IF; RETURN NEW; END $$`);
+    await prisma.$executeRawUnsafe('CREATE TRIGGER copy_retry_failure BEFORE INSERT ON route_plans FOR EACH ROW EXECUTE FUNCTION copy_retry_failure()');
+    try { await expect(service.copyGrouping(input)).rejects.toThrow('copy retry fixture'); }
+    finally { await prisma.$executeRawUnsafe('DROP TRIGGER copy_retry_failure ON route_plans'); await prisma.$executeRawUnsafe('DROP FUNCTION copy_retry_failure()'); }
+    expect(await prisma.routeGrouping.findUnique({ where: { id: input.requestId } })).toBeNull();
+    expect(await prisma.order.count({ where: { shopId } })).toBe(before);
+    expect((await service.copyGrouping(input))!.id).toBe(input.requestId);
+    expect(await service.getGrouping({ appId, groupingId: source.id, shopDomain })).toEqual(source);
+  });
+
+  test.each([
+    ['2026-07-14', '2026-07-14T04:00:00Z', '2026-07-15T04:00:00Z'],
+    ['2026-01-13', '2026-01-13T05:00:00Z', '2026-01-14T05:00:00Z'],
+    ['2026-03-08', '2026-03-08T05:00:00Z', '2026-03-09T04:00:00Z'],
+    ['2026-11-01', '2026-11-01T04:00:00Z', '2026-11-02T05:00:00Z']
+  ])('Toronto %s DB filters include start and end-minus-1ms, exclude either outside edge (%s/%s)', async (date, start, end) => {
+    const marker = `date-boundary-${randomUUID()}`;
+    const timestamps = [new Date(new Date(start).getTime() - 1), new Date(start), new Date(new Date(end).getTime() - 1), new Date(end)];
+    const orders = await Promise.all(timestamps.map(async (processedAt, index) => {
+      const order = await seedOrder({ displayOrderSequence: true, namePrefix: marker });
+      await prisma.order.update({ where: { id: order.id }, data: {
+        processedAt, createdAt: new Date('2026-12-01T12:00:00Z'),
+        rawPayload: { processedAt: processedAt.toISOString(), createdAt: '2026-12-01T10:00:00Z',
+          orderCreatedAt: '2026-12-01T10:00:00Z', orderDateLocal: '2026-12-01' }
+      } });
+      return { ...order, index };
+    }));
+    const filters = { search: marker, orderedDateFrom: date, orderedDateTo: date, orderedDateTimeZone: 'America/Toronto' };
+    const result = await orderQueries.listPage({ appId, filters, page: 1, readWatermark: '2030-09-10T12:00:00Z', shopDomain });
+    expect(result.rows.map(({ orderId }) => orderId).sort()).toEqual([orders[1]!.id, orders[2]!.id].sort());
+    const snapshot = await orderQueries.createSelectionSnapshot({ actor: 'integration', appId, filters, shopDomain });
+    expect(snapshot.selectedCount).toBe(2);
+    expect((await orderQueries.facets({ appId, filters, shopDomain })).totalCount).toBe(2);
+    expect((await orderQueries.mapPoints({ appId, filters, limit: 10, shopDomain })).points.map(({ orderId }) => orderId).sort())
+      .toEqual([orders[1]!.id, orders[2]!.id].sort());
+  });
+
+  test('received order date is independent of Shopify creation, stale derived date, and delayed DB import', async () => {
+    const marker = `received-date-${randomUUID()}`;
+    const imported = await seedOrder({ displayOrderSequence: true, namePrefix: marker });
+    const formerFailure = await seedOrder({ displayOrderSequence: true, namePrefix: marker });
+    for (const [order, receivedAt, sourceCreatedAt] of [
+      [imported, '2026-10-07T02:00:00Z', '2026-10-08T18:00:00Z'],
+      [formerFailure, '2026-10-07T18:00:00Z', '2026-10-07T02:00:00Z']
+    ] as const) {
+      await prisma.order.update({ where: { id: order.id }, data: {
+        processedAt: new Date(receivedAt), createdAt: new Date('2026-10-09T18:00:00Z'),
+        rawPayload: { processedAt: receivedAt, createdAt: sourceCreatedAt, orderCreatedAt: sourceCreatedAt, orderDateLocal: '2026-10-06' }
+      } });
+    }
+    const api = Fastify();
+    registerAdminOrdersRoutes(api, {
+      sessionTokenVerifier: { verify(token) {
+        if (token !== 'fixture-reception-token') throw new Error('fixture auth denied');
+        return { appId, shopDomain, subject: 'integration' };
+      } },
+      orderSyncService: {
+        listCanonicalOrders: () => Promise.resolve([]),
+        listCanonicalOrdersPage: (input) => orderQueries.listPage(input),
+        syncOrdersSnapshot: () => Promise.reject(new Error('external sync forbidden'))
+      }
+    });
+    try {
+      for (const [date, expectedId] of [['2026-10-06', imported.id], ['2026-10-07', formerFailure.id]] as const) {
+        const filters = { search: marker, orderedDateFrom: date, orderedDateTo: date, orderedDateTimeZone: 'America/Toronto' };
+        const page = await orderQueries.listPage({ appId, filters, page: 1, readWatermark: '2030-09-10T12:00:00Z', shopDomain });
+        expect(page.rows.map(({ orderId }) => orderId)).toEqual([expectedId]);
+        expect(page.rows[0]!.processedAt).toBe(date === '2026-10-06' ? '2026-10-07T02:00:00.000Z' : '2026-10-07T18:00:00.000Z');
+        expect((await orderQueries.facets({ appId, filters, shopDomain })).totalCount).toBe(1);
+        expect((await orderQueries.mapPoints({ appId, filters, limit: 10, shopDomain })).points.map(({ orderId }) => orderId)).toEqual([expectedId]);
+        expect((await orderQueries.createSelectionSnapshot({ actor: 'integration', appId, filters, shopDomain })).selectedCount).toBe(1);
+        const response = await api.inject({ method: 'GET', headers: { authorization: 'Bearer fixture-reception-token' },
+          url: `/admin/orders/page?${new URLSearchParams({ ...filters, pageSize: '50', sort: 'id_desc', page: '1', readWatermark: '2030-09-10T12:00:00Z', scope: 'history', tab: 'all' }).toString()}` });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json<{ data: { rows: { orderId: string }[] } }>().data.rows.map(({ orderId }) => orderId)).toEqual([expectedId]);
+      }
+    } finally { await api.close(); }
+  });
 
   test('Reference Copy saves and splits real-order plans without resetting terminal state or changing the source', async () => {
     const orders = await seedOrders(2);

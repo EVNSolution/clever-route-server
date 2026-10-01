@@ -1266,12 +1266,17 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
   const knownKeys = new Set([
     'deliveryArea', 'deliveryBatchEndDate', 'deliveryBatchStartDate', 'deliveryDate', 'deliveryDateFrom',
     'deliverySession', 'deliveryState', 'deliveryWeekday', 'geocodeStatus', 'operateDeliveryStatus',
-    'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'planned', 'planningGroupKey', 'q',
+    'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'orderedDateTimeZone', 'planned', 'planningGroupKey', 'q',
     'readiness', 'routeOpsScope', 'routeOpsTab', 'routeOpsToday', 'routeScopeKey', 'scope', 'search',
     'serviceCategory', 'serviceType', 'tab'
   ]);
   if (Object.keys(query).some((key) => !knownKeys.has(key))) throw new Error('unknown order filter');
   const filters: ListCanonicalOrdersFilters = {};
+  const orderedDateTimeZone = readSingleQuery(query.orderedDateTimeZone);
+  if (orderedDateTimeZone !== null) {
+    if (!isValidTimeZone(orderedDateTimeZone)) throw new Error('orderedDateTimeZone must be an IANA timezone');
+    filters.orderedDateTimeZone = orderedDateTimeZone;
+  }
   const readiness = readSingleQuery(query.readiness);
   if (readiness !== null) {
     if (readiness !== 'READY_TO_PLAN' && readiness !== 'NEEDS_REVIEW' && readiness !== 'SKIPPED') {

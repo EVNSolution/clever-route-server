@@ -499,6 +499,25 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
       });
       if (shop === null) return null;
+      // Serialize a logical request across tenants and sources before locking its source.
+      // The first version retains the immutable fingerprint even after later route edits.
+      const copyRequestReason = input.requestId === undefined ? undefined : `copy-request:v1:${createHash('sha256').update(JSON.stringify({
+        actor: input.actor, expectedUpdatedAt: parseExpectedUpdatedAt(input.expectedUpdatedAt).toISOString(),
+        groupingId: input.groupingId, mode: input.mode, shopId: shop.id
+      })).digest('hex')}`;
+      if (input.requestId !== undefined) {
+        await lockRouteGroupingDraftSave(tx, input.requestId);
+        const existing = await tx.routeGrouping.findUnique({ select: { id: true, shopId: true }, where: { id: input.requestId } });
+        if (existing !== null) {
+          const receipt = await tx.routeGroupingVersion.findUnique({
+            select: { changeReason: true }, where: { groupingId_version: { groupingId: existing.id, version: 1 } }
+          });
+          if (existing.shopId !== shop.id || receipt?.changeReason !== copyRequestReason) {
+            throw new RouteGroupingConflictError('copy request changed; start a new request');
+          }
+          return existing.id;
+        }
+      }
       await lockRouteGroupingCopySource(tx, input.groupingId, shop.id);
       const source = await tx.routeGrouping.findFirst({
         include: groupingInclude(),
@@ -519,6 +538,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
       const copy = await tx.routeGrouping.create({
         data: {
+          ...(input.requestId === undefined ? {} : { id: input.requestId }),
           createdBy: input.actor,
           dateRangeEnd: source.dateRangeEnd,
           dateRangeStart: source.dateRangeStart,
@@ -533,7 +553,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         select: { id: true }
       });
       const copyVersion = await tx.routeGroupingVersion.create({
-        data: { actor: input.actor, groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 },
+        data: { actor: input.actor, ...(copyRequestReason === undefined ? {} : { changeReason: copyRequestReason }), groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 },
         select: { id: true }
       });
 
