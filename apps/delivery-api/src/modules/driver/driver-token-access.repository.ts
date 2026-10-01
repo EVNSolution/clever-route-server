@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import {
@@ -89,6 +90,7 @@ export class PrismaDriverTokenAccessRepository {
       },
       where: {
         id: input.routePlanId,
+        ...visibleDsvRouteWhere(),
         ...(options.allowCompleted === true
           ? { status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] } }
           : {

@@ -1,3 +1,4 @@
+import { visibleDsvOrderWhere, hasDsvTestExclusions } from '../dsv/dsv-test-visibility.js';
 import { Prisma, type PrismaClient } from "@prisma/client";
 
 import { redactDiagnosticPath, redactDiagnosticValue } from "../security/diagnostic-redaction.js";
@@ -615,7 +616,7 @@ export class PrismaOrderSyncRepository {
 
     const order = await this.prisma.order.findFirst({
       include: canonicalOrderInclude(),
-      where: { id: input.orderId, shopId: shop.id },
+      where: { id: input.orderId, shopId: shop.id, ...visibleDsvOrderWhere(shop.id) },
     });
 
     return order === null ? null : toCanonicalOrderRow(order);
@@ -668,7 +669,7 @@ export class PrismaOrderSyncRepository {
     const orders = (await this.prisma.order.findMany({
       include: canonicalOrderInclude(),
       orderBy: { updatedAtShopify: "desc" },
-      where: { shopId: shop.id, OR },
+      where: { shopId: shop.id, OR, ...visibleDsvOrderWhere(shop.id) },
     })) as CanonicalOrderRecord[];
 
     return orders.map((order) => toCanonicalOrderRow(order));
@@ -701,6 +702,7 @@ export class PrismaOrderSyncRepository {
           ? {}
           : { deliveryDate: parseDateOnly(input.deliveryDate) }),
         shopId: shop.id,
+        ...(hasDsvTestExclusions(shop.id) ? { order: visibleDsvOrderWhere(shop.id) } : {}),
       },
     })) as DeliveryFactCandidateRecord[];
     return summarizeDeliveryBatchCandidates(facts);
@@ -1569,6 +1571,7 @@ export function toCanonicalOrderWhere(
   now: Date = new Date(),
 ): Prisma.OrderWhereInput {
   const AND: Prisma.OrderWhereInput[] = [
+    ...(hasDsvTestExclusions(shopId) ? [visibleDsvOrderWhere(shopId)] : []),
     { sourcePlatform: { not: 'CUSTOM' } },
     { OR: [{ sellerOrderSourceKind: null }, { sellerOrderSourceKind: { not: 'CLEVER_ROUTE_COPY' } }] }
   ];

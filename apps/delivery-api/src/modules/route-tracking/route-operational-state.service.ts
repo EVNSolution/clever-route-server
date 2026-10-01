@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import type { PrismaClient } from '@prisma/client';
 import type { PrismaDriverSyncHealthService, DriverSyncHealthDto } from '../driver/driver-sync-health.service.js';
 import type { OperationalAlertDto, PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
@@ -72,7 +73,7 @@ export class PrismaRouteOperationalStateService {
         trackingGeometry: { select: { lastEventId: true, lastLatitude: true, lastLongitude: true, lastOccurredAt: true, lastReceivedAt: true } },
         routeStops: { include: { deliveryStop: { select: { latitude: true, longitude: true, status: true, updatedAt: true } } } }
       },
-      where: { id: { in: uniqueRoutePlanIds } }
+      where: { id: { in: uniqueRoutePlanIds }, ...visibleDsvRouteWhere() }
     });
     const trackingGeometryByRouteId = new Map(routes.map((route) => [
       route.id,

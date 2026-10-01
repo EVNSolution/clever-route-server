@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../src/modules/dsv/dsv-test-visibility.js';
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverTokenAccessRepository } from '../src/modules/driver/driver-token-access.repository.js';
@@ -76,6 +77,7 @@ describe('PrismaDriverTokenAccessRepository', () => {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: 'route-plan-id',
+        ...visibleDsvRouteWhere(),
         status: { in: ['READY', 'IN_PROGRESS', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] }
       }
     });
@@ -152,6 +154,7 @@ describe('PrismaDriverTokenAccessRepository', () => {
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         id: 'route-plan-id',
+        ...visibleDsvRouteWhere(),
         status: { in: ['READY', 'IN_PROGRESS', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'COMPLETED', 'INCOMPLETE'] }
       }
     }));

@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import { assertRouteDispatchOwnership, claimRouteExecutionProjection } from './route-execution-ownership.js';
 import { DriverEventType, Prisma, type PrismaClient } from '@prisma/client';
 import {
@@ -1250,6 +1251,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
     const where: Prisma.RoutePlanWhereInput = {
       shopId: shop.id,
+      ...visibleDsvRouteWhere(shop.id),
       ...(input.deliveryDate === undefined ? {} : { planDate: parsePlanDate(input.deliveryDate) })
     };
     const routePlans = await this.prisma.routePlan.findMany({
@@ -1275,7 +1277,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       include: routePlanInclude(),
       where: {
         id: input.routePlanId,
-        shopId: shop.id
+        shopId: shop.id,
+        ...visibleDsvRouteWhere(shop.id)
       }
     });
 
@@ -1299,7 +1302,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       select: { id: true },
       where: {
         id: input.routePlanId,
-        shopId: shop.id
+        shopId: shop.id,
+        ...visibleDsvRouteWhere(shop.id)
       }
     });
     return routePlan !== null;
