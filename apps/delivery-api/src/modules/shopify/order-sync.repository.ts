@@ -1644,6 +1644,9 @@ export function toCanonicalOrderWhere(
   if (filters.deliveryBatchEndDate !== undefined) {
     AND.push({ rawPayload: { path: ['deliveryBatchEndDate'], equals: filters.deliveryBatchEndDate } });
   }
+  // Order.processedAt is copied from Shopify's displayed/original order date,
+  // not the ingestion job processedAt or CLEVER Order.createdAt (DB import time).
+  // The web Order Date must use this same source instant in the store IANA zone.
   if (filters.orderedDateFrom !== undefined) {
     const from = parseDateOnly(filters.orderedDateFrom);
     if (from !== null) AND.push({ processedAt: { gte: orderedDateBoundary(filters.orderedDateFrom, filters.orderedDateTimeZone) } });

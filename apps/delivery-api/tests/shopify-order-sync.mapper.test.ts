@@ -754,3 +754,16 @@ test('uses tomatono_delivery_date attributes as ready route scope input', () => 
   );
   expect(mapped.order.rawPayload).toEqual(expect.objectContaining({ deliveryDateRaw: '2026-05-18' }));
 });
+
+
+test('Shopify source order-date instant is retained independently from record creation for delayed imports', () => {
+  const mapped = mapShopifyOrderNodeToDeliveryInputs({
+    id: 'gid://shopify/Order/received-date-fixture', legacyResourceId: '1', name: '#fixture', currentTotalPriceSet: null,
+    createdAt: '2026-10-08T18:00:00Z', processedAt: '2026-10-07T02:00:00-04:00', updatedAt: '2026-10-09T18:00:00Z',
+    email: null, phone: null, displayFinancialStatus: 'PENDING', displayFulfillmentStatus: 'UNFULFILLED',
+    shippingAddress: null
+  });
+  expect(mapped.order.processedAt).toEqual(new Date('2026-10-07T06:00:00Z'));
+  expect(mapped.order.rawPayload.processedAt).toBe('2026-10-07T02:00:00-04:00');
+  expect(mapped.order.rawPayload.createdAt).toBe('2026-10-08T18:00:00Z');
+});

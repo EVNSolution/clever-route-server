@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import { PrismaClient } from '@prisma/client';
+import Fastify from 'fastify';
+import { registerAdminOrdersRoutes } from '../src/routes/admin-orders.routes.js';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
 import {
@@ -1037,17 +1039,63 @@ describeDatabase('route grouping save database regressions', () => {
     const timestamps = [new Date(new Date(start).getTime() - 1), new Date(start), new Date(new Date(end).getTime() - 1), new Date(end)];
     const orders = await Promise.all(timestamps.map(async (processedAt, index) => {
       const order = await seedOrder({ displayOrderSequence: true, namePrefix: marker });
-      await prisma.order.update({ where: { id: order.id }, data: { processedAt, rawPayload: { orderCreatedAt: processedAt.toISOString() } } });
+      await prisma.order.update({ where: { id: order.id }, data: {
+        processedAt, createdAt: new Date('2026-12-01T12:00:00Z'),
+        rawPayload: { processedAt: processedAt.toISOString(), createdAt: '2026-12-01T10:00:00Z',
+          orderCreatedAt: '2026-12-01T10:00:00Z', orderDateLocal: '2026-12-01' }
+      } });
       return { ...order, index };
     }));
     const filters = { search: marker, orderedDateFrom: date, orderedDateTo: date, orderedDateTimeZone: 'America/Toronto' };
-    const result = await orderQueries.listPage({ appId, filters, shopDomain });
+    const result = await orderQueries.listPage({ appId, filters, page: 1, readWatermark: '2030-09-10T12:00:00Z', shopDomain });
     expect(result.rows.map(({ orderId }) => orderId).sort()).toEqual([orders[1]!.id, orders[2]!.id].sort());
     const snapshot = await orderQueries.createSelectionSnapshot({ actor: 'integration', appId, filters, shopDomain });
     expect(snapshot.selectedCount).toBe(2);
     expect((await orderQueries.facets({ appId, filters, shopDomain })).totalCount).toBe(2);
     expect((await orderQueries.mapPoints({ appId, filters, limit: 10, shopDomain })).points.map(({ orderId }) => orderId).sort())
       .toEqual([orders[1]!.id, orders[2]!.id].sort());
+  });
+
+  test('received order date is independent of Shopify creation, stale derived date, and delayed DB import', async () => {
+    const marker = `received-date-${randomUUID()}`;
+    const imported = await seedOrder({ displayOrderSequence: true, namePrefix: marker });
+    const formerFailure = await seedOrder({ displayOrderSequence: true, namePrefix: marker });
+    for (const [order, receivedAt, sourceCreatedAt] of [
+      [imported, '2026-10-07T02:00:00Z', '2026-10-08T18:00:00Z'],
+      [formerFailure, '2026-10-07T18:00:00Z', '2026-10-07T02:00:00Z']
+    ] as const) {
+      await prisma.order.update({ where: { id: order.id }, data: {
+        processedAt: new Date(receivedAt), createdAt: new Date('2026-10-09T18:00:00Z'),
+        rawPayload: { processedAt: receivedAt, createdAt: sourceCreatedAt, orderCreatedAt: sourceCreatedAt, orderDateLocal: '2026-10-06' }
+      } });
+    }
+    const api = Fastify();
+    registerAdminOrdersRoutes(api, {
+      sessionTokenVerifier: { verify(token) {
+        if (token !== 'fixture-reception-token') throw new Error('fixture auth denied');
+        return { appId, shopDomain, subject: 'integration' };
+      } },
+      orderSyncService: {
+        listCanonicalOrders: () => Promise.resolve([]),
+        listCanonicalOrdersPage: (input) => orderQueries.listPage(input),
+        syncOrdersSnapshot: () => Promise.reject(new Error('external sync forbidden'))
+      }
+    });
+    try {
+      for (const [date, expectedId] of [['2026-10-06', imported.id], ['2026-10-07', formerFailure.id]] as const) {
+        const filters = { search: marker, orderedDateFrom: date, orderedDateTo: date, orderedDateTimeZone: 'America/Toronto' };
+        const page = await orderQueries.listPage({ appId, filters, page: 1, readWatermark: '2030-09-10T12:00:00Z', shopDomain });
+        expect(page.rows.map(({ orderId }) => orderId)).toEqual([expectedId]);
+        expect(page.rows[0]!.processedAt).toBe(date === '2026-10-06' ? '2026-10-07T02:00:00.000Z' : '2026-10-07T18:00:00.000Z');
+        expect((await orderQueries.facets({ appId, filters, shopDomain })).totalCount).toBe(1);
+        expect((await orderQueries.mapPoints({ appId, filters, limit: 10, shopDomain })).points.map(({ orderId }) => orderId)).toEqual([expectedId]);
+        expect((await orderQueries.createSelectionSnapshot({ actor: 'integration', appId, filters, shopDomain })).selectedCount).toBe(1);
+        const response = await api.inject({ method: 'GET', headers: { authorization: 'Bearer fixture-reception-token' },
+          url: `/admin/orders/page?${new URLSearchParams({ ...filters, pageSize: '50', sort: 'id_desc', page: '1', readWatermark: '2030-09-10T12:00:00Z', scope: 'history', tab: 'all' }).toString()}` });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json<{ data: { rows: { orderId: string }[] } }>().data.rows.map(({ orderId }) => orderId)).toEqual([expectedId]);
+      }
+    } finally { await api.close(); }
   });
 
   test('Reference Copy saves and splits real-order plans without resetting terminal state or changing the source', async () => {
