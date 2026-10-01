@@ -632,15 +632,23 @@ function readCreateGroupingPayload(value: unknown): {
   };
 }
 
-function readCopyGroupingPayload(value: unknown): { expectedUpdatedAt: string; mode: 'REFERENCE' | 'VIRTUAL' } {
+function readCopyGroupingPayload(value: unknown): { expectedUpdatedAt: string; mode: 'REFERENCE' | 'VIRTUAL'; requestId?: string } {
   const object = requireObject(value);
   if (object.mode !== 'REFERENCE' && object.mode !== 'VIRTUAL') {
     throw new BadRouteGroupPayloadError('copy mode must be REFERENCE or VIRTUAL');
   }
   return {
+    ...(object.requestId === undefined ? {} : { requestId: readCopyRequestId(object.requestId) }),
     expectedUpdatedAt: readRevisionTimestamp(object.expectedUpdatedAt, 'expectedUpdatedAt'),
     mode: object.mode
   };
+}
+
+function readCopyRequestId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)) {
+    throw new BadRouteGroupPayloadError('requestId must be a UUID');
+  }
+  return value.toLowerCase();
 }
 
 function readDepot(value: unknown): RoutePlanDepotInput {

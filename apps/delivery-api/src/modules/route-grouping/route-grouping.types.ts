@@ -191,6 +191,7 @@ export type CopyRouteGroupingInput = {
   expectedUpdatedAt: string;
   groupingId: string;
   mode: RouteGroupingCopyMode;
+  requestId?: string;
   shopDomain: string;
 };
 

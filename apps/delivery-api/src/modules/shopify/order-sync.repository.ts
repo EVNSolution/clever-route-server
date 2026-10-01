@@ -25,6 +25,7 @@ import type { AssignedRouteAddressChangedEvent } from "../notifications/admin-we
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
 import { requireOrdersPlanningReferenceDate } from "./order-pagination.js";
 import { parseOrderDisplaySequence } from "./order-display-sequence.js";
+import { orderedDateBoundary } from './ordered-date-range.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
 import {
@@ -84,6 +85,7 @@ export type ListCanonicalOrdersFilters = {
   orderHealth?: OrderHealth;
   orderedDateFrom?: string;
   orderedDateTo?: string;
+  orderedDateTimeZone?: string;
   planned?: boolean;
   planningGroupKey?: string;
   readiness?: CanonicalOrderReadiness;
@@ -1644,11 +1646,11 @@ export function toCanonicalOrderWhere(
   }
   if (filters.orderedDateFrom !== undefined) {
     const from = parseDateOnly(filters.orderedDateFrom);
-    if (from !== null) AND.push({ processedAt: { gte: from } });
+    if (from !== null) AND.push({ processedAt: { gte: orderedDateBoundary(filters.orderedDateFrom, filters.orderedDateTimeZone) } });
   }
   if (filters.orderedDateTo !== undefined) {
     const to = parseDateOnly(filters.orderedDateTo);
-    if (to !== null) AND.push({ processedAt: { lt: new Date(to.getTime() + 86_400_000) } });
+    if (to !== null) AND.push({ processedAt: { lt: orderedDateBoundary(filters.orderedDateTo, filters.orderedDateTimeZone, true) } });
   }
   if (filters.deliveryState === 'fulfilled') AND.push({ fulfillmentStatus: { equals: 'FULFILLED', mode: 'insensitive' } });
   if (filters.deliveryState === 'unfulfilled') AND.push({ fulfillmentStatus: { in: SHOPIFY_UNFULFILLED_STATUSES, mode: 'insensitive' } });
