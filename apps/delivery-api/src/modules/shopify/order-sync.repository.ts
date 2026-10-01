@@ -25,6 +25,7 @@ import type { AssignedRouteAddressChangedEvent } from "../notifications/admin-we
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
 import { requireOrdersPlanningReferenceDate } from "./order-pagination.js";
 import { parseOrderDisplaySequence } from "./order-display-sequence.js";
+import { ordersV2Where, prepareOrdersV2Filters, v2ProgressForRecord, type OrdersV2Filters } from './order-filters-v2.js';
 import { orderedDateBoundary } from './ordered-date-range.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
@@ -71,7 +72,7 @@ export type AssertOrdersSnapshotRefreshableInput = {
   shopifyOrderGids: string[];
 };
 
-export type ListCanonicalOrdersFilters = {
+export type ListCanonicalOrdersFilters = OrdersV2Filters & {
   deliveryState?: "unplanned" | "planned" | "assigned_undelivered" | "past_due" | "delivered" | "fulfilled" | "unfulfilled";
   deliveryBatchEndDate?: string;
   deliveryBatchStartDate?: string;
@@ -303,6 +304,8 @@ type ExistingDeliveryStop = {
 };
 
 export type CanonicalOrderRecord = {
+  currentRouteVersionId?: string | null;
+  currentRouteVersion?: { status: string; supersededAt: Date | null; routePlan?: { status: string } | null } | null;
   cancelledAt: Date | null;
   currencyCode: string | null;
   deliveryFacts?: DeliveryFactCanonicalRecord[];
@@ -627,14 +630,15 @@ export class PrismaOrderSyncRepository {
     }
 
     const now = this.options.now?.() ?? new Date();
+    const preparedFilters = await prepareOrdersV2Filters(this.prisma, shop.id, input.filters ?? {});
     const orders = (await this.prisma.order.findMany({
       include: canonicalOrderInclude(),
       orderBy: { updatedAtShopify: "desc" },
-      where: toCanonicalOrderWhere(shop.id, input.filters ?? {}, now),
+      where: toCanonicalOrderWhere(shop.id, preparedFilters, now),
     })) as CanonicalOrderRecord[];
 
     return orders
-      .map((order) => toCanonicalOrderRow(order))
+      .map((order) => toOrdersQueryRow(order, input.filters ?? {}, now))
       .filter((row) => matchesDerivedFilters(row, input.filters ?? {}, now));
   }
 
@@ -1537,6 +1541,7 @@ function isExistingNewerThanSnapshot(
 
 export function canonicalOrderInclude(): Prisma.OrderInclude {
   return {
+    currentRouteVersion: { select: { status: true, supersededAt: true, routePlan: { select: { status: true } } } },
     deliveryFacts: {
       take: 1,
     },
@@ -1616,6 +1621,7 @@ export function toCanonicalOrderWhere(
     ] satisfies Prisma.OrderWhereInput[];
     AND.push({ OR: textFields });
   }
+  if (filters.filterVersion === '2') return { shopId, AND: [...AND, ...ordersV2Where(filters, now)] };
   const fact: Prisma.OrderDeliveryFactWhereInput = {};
   if (filters.deliveryArea !== undefined) fact.deliveryArea = { equals: filters.deliveryArea.trim(), mode: 'insensitive' };
   if (filters.deliveryDate !== undefined) fact.deliveryDate = parseDateOnly(filters.deliveryDate);
@@ -3160,6 +3166,18 @@ function hasMetadataResolved(input: {
     "missing_order_date",
   ]);
   return !input.reviewReasons.some((reason) => metadataBlockers.has(reason));
+}
+
+export function toOrdersQueryRow(order: CanonicalOrderRecord, filters: ListCanonicalOrdersFilters, now: Date): CanonicalOrderRow {
+  const row = toCanonicalOrderRow(order);
+  if (filters.filterVersion !== '2') return row;
+  const fact = order.deliveryFacts?.[0];
+  return { ...row, filterVersion: '2',
+    deliveryDate: fact?.deliveryDate?.toISOString().slice(0, 10) ?? null,
+    deliveryArea: fact?.deliveryArea ?? null,
+    serviceType: fact?.serviceType ?? null,
+    queryDeliveryProgress: v2ProgressForRecord(order, now, filters.orderedDateTimeZone)
+  };
 }
 
 export function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {

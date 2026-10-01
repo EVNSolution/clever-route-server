@@ -1,3 +1,4 @@
+import { prepareOrdersV2Filters, V2_PROGRESS, V2_SERVICES, V2_FULFILLMENT, V2_PAYMENT } from './order-filters-v2.js';
 import { createHmac, randomBytes } from 'node:crypto';
 
 import { Prisma, type PrismaClient } from '@prisma/client';
@@ -12,7 +13,7 @@ import {
 import { parseOrderDisplaySequence } from './order-display-sequence.js';
 import {
   canonicalOrderInclude,
-  toCanonicalOrderRow,
+  toOrdersQueryRow,
   toCanonicalOrderWhere,
   type CanonicalOrderRecord,
   type BulkOrderPaymentValue,
@@ -87,12 +88,13 @@ export class PrismaOrderQueryRepository {
     if (input.page !== undefined && (input.after !== undefined || input.before !== undefined)) {
       throw new Error('page cannot be combined with cursors');
     }
-    const filters = input.filters ?? {};
+    let filters = input.filters ?? {};
     const now = this.now();
     const shop = await this.findShop(input);
     if (shop === null) return emptyPage(createOrdersFilterHash(filters, this.secret));
-    const appId = normalizeShopifyAppId(input.appId);
     const filterHash = createOrdersFilterHash(filters, this.secret);
+    filters = await prepareOrdersV2Filters(this.prisma, shop.id, filters);
+    const appId = normalizeShopifyAppId(input.appId);
     if (input.page !== undefined) {
       return this.listNumericPage({
         appId,
@@ -150,7 +152,7 @@ export class PrismaOrderQueryRepository {
     const hasExtra = rows.length > ORDERS_PAGE_SIZE;
     const kept = rows.slice(0, ORDERS_PAGE_SIZE);
     if (boundary === 'before') kept.reverse();
-    const mapped = kept.map(toCanonicalOrderRow);
+    const mapped = kept.map(order => toOrdersQueryRow(order, filters, now));
     const start = kept[0];
     const end = kept.at(-1);
     return {
@@ -213,7 +215,7 @@ export class PrismaOrderQueryRepository {
         startCursor: start === undefined ? null : this.cursorFor(start, { appId: input.appId, boundary: 'before', filterHash: input.filterHash, readWatermark, shopId: input.shopId }),
         totalPages
       },
-      rows: rows.map(toCanonicalOrderRow),
+      rows: rows.map(order => toOrdersQueryRow(order, input.filters, input.now)),
       sort: ORDERS_SORT
     };
   }
@@ -224,6 +226,7 @@ export class PrismaOrderQueryRepository {
     const shop = await this.findShop(input);
     const filterHash = createOrdersFilterHash(filters, this.secret);
     if (shop === null) return { countPrecision: 'exact' as const, facets: emptyFacets(), filterHash, totalCount: 0 };
+    if (filters.filterVersion === '2') return this.v2Facets(shop.id, filters, now, filterHash);
     const without = <K extends keyof ListCanonicalOrdersFilters>(...keys: K[]) => {
       const copy = { ...filters };
       for (const key of keys) delete copy[key];
@@ -255,13 +258,31 @@ export class PrismaOrderQueryRepository {
     };
   }
 
+  private async v2Facets(shopId: string, filters: ListCanonicalOrdersFilters, now: Date, filterHash: string) {
+    const preparedFilters = await prepareOrdersV2Filters(this.prisma, shopId, filters);
+    const scheduledKeys = ['scheduledDateFrom', 'scheduledDateTo', 'scheduledDateMissing', 'scheduledWeekdays', 'scheduledActualDates'] as const;
+    const without = (...keys: (keyof ListCanonicalOrdersFilters)[]) => { const copy = { ...preparedFilters }; for (const key of keys) delete copy[key]; return copy; };
+    const count = async (query: ListCanonicalOrdersFilters) => this.prisma.order.count({ where: toCanonicalOrderWhere(shopId, query, now) });
+    const options = async (key: 'serviceTypes' | 'deliveryProgress' | 'fulfillmentStatuses' | 'paymentStatuses', values: readonly string[]) => Promise.all(values.map(async value => ({ value, count: await count({ ...without(key), [key]: [value] }) })));
+    const [areas, services, progress, fulfillment, payments, missingDateCount, totalCount] = await Promise.all([
+      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryArea'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shopId, without('areas', 'areaMissing'), now) } }),
+      options('serviceTypes', V2_SERVICES), options('deliveryProgress', V2_PROGRESS), options('fulfillmentStatuses', V2_FULFILLMENT), options('paymentStatuses', V2_PAYMENT),
+      count({ ...without(...scheduledKeys), scheduledDateMissing: true }), count(preparedFilters)
+    ]);
+    const areaValues = areas.flatMap(row => row.deliveryArea?.trim() ? [row.deliveryArea] : []);
+    const areaCounts = await Promise.all(areaValues.map(async value => ({ value, count: await count({ ...without('areas', 'areaMissing'), areas: [value] }) })));
+    areaCounts.push({ value: '__MISSING__', count: await count({ ...without('areas', 'areaMissing'), areaMissing: true }) });
+    return { countPrecision: 'exact' as const, filterHash, totalCount, facets: { areas: areaCounts, serviceTypes: services, deliveryProgress: progress, fulfillmentStatuses: fulfillment, paymentStatuses: payments, scheduledDateMissing: [{ value: 'true', count: missingDateCount }] } };
+  }
+
   async mapPoints(input: { appId?: string; filters?: ListCanonicalOrdersFilters; limit: number; shopDomain: string }) {
-    const filters = input.filters ?? {};
+    let filters = input.filters ?? {};
     const shop = await this.findShop(input);
     const filterHash = createOrdersFilterHash(filters, this.secret);
     if (shop === null) return { filterHash, generatedAt: new Date().toISOString(), omittedCount: 0, points: [] };
     const boundedLimit = Math.min(Math.max(input.limit, 1), 2_000);
     const now = this.now();
+    filters = await prepareOrdersV2Filters(this.prisma, shop.id, filters);
     const where = toCanonicalOrderWhere(shop.id, filters, now);
     const [orders, totalCount] = await this.prisma.$transaction([
       this.prisma.order.findMany({
@@ -315,7 +336,7 @@ export class PrismaOrderQueryRepository {
     filters?: ListCanonicalOrdersFilters;
     shopDomain: string;
   }) {
-    const filters = input.filters ?? {};
+    let filters = input.filters ?? {};
     const shop = await this.findShop(input);
     if (shop === null || input.actor.trim() === '') throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
     const appId = normalizeShopifyAppId(input.appId);
@@ -325,6 +346,7 @@ export class PrismaOrderQueryRepository {
     const tokenHash = keyedHash(this.secret, token);
     const actorSubjectHash = keyedHash(this.secret, input.actor);
     const filterHash = createOrdersFilterHash(filters, this.secret);
+    filters = await prepareOrdersV2Filters(this.prisma, shop.id, filters);
     const exclusions = new Set(input.excludeOrderIds ?? []);
     const result = await this.prisma.$transaction(async (tx) => {
       const members = await tx.order.findMany({
