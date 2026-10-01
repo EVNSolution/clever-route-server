@@ -146,6 +146,8 @@ export type GeocodeDiagnostics = {
 };
 
 export type CanonicalOrderRow = {
+  filterVersion?: '2';
+  queryDeliveryProgress?: string;
   cancelledAt: string | null;
   currencyCode: string | null;
   customerNote?: string | null;

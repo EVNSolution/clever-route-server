@@ -1,3 +1,4 @@
+import { readOrdersV2Filters } from '../modules/shopify/order-filters-v2.js';
 import { performance } from 'node:perf_hooks';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -861,11 +862,19 @@ function readSelectionSnapshotCreatePayload(value: unknown): {
   }
   const excludeOrderIds = readStringArrayValue(object.excludeOrderIds);
   const rawFilters = object.filters === undefined ? {} : requireObject(object.filters);
-  const query = Object.fromEntries(Object.entries(rawFilters).map(([key, item]) => {
-    if (typeof item === 'boolean') return [key, String(item)];
-    if (typeof item !== 'string') throw new Error('invalid selection filter');
-    return [key, item];
-  }));
+  const query: Record<string, string | string[]> = {};
+  for (const [key, item] of Object.entries(rawFilters)) {
+    if (Array.isArray(item)) {
+      const values: string[] = [];
+      for (const value of item as unknown[]) {
+        if (typeof value !== 'string') throw new Error('invalid selection filter');
+        values.push(value);
+      }
+      query[key] = values;
+    } else if (typeof item === 'boolean') query[key] = String(item);
+    else if (typeof item === 'string') query[key] = item;
+    else throw new Error('invalid selection filter');
+  }
   return {
     ...(excludeOrderIds.length === 0 ? {} : { excludeOrderIds }),
     filters: readFilters(query)
@@ -1263,6 +1272,7 @@ function readDateOrIssue(
 }
 
 function readFilters(query: Record<string, string | string[] | undefined>): ListCanonicalOrdersFilters {
+  if (query.filterVersion !== undefined) return readOrdersV2Filters(query);
   const knownKeys = new Set([
     'deliveryArea', 'deliveryBatchEndDate', 'deliveryBatchStartDate', 'deliveryDate', 'deliveryDateFrom',
     'deliverySession', 'deliveryState', 'deliveryWeekday', 'geocodeStatus', 'operateDeliveryStatus',
