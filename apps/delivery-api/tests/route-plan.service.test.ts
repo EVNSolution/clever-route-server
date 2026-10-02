@@ -201,34 +201,111 @@ describe('RoutePlanAdminService route geometry policy', () => {
     expect(publisher.publishProgress).not.toHaveBeenCalled();
   });
 
-  test('admin stop override delegates stale geometry handling to the repository', async () => {
+  test('admin stop override preserves geometry without a refresh when repository reports no shape change', async () => {
     const { repository, routeGeometryProvider, updateAdminRouteStopOverride } = createHarness(baseDetail);
+    updateAdminRouteStopOverride.mockResolvedValueOnce({
+      geometry: { status: 'preserved' },
+      refreshGuard: null,
+      routePlan: baseDetail
+    });
     const service = new RoutePlanAdminService(repository, routeGeometryProvider);
 
-    await service.updateAdminRouteStopOverride({
+    const result = await service.updateAdminRouteStopOverride({
       actor: 'admin-subject',
       deliveryStopId: 'stop-1',
-      payload: {
-        latitude: 43.7,
-        longitude: -79.4,
-        serviceMinutes: 10
-      },
+      payload: { serviceMinutes: 5 },
       routePlanId: 'route-plan-id',
       shopDomain: 'example.myshopify.com'
     });
 
-    expect(updateAdminRouteStopOverride).toHaveBeenCalledWith({
+    expect(result?.geometry.status).toBe('preserved');
+    expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
+  });
+
+  test('admin stop override refreshes changed geometry before returning the fresh route detail', async () => {
+    const { commitAdminRouteStopGeometryCache, repository, routeGeometryProvider, updateAdminRouteStopOverride } = createHarness(baseDetail);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    const result = await service.updateAdminRouteStopOverride({
       actor: 'admin-subject',
       deliveryStopId: 'stop-1',
-      payload: {
-        latitude: 43.7,
-        longitude: -79.4,
-        serviceMinutes: 10
-      },
+      payload: { serviceMinutes: 10 },
       routePlanId: 'route-plan-id',
       shopDomain: 'example.myshopify.com'
     });
-    expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
+
+    expect(updateAdminRouteStopOverride).toHaveBeenCalledBefore(routeGeometryProvider.buildRoute);
+    expect(routeGeometryProvider.buildRoute).toHaveBeenCalledWith(baseDetail);
+    expect(routeGeometryProvider.buildRoute).toHaveBeenCalledBefore(commitAdminRouteStopGeometryCache);
+    expect(commitAdminRouteStopGeometryCache).toHaveBeenCalledWith(expect.objectContaining({
+      routePlanId: 'route-plan-id',
+      source: 'SHAPE_MUTATION'
+    }));
+    expect(result?.geometry.status).toBe('stale');
+    expect(result?.routePlan.routeGeometryStatus).toBe('fresh');
+    expect(result?.routePlan.routeMetrics).toEqual(routeResult.routeMetrics);
+  });
+
+  test('admin stop override returns the newest detail when a late provider result loses its commit guard', async () => {
+    const latestDetail = detailWithComputedSignature({
+      ...changedShapeDetail,
+      routeGeometryStatus: 'fresh'
+    });
+    const { commitAdminRouteStopGeometryCache, findRoutePlanDetail, repository, routeGeometryProvider } = createHarness(baseDetail);
+    commitAdminRouteStopGeometryCache.mockResolvedValueOnce(false);
+    findRoutePlanDetail.mockResolvedValueOnce(latestDetail);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    const result = await service.updateAdminRouteStopOverride({
+      actor: 'admin-subject',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: 10 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(commitAdminRouteStopGeometryCache).toHaveBeenCalledOnce();
+    expect(result?.routePlan).toBe(latestDetail);
+  });
+
+  test('admin stop override returns explicit unavailable geometry when provider refresh fails', async () => {
+    const { repository, routeGeometryProvider } = createHarness(baseDetail);
+    routeGeometryProvider.buildRoute.mockRejectedValueOnce(new Error('OSRM unavailable'));
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    const result = await service.updateAdminRouteStopOverride({
+      actor: 'admin-subject',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: 10 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.geometry.status).toBe('stale');
+    expect(result?.routePlan.routeGeometryStatus).toBe('unavailable');
+    expect(result?.routePlan.routeGeometry).toBeNull();
+    expect(result?.routePlan.routeMetrics).toBeNull();
+  });
+
+  test('admin stop override does not commit an incomplete provider result', async () => {
+    const { commitAdminRouteStopGeometryCache, repository, routeGeometryProvider } = createHarness(baseDetail);
+    routeGeometryProvider.buildRoute.mockResolvedValueOnce({
+      routeGeometry: null,
+      routeMetrics: null,
+      routeStopPoints: []
+    });
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    const result = await service.updateAdminRouteStopOverride({
+      actor: 'admin-subject',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: 10 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(commitAdminRouteStopGeometryCache).not.toHaveBeenCalled();
+    expect(result?.routePlan.routeGeometryStatus).toBe('unavailable');
   });
 
   test('shape mutation refreshes and persists geometry only when shape signature changes', async () => {
@@ -679,6 +756,7 @@ function createHarness(detail: RoutePlanDetail, options: {
   updateRoutePlanStops: ReturnType<typeof vi.fn<RoutePlanRepository['updateRoutePlanStops']>>;
   upsertRouteGeometryCache: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['upsertRouteGeometryCache']>>>;
   commitOrderDataRouteGeometryCache: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['commitOrderDataRouteGeometryCache']>>>;
+  commitAdminRouteStopGeometryCache: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['commitAdminRouteStopGeometryCache']>>>;
 } {
   const assignRoutePlanDriver = vi.fn<RoutePlanRepository['assignRoutePlanDriver']>().mockResolvedValue(detail);
   const createRoutePlanDraft = vi.fn<RoutePlanRepository['createRoutePlanDraft']>().mockResolvedValue(detail.routePlan);
@@ -697,14 +775,24 @@ function createHarness(detail: RoutePlanDetail, options: {
   const transitionAdminRouteStop = vi.fn<NonNullable<RoutePlanRepository['transitionAdminRouteStop']>>().mockResolvedValue(options.transitionResult ?? adminStopTransitionResult(detail));
   const updateAdminRouteStopOverride = vi.fn<NonNullable<RoutePlanRepository['updateAdminRouteStopOverride']>>().mockResolvedValue({
     geometry: { status: 'stale' },
+    refreshGuard: {
+      expectedRoutePlanUpdatedAt: detail.routePlan.updatedAt,
+      expectedStopUpdatedAts: detail.stops.map((stop) => ({
+        deliveryStopId: stop.deliveryStopId,
+        updatedAt: '2026-05-07T12:30:00.000Z'
+      })),
+      shapeSignature: computeRouteShapeSignature(detail)
+    },
     routePlan: detail
   });
   const routePlanExists = vi.fn<NonNullable<RoutePlanRepository['routePlanExists']>>().mockResolvedValue(true);
   const findRoutePlanDetail = vi.fn<RoutePlanRepository['findRoutePlanDetail']>().mockResolvedValue(detail);
   const upsertRouteGeometryCache = vi.fn<NonNullable<RoutePlanRepository['upsertRouteGeometryCache']>>().mockResolvedValue(undefined);
   const commitOrderDataRouteGeometryCache = vi.fn<NonNullable<RoutePlanRepository['commitOrderDataRouteGeometryCache']>>().mockResolvedValue(true);
+  const commitAdminRouteStopGeometryCache = vi.fn<NonNullable<RoutePlanRepository['commitAdminRouteStopGeometryCache']>>().mockResolvedValue(true);
   const repository = {
     assignRoutePlanDriver,
+    commitAdminRouteStopGeometryCache,
     createRoutePlanDraft,
     commitOrderDataRouteGeometryCache,
     deleteRoutePlan: vi.fn(),
@@ -725,7 +813,7 @@ function createHarness(detail: RoutePlanDetail, options: {
   };
   const publisher = { publishProgress: vi.fn<RouteTrackingProgressPublisher['publishProgress']>() };
 
-  return { assignRoutePlanDriver, commitOrderDataRouteGeometryCache, createRoutePlanDraft, findRoutePlanDetail, publishRoutePlan, publisher, repository, routeGeometryProvider, routePlanExists, saveRoutePlan, transitionAdminRouteStop, updateAdminRouteStopOverride, updateRoutePlanOptions, updateRoutePlanStops, upsertRouteGeometryCache };
+  return { assignRoutePlanDriver, commitAdminRouteStopGeometryCache, commitOrderDataRouteGeometryCache, createRoutePlanDraft, findRoutePlanDetail, publishRoutePlan, publisher, repository, routeGeometryProvider, routePlanExists, saveRoutePlan, transitionAdminRouteStop, updateAdminRouteStopOverride, updateRoutePlanOptions, updateRoutePlanStops, upsertRouteGeometryCache };
 }
 
 function adminStopTransitionInput() {
