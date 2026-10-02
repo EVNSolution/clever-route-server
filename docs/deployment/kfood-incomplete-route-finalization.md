@@ -13,6 +13,12 @@ any stop or order status and does not append a synthetic driver event.
 
 ## Scope and guards
 
+Routes with a valid current delivery-completion marker follow the
+[two-hour return-navigation policy](kfood-delivery-navigation-grace.md): their
+administrative status is already `COMPLETED`, and this worker finalizes their
+raw status as `COMPLETED` after the navigation deadline. The tracking-window
+`INCOMPLETE` guards below apply when no valid completion marker exists.
+
 The runtime is deliberately fixed to this tenant identity:
 
 - app ID: `clever-route-kfood`

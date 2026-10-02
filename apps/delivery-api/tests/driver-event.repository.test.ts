@@ -870,7 +870,7 @@ describe('PrismaDriverEventRepository', () => {
       },
       eventId: 'original-delivery-id'
     });
-    expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
     expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
     expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
   });
@@ -930,7 +930,7 @@ describe('PrismaDriverEventRepository', () => {
       },
       eventId: 'original-failure-id'
     });
-    expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
   });
 
   test('returns duplicate pickup snapshot with missing duration without hydrating geometry cache', async () => {

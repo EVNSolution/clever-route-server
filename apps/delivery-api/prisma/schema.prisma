@@ -1434,6 +1434,10 @@ model RoutePlan {
   status                          RoutePlanStatus                  @default(READY)
   driverId                        String?                          @db.Uuid
   assignmentGeneration            BigInt                           @default(1)
+  deliveryWorkCompletedAt         DateTime?                        @db.Timestamptz(6)
+  driverNavigationUntil           DateTime?                        @db.Timestamptz(6)
+  deliveryWorkCompletedGeneration BigInt?
+  deliveryWorkCompletedVersionId  String?                          @db.Uuid
   driver                          Driver?                          @relation(fields: [driverId], references: [id], onDelete: SetNull)
   vehicleId                       String?                          @db.Uuid
   vehicle                         Vehicle?                         @relation(fields: [vehicleId], references: [id], onDelete: SetNull)

@@ -3,9 +3,25 @@ import { isDeepStrictEqual } from 'node:util';
 import { Prisma, type PrismaClient, type DriverCompletionRun, type DriverCompletionCandidate, type DeliveryStop } from '@prisma/client';
 import { parseCompletionPolicy, type CompletionPolicy, type CompletionRun, type CompletionCandidate, type CompletionCommand, type CompletionSample, type CompletionAcknowledgement } from './completion-assistance.contract.js';
 import { validateVisitEvidence } from './completion-assistance.evidence.js';
+import {
+  KFOOD_DELIVERY_APP_ID,
+  KFOOD_DELIVERY_SHOP_DOMAIN,
+  reconcileKfoodDeliveryWorkCompletion
+} from '../route-plans/kfood-delivery-completion.js';
 
 const DAY_MS = 86_400_000;
 const NONTERMINAL = new Set(['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED']);
+const TERMINAL_STOP_STATUSES = new Set(['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED']);
+const KFOOD_RETURN_INTENT_POLICY: CompletionPolicy = {
+  version: 'kfood_return_intent_only_v1',
+  maxAccuracyMeters: 20,
+  enterRadiusMeters: 50,
+  exitRadiusMeters: 100,
+  dwellMs: 60_000,
+  maxGapMs: 30_000,
+  minDwellSamples: 3,
+  ambiguityRadiusMeters: 200
+};
 type Tx = Prisma.TransactionClient;
 type Env = Partial<Record<string, string>>;
 type Identity = Pick<CompletionRun, 'runId' | 'routePlanId' | 'assignmentGeneration' | 'expectedRouteVersionId'>;
@@ -43,8 +59,20 @@ export class PrismaCompletionAssistanceService {
         where: { driver: { accountId, status: 'ACTIVE' }, shop: { appId: 'clever', shopDomain: { endsWith: '.myshopify.com' } }, status: { in: ['IN_PROGRESS', 'READY', 'ASSIGNED', 'PUBLISHED'] } },
         select: { id: true }, orderBy: { id: 'asc' }
       });
-      for (const route of routes) await this.issueRun(accountId, route.id, settings, now);
+      for (const route of routes) await this.issueRun(accountId, route.id, settings, now, false);
     }
+    // K-food's explicit "return to store" action is independent of GPS
+    // inference. App v1 needs a durable run identity even while detection and
+    // its policy are disabled.
+    const kfoodRoutes = await this.prisma.routePlan.findMany({
+      where: {
+        driver: { accountId, status: 'ACTIVE' },
+        shop: { appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN },
+        status: 'IN_PROGRESS'
+      },
+      select: { id: true }, orderBy: { id: 'asc' }
+    });
+    for (const route of kfoodRoutes) await this.issueRun(accountId, route.id, settings, now, true);
     const records = await this.prisma.driverCompletionRun.findMany({ where: { accountId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
     const runs: CompletionRun[] = [];
     const candidates: CompletionCandidate[] = [];
@@ -60,8 +88,14 @@ export class PrismaCompletionAssistanceService {
         const lastPolicy = versions.at(-1);
         const stored = lastPolicy === undefined ? null : await tx.driverCompletionPolicy.findUnique({ where: { version: lastPolicy } });
         const validSettings = settings.detectionEnabled && settings.accounts.has(accountId) && run.invalidatedAt === null;
-        const policy = validSettings && stored !== null && settings.policy?.version === stored.version
-          && isDeepStrictEqual(stored.policy, settings.policy) ? stored.policy as CompletionPolicy : null;
+        const commandOnlyKfood = await this.hasKfoodReturnIntentOnlyMarker(tx, run);
+        const safeCommandProjection = commandOnlyKfood && run.invalidatedAt === null && run.activationId === null
+          && stored?.version === KFOOD_RETURN_INTENT_POLICY.version
+          && isDeepStrictEqual(stored.policy, KFOOD_RETURN_INTENT_POLICY)
+          && (run.stops as CompletionRun['stops']).every((stop) => stop.coordinates === null);
+        const policy = safeCommandProjection ? KFOOD_RETURN_INTENT_POLICY
+          : validSettings && stored !== null && settings.policy?.version === stored.version
+            && isDeepStrictEqual(stored.policy, settings.policy) ? stored.policy as CompletionPolicy : null;
         return {
           run: { runId: run.id, routePlanId: run.routePlanId, assignmentGeneration: run.assignmentGeneration.toString(), expectedRouteVersionId: run.expectedRouteVersionId,
             routeName: run.routeName, policy: policy as CompletionPolicy, stops,
@@ -97,9 +131,13 @@ export class PrismaCompletionAssistanceService {
       const now = this.now();
       const run = await this.reconcileRun(tx, storedRun, now);
       let result: CompletionAcknowledgement;
-      if (command.kind === 'candidate') result = await this.registerCandidate(tx, run, command, now);
+      if (command.kind !== 'return_intent' && await this.hasKfoodReturnIntentOnlyMarker(tx, run)) {
+        result = ack(command, 'rejected', null, 'return_intent_only');
+      } else if (command.kind === 'candidate') result = await this.registerCandidate(tx, run, command, now);
       else if (command.kind === 'response') result = await this.respond(tx, run, command, now);
-      else result = ack(command, run.invalidatedAt === null ? 'applied' : 'rejected', null, run.invalidatedAt === null ? undefined : 'run_invalidated');
+      else {
+        result = await this.returnIntent(tx, run, command, now);
+      }
       await tx.driverCompletionReceipt.create({ data: {
         accountId, commandId: command.commandId, runId: run.id,
         candidateId: result.candidate?.candidateId ?? null,
@@ -153,26 +191,32 @@ export class PrismaCompletionAssistanceService {
     return applied;
   }
 
-  private async issueRun(accountId: string, routePlanId: string, settings: ReturnType<typeof completionAssistanceSettings>, now: Date) {
+  private async issueRun(accountId: string, routePlanId: string, settings: ReturnType<typeof completionAssistanceSettings>, now: Date, allowKfoodCommandRun: boolean) {
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${routePlanId}::uuid FOR UPDATE`;
       const route = await tx.routePlan.findFirst({ where: { id: routePlanId, driver: { accountId, status: 'ACTIVE' } }, include: {
+        shop: { select: { appId: true, shopDomain: true } },
         routeStops: { include: { deliveryStop: true }, orderBy: { sequence: 'asc' } },
         routeGroupingChildVersions: { where: { status: 'CURRENT', supersededAt: null }, take: 2 }
       } });
       if (route === null || route.driverId === null || !['IN_PROGRESS', 'READY', 'ASSIGNED', 'PUBLISHED'].includes(route.status)) return;
       const version = route.routeGroupingChildVersions.length === 1 ? route.routeGroupingChildVersions[0] : undefined;
-      if (version === undefined || version.driverId !== route.driverId || settings.policy === null) return;
-      // Global version is immutable: reusing a version for changed thresholds disables detection.
-      await tx.driverCompletionPolicy.createMany({ data: { version: settings.policy.version, policy: json(settings.policy), createdAt: now }, skipDuplicates: true });
-      const existingPolicy = await tx.driverCompletionPolicy.findUniqueOrThrow({ where: { version: settings.policy.version } });
-      if (!isDeepStrictEqual(existingPolicy.policy, settings.policy)) return;
+      const kfoodCommandRun = allowKfoodCommandRun && route.shop.appId === KFOOD_DELIVERY_APP_ID
+        && route.shop.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN && route.status === 'IN_PROGRESS';
+      const runPolicy = kfoodCommandRun ? KFOOD_RETURN_INTENT_POLICY : settings.policy;
+      if (version === undefined || version.driverId !== route.driverId || runPolicy === null) return;
+      // Global version is immutable: reusing a version for changed thresholds disables the run.
+      await tx.driverCompletionPolicy.createMany({ data: { version: runPolicy.version, policy: json(runPolicy), createdAt: now }, skipDuplicates: true });
+      const existingPolicy = await tx.driverCompletionPolicy.findUniqueOrThrow({ where: { version: runPolicy.version } });
+      if (!isDeepStrictEqual(existingPolicy.policy, runPolicy)) return;
       const identity = { routePlanId, assignmentGeneration: route.assignmentGeneration, expectedRouteVersionId: version.id };
       const existing = await tx.driverCompletionRun.findUnique({ where: { routePlanId_assignmentGeneration_expectedRouteVersionId: identity } });
       if (existing !== null) {
         if (existing.accountId !== accountId || existing.driverId !== route.driverId) return;
         const versions = existing.policyVersions as string[];
-        if (versions.at(-1) !== settings.policy.version) await tx.driverCompletionRun.update({ where: { id: existing.id }, data: { policyVersions: [...versions, settings.policy.version] } });
+        if (versions.at(-1) !== runPolicy.version) {
+          await tx.driverCompletionRun.update({ where: { id: existing.id }, data: { policyVersions: [...versions, runPolicy.version] } });
+        }
         return;
       }
       const ended = await tx.driverEvent.findFirst({ where: { routePlanId, assignmentGeneration: route.assignmentGeneration, eventType: 'ROUTE_COMPLETED' }, select: { id: true } });
@@ -180,10 +224,91 @@ export class PrismaCompletionAssistanceService {
       await tx.driverCompletionRun.create({ data: {
         id: randomUUID(), ...identity, accountId, shopId: route.shopId, driverId: route.driverId, routeName: route.name,
         stops: json(route.routeStops.map(({ deliveryStop: stop }) => ({ deliveryStopId: stop.id, status: stop.status,
-          coordinates: stop.geocodeStatus === 'RESOLVED' && stop.latitude !== null && stop.longitude !== null ? { latitude: Number(stop.latitude), longitude: Number(stop.longitude) } : null }))),
-        policyVersions: [settings.policy.version], activationId: settings.workerEnabled && now >= settings.activatedAt ? settings.activationId : null, createdAt: now
+          coordinates: !kfoodCommandRun && stop.geocodeStatus === 'RESOLVED' && stop.latitude !== null && stop.longitude !== null
+            ? { latitude: Number(stop.latitude), longitude: Number(stop.longitude) } : null }))),
+        policyVersions: [runPolicy.version],
+        activationId: !kfoodCommandRun && settings.workerEnabled && now >= settings.activatedAt ? settings.activationId : null, createdAt: now
       } });
     });
+  }
+
+  private async returnIntent(tx: Tx, run: DriverCompletionRun, command: Extract<CompletionCommand, { kind: 'return_intent' }>, now: Date) {
+    if (run.invalidatedAt !== null) return ack(command, 'rejected', null, 'run_invalidated');
+    const shop = await tx.shop.findUnique({ where: { id: run.shopId }, select: { appId: true, shopDomain: true } });
+    if (shop?.appId !== KFOOD_DELIVERY_APP_ID || shop.shopDomain !== KFOOD_DELIVERY_SHOP_DOMAIN) {
+      return ack(command, 'applied', null);
+    }
+    const route = await tx.routePlan.findFirst({
+      where: {
+        id: run.routePlanId, shopId: run.shopId, driverId: run.driverId, assignmentGeneration: run.assignmentGeneration,
+        status: 'IN_PROGRESS', shop: { appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN }
+      },
+      select: {
+        routeGroupingChildVersions: {
+          where: { status: 'CURRENT', supersededAt: null }, take: 2,
+          select: { id: true, snapshot: true }
+        },
+        routeStops: {
+          orderBy: { sequence: 'asc' },
+          select: {
+            sequence: true, deliveryStopId: true,
+            deliveryStop: { select: { orderId: true, status: true, order: { select: { currentRouteVersionId: true } } } }
+          }
+        }
+      }
+    });
+    if (route === null) return ack(command, 'rejected', null, 'return_intent_not_available');
+    const version = route.routeGroupingChildVersions.length === 1 ? route.routeGroupingChildVersions[0] : undefined;
+    if (version === undefined || version.id !== run.expectedRouteVersionId
+      || !hasExactCurrentMembership(version.snapshot, version.id, route.routeStops)) {
+      return ack(command, 'rejected', null, 'route_membership_changed');
+    }
+    const unresolved = route.routeStops.filter(({ deliveryStop }) => !TERMINAL_STOP_STATUSES.has(deliveryStop.status));
+    if (unresolved.length === 0) {
+      const completion = await reconcileKfoodDeliveryWorkCompletion(tx, { routePlanId: run.routePlanId, shopId: run.shopId, now });
+      return ack(command, completion === null ? 'rejected' : 'applied', null, completion === null ? 'route_completion_not_available' : undefined);
+    }
+    const finalStop = route.routeStops.at(-1);
+    if (unresolved.length !== 1 || finalStop === undefined || unresolved[0]?.deliveryStopId !== finalStop.deliveryStopId
+      || finalStop.deliveryStop.status !== 'ARRIVED') {
+      return ack(command, 'rejected', null, 'final_arrival_not_ready');
+    }
+    const updated = await tx.deliveryStop.updateMany({
+      where: { id: finalStop.deliveryStopId, shopId: run.shopId, status: 'ARRIVED' },
+      data: { status: 'DELIVERED' }
+    });
+    if (updated.count !== 1) return ack(command, 'rejected', null, 'final_arrival_changed');
+    const eventId = randomUUID();
+    await tx.driverEvent.create({ data: {
+      id: eventId, shopId: run.shopId, driverId: run.driverId, routePlanId: run.routePlanId,
+      routeVersionId: run.expectedRouteVersionId, expectedRouteVersionId: run.expectedRouteVersionId,
+      assignmentGeneration: run.assignmentGeneration, deliveryStopId: finalStop.deliveryStopId,
+      clientEventId: `completion-assistance:return-intent:${command.commandId}`, driverContractVersion: 2,
+      eventType: 'STOP_DELIVERED', occurredAt: new Date(command.occurredAt),
+      payload: {
+        source: 'DRIVER_RETURN_INTENT', previousStatus: 'ARRIVED', nextStatus: 'DELIVERED',
+        processedAt: now.toISOString(), returnIntentCommandId: command.commandId
+      }
+    } });
+    await tx.customerRouteNotificationFact.create({ data: {
+      shopId: run.shopId, routePlanId: run.routePlanId, deliveryStopId: finalStop.deliveryStopId,
+      orderId: finalStop.deliveryStop.orderId,
+      idempotencyKey: `completion-assistance:return-intent:${command.commandId}`,
+      source: 'COMPLETION_ASSISTANCE', requestedUiStatus: 'COMPLETED', occurredAt: now,
+      status: 'SKIPPED', errorCode: 'COMPLETION_ASSISTANCE_NOTIFICATIONS_DISABLED',
+      metadata: { driverEventId: eventId, source: 'DRIVER_RETURN_INTENT', previousStatus: 'ARRIVED', nextStatus: 'DELIVERED' }
+    } });
+    const completion = await reconcileKfoodDeliveryWorkCompletion(tx, { routePlanId: run.routePlanId, shopId: run.shopId, now });
+    if (completion === null) throw new Error('K-food delivery completion invariant changed during return intent');
+    return ack(command, 'applied', null);
+  }
+
+  private async hasKfoodReturnIntentOnlyMarker(tx: Tx, run: DriverCompletionRun) {
+    const versions = run.policyVersions as string[];
+    if (versions.at(-1) !== KFOOD_RETURN_INTENT_POLICY.version) return false;
+    return await tx.shop.findFirst({ where: {
+      id: run.shopId, appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN
+    }, select: { id: true } }) !== null;
   }
 
   private async reconcileRun(tx: Tx, original: DriverCompletionRun, now: Date): Promise<DriverCompletionRun> {
@@ -324,6 +449,7 @@ export class PrismaCompletionAssistanceService {
       errorCode: 'COMPLETION_ASSISTANCE_NOTIFICATIONS_DISABLED',
       metadata: { driverEventId: eventId, candidateId: row.id, revision: next.revision, source, previousStatus: stop.status, nextStatus: target }
     } });
+    await reconcileKfoodDeliveryWorkCompletion(tx, { routePlanId: run.routePlanId, shopId: run.shopId, now });
     return updated;
   }
 
@@ -364,6 +490,33 @@ async function currentStops(tx: Tx, run: DriverCompletionRun): Promise<Completio
   const current = await tx.deliveryStop.findMany({ where: { shopId: run.shopId, id: { in: snapshots.map((stop) => stop.deliveryStopId) } }, select: { id: true, status: true } });
   const statusById = new Map(current.map((stop) => [stop.id, stop.status]));
   return snapshots.map((stop) => ({ ...stop, status: statusById.get(stop.deliveryStopId) ?? 'CANCELLED' }));
+}
+
+type ReturnIntentStop = {
+  sequence: number;
+  deliveryStopId: string;
+  deliveryStop: { orderId: string; status: string; order: { currentRouteVersionId: string | null } };
+};
+
+function hasExactCurrentMembership(snapshot: unknown, versionId: string, stops: ReturnIntentStop[]): boolean {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot) || stops.length === 0) return false;
+  const record = snapshot as Record<string, unknown>;
+  if (record.membershipSchemaVersion !== undefined && record.membershipSchemaVersion !== 1) return false;
+  if (!Array.isArray(record.stops) || record.stops.length !== stops.length) return false;
+  const members = record.stops as unknown[];
+  const stopIds = new Set<string>();
+  const orderIds = new Set<string>();
+  return stops.every((stop, index) => {
+    const member = members[index];
+    if (member === null || typeof member !== 'object' || Array.isArray(member)) return false;
+    const tuple = member as Record<string, unknown>;
+    if (stopIds.has(stop.deliveryStopId) || orderIds.has(stop.deliveryStop.orderId)) return false;
+    stopIds.add(stop.deliveryStopId);
+    orderIds.add(stop.deliveryStop.orderId);
+    return stop.sequence === index + 1 && tuple.sequence === stop.sequence
+      && tuple.deliveryStopId === stop.deliveryStopId && tuple.orderId === stop.deliveryStop.orderId
+      && stop.deliveryStop.order.currentRouteVersionId === versionId;
+  });
 }
 async function serverSamples(tx: Tx, run: DriverCompletionRun, candidate: CompletionCandidate, now: Date): Promise<CompletionSample[]> {
   const first = candidate.evidence[0]?.occurredAt ?? candidate.arrivalAt;

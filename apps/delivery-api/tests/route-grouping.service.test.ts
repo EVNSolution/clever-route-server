@@ -45,6 +45,28 @@ describe('route grouping contracts', () => {
     expect(deriveGroupingDisplayStatus(group(['COMPLETED', 'READY']))).toBe('IN_PROGRESS');
   });
 
+  test('projects a current child complete from a matching delivery-work marker during navigation grace', () => {
+    const completedAt = new Date('2026-10-01T22:00:00.000Z');
+    const group = {
+      childVersions: [{
+        routePlan: {
+          assignmentGeneration: 4n,
+          deliveryWorkCompletedAt: completedAt,
+          deliveryWorkCompletedGeneration: 4n,
+          deliveryWorkCompletedVersionId: 'route-version-id',
+          driverEvents: [{ eventType: 'ROUTE_STARTED' }],
+          driverNavigationUntil: new Date('2026-10-02T00:00:00.000Z'),
+          status: 'IN_PROGRESS'
+        },
+        status: 'CURRENT',
+        supersededAt: null
+      }],
+      status: 'READY'
+    };
+
+    expect(deriveGroupingDisplayStatus(group)).toBe('COMPLETED');
+  });
+
   test('requires a scheduled departure to fall on the route plan date in its local timezone', () => {
     const route = {
       branchId: null,
@@ -1161,6 +1183,13 @@ describe('route grouping contracts', () => {
     const nextSnapshot = { stops: [{ orderId: 'order-old' }, { orderId: 'order-new' }] };
     const prisma = {
       order: { updateMany: vi.fn(() => { calls.push('rebind'); return Promise.resolve({ count: 2 }); }) },
+      routePlan: {
+        updateMany: vi.fn((...args: [unknown]) => {
+          void args;
+          calls.push('clear-completion');
+          return Promise.resolve({ count: 1 });
+        })
+      },
       routeGroupingChildVersion: {
         create: vi.fn((...args: [unknown]) => { void args; calls.push('create'); return Promise.resolve({ id: 'child-next' }); }),
         updateMany: vi.fn((...args: [unknown]) => { void args; calls.push('archive'); return Promise.resolve({ count: 1 }); })
@@ -1173,7 +1202,7 @@ describe('route grouping contracts', () => {
       routePlanId: 'route-id', shopId: 'shop-id', snapshot: nextSnapshot, version: 7
     })).resolves.toBe('child-next');
 
-    expect(calls).toEqual(['archive', 'create', 'rebind']);
+    expect(calls).toEqual(['archive', 'create', 'clear-completion', 'rebind']);
     expect(oldSnapshot).toEqual({ stops: [{ orderId: 'order-old' }] });
     const archiveCall: unknown = prisma.routeGroupingChildVersion.updateMany.mock.calls[0]?.[0];
     const createCall: unknown = prisma.routeGroupingChildVersion.create.mock.calls[0]?.[0];
@@ -1182,6 +1211,19 @@ describe('route grouping contracts', () => {
       where: { id: 'child-old', status: 'CURRENT', supersededAt: null }
     });
     expect(createCall).toMatchObject({ data: { snapshot: nextSnapshot, status: 'CURRENT', supersededAt: null } });
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: {
+        deliveryWorkCompletedAt: null,
+        deliveryWorkCompletedGeneration: null,
+        deliveryWorkCompletedVersionId: null,
+        driverNavigationUntil: null
+      },
+      where: {
+        deliveryWorkCompletedVersionId: 'child-old',
+        id: 'route-id',
+        shopId: 'shop-id'
+      }
+    });
   });
 
   test('allows draft saves to persist a validated vehicle on child route plans', () => {
