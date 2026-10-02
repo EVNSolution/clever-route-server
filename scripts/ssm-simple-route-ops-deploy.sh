@@ -377,11 +377,333 @@ firebase_credentials=''
 python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); assert value.get("project_id") == "clever-routes-prod"; assert value.get("client_email")' "$FIREBASE_CREDENTIALS_FILE"
 chown 100:101 "$FIREBASE_CREDENTIALS_FILE"
 chmod 400 "$FIREBASE_CREDENTIALS_FILE"
+clear_kfood_navigation_markers_for_legacy_rollback() {
+  rollback_evidence_dir="$APP_DIR/.deploy/kfood-legacy-rollback-evidence"
+  if ! install -d -m 0700 -o root -g root "$rollback_evidence_dir"; then
+    echo 'simple deploy rollback blocked: private marker backup directory could not be prepared' >&2
+    return 1
+  fi
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm --no-deps -T \
+    --user 0:0 \
+    -e "KFOOD_ROLLBACK_EVIDENCE_HOST_DIR=$rollback_evidence_dir" \
+    -v "$rollback_evidence_dir:/rollback-evidence" \
+    --entrypoint node \
+    clever-route-api <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const { createHash, randomUUID } = require('node:crypto');
+const { Client } = require('pg');
+
+const markerColumns = [
+  'deliveryWorkCompletedAt',
+  'driverNavigationUntil',
+  'deliveryWorkCompletedGeneration',
+  'deliveryWorkCompletedVersionId',
+];
+const appId = 'clever-route-kfood';
+const shopDomain = '7hrud1-xq.myshopify.com';
+const backupDirectory = '/rollback-evidence';
+const backupDisplayDirectory = process.env.KFOOD_ROLLBACK_EVIDENCE_HOST_DIR || backupDirectory;
+
+function persistBackup(routes) {
+  const stamp = new Date().toISOString().replace(/[-:.]/g, '');
+  const backupPath = path.join(
+    backupDirectory,
+    `kfood-navigation-markers-before-legacy-rollback-${stamp}-${randomUUID()}.json`,
+  );
+  const handle = fs.openSync(backupPath, 'wx', 0o600);
+  const body = `${JSON.stringify({
+    kind: 'kfood_navigation_markers_before_legacy_rollback_v1',
+    createdAt: new Date().toISOString(),
+    routes,
+  }, null, 2)}\n`;
+  try {
+    fs.writeFileSync(handle, body);
+    fs.fsyncSync(handle);
+  } finally {
+    fs.closeSync(handle);
+  }
+  fs.chmodSync(backupPath, 0o600);
+  const directoryHandle = fs.openSync(backupDirectory, 'r');
+  try {
+    fs.fsyncSync(directoryHandle);
+  } finally {
+    fs.closeSync(directoryHandle);
+  }
+  return {
+    backupPath: path.join(backupDisplayDirectory, path.basename(backupPath)),
+    backupSha256: createHash('sha256').update(body).digest('hex'),
+  };
+}
+
+async function main() {
+  const client = new Client({
+    connectionString: process.env.DATABASE_URL,
+    connectionTimeoutMillis: 10000,
+    query_timeout: 30000,
+    statement_timeout: 30000,
+  });
+  await client.connect();
+  try {
+    const shops = await client.query(
+      `SELECT "id"
+         FROM "shops"
+        WHERE "appId" = $1
+          AND "shopDomain" = $2`,
+      [appId, shopDomain],
+    );
+    if (shops.rowCount !== 1) {
+      throw new Error(`legacy rollback marker guard: expected one exact K-food shop, found ${shops.rowCount}`);
+    }
+    const shopId = shops.rows[0].id;
+    const completionAcks = await client.query(
+      `SELECT count(*)::int AS "count"
+         FROM "driver_events"
+        WHERE "shopId" = $1
+          AND "eventType"::text = 'NOTE_ADDED'
+          AND "payload"->>'schema' = 'kfood_return_navigation_completion_ack_v1'
+          AND "payload"->>'requestedEventType' = 'ROUTE_COMPLETED'`,
+      [shopId],
+    );
+    if (completionAcks.rows[0].count !== 0) {
+      throw new Error(`legacy rollback marker guard: ${completionAcks.rows[0].count} deferred completion acknowledgement(s) require a compatible image or forward fix`);
+    }
+
+    const columns = await client.query(
+      `SELECT "column_name"
+         FROM information_schema.columns
+        WHERE "table_schema" = ANY (current_schemas(false)::text[])
+          AND "table_name" = 'route_plans'
+          AND "column_name" = ANY ($1::text[])`,
+      [markerColumns],
+    );
+    if (columns.rowCount === 0) {
+      console.log('legacy rollback marker guard: marker columns are absent; no cleanup required');
+      return;
+    }
+    if (columns.rowCount !== markerColumns.length) {
+      throw new Error(`legacy rollback marker guard: partial marker schema (${columns.rowCount}/${markerColumns.length})`);
+    }
+
+    await client.query('BEGIN');
+    try {
+      await client.query("SET LOCAL lock_timeout = '10s'");
+      await client.query("SET LOCAL statement_timeout = '30s'");
+      const locked = await client.query(
+        `SELECT rp."id",
+                rp."shopId",
+                rp."status"::text AS "status",
+                rp."assignmentGeneration",
+                to_char(rp."updatedAt", 'YYYY-MM-DD"T"HH24:MI:SS.USOF') AS "updatedAt",
+                to_char(rp."deliveryWorkCompletedAt", 'YYYY-MM-DD"T"HH24:MI:SS.USOF') AS "deliveryWorkCompletedAt",
+                to_char(rp."driverNavigationUntil", 'YYYY-MM-DD"T"HH24:MI:SS.USOF') AS "driverNavigationUntil",
+                rp."deliveryWorkCompletedGeneration",
+                rp."deliveryWorkCompletedVersionId"
+           FROM "route_plans" rp
+          WHERE rp."shopId" = $1
+            AND (rp."deliveryWorkCompletedAt" IS NOT NULL
+              OR rp."driverNavigationUntil" IS NOT NULL
+              OR rp."deliveryWorkCompletedGeneration" IS NOT NULL
+              OR rp."deliveryWorkCompletedVersionId" IS NOT NULL)
+          ORDER BY rp."id"
+          FOR UPDATE OF rp`,
+        [shopId],
+      );
+      if (locked.rowCount === 0) {
+        await client.query('COMMIT');
+        console.log('legacy rollback marker guard: no K-food navigation markers found');
+        return;
+      }
+
+      const routeIds = locked.rows.map((row) => row.id);
+      const stopStatuses = await client.query(
+        `SELECT rps."routePlanId", rps."sequence", ds."id" AS "deliveryStopId", ds."status"::text AS "status"
+           FROM "route_plan_stops" rps
+           JOIN "delivery_stops" ds
+             ON ds."id" = rps."deliveryStopId"
+            AND ds."shopId" = rps."shopId"
+          WHERE rps."routePlanId" = ANY ($1::uuid[])
+          ORDER BY rps."routePlanId", rps."sequence", ds."id"`,
+        [routeIds],
+      );
+      const stopDigestByRoute = new Map();
+      for (const routeId of routeIds) {
+        const digestInput = stopStatuses.rows
+          .filter((row) => row.routePlanId === routeId)
+          .map((row) => [row.sequence, row.deliveryStopId, row.status]);
+        stopDigestByRoute.set(routeId, createHash('sha256').update(JSON.stringify(digestInput)).digest('hex'));
+      }
+      const backupRows = locked.rows.map((row) => ({
+        ...row,
+        stopStatusDigest: stopDigestByRoute.get(row.id),
+      }));
+      const { backupPath, backupSha256 } = persistBackup(backupRows);
+
+      let clearedCount = 0;
+      for (const route of locked.rows) {
+        const cleared = await client.query(
+          `UPDATE "route_plans"
+              SET "deliveryWorkCompletedAt" = NULL,
+                  "driverNavigationUntil" = NULL,
+                  "deliveryWorkCompletedGeneration" = NULL,
+                  "deliveryWorkCompletedVersionId" = NULL
+            WHERE "id" = $1
+              AND "shopId" = $2
+              AND "status"::text = $3
+              AND "assignmentGeneration" = $4::bigint
+              AND "updatedAt" = $5
+              AND "deliveryWorkCompletedAt" IS NOT DISTINCT FROM $6::timestamptz
+              AND "driverNavigationUntil" IS NOT DISTINCT FROM $7::timestamptz
+              AND "deliveryWorkCompletedGeneration" IS NOT DISTINCT FROM $8::bigint
+              AND "deliveryWorkCompletedVersionId" IS NOT DISTINCT FROM $9::uuid`,
+          [
+            route.id,
+            route.shopId,
+            route.status,
+            route.assignmentGeneration,
+            route.updatedAt,
+            route.deliveryWorkCompletedAt,
+            route.driverNavigationUntil,
+            route.deliveryWorkCompletedGeneration,
+            route.deliveryWorkCompletedVersionId,
+          ],
+        );
+        if (cleared.rowCount !== 1) {
+          throw new Error(`legacy rollback marker guard: compare-and-clear failed for route ${route.id}`);
+        }
+        clearedCount += 1;
+      }
+      const audit = await client.query(
+        `SELECT count(*)::int AS "remaining"
+           FROM "route_plans" rp
+          WHERE rp."shopId" = $1
+            AND (rp."deliveryWorkCompletedAt" IS NOT NULL
+              OR rp."driverNavigationUntil" IS NOT NULL
+              OR rp."deliveryWorkCompletedGeneration" IS NOT NULL
+              OR rp."deliveryWorkCompletedVersionId" IS NOT NULL)`,
+        [shopId],
+      );
+      if (audit.rows[0].remaining !== 0) {
+        throw new Error(`legacy rollback marker guard: ${audit.rows[0].remaining} markers remain after cleanup`);
+      }
+      const preservedRoutes = await client.query(
+        `SELECT "id",
+                "status"::text AS "status",
+                "assignmentGeneration",
+                to_char("updatedAt", 'YYYY-MM-DD"T"HH24:MI:SS.USOF') AS "updatedAt"
+           FROM "route_plans"
+          WHERE "id" = ANY ($1::uuid[])
+          ORDER BY "id"`,
+        [routeIds],
+      );
+      for (const before of locked.rows) {
+        const after = preservedRoutes.rows.find((row) => row.id === before.id);
+        if (!after
+          || after.status !== before.status
+          || after.assignmentGeneration !== before.assignmentGeneration
+          || after.updatedAt !== before.updatedAt) {
+          throw new Error(`legacy rollback marker guard: route state changed while clearing markers for ${before.id}`);
+        }
+      }
+      const stopStatusesAfter = await client.query(
+        `SELECT rps."routePlanId", rps."sequence", ds."id" AS "deliveryStopId", ds."status"::text AS "status"
+           FROM "route_plan_stops" rps
+           JOIN "delivery_stops" ds
+             ON ds."id" = rps."deliveryStopId"
+            AND ds."shopId" = rps."shopId"
+          WHERE rps."routePlanId" = ANY ($1::uuid[])
+          ORDER BY rps."routePlanId", rps."sequence", ds."id"`,
+        [routeIds],
+      );
+      for (const routeId of routeIds) {
+        const digestInput = stopStatusesAfter.rows
+          .filter((row) => row.routePlanId === routeId)
+          .map((row) => [row.sequence, row.deliveryStopId, row.status]);
+        const digestAfter = createHash('sha256').update(JSON.stringify(digestInput)).digest('hex');
+        if (digestAfter !== stopDigestByRoute.get(routeId)) {
+          throw new Error(`legacy rollback marker guard: stop status digest changed for route ${routeId}`);
+        }
+      }
+      await client.query('COMMIT');
+      console.log(`legacy rollback marker guard: cleared ${clearedCount} route(s); backup=${backupPath} backupSha256=${backupSha256}`);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
+NODE
+}
+contain_failed_rollback_api() {
+  if ! rollback_api_ids="$(docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" ps -a -q clever-route-api)"; then
+    echo 'simple deploy rollback containment failed: rollback API container could not be resolved; manual containment required' >&2
+    return 1
+  fi
+  if [ -z "$rollback_api_ids" ]; then
+    return 0
+  fi
+  if ! docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" stop --timeout 30 clever-route-api; then
+    echo 'simple deploy rollback containment failed: rollback API stop command failed; manual containment required' >&2
+    return 1
+  fi
+  for rollback_api_id in $rollback_api_ids; do
+    if ! rollback_api_running="$(docker inspect "$rollback_api_id" --format '{{.State.Running}}')"; then
+      echo 'simple deploy rollback containment failed: rollback API state could not be inspected; manual containment required' >&2
+      return 1
+    fi
+    if [ "$rollback_api_running" != "false" ]; then
+      echo 'simple deploy rollback containment failed: rollback API remains running; manual containment required' >&2
+      return 1
+    fi
+  done
+  echo 'simple deploy rollback containment verified: rollback API is stopped' >&2
+}
 rollback_delivery_api() {
   echo 'simple deploy health failed; rolling clever-route-api back to previous image env' >&2
-  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api route-ops-web-static vroom vroom-korea
-  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
-  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api
+  if ! candidate_api_id="$(docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" ps -a -q clever-route-api)"; then
+    echo 'simple deploy rollback blocked: candidate clever-route-api container could not be resolved' >&2
+    return 1
+  fi
+  if [ -z "$candidate_api_id" ]; then
+    echo 'simple deploy rollback blocked: candidate clever-route-api container is missing' >&2
+    return 1
+  fi
+  if ! docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" stop --timeout 30 clever-route-api; then
+    echo 'simple deploy rollback blocked: candidate clever-route-api could not be stopped' >&2
+    return 1
+  fi
+  if ! candidate_api_running="$(docker inspect "$candidate_api_id" --format '{{.State.Running}}')"; then
+    echo 'simple deploy rollback blocked: candidate clever-route-api state could not be inspected' >&2
+    return 1
+  fi
+  if [ "$candidate_api_running" != "false" ]; then
+    echo 'simple deploy rollback blocked: candidate clever-route-api is still running' >&2
+    return 1
+  fi
+  if ! clear_kfood_navigation_markers_for_legacy_rollback; then
+    echo 'simple deploy rollback blocked: K-food navigation markers were not safely cleared' >&2
+    return 1
+  fi
+  if ! docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api route-ops-web-static vroom vroom-korea; then
+    echo 'simple deploy rollback failed: previous images could not be pulled' >&2
+    return 1
+  fi
+  if ! docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static; then
+    echo 'simple deploy rollback failed: previous static artifact could not be staged' >&2
+    return 1
+  fi
+  if ! docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api; then
+    echo 'simple deploy rollback failed: previous clever-route-api could not be started' >&2
+    contain_failed_rollback_api || true
+    return 1
+  fi
   for rollback_attempt in $(seq 1 30); do
     if smoke_health; then
       echo 'simple deploy rollback completed; previous clever-route-api is healthy' >&2
@@ -390,6 +712,7 @@ rollback_delivery_api() {
     sleep 2
   done
   echo 'simple deploy rollback failed health check; manual intervention required' >&2
+  contain_failed_rollback_api || true
   return 1
 }
 rollback_retention_runtime() {
@@ -560,7 +883,12 @@ fi
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api
 for attempt in $(seq 1 30); do
   if smoke_health; then break; fi
-  if [ "$attempt" = "30" ]; then rollback_delivery_api || true; exit 1; fi
+  if [ "$attempt" = "30" ]; then
+    if ! rollback_delivery_api; then
+      echo 'simple deploy automatic rollback did not reach a verified healthy state; inspect rollback and containment diagnostics' >&2
+    fi
+    exit 1
+  fi
   sleep 2
 done
 cp .deploy/current-image.env ".deploy/current-image.env.before-simple-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
@@ -575,7 +903,9 @@ if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE="$APP_DIR/.deploy/candidate-retention/
     rm -f .deploy/current-image.env
   fi
   rollback_retention_runtime || true
-  rollback_delivery_api || true
+  if ! rollback_delivery_api; then
+    echo 'retention failure rollback did not reach a verified healthy state; inspect rollback and containment diagnostics' >&2
+  fi
   exit 1
 fi
 .deploy/route-ops-docker-cleanup.sh --enforce

@@ -19,6 +19,17 @@ delivered successfully.
 
 Driver terminal events, accepted completion-assistance outcomes/return intent,
 and administrative stop transitions reconcile completion under the route lock.
+K-food receives a command-only completion run even when location detection is
+disabled. Released apps require a valid policy to send the return command, so
+this run uses an immutable internal policy and null coordinates for every
+stop. Null coordinates prevent local visit detection; the run has no inference
+activation and does not enable the location worker. An explicit return-to-store
+command resolves the final stop from
+`ARRIVED` to `DELIVERED` only when it is the sole unresolved stop, every earlier
+stop is terminal, and the current account, assignment, child snapshot and order
+bindings match. The server records `DRIVER_RETURN_INTENT` as the outcome source
+and does not infer a delivery time from GPS. Pending or en-route stops, earlier
+unresolved stops and stale assignments cannot be completed this way.
 Repeats do not extend the deadline. Stop corrections invalidate the marker, and
 child replacement clears markers owned by the replaced version. No historical
 backfill or synthetic `ROUTE_COMPLETED` event occurs.
@@ -54,16 +65,32 @@ is disabled, access still expires but raw status awaits worker activation.
 
 Deployment requires explicit production authority. Preserve the existing
 backup/restore rehearsal, migration approval and rollback evidence requirements
-in the production runbooks. Returning to an older server image loses immediate
-completion projection and access-expiry behavior for existing markers; retain
-a compatible image for rollback. Do not remove these columns or backfill
-completion times as part of rollback.
+in the production runbooks. An older image does not maintain these markers
+when a stop or child version changes. Before it can serve requests, stop the
+candidate, durably back up marker-bearing K-food routes, conditionally clear
+all four marker fields under route locks, and verify that none remain. The
+simple deployment wrapper performs this guard before automatic image rollback.
+It first requires zero deferred `kfood_return_navigation_completion_ack_v1`
+events, because an older image cannot replay those receipts. If one exists, or
+backup or cleanup fails, it must not start the older image; recover with a
+compatible image or a forward fix. Manual rollback must use the same guard,
+or use a marker-aware compatible image. Retain the
+private backup for audit and do not restore markers after mutations by an
+older server. Order/stop outcomes, route status and assignment generation are
+preserved. Do not remove these columns or backfill completion times as part
+of rollback.
+
+Before first rollout, verify the exact K-food tenant is unique, marker fields
+have no existing values, deferred completion acknowledgements are absent, and
+the previous runtime digest is pinned. After any acknowledgement is created,
+that previous image is no longer an unconditional recovery option.
 
 Validate separately:
 
 1. Prisma generation, lint, typecheck, tests and server build.
 2. Additive migration on a disposable PostgreSQL database and the last-stop,
-   retry, client completion acknowledgement, correction and expiry contracts.
+   explicit return intent, retry, client completion acknowledgement, correction
+   and expiry contracts, with location detection disabled.
 3. Production migration, runtime revision, worker flag and health evidence.
 4. Authenticated Shopify Complete views and the currently installed mobile
    binary before/after the deadline. Local API tests do not prove these screens.
