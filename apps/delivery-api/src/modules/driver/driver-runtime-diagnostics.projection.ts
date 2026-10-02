@@ -117,6 +117,16 @@ function isFuture(nowMs: number, value: Date | null): boolean {
   return age !== null && age < -DRIVER_RUNTIME_DIAGNOSTIC_THRESHOLDS.clockSkewBudgetMs;
 }
 
+function hasInvalidObservationOrder(nowMs: number, blocker: DriverDiagnosticBlocker): boolean {
+  const since = parseTimestamp(blocker.since);
+  const lastObservedAt = parseTimestamp(blocker.lastObservedAt);
+  return since === null
+    || lastObservedAt === null
+    || isFuture(nowMs, since)
+    || isFuture(nowMs, lastObservedAt)
+    || lastObservedAt.getTime() < since.getTime();
+}
+
 function matchesBlocker(attempt: DriverRuntimeAttemptEvidence, blocker: DriverDiagnosticBlocker): boolean {
   const blockerIds = [blocker.clientEventId, blocker.requestId].filter((value): value is string => value !== undefined);
   if (blockerIds.length === 0) return false;
@@ -167,12 +177,15 @@ export function deriveDriverRuntimeDiagnostic(input: DriverRuntimeDiagnosticInpu
   }
 
   const blockers = snapshot.blockers ?? [];
-  const currentBlockers = blockers.filter((blocker) => {
-    const lastObservedAt = parseTimestamp(blocker.lastObservedAt);
-    const since = parseTimestamp(blocker.since);
-    return isFresh(nowMs, lastObservedAt) && !isFuture(nowMs, since);
-  });
-  const staleBlocker = blockers.find((blocker) => !currentBlockers.includes(blocker));
+  const invalidBlocker = blockers.find((blocker) => hasInvalidObservationOrder(nowMs, blocker));
+  if (invalidBlocker !== undefined) {
+    return projection({
+      blocker: invalidBlocker,
+      observedAt: parseTimestamp(invalidBlocker.lastObservedAt) ?? parseTimestamp(invalidBlocker.since) ?? snapshotAt,
+      state: 'UNKNOWN_STALE_EVIDENCE'
+    });
+  }
+  const currentBlockers = blockers;
 
   const attempts = input.attempts ?? [];
   for (const blocker of currentBlockers) {
@@ -305,10 +318,6 @@ export function deriveDriverRuntimeDiagnostic(input: DriverRuntimeDiagnosticInpu
   if (locationBlocker !== undefined) {
     return projection({ blocker: locationBlocker, observedAt: observedAt(locationBlocker), state: 'UNKNOWN_INSUFFICIENT_EVIDENCE' });
   }
-  if (staleBlocker !== undefined) {
-    return projection({ blocker: staleBlocker, observedAt: parseTimestamp(staleBlocker.lastObservedAt), state: 'UNKNOWN_STALE_EVIDENCE' });
-  }
-
   const queueAt = parseTimestamp(snapshot.businessQueue.observedAt);
   const directSendEvidence = [sendAttemptAt, sendAcknowledgedAt, queueAt];
   if (directSendEvidence.some((at) => isFuture(nowMs, at))) {

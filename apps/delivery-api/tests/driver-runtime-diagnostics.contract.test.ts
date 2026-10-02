@@ -349,6 +349,65 @@ describe('driver runtime diagnostic projection', () => {
       .toBe('UNKNOWN_STALE_EVIDENCE');
   });
 
+  test('retains an unresolved authentication blocker from a fresh live snapshot after four minutes', () => {
+    const unresolvedSince = '2026-10-02T11:56:00.000Z';
+    const result = classify({
+      lastContactAt: NOW,
+      snapshot: snapshot({
+        blockers: [blocker({
+          lastObservedAt: unresolvedSince,
+          reason: 'AUTH_CREDENTIAL_MISSING',
+          since: unresolvedSince,
+          stage: 'AUTH'
+        })],
+        locationTaskExpected: false
+      })
+    });
+
+    expect(result).toMatchObject({
+      observedAt: new Date(unresolvedSince),
+      reasons: ['AUTH_CREDENTIAL_MISSING'],
+      stage: 'AUTH',
+      state: 'AUTH_OR_ROUTE_BLOCKED'
+    });
+  });
+
+  test('keeps contact and snapshot freshness authoritative over retained blockers', () => {
+    const retainedAuth = blocker({
+      lastObservedAt: '2026-10-02T11:56:00.000Z',
+      reason: 'HTTP_UNAUTHORIZED',
+      since: '2026-10-02T11:56:00.000Z',
+      stage: 'AUTH'
+    });
+    expect(classify({
+      lastContactAt: new Date('2026-10-02T11:56:59.999Z'),
+      snapshot: snapshot({ blockers: [retainedAuth], locationTaskExpected: false })
+    }).state).toBe('SIGNAL_ABSENT_UNKNOWN');
+    expect(classify({
+      snapshot: snapshot({
+        blockers: [retainedAuth],
+        locationTaskExpected: false,
+        snapshotObservedAt: '2026-10-02T11:56:59.999Z'
+      })
+    }).state).toBe('UNKNOWN_STALE_EVIDENCE');
+    expect(classify({
+      snapshot: snapshot({ blockers: [], locationTaskExpected: false })
+    })).toMatchObject({ reasons: [], state: 'UNKNOWN_INSUFFICIENT_EVIDENCE' });
+  });
+
+  test.each([
+    ['invalid', 'not-a-timestamp', '2026-10-02T11:56:00.000Z'],
+    ['future', '2026-10-02T12:01:00.000Z', '2026-10-02T11:56:00.000Z'],
+    ['reversed', '2026-10-02T11:55:00.000Z', '2026-10-02T11:56:00.000Z']
+  ] as const)('rejects %s retained blocker timestamps as stale evidence', (_case, lastObservedAt, since) => {
+    expect(classify({
+      snapshot: snapshot({
+        blockers: [blocker({ lastObservedAt, reason: 'HTTP_UNAUTHORIZED', since, stage: 'AUTH' })],
+        locationTaskExpected: false
+      })
+    }).state).toBe('UNKNOWN_STALE_EVIDENCE');
+  });
+
   test('does not use stale or future field evidence as a current diagnosis', () => {
     expect(classify({
       snapshot: snapshot({
@@ -456,8 +515,8 @@ describe('driver runtime diagnostic projection', () => {
       .toBe('GPS_POST_COLLECTION_BLOCKED');
   });
 
-  test('does not let stale blocker history hide a fresh higher-priority blocker', () => {
-    const staleStorage = blocker({
+  test('keeps authentication priority over an older retained runtime blocker', () => {
+    const retainedStorage = blocker({
       clientEventId: `completion-assistance-write:${REQUEST_ID}`,
       lastObservedAt: '2026-10-02T11:40:00.000Z',
       reason: 'STORAGE_WRITE_FAILED',
@@ -465,7 +524,7 @@ describe('driver runtime diagnostic projection', () => {
       stage: 'STORAGE'
     });
     const freshAuth = blocker({ reason: 'AUTH_REFRESH_FAILED', stage: 'AUTH' });
-    expect(classify({ snapshot: snapshot({ blockers: [staleStorage, freshAuth] }) }).state)
+    expect(classify({ snapshot: snapshot({ blockers: [retainedStorage, freshAuth] }) }).state)
       .toBe('AUTH_OR_ROUTE_BLOCKED');
   });
 });
