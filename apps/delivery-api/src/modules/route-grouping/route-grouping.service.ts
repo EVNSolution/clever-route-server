@@ -1,4 +1,4 @@
-import { assertRouteDispatchOwnership, claimRouteExecutionProjection, hasDispatchReservation, withoutDispatchReservation } from '../route-plans/route-execution-ownership.js';
+import { assertRouteDispatchOwnership, claimRouteExecutionProjection, hasDispatchReservation, lockRouteExecutionStops, withoutDispatchReservation } from '../route-plans/route-execution-ownership.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { DriverEventType, Prisma, type DeliveryStopStatus, type DriverRouteNotificationStatus, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
@@ -1088,7 +1088,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (input.targetRoutePlanId !== undefined) {
         await lockRoutePlanMembership(tx, input.targetRoutePlanId, group.shopId);
       }
-      await lockManualAdditionOrders(tx, group.shopId, addOrderIds);
+      await lockManualAdditionOrders(tx, group.shopId, addOrderIds, input.targetRoutePlanId);
 
       if (removeOrderIds.length > 0) {
         const membershipAuthority = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
@@ -1163,9 +1163,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (input.targetRoutePlanId !== undefined) {
         const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
         if (loaded === null) return null;
-        await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds, {
-          requireCompleteOwnershipRebind: true
-        });
+        await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds);
       }
       await recomputeAssignments(tx, group.id);
       return group.id;
@@ -4180,16 +4178,26 @@ function validateManualAdditionFacts(input: { facts: DeliveryFactForGrouping[]; 
     if (['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(stop.status)) {
       blockers.push('completed orders cannot be added to a route grouping');
     }
-    if (fact?.order.currentRouteVersionId !== null && fact?.order.currentRouteVersionId !== undefined) {
-      blockers.push('selected orders are already assigned to another route');
-    }
   }
   return [...new Set(blockers)];
 }
 
-async function lockManualAdditionOrders(tx: Tx, shopId: string, orderIds: string[]): Promise<void> {
+async function lockManualAdditionOrders(tx: Tx, shopId: string, orderIds: string[], targetRoutePlanId?: string): Promise<void> {
   const ids = normalizeIds(orderIds).sort().map((orderId) => Prisma.sql`${orderId}::uuid`);
   if (ids.length === 0) return;
+  const stops = await tx.deliveryStop.findMany({
+    select: { id: true },
+    where: {
+      shopId,
+      OR: [
+        { orderId: { in: orderIds } },
+        ...(targetRoutePlanId === undefined ? [] : [{ routePlanStops: { some: { routePlanId: targetRoutePlanId } } }])
+      ]
+    }
+  });
+  // Dispatch also locks stops before updating order projections. Take the full
+  // target membership first so append can recheck ownership without inversion.
+  await lockRouteExecutionStops(tx, stops.map((stop) => stop.id));
   await tx.$queryRaw<{ id: string }[]>`
     SELECT "id"
     FROM "orders"
@@ -4515,8 +4523,7 @@ async function appendGroupingOrdersToChildRoute(
   tx: Tx,
   group: LoadedGrouping,
   targetRoutePlanId: string,
-  orderIds: string[],
-  options: { requireCompleteOwnershipRebind?: boolean } = {}
+  orderIds: string[]
 ): Promise<void> {
   const targetChild = group.childVersions
     .filter((child) => isOperationalCurrentChild(child))
@@ -4542,11 +4549,13 @@ async function appendGroupingOrdersToChildRoute(
 
   const currentAssignments = currentChildAssignments(group, targetChild);
   const currentStopIds = new Set(currentAssignments.map((assignment) => assignment.deliveryStopId));
+  // Each group still partitions its orders across children; other groups may
+  // independently plan the same real order without taking execution ownership.
+  const siblingStopIds = new Set(group.childVersions
+    .filter((child) => isOperationalCurrentChild(child) && child.id !== targetChild.id)
+    .flatMap((child) => currentChildAssignments(group, child).map((assignment) => assignment.deliveryStopId)));
   const additionsToAppend = (additions as LoadedAssignment[]).filter((assignment) => {
-    const otherRouteMembership = assignment.deliveryStop.routePlanStops.some(
-      ({ routePlanId }) => routePlanId !== targetRoutePlanId
-    );
-    if (otherRouteMembership) {
+    if (siblingStopIds.has(assignment.deliveryStopId)) {
       throw new RouteGroupingValidationError(['selected orders are already assigned to another child route']);
     }
     return !currentStopIds.has(assignment.deliveryStopId);
@@ -4562,6 +4571,16 @@ async function appendGroupingOrdersToChildRoute(
     routeDetailsChanged: false,
     status: lockedRoutePlan.status
   });
+  const reservesExecution = targetChild.publishedAt !== null
+    || lockedRoutePlan.status === 'IN_PROGRESS'
+    || hasDispatchReservation(lockedRoutePlan.constraints);
+  if (reservesExecution) {
+    await assertRouteDispatchOwnership(tx, {
+      deliveryStopIds: assignments.map((assignment) => assignment.deliveryStopId),
+      routePlanId: targetRoutePlanId,
+      shopId: group.shopId
+    });
+  }
   const snapshot = readChildSnapshot(targetChild.snapshot);
   await syncRoutePlanStopsPreservingRows(tx, group.shopId, targetRoutePlanId, assignments);
   await tx.routePlan.update({
@@ -4570,7 +4589,7 @@ async function appendGroupingOrdersToChildRoute(
   });
   await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
   await replaceCurrentRouteGroupingChildVersion(tx, {
-    planning: options.requireCompleteOwnershipRebind !== true,
+    planning: true,
     currentChildId: targetChild.id,
     driverId: lockedRoutePlan.driverId ?? targetChild.driverId,
     groupingId: group.id,
@@ -4592,6 +4611,9 @@ async function appendGroupingOrdersToChildRoute(
     ),
     version: targetChild.version
   });
+  if (reservesExecution) {
+    await claimRouteExecutionProjection(tx, { routePlanId: targetRoutePlanId, shopId: group.shopId });
+  }
 }
 
 function validateManualChildAdditions(assignments: LoadedAssignment[]): string[] {
@@ -4603,9 +4625,6 @@ function validateManualChildAdditions(assignments: LoadedAssignment[]): string[]
     }
     if (decimalNumber(assignment.deliveryStop.latitude) === null || decimalNumber(assignment.deliveryStop.longitude) === null) {
       blockers.push('selected orders must have coordinates');
-    }
-    if (assignment.order.currentRouteVersionId !== null) {
-      blockers.push('selected orders are already assigned to another route');
     }
   }
   return [...new Set(blockers)];
