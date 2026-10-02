@@ -70,6 +70,13 @@ snapshot. Stale per-field observations, future clock skew, and a new context's
 observation grace result in UNKNOWN states rather than invented failure times.
 Absence means `SIGNAL_ABSENT_UNKNOWN`, not proof of app termination, network loss,
 or operating-system restrictions. Classification uses versioned server constants.
+The fresh live snapshot is authoritative for whether a blocker remains active. A
+blocker retained in that snapshot is not discarded merely because its `since` or
+`lastObservedAt` time is older than the evidence-freshness window; those times
+describe when the unresolved condition began and was last observed. A newer fresh
+snapshot that omits the blocker clears it. Invalid, future-skewed, or reversed
+blocker times produce `UNKNOWN_STALE_EVIDENCE`. Stale contact and stale live-snapshot
+checks still take precedence over blocker classification.
 
 A current direct GPS transmission can be `HEALTHY` when callback, collection,
 send-attempt, client-ACK, empty observed queue, runtime state observations, and
@@ -119,8 +126,9 @@ bounded-operation timeout reason. A processing, storage, or transport blocker is
 `GPS_POST_COLLECTION_BLOCKED` only when its safe operation identifier or reason
 correlates it to the GPS pipeline. Other current runtime work, such as completion
 assistance persistence, is `RUNTIME_OPERATION_BLOCKED`; it does not imply that raw
-GPS collection or transmission stopped. A fresh higher-priority blocker is evaluated
-before unrelated stale blocker history. Diagnosis states are additive operational
+GPS collection or transmission stopped. Authentication and route blockers in a
+fresh live snapshot retain their higher priority even when they began before another
+active runtime blocker. Diagnosis states are additive operational
 labels; admin consumers must preserve and display an unknown future state rather
 than treating it as `HEALTHY`.
 
