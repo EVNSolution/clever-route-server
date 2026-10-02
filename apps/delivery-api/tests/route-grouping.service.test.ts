@@ -1064,7 +1064,7 @@ describe('route grouping contracts', () => {
     const validatorBody = source.slice(source.indexOf('function validateCreateFacts'), source.indexOf('async function recomputeAssignments'));
 
     expect(source).toContain('const blockers = validateCreateFacts({ dateRange, facts, orderIds });');
-    expect(source).toContain('const blockers = validateCreateFacts({ dateRange: loadedGroupDateRange(group), facts, orderIds: newOrderIds });');
+    expect(source).toContain('const blockers = validateManualAdditionFacts({ facts, orderIds: newOrderIds });');
     expect(validatorBody).not.toContain('pickup orders cannot be grouped into driver delivery routes');
     expect(validatorBody).not.toContain('isPickupService');
   });
@@ -1476,7 +1476,8 @@ describe('route grouping contracts', () => {
     const body = source.slice(start, end);
 
     expect(body).toContain('input.targetRoutePlanId');
-    expect(body).toContain('await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds)');
+    expect(body).toContain('await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds, {');
+    expect(body).toContain('requireCompleteOwnershipRebind: true');
     expect(body).toContain('await recomputeAssignments(tx, group.id)');
     expect(body.indexOf('await appendGroupingOrdersToChildRoute'))
       .toBeLessThan(body.indexOf('await recomputeAssignments'));
