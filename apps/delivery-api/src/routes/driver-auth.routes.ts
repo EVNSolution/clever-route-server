@@ -6,8 +6,10 @@ import {
 import type { DriverAuthSessionInfo, PrismaDriverAuthRepository } from '../modules/driver/driver-auth.repository.js';
 import type { DriverTokenAccessRepositoryApi } from '../modules/driver/driver-token-access.repository.js';
 import type { DriverPushTokenService } from '../modules/route-grouping/driver-push-token.service.js';
+import type { DriverRuntimeDiagnosticsService } from './driver-runtime-diagnostics.routes.js';
 
 export type DriverAuthDependencies = {
+  diagnosticsService?: DriverRuntimeDiagnosticsService;
   driverAuthRepository: PrismaDriverAuthRepository;
   driverTokenAccessRepository?: DriverTokenAccessRepositoryApi;
   jwtSecret: string;

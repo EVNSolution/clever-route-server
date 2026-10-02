@@ -40,7 +40,7 @@ describe('ordered driver event contract v2', () => {
     const app = await buildApp({ driverApi: routeDependencies(recordDriverEvent) });
     try {
       const response = await app.inject({
-        headers: { authorization: `Bearer ${routeToken()}` },
+        headers: { authorization: `Bearer ${routeToken()}`, 'x-request-id': 'ea5e87d8-69e4-4706-89d9-a7c97d1886db' },
         method: 'POST',
         payload: versionedPayload(),
         url: '/driver/events'
@@ -54,7 +54,7 @@ describe('ordered driver event contract v2', () => {
         expectedRouteVersionId: '22222222-2222-4222-8222-222222222222',
         versionCode: 120
       });
-      expect(typeof admitted?.requestId).toBe('string');
+      expect(admitted?.requestId).toBe('ea5e87d8-69e4-4706-89d9-a7c97d1886db');
     } finally {
       await app.close();
     }

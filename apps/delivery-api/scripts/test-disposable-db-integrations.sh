@@ -315,6 +315,10 @@ DRIVER_EVENT_CONTRACT_V2_DATABASE_URL="$g002_url" \
 ROUTE_OPERATIONAL_HEALTH_DATABASE_URL="$g002_url" \
 npm test -- driver-event-contract-v2.integration.test.ts route-operational-health.integration.test.ts
 
+DRIVER_RUNTIME_DIAGNOSTICS_DATABASE_TARGET_CLASS='safe-local-disposable' \
+DRIVER_RUNTIME_DIAGNOSTICS_DATABASE_URL="$g002_url" \
+npm test -- driver-runtime-diagnostics.integration.test.ts driver-runtime-diagnostics.http.integration.test.ts --maxWorkers=1
+
 DATABASE_URL="$email_reconciliation_url" \
 EMAIL_RECONCILIATION_DATABASE_TARGET_CLASS='safe-local-email-reconciliation-disposable' \
 EMAIL_RECONCILIATION_DATABASE_URL="$email_reconciliation_url" \

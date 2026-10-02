@@ -39,6 +39,43 @@ describe('driver event attempt retention', () => {
     expect(sql).toContain('ORDER BY "retainedUntil" ASC, "id" ASC');
   });
 
+  test('expires every LOCATION_UPDATED attempt status without limiting the driver contract version', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([{ id: 'expired-location-attempt' }])
+      .mockResolvedValueOnce([{ exists: true }]);
+    const cutoff = new Date('2026-08-25T00:00:00.000Z');
+
+    await cleanupResolvedDriverEventAttempts(
+      { $queryRaw: query } as never,
+      cutoff,
+      { batchSize: 1, maxRows: 1 }
+    );
+
+    const deleteSql = sqlText(query.mock.calls[0]?.[0]);
+    expect(deleteSql).toMatch(/"retainedUntil" < .*AND \(\s*"eventType" = 'LOCATION_UPDATED'\s*OR "status" IN \('APPLIED', 'DUPLICATE'\)/su);
+    expect(deleteSql).not.toContain('driverContractVersion');
+    expect(sqlValues(query.mock.calls[0]?.[0])).toContain(cutoff);
+  });
+
+  test('keeps the business-event evidence safeguards and reuses the same expiry rule for continuation', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce([{ id: 'expired-attempt' }])
+      .mockResolvedValueOnce([{ exists: true }]);
+
+    await cleanupResolvedDriverEventAttempts(
+      { $queryRaw: query } as never,
+      new Date('2026-08-25T00:00:00.000Z'),
+      { batchSize: 1, maxRows: 1 }
+    );
+
+    const deletePredicate = cleanupPredicate(sqlText(query.mock.calls[0]?.[0]));
+    const continuationPredicate = cleanupPredicate(sqlText(query.mock.calls[1]?.[0]));
+    expect(continuationPredicate).toBe(deletePredicate);
+    expect(deletePredicate).toContain('"status" IN (\'APPLIED\', \'DUPLICATE\')');
+    expect(deletePredicate).toContain('("status" = \'REJECTED\' AND "reconciledAt" IS NOT NULL)');
+    expect(deletePredicate).not.toMatch(/"status"\s+IN\s+\([^)]*'ACCEPTED'|"status"\s+IN\s+\([^)]*'FAILED'/u);
+  });
+
   test('stops without a continuation query after a partial batch', async () => {
     const query = vi.fn().mockResolvedValueOnce([{ id: 'attempt-1' }]);
 
@@ -50,3 +87,17 @@ describe('driver event attempt retention', () => {
     expect(query).toHaveBeenCalledOnce();
   });
 });
+
+function sqlText(statement: unknown): string {
+  return (statement as { strings: readonly string[] }).strings.join(' ').replace(/\s+/gu, ' ').trim();
+}
+
+function sqlValues(statement: unknown): readonly unknown[] {
+  return (statement as { values: readonly unknown[] }).values;
+}
+
+function cleanupPredicate(sql: string): string {
+  const match = sql.match(/"retainedUntil" < .*?AND \(.*?\) (?=ORDER BY|\) AS "exists")/u);
+  if (match === null) throw new Error(`Cleanup predicate not found in SQL: ${sql}`);
+  return match[0].replace(/\$\d+/gu, '$cutoff');
+}

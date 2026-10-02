@@ -31,6 +31,7 @@ import { registerAdminOrdersRoutes, type AdminOrdersDependencies } from './route
 import { registerApiDocsRoutes } from './routes/api-docs.routes.js';
 import { registerDriverEventRoutes, type DriverApiDependencies } from './routes/driver-events.routes.js';
 import { registerDriverAuthRoutes, type DriverAuthDependencies } from './routes/driver-auth.routes.js';
+import { registerDriverRuntimeDiagnosticsRoutes } from './routes/driver-runtime-diagnostics.routes.js';
 import { isInvalidJsonBodyError, registerJsonBodyParser } from './routes/json-body-parser.js';
 import { registerPrivacyRoutes } from './routes/privacy.routes.js';
 import { registerHealthRoutes } from './routes/health.routes.js';
@@ -231,6 +232,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.driverAuth !== undefined) {
     registerDriverAuthRoutes(app, options.driverAuth);
+    if (options.driverAuth.diagnosticsService !== undefined) {
+      await registerDriverRuntimeDiagnosticsRoutes(app, {
+        service: options.driverAuth.diagnosticsService,
+        jwtSecret: options.driverAuth.jwtSecret,
+        ...(options.adminDrivers === undefined ? {} : { sessionTokenVerifier: options.adminDrivers.sessionTokenVerifier })
+      });
+    }
   }
 
   const dsvControl = options.dsvControl;
