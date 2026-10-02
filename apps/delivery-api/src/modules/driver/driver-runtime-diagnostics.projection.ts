@@ -19,6 +19,7 @@ export type DriverRuntimeDiagnosticState =
   | 'GPS_COLLECTION_STOPPED'
   | 'GPS_POST_COLLECTION_BLOCKED'
   | 'HEALTHY'
+  | 'RUNTIME_OPERATION_BLOCKED'
   | 'SERVER_APPLIED_CLIENT_ACK_UNKNOWN'
   | 'SERVER_RECEIVED_NOT_APPLIED'
   | 'SIGNAL_ABSENT_UNKNOWN'
@@ -135,6 +136,15 @@ function observedAt(blocker: DriverDiagnosticBlocker): Date {
   return new Date(blocker.since);
 }
 
+function isGpsCorrelated(blocker: DriverDiagnosticBlocker): boolean {
+  if (
+    blocker.stage === 'PROCESSING'
+    && (blocker.reason === 'LOCATION_PROCESSING_FAILED' || blocker.reason === 'LOCATION_PIPELINE_TIMEOUT')
+  ) return true;
+  return blocker.clientEventId !== undefined
+    && /^(?:continuous-location|location-updated)(?:[-:.]|$)/u.test(blocker.clientEventId);
+}
+
 export function deriveDriverRuntimeDiagnostic(input: DriverRuntimeDiagnosticInput): DriverRuntimeDiagnosticProjection {
   const nowMs = input.now.getTime();
   if (input.lastContactAt === null) {
@@ -157,17 +167,15 @@ export function deriveDriverRuntimeDiagnostic(input: DriverRuntimeDiagnosticInpu
   }
 
   const blockers = snapshot.blockers ?? [];
-  const staleBlocker = blockers.find((blocker) => {
+  const currentBlockers = blockers.filter((blocker) => {
     const lastObservedAt = parseTimestamp(blocker.lastObservedAt);
     const since = parseTimestamp(blocker.since);
-    return !isFresh(nowMs, lastObservedAt) || isFuture(nowMs, since);
+    return isFresh(nowMs, lastObservedAt) && !isFuture(nowMs, since);
   });
-  if (staleBlocker !== undefined) {
-    return projection({ blocker: staleBlocker, observedAt: parseTimestamp(staleBlocker.lastObservedAt), state: 'UNKNOWN_STALE_EVIDENCE' });
-  }
+  const staleBlocker = blockers.find((blocker) => !currentBlockers.includes(blocker));
 
   const attempts = input.attempts ?? [];
-  for (const blocker of blockers) {
+  for (const blocker of currentBlockers) {
     const scopedAttempts = attemptsForBlocker(attempts, blocker);
     const successful = scopedAttempts.filter(({ receivedAt, status }) => (
       Number.isFinite(receivedAt.getTime())
@@ -193,11 +201,11 @@ export function deriveDriverRuntimeDiagnostic(input: DriverRuntimeDiagnosticInpu
     }
   }
 
-  const authOrRoute = blockers.find(({ stage }) => stage === 'AUTH' || stage === 'ROUTE');
+  const authOrRoute = currentBlockers.find(({ stage }) => stage === 'AUTH' || stage === 'ROUTE');
   if (authOrRoute !== undefined) {
     return projection({ blocker: authOrRoute, observedAt: observedAt(authOrRoute), state: 'AUTH_OR_ROUTE_BLOCKED' });
   }
-  const diagnosticStorage = blockers.find(({ reason }) => reason === 'DIAGNOSTIC_STORAGE_FAILED');
+  const diagnosticStorage = currentBlockers.find(({ reason }) => reason === 'DIAGNOSTIC_STORAGE_FAILED');
   if (diagnosticStorage !== undefined) {
     return projection({ blocker: diagnosticStorage, observedAt: observedAt(diagnosticStorage), state: 'DIAGNOSTIC_EVIDENCE_DEGRADED' });
   }
@@ -215,13 +223,22 @@ export function deriveDriverRuntimeDiagnostic(input: DriverRuntimeDiagnosticInpu
   const callbackIsFresh = isFresh(nowMs, callbackAt);
   const collectionIsFresh = isFresh(nowMs, collectedAt);
 
-  const postCollection = blockers.find(({ stage }) => (
+  const postCollectionBlockers = currentBlockers.filter(({ stage }) => (
     stage === 'PROCESSING' || stage === 'STORAGE' || stage === 'TRANSPORT'
   ));
-  if (postCollection !== undefined && callbackIsFresh && collectionIsFresh) {
-    return projection({ blocker: postCollection, observedAt: observedAt(postCollection), state: 'GPS_POST_COLLECTION_BLOCKED' });
+  const gpsPostCollection = postCollectionBlockers.find(isGpsCorrelated);
+  if (gpsPostCollection !== undefined && callbackIsFresh && collectionIsFresh) {
+    return projection({
+      blocker: gpsPostCollection,
+      observedAt: observedAt(gpsPostCollection),
+      state: 'GPS_POST_COLLECTION_BLOCKED'
+    });
   }
-  const locationBlocker = blockers.find(({ stage }) => stage === 'LOCATION');
+  const runtimeOperation = postCollectionBlockers.find((blocker) => !isGpsCorrelated(blocker));
+  if (runtimeOperation !== undefined) {
+    return projection({ blocker: runtimeOperation, observedAt: observedAt(runtimeOperation), state: 'RUNTIME_OPERATION_BLOCKED' });
+  }
+  const locationBlocker = currentBlockers.find(({ stage }) => stage === 'LOCATION');
   if (snapshot.locationTaskExpected !== true) {
     return projection({
       ...(locationBlocker === undefined ? {} : { blocker: locationBlocker }),
@@ -288,13 +305,16 @@ export function deriveDriverRuntimeDiagnostic(input: DriverRuntimeDiagnosticInpu
   if (locationBlocker !== undefined) {
     return projection({ blocker: locationBlocker, observedAt: observedAt(locationBlocker), state: 'UNKNOWN_INSUFFICIENT_EVIDENCE' });
   }
+  if (staleBlocker !== undefined) {
+    return projection({ blocker: staleBlocker, observedAt: parseTimestamp(staleBlocker.lastObservedAt), state: 'UNKNOWN_STALE_EVIDENCE' });
+  }
 
   const queueAt = parseTimestamp(snapshot.businessQueue.observedAt);
-  const requiredCurrentEvidence = [persistedAt, sendAttemptAt, sendAcknowledgedAt, queueAt];
-  if (requiredCurrentEvidence.some((at) => isFuture(nowMs, at))) {
-    return projection({ observedAt: requiredCurrentEvidence.find((at) => isFuture(nowMs, at)) ?? snapshotAt, state: 'UNKNOWN_STALE_EVIDENCE' });
+  const directSendEvidence = [sendAttemptAt, sendAcknowledgedAt, queueAt];
+  if (directSendEvidence.some((at) => isFuture(nowMs, at))) {
+    return projection({ observedAt: directSendEvidence.find((at) => isFuture(nowMs, at)) ?? snapshotAt, state: 'UNKNOWN_STALE_EVIDENCE' });
   }
-  const staleCurrentEvidence = requiredCurrentEvidence.find((at) => at !== null && !isFresh(nowMs, at));
+  const staleCurrentEvidence = directSendEvidence.find((at) => at !== null && !isFresh(nowMs, at));
   if (staleCurrentEvidence !== undefined) {
     return projection({ observedAt: staleCurrentEvidence, state: 'UNKNOWN_STALE_EVIDENCE' });
   }
@@ -303,9 +323,10 @@ export function deriveDriverRuntimeDiagnostic(input: DriverRuntimeDiagnosticInpu
     && snapshot.locationTask === 'STARTED'
     && snapshot.network === 'ONLINE';
   if (
-    requiredCurrentEvidence.every((at) => isFresh(nowMs, at))
+    directSendEvidence.every((at) => isFresh(nowMs, at))
     && snapshot.businessQueue.queueDepth === 0
     && stateAllowsHealthy
+    && blockers.length === 0
   ) {
     const currentStateObservations = Object.values(snapshot.stateObservedAt).map(parseTimestamp);
     const missingStateObservation = currentStateObservations.some((at) => at === null);

@@ -71,6 +71,18 @@ observation grace result in UNKNOWN states rather than invented failure times.
 Absence means `SIGNAL_ABSENT_UNKNOWN`, not proof of app termination, network loss,
 or operating-system restrictions. Classification uses versioned server constants.
 
+A current direct GPS transmission can be `HEALTHY` when callback, collection,
+send-attempt, client-ACK, empty observed queue, runtime state observations, and
+server contact are all fresh and there are no active blockers. Direct success
+does not require a local queue write, so `lastGpsPersistedAt` may truthfully remain
+`null`; the server does not synthesize it. An older valid persistence timestamp
+also does not override a fresh direct send and ACK. A missing or stale ACK, a non-empty or
+stale queue, a storage/processing/transport blocker, stale runtime state, or absent
+signal prevents `HEALTHY`. Server-applied business-event evidence, authentication
+or route blockers, failed/rejected server attempts, and stale/future evidence keep
+their existing higher-priority diagnoses. Historical replay never replaces the
+newer live snapshot.
+
 Event joins require company, driver, route, and the supplied correlation IDs.
 UUID-validated client `X-Request-Id` is `transportRequestId` in the event attempt table;
 the server's unique `requestId` remains separate. APPLIED/DUPLICATE evidence
@@ -89,11 +101,41 @@ constraint/index names found in the production backup; their definitions and
 historical migrations are unchanged. This avoids unrelated naming drift during
 the migration verification.
 
+The public Routes privacy notice describes the same boundary: automatic technical
+diagnostics are linked to the signed-in account and an installation-derived hash,
+and authorized EV&Solution and tenant delivery operators may use tenant-scoped
+records for support and service reliability. Diagnostic payloads exclude tokens,
+PINs, names, phone numbers, addresses, raw coordinates, proof images or note
+contents, and arbitrary error text. Server diagnostic records and state use a
+30-day retention basis; installation linkage is eligible for cleanup after 30 days
+without contact once related records, state, and credentials are gone. The mobile
+diagnostic pending and quarantine stores each use a 1,000-record and seven-day
+bound during app storage/recovery work. Those mobile limits do not delete queued
+business events or proof photos.
+
+`STORAGE_READ_FAILED` and `STORAGE_WRITE_FAILED` are distinct allowlisted reasons;
+both remain storage-stage blockers, while `STORAGE_OPERATION_TIMEOUT` remains the
+bounded-operation timeout reason. A processing, storage, or transport blocker is
+`GPS_POST_COLLECTION_BLOCKED` only when its safe operation identifier or reason
+correlates it to the GPS pipeline. Other current runtime work, such as completion
+assistance persistence, is `RUNTIME_OPERATION_BLOCKED`; it does not imply that raw
+GPS collection or transmission stopped. A fresh higher-priority blocker is evaluated
+before unrelated stale blocker history. Diagnosis states are additive operational
+labels; admin consumers must preserve and display an unknown future state rather
+than treating it as `HEALTHY`.
+
+Completion-assistance storage correlation accepts only
+`completion-assistance-read:<uuid>`, `completion-assistance-write:<uuid>`, and
+`completion-assistance-remove:<uuid>` with a strict UUID suffix. Arbitrary
+suffix text remains an invalid record and is never persisted as diagnostic detail.
+
 Deployment order: server migration and immutable API image; endpoint/runtime
 verification; then the separately validated Routes app release. No alerting is
-enabled by this server change. The app currently ignores `rejectedDiagnostics`:
-before its release, it must quarantine permanent rejections so a poison record
-cannot block its outbox, and invoke revocation on explicit logout. Local token
+enabled by this server change. Older clients may ignore `rejectedDiagnostics`.
+The separately built Routes 1.3.4 (40) release candidate acknowledges accepted
+or duplicate IDs and atomically quarantines recognized permanent rejections so a
+poison record cannot block its outbox; source, artifact, and device installation
+remain separate evidence. It also invokes revocation on explicit logout. Local token
 deletion alone does not revoke the server credential. Route reassignment replay
 without independently verified historical ownership remains rejected rather
 than trusting the payload's claimed driver.
