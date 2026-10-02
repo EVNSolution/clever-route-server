@@ -473,6 +473,91 @@ describe('driver runtime diagnostics PostgreSQL contract', () => {
       await prisma.$disconnect();
     }
   }, 30_000);
+
+  live('finds a durable user report by route and diagnostic ID beyond the recent-record window', async () => {
+    assertDisposableDatabase();
+    const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    let now = new Date('2026-10-02T12:00:00.000Z');
+    const repository = new PrismaDriverRuntimeDiagnosticsRepository(prisma, {
+      now: () => now,
+      token: () => 'C'.repeat(43),
+    });
+
+    try {
+      await cleanup(prisma);
+      await seed(prisma);
+      const registration = await repository.register({ accountId: accountA, deviceInstanceHash: deviceHash, tokenVersion: 3 });
+      if (registration === null) throw new Error('Expected diagnostic registration');
+      const credential = await repository.authenticate(registration.token);
+      if (credential === null) throw new Error('Expected credential authentication');
+
+      const reportId = 'd2000000-0000-4000-8000-000000000001';
+      const report = envelope({
+        batchId: 'b2000000-0000-4000-8000-000000000001',
+        diagnosticId: reportId,
+        kind: 'USER_REPORT',
+        observedAt: now.toISOString(),
+        routePlanId: routeA,
+      });
+      delete report.records[0]!.identifiers;
+      await expect(repository.ingest(credential, report)).resolves.toMatchObject({
+        acceptedDiagnosticIds: [reportId],
+      });
+      await expect(repository.ingest(credential, report)).resolves.toMatchObject({
+        acceptedDiagnosticIds: [reportId],
+      });
+
+      for (let index = 2; index <= 27; index += 1) {
+        now = new Date(`2026-10-02T12:00:${String(index).padStart(2, '0')}.000Z`);
+        const suffix = String(index).padStart(12, '0');
+        await repository.ingest(credential, envelope({
+          batchId: `b2000000-0000-4000-8000-${suffix}`,
+          diagnosticId: `d2000000-0000-4000-8000-${suffix}`,
+          observedAt: now.toISOString(),
+          routePlanId: routeA,
+        }));
+      }
+
+      const recent = await repository.listForShop({ appId: 'clever', routePlanId: routeA, shopDomain: 'tenant-a.test' });
+      expect(recent?.devices[0]?.records).toHaveLength(25);
+      expect(recent?.devices[0]?.records.some(({ diagnosticId }) => diagnosticId === reportId)).toBe(false);
+
+      const oldHeartbeatId = 'd2000000-0000-4000-8000-000000000002';
+      expect((await repository.listForShop({
+        appId: 'clever', diagnosticId: oldHeartbeatId, routePlanId: routeA, shopDomain: 'tenant-a.test',
+      }))?.devices).toEqual([]);
+
+      const exact = await repository.listForShop({
+        appId: 'clever', diagnosticId: reportId, routePlanId: routeA, shopDomain: 'tenant-a.test',
+      });
+      expect(exact?.devices).toHaveLength(1);
+      expect(exact?.devices[0]?.records).toEqual([
+        expect.objectContaining({ diagnosticId: reportId, identifiers: null, kind: 'USER_REPORT' }),
+      ]);
+      expect((await repository.listForShop({
+        appId: 'clever', diagnosticId: reportId, routePlanId: routeA, shopDomain: 'tenant-b.test',
+      }))?.devices).toEqual([]);
+
+      const privateReportId = 'd2000000-0000-4000-8000-000000000099';
+      await repository.ingest(credential, envelope({
+        batchId: 'b2000000-0000-4000-8000-000000000099',
+        diagnosticId: privateReportId,
+        kind: 'USER_REPORT',
+        liveRoutePlanId: null,
+        observedAt: now.toISOString(),
+        routePlanId: null,
+      }));
+      expect(await prisma.driverRuntimeDiagnosticRecord.findFirstOrThrow({
+        select: { kind: true, shopId: true }, where: { diagnosticId: privateReportId },
+      })).toEqual({ kind: 'USER_REPORT', shopId: null });
+      expect((await repository.listForShop({
+        appId: 'clever', diagnosticId: privateReportId, routePlanId: routeA, shopDomain: 'tenant-a.test',
+      }))?.devices).toEqual([]);
+    } finally {
+      await cleanup(prisma).catch(() => undefined);
+      await prisma.$disconnect();
+    }
+  }, 30_000);
 });
 
 function envelope(input: {
@@ -482,6 +567,7 @@ function envelope(input: {
   discardedRecordCount?: number;
   liveObservedAt?: string;
   liveRoutePlanId?: string | null;
+  kind?: DriverDiagnosticEnvelope['records'][number]['kind'];
   observedAt: string;
   routePlanId: string | null;
   sequence?: number;
@@ -510,7 +596,7 @@ function envelope(input: {
       context,
       diagnosticId: input.diagnosticId,
       identifiers: { clientEventId: 'location-updated-fixture', requestId: 'fixture-request' },
-      kind: 'HEARTBEAT',
+      kind: input.kind ?? 'HEARTBEAT',
       observedAt: input.observedAt,
       sequence: input.sequence ?? 1,
       snapshot: snapshot(input.observedAt),

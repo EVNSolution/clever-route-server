@@ -148,6 +148,21 @@ describe('driver diagnostic contract parser', () => {
     }))).toBeNull();
   });
 
+  test('accepts a user-initiated support report without retaining free text', () => {
+    const record = envelope().records[0]!;
+    const parsed = parseDriverDiagnosticEnvelope(envelope({
+      records: [{
+        ...record,
+        kind: 'USER_REPORT',
+        message: 'customer address, PIN, and token must not persist',
+        rawError: 'private stack trace'
+      }]
+    }));
+
+    expect(parsed?.records[0]).toMatchObject({ diagnosticId: DIAGNOSTIC_ID, kind: 'USER_REPORT' });
+    expect(JSON.stringify(parsed?.records[0])).not.toMatch(/message|rawError|customer address|PIN|token|stack trace/iu);
+  });
+
   test('reports malformed historical records by safe diagnostic ID while preserving valid records', () => {
     const validRecord = envelope().records[0]!;
     const detailed = parseDriverDiagnosticEnvelopeDetailed(envelope({
