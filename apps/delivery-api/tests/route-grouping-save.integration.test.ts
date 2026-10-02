@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { PrismaClient } from '@prisma/client';
 import Fastify from 'fastify';
+import { Client } from 'pg';
 import { registerAdminOrdersRoutes } from '../src/routes/admin-orders.routes.js';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
@@ -940,18 +941,6 @@ describeDatabase('route grouping save database regressions', () => {
       await prisma.shop.delete({ where: { id: foreignShop.id } });
     }
 
-    const assigned = await seedOrder();
-    await materializedGroup('manual addition ownership source', [assigned.id]);
-    await expect(service.updateGroupingOrders({
-      addOrderIds: [assigned.id], appId, groupingId: grouping.id, shopDomain, targetRoutePlanId: routePlanId
-    })).rejects.toMatchObject({
-      blockers: ['selected orders are already assigned to another route'],
-      code: 'ROUTE_GROUPING_INVALID'
-    });
-    await expect(prisma.routeGroupingOrder.count({
-      where: { groupingId: grouping.id, orderId: assigned.id }
-    })).resolves.toBe(0);
-
     const afterCompletion = await seedOrder({ deliveryDate: new Date('2026-09-12T00:00:00.000Z') });
     await prisma.routePlan.update({ data: { status: 'COMPLETED' }, where: { id: routePlanId } });
     await expect(service.updateGroupingOrders({
@@ -965,7 +954,7 @@ describeDatabase('route grouping save database regressions', () => {
     })).resolves.toBe(0);
   });
 
-  test('concurrent manual additions claim one route atomically without leaving loser membership', async () => {
+  test('concurrent manual additions place one unowned order in both READY plans while retaining one compatibility projection', async () => {
     const [firstBase, secondBase, contested] = await seedOrders(3);
     const firstGroup = await createGrouping('manual add ownership race first', [firstBase!.id]);
     const secondGroup = await createGrouping('manual add ownership race second', [secondBase!.id]);
@@ -997,13 +986,7 @@ describeDatabase('route grouping save database regressions', () => {
       })
     ]);
 
-    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
-    expect(results.filter(({ status }) => status === 'rejected')).toHaveLength(1);
-    expect((results.find(({ status }) => status === 'rejected') as PromiseRejectedResult).reason)
-      .toMatchObject({
-        blockers: ['selected orders are already assigned to another route'],
-        code: 'ROUTE_GROUPING_INVALID'
-      });
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(2);
 
     const memberships = await prisma.routeGroupingOrder.findMany({
       select: { groupingId: true },
@@ -1013,31 +996,284 @@ describeDatabase('route grouping save database regressions', () => {
       select: { routePlanId: true },
       where: { deliveryStopId: contested!.deliveryStopId }
     });
-    expect(memberships).toHaveLength(1);
-    expect(routeStops).toHaveLength(1);
-    const winningGroupingId = memberships[0]!.groupingId;
-    const winningRoutePlanId = routeStops[0]!.routePlanId;
-    expect([
-      [firstGroup.id, firstRoutePlanId],
-      [secondGroup.id, secondRoutePlanId]
-    ]).toContainEqual([winningGroupingId, winningRoutePlanId]);
+    expect(memberships.map(({ groupingId }) => groupingId).sort())
+      .toEqual([firstGroup.id, secondGroup.id].sort());
+    expect(routeStops.map(({ routePlanId }) => routePlanId).sort())
+      .toEqual([firstRoutePlanId, secondRoutePlanId].sort());
 
     const currentOwner = await prisma.order.findUniqueOrThrow({
       select: { currentRouteVersion: { select: { groupingId: true, routePlanId: true } } },
       where: { id: contested!.id }
     });
-    expect(currentOwner.currentRouteVersion).toMatchObject({
-      groupingId: winningGroupingId,
-      routePlanId: winningRoutePlanId
-    });
+    expect([
+      { groupingId: firstGroup.id, routePlanId: firstRoutePlanId },
+      { groupingId: secondGroup.id, routePlanId: secondRoutePlanId }
+    ]).toContainEqual(currentOwner.currentRouteVersion);
     const [firstReloaded, secondReloaded] = await Promise.all([
       service.getGrouping({ appId, groupingId: firstGroup.id, shopDomain }),
       service.getGrouping({ appId, groupingId: secondGroup.id, shopDomain })
     ]);
-    expect([firstReloaded, secondReloaded].filter((group) => group!.assignments.some(({ orderId }) => orderId === contested!.id)))
-      .toHaveLength(1);
-    expect([firstReloaded, secondReloaded].filter((group) => group!.children[0]!.orderIds.includes(contested!.id)))
-      .toHaveLength(1);
+    expect([firstReloaded, secondReloaded].every((group) => group!.assignments.some(({ orderId }) => orderId === contested!.id)))
+      .toBe(true);
+    expect([firstReloaded, secondReloaded].every((group) => group!.children[0]!.orderIds.includes(contested!.id)))
+      .toBe(true);
+  });
+
+  test.each([
+    { sourceStatus: 'READY', groupOnlyFirst: false },
+    { sourceStatus: 'IN_PROGRESS', groupOnlyFirst: false },
+    { sourceStatus: 'READY', groupOnlyFirst: true }
+  ] as const)(
+    'adds an order from a separate $sourceStatus route to a READY plan without changing its source (group first: $groupOnlyFirst)',
+    async ({ sourceStatus, groupOnlyFirst }) => {
+      const [sourceOrder, targetBase] = await seedOrders(2);
+      const source = await materializedGroup(`manual duplicate ${sourceStatus} source`, [sourceOrder!.id]);
+      const sourceRoutePlanId = source.children[0]!.routePlanId!;
+      if (sourceStatus === 'IN_PROGRESS') {
+        await prisma.routePlan.update({ data: { status: sourceStatus }, where: { id: sourceRoutePlanId } });
+      }
+      const targetGroup = await createGrouping(`manual duplicate ${sourceStatus} target`, [targetBase!.id]);
+      const target = (await service.saveDraft({
+        appId,
+        groupingId: targetGroup.id,
+        mode: 'MANUAL_ORDER',
+        routes: [draftRoute(`manual duplicate ${sourceStatus} target`, [targetBase!.id])],
+        shopDomain
+      }))!;
+      const targetRoutePlanId = target.children[0]!.routePlanId!;
+      const pointerBefore = (await prisma.order.findUniqueOrThrow({
+        select: { currentRouteVersionId: true },
+        where: { id: sourceOrder!.id }
+      })).currentRouteVersionId;
+
+      if (groupOnlyFirst) {
+        const grouped = await service.updateGroupingOrders({
+          addOrderIds: [sourceOrder!.id], appId, groupingId: targetGroup.id, shopDomain
+        });
+        expect(grouped!.assignments.some(({ orderId }) => orderId === sourceOrder!.id)).toBe(true);
+        expect(grouped!.children[0]!.orderIds).toEqual([targetBase!.id]);
+      }
+
+      const updated = await service.updateGroupingOrders({
+        addOrderIds: [sourceOrder!.id],
+        appId,
+        groupingId: targetGroup.id,
+        shopDomain,
+        targetRoutePlanId
+      });
+
+      expect(updated!.children[0]!.orderIds).toEqual([targetBase!.id, sourceOrder!.id]);
+      await expect(prisma.routePlanStop.findMany({
+        orderBy: { sequence: 'asc' },
+        select: { deliveryStopId: true },
+        where: { routePlanId: sourceRoutePlanId }
+      })).resolves.toEqual([{ deliveryStopId: sourceOrder!.deliveryStopId }]);
+      await expect(prisma.routeGroupingOrder.findMany({
+        orderBy: { groupingId: 'asc' },
+        select: { groupingId: true },
+        where: { orderId: sourceOrder!.id }
+      })).resolves.toEqual([
+        { groupingId: source.id },
+        { groupingId: targetGroup.id }
+      ].sort((left, right) => left.groupingId.localeCompare(right.groupingId)));
+      await expect(prisma.order.findUniqueOrThrow({
+        select: { currentRouteVersionId: true },
+        where: { id: sourceOrder!.id }
+      })).resolves.toEqual({ currentRouteVersionId: pointerBefore });
+      await expect(prisma.orderDeliveryFact.findFirstOrThrow({
+        select: { deliveryDate: true, readiness: true, routeScopeKey: true },
+        where: { orderId: sourceOrder!.id }
+      })).resolves.toEqual({
+        deliveryDate: new Date('2026-09-10T00:00:00.000Z'),
+        readiness: 'READY_TO_PLAN',
+        routeScopeKey: 'thursday-delivery'
+      });
+    }
+  );
+
+  test('rejects a reserved source order added to an executing route and rolls back every target change', async () => {
+    const [sourceOrder, targetBase] = await seedOrders(2);
+    const source = await materializedGroup('reserved manual-add source', [sourceOrder!.id]);
+    const target = await materializedGroup('executing manual-add target', [targetBase!.id]);
+    const sourceRoutePlanId = source.children[0]!.routePlanId!;
+    const targetRoutePlanId = target.children[0]!.routePlanId!;
+    await routePlans.publishRoutePlan({ appId, routePlanId: sourceRoutePlanId, shopDomain });
+    await startRoute(targetRoutePlanId);
+    const targetBefore = await service.getGrouping({ appId, groupingId: target.id, shopDomain });
+    const pointerBefore = await prisma.order.findUniqueOrThrow({
+      select: { currentRouteVersionId: true },
+      where: { id: sourceOrder!.id }
+    });
+
+    await expect(service.updateGroupingOrders({
+      addOrderIds: [sourceOrder!.id],
+      appId,
+      groupingId: target.id,
+      shopDomain,
+      targetRoutePlanId
+    })).rejects.toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+
+    expect(await service.getGrouping({ appId, groupingId: target.id, shopDomain })).toEqual(targetBefore);
+    await expect(prisma.routeGroupingOrder.count({
+      where: { groupingId: target.id, orderId: sourceOrder!.id }
+    })).resolves.toBe(0);
+    await expect(prisma.routePlanStop.count({
+      where: { deliveryStopId: sourceOrder!.deliveryStopId, routePlanId: targetRoutePlanId }
+    })).resolves.toBe(0);
+    await expect(prisma.order.findUniqueOrThrow({
+      select: { currentRouteVersionId: true },
+      where: { id: sourceOrder!.id }
+    })).resolves.toEqual(pointerBefore);
+  });
+
+  test('adds an unreserved READY source order to an executing target and transfers the compatibility projection', async () => {
+    const [sourceOrder, targetBase] = await seedOrders(2);
+    const source = await materializedGroup('unreserved READY manual-add source', [sourceOrder!.id]);
+    const target = await materializedGroup('executing projection target', [targetBase!.id]);
+    const sourceRoutePlanId = source.children[0]!.routePlanId!;
+    const targetRoutePlanId = target.children[0]!.routePlanId!;
+    await startRoute(targetRoutePlanId);
+
+    const updated = await service.updateGroupingOrders({
+      addOrderIds: [sourceOrder!.id],
+      appId,
+      groupingId: target.id,
+      shopDomain,
+      targetRoutePlanId
+    });
+    const targetCurrentChild = await prisma.routeGroupingChildVersion.findFirstOrThrow({
+      select: { id: true },
+      where: { routePlanId: targetRoutePlanId, status: 'CURRENT', supersededAt: null }
+    });
+
+    expect(updated!.children[0]!.orderIds).toEqual([targetBase!.id, sourceOrder!.id]);
+    await expect(prisma.order.findUniqueOrThrow({
+      select: { currentRouteVersionId: true },
+      where: { id: sourceOrder!.id }
+    })).resolves.toEqual({ currentRouteVersionId: targetCurrentChild.id });
+    await expect(prisma.routePlanStop.findMany({
+      select: { deliveryStopId: true },
+      where: { routePlanId: sourceRoutePlanId }
+    })).resolves.toEqual([{ deliveryStopId: sourceOrder!.deliveryStopId }]);
+    await expect(prisma.routeGroupingOrder.count({
+      where: { groupingId: source.id, orderId: sourceOrder!.id }
+    })).resolves.toBe(1);
+  });
+
+  test('serializes a source Dispatch ahead of an executing-target manual addition without deadlock or partial membership', async () => {
+    const [sharedOrder, targetBase] = await seedOrders(2);
+    const source = await materializedGroup('manual-add lock-order source', [sharedOrder!.id]);
+    const target = await materializedGroup('manual-add lock-order target', [targetBase!.id]);
+    const sourceRoutePlanId = source.children[0]!.routePlanId!;
+    const targetRoutePlanId = target.children[0]!.routePlanId!;
+    await startRoute(targetRoutePlanId);
+
+    const barrier = new Client({ connectionString: databaseUrl! });
+    await barrier.connect();
+    const waitForAdvisoryWaiters = async (minimum: number) => {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const result = await barrier.query<{ count: string }>(`
+          SELECT count(*)::text AS count FROM pg_locks
+          WHERE locktype = 'advisory' AND classid = 710027 AND NOT granted
+        `);
+        if (Number(result.rows[0]?.count ?? 0) >= minimum) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`Timed out waiting for ${minimum} route execution lock waiters`);
+    };
+
+    let publish!: Promise<unknown>;
+    let manualAdd!: Promise<unknown>;
+    try {
+      await barrier.query('BEGIN');
+      await barrier.query('SELECT pg_advisory_xact_lock(710027, hashtext($1))', [sharedOrder!.deliveryStopId]);
+      publish = routePlans.publishRoutePlan({ appId, routePlanId: sourceRoutePlanId, shopDomain });
+      await waitForAdvisoryWaiters(1);
+      manualAdd = service.updateGroupingOrders({
+        addOrderIds: [sharedOrder!.id], appId, groupingId: target.id, shopDomain, targetRoutePlanId
+      });
+      await waitForAdvisoryWaiters(2);
+      await barrier.query('COMMIT');
+    } finally {
+      await barrier.query('ROLLBACK').catch(() => undefined);
+      await barrier.end();
+    }
+
+    const results = await Promise.allSettled([publish, manualAdd]);
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find(({ status }) => status === 'rejected') as PromiseRejectedResult | undefined;
+    expect(rejected?.reason).toMatchObject({ code: 'ROUTE_EXECUTION_CONFLICT' });
+    await expect(prisma.routeGroupingOrder.count({
+      where: { groupingId: target.id, orderId: sharedOrder!.id }
+    })).resolves.toBe(0);
+    await expect(prisma.routePlanStop.count({
+      where: { deliveryStopId: sharedOrder!.deliveryStopId, routePlanId: targetRoutePlanId }
+    })).resolves.toBe(0);
+    await expect(prisma.routeGroupingOrder.count({
+      where: { groupingId: source.id, orderId: sharedOrder!.id }
+    })).resolves.toBe(1);
+  }, 30_000);
+
+  test('rejects moving an order between current sibling routes in the same grouping', async () => {
+    const orders = await seedOrders(2);
+    const grouping = await createGrouping('same-group sibling ownership', orders.map(({ id }) => id));
+    const saved = (await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        draftRoute('same-group sibling first', [orders[0]!.id]),
+        draftRoute('same-group sibling second', [orders[1]!.id])
+      ],
+      shopDomain
+    }))!;
+    const targetRoutePlanId = saved.children.find((child) => child.orderIds.includes(orders[0]!.id))!.routePlanId!;
+
+    await expect(service.updateGroupingOrders({
+      addOrderIds: [orders[1]!.id],
+      appId,
+      groupingId: grouping.id,
+      shopDomain,
+      targetRoutePlanId
+    })).rejects.toMatchObject({
+      blockers: ['selected orders are already assigned to another child route'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+    await expect(prisma.routePlanStop.count({
+      where: { deliveryStopId: orders[1]!.deliveryStopId, routePlanId: targetRoutePlanId }
+    })).resolves.toBe(0);
+  });
+
+  test('retries a duplicate READY-plan addition without duplicating group membership or route stops', async () => {
+    const [sourceOrder, targetBase] = await seedOrders(2);
+    const source = await materializedGroup('manual-add retry source', [sourceOrder!.id]);
+    const targetGroup = await createGrouping('manual-add retry target', [targetBase!.id]);
+    const target = (await service.saveDraft({
+      appId,
+      groupingId: targetGroup.id,
+      mode: 'MANUAL_ORDER',
+      routes: [draftRoute('manual-add retry target', [targetBase!.id])],
+      shopDomain
+    }))!;
+    const targetRoutePlanId = target.children[0]!.routePlanId!;
+    const input = {
+      addOrderIds: [sourceOrder!.id], appId, groupingId: targetGroup.id, shopDomain, targetRoutePlanId
+    };
+
+    await service.updateGroupingOrders(input);
+    const retried = await service.updateGroupingOrders(input);
+
+    expect(retried!.children[0]!.orderIds).toEqual([targetBase!.id, sourceOrder!.id]);
+    await expect(prisma.routeGroupingOrder.count({
+      where: { groupingId: targetGroup.id, orderId: sourceOrder!.id }
+    })).resolves.toBe(1);
+    await expect(prisma.routePlanStop.count({
+      where: { deliveryStopId: sourceOrder!.deliveryStopId, routePlanId: targetRoutePlanId }
+    })).resolves.toBe(1);
+    await expect(prisma.routePlanStop.count({
+      where: { deliveryStopId: sourceOrder!.deliveryStopId, routePlanId: source.children[0]!.routePlanId! }
+    })).resolves.toBe(1);
   });
 
   test('revalidates existing Unassigned group members before appending them to a child route', async () => {

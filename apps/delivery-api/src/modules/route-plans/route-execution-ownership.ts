@@ -39,6 +39,15 @@ export type RouteDispatchConflict = {
   routeName: string;
 };
 
+export async function lockRouteExecutionStops(
+  tx: Pick<RouteExecutionOwnershipTx, '$queryRaw'>,
+  deliveryStopIds: string[]
+): Promise<void> {
+  for (const stopId of [...new Set(deliveryStopIds)].sort()) {
+    await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(710027, hashtext(${stopId}))`);
+  }
+}
+
 // Planning membership is many-to-many. Dispatch reserves execution, separately
 // from the order's legacy primary-route projection. No stop outcome is reset.
 export async function assertRouteDispatchOwnership(
@@ -47,9 +56,7 @@ export async function assertRouteDispatchOwnership(
 ): Promise<void> {
   const stopIds = [...new Set(input.deliveryStopIds)].sort();
   if (stopIds.length === 0) return;
-  for (const stopId of stopIds) {
-    await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(710027, hashtext(${stopId}))`);
-  }
+  await lockRouteExecutionStops(tx, stopIds);
   const conflicts = await tx.$queryRaw(Prisma.sql`
     SELECT DISTINCT s."deliveryStopId", o.id AS "orderId", o.name AS "orderName",
       r.id AS "routePlanId", r.name AS "routeName"
@@ -123,9 +130,7 @@ export async function assertRouteExecutionOwnership(
   const deliveryStopIds = [...new Set(input.deliveryStopIds)].sort((left, right) => left.localeCompare(right));
   if (deliveryStopIds.length === 0) return;
 
-  for (const deliveryStopId of deliveryStopIds) {
-    await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(710027, hashtext(${deliveryStopId}))`);
-  }
+  await lockRouteExecutionStops(tx, deliveryStopIds);
 
   const conflict = await tx.routePlanStop.findFirst({
     select: { deliveryStopId: true, routePlanId: true },

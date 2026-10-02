@@ -1476,8 +1476,8 @@ describe('route grouping contracts', () => {
     const body = source.slice(start, end);
 
     expect(body).toContain('input.targetRoutePlanId');
-    expect(body).toContain('await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds, {');
-    expect(body).toContain('requireCompleteOwnershipRebind: true');
+    expect(body).toContain('await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds)');
+    expect(body).not.toContain('requireCompleteOwnershipRebind');
     expect(body).toContain('await recomputeAssignments(tx, group.id)');
     expect(body.indexOf('await appendGroupingOrdersToChildRoute'))
       .toBeLessThan(body.indexOf('await recomputeAssignments'));
@@ -1491,6 +1491,9 @@ describe('route grouping contracts', () => {
     );
     expect(appendBody).toContain('await replaceCurrentRouteGroupingChildVersion(tx, {');
     expect(appendBody).toContain('currentChildId: targetChild.id');
+    expect(appendBody).toContain('planning: true');
+    expect(appendBody).toContain('await assertRouteDispatchOwnership(tx, {');
+    expect(appendBody).toContain('await claimRouteExecutionProjection(tx, {');
     expect(appendBody).not.toContain('data: {\n      snapshot: createChildSnapshot');
   });
 
