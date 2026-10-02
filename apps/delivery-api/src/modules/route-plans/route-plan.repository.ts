@@ -24,7 +24,7 @@ import { diagnoseRouteStopLocation } from './route-stop-location-diagnostic.js';
 import { assertSafeRouteScopeToken } from '../route-ops/route-scope-config.js';
 import type {
   AdminRouteStopOverrideInput,
-  AdminRouteStopOverrideResult,
+  AdminRouteStopOverrideRepositoryResult,
   AdminRouteStopTransitionInput,
   AdminRouteStopTransitionResult,
   RoutePlanDepotInput,
@@ -180,6 +180,7 @@ type DeliveryStopRecord = {
   routePlanStops?: Array<{ id: string }>;
   serviceMinutes: number | null;
   status: string;
+  updatedAt?: Date;
 };
 
 type OrderRecord = {
@@ -489,39 +490,49 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     };
   }
 
-  async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null> {
+  async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideRepositoryResult | null> {
     const shopDomain = this.normalizeShopDomain(input.shopDomain);
-    const geometryAffecting = hasGeometryAffectingStopOverride(input.payload);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: { id: true },
         where: this.shopWhere({ appId: input.appId, shopDomain })
       });
-      if (shop === null) return false;
+      if (shop === null) return null;
 
       const routeStop = await tx.routePlanStop.findFirst({
-        select: { id: true },
+        select: { id: true, routePlan: { select: { status: true } } },
         where: {
           deliveryStopId: input.deliveryStopId,
           routePlanId: input.routePlanId,
           shopId: shop.id
         }
       });
-      if (routeStop === null) return false;
+      if (routeStop === null) return null;
+
+      const currentStop = await tx.deliveryStop.findFirst({
+        select: {
+          address1: true,
+          address2: true,
+          city: true,
+          countryCode: true,
+          geocodeStatus: true,
+          instructions: true,
+          latitude: true,
+          longitude: true,
+          phone: true,
+          postalCode: true,
+          province: true,
+          recipientName: true,
+          serviceMinutes: true,
+          timeWindowEnd: true,
+          timeWindowStart: true
+        },
+        where: { id: input.deliveryStopId, shopId: shop.id }
+      });
+      if (currentStop === null) return null;
 
       if (hasLocationAffectingStopOverride(input.payload)) {
-        const currentStop = await tx.deliveryStop.findFirst({
-          select: {
-            countryCode: true,
-            geocodeStatus: true,
-            latitude: true,
-            longitude: true,
-            province: true
-          },
-          where: { id: input.deliveryStopId, shopId: shop.id }
-        });
-        if (currentStop === null) return false;
 
         const locationDiagnostic = diagnoseRouteStopLocation({
           countryCode: input.payload.countryCode === undefined ? currentStop.countryCode : input.payload.countryCode,
@@ -539,39 +550,57 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       }
 
-      await tx.deliveryStop.updateMany({
-        data: toDeliveryStopOperationalOverrideWrite(input.payload),
-        where: {
-          id: input.deliveryStopId,
-          shopId: shop.id
-        }
-      });
-
-      if (geometryAffecting) {
-        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: input.routePlanId } });
-        await tx.routePlanStop.updateMany({
-          data: {
-            distanceFromPreviousMeters: null,
-            durationFromPreviousSeconds: null,
-            estimatedArrivalAt: null,
-            etaCalculatedAt: null,
-            etaFailureCode: null,
-            etaFailureMessage: null,
-            etaInputRouteVersionId: null,
-            etaSource: 'ADMIN_STOP_OVERRIDE',
-            etaStatus: 'STALE'
-          },
+      const override = changedDeliveryStopOperationalOverride(currentStop, input.payload);
+      if (override.changed) {
+        await tx.deliveryStop.updateMany({
+          data: override.data,
           where: {
-            routePlanId: input.routePlanId,
+            id: input.deliveryStopId,
             shopId: shop.id
           }
         });
       }
 
-      return true;
+      if (override.geometryChanged) {
+        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: input.routePlanId } });
+        if (isRouteReadyStatus(routeStop.routePlan.status)) {
+          await tx.routePlanStop.updateMany({
+            data: {
+              distanceFromPreviousMeters: null,
+              durationFromPreviousSeconds: null,
+              estimatedArrivalAt: null,
+              etaCalculatedAt: null,
+              etaFailureCode: null,
+              etaFailureMessage: null,
+              etaInputRouteVersionId: null,
+              etaSource: 'ADMIN_STOP_OVERRIDE',
+              etaStatus: 'STALE'
+            },
+            where: {
+              deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
+              routePlanId: input.routePlanId,
+              shopId: shop.id
+            }
+          });
+        }
+      }
+
+      const refreshInputs = override.geometryChanged
+        ? await tx.routePlan.findFirst({
+          select: {
+            routeStops: {
+              orderBy: { sequence: 'asc' },
+              select: { deliveryStop: { select: { updatedAt: true } }, deliveryStopId: true }
+            },
+            updatedAt: true
+          },
+          where: { id: input.routePlanId, shopId: shop.id }
+        })
+        : null;
+      return { geometryChanged: override.geometryChanged, refreshInputs };
     });
 
-    if (!updated) return null;
+    if (updated === null) return null;
     const detail = await this.findRoutePlanDetail({
       appId: input.appId,
       routePlanId: input.routePlanId,
@@ -580,7 +609,15 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     if (detail === null) return null;
 
     return {
-      geometry: { status: geometryAffecting ? 'stale' : 'preserved' },
+      geometry: { status: updated.geometryChanged ? 'stale' : 'preserved' },
+      refreshGuard: updated.refreshInputs === null ? null : {
+        expectedRoutePlanUpdatedAt: updated.refreshInputs.updatedAt.toISOString(),
+        expectedStopUpdatedAts: updated.refreshInputs.routeStops.map((stop) => ({
+          deliveryStopId: stop.deliveryStopId,
+          updatedAt: stop.deliveryStop.updatedAt.toISOString()
+        })),
+        shapeSignature: computeRouteShapeSignature(detail)
+      },
       routePlan: detail
     };
   }
@@ -1375,6 +1412,50 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     return false;
   }
 
+  async commitAdminRouteStopGeometryCache(input: RouteGeometryCacheWrite & {
+    appId?: string | undefined;
+    expectedRoutePlanUpdatedAt: string;
+    expectedStopUpdatedAts: Array<{ deliveryStopId: string; updatedAt: string }>;
+    shopDomain: string;
+  }): Promise<boolean> {
+    const shop = await this.findShop(input);
+    if (shop === null) return false;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const routePlan = await tx.routePlan.findFirst({
+            include: routePlanInclude(),
+            where: { id: input.routePlanId, shopId: shop.id }
+          }) as RoutePlanRecord | null;
+          if (routePlan === null) return false;
+          if (routePlan.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) return false;
+          if (computeRouteShapeSignature(toRoutePlanDetail(routePlan)) !== input.shapeSignature) return false;
+
+          const expectedStopUpdatedAtById = new Map(
+            input.expectedStopUpdatedAts.map((stop) => [stop.deliveryStopId, stop.updatedAt])
+          );
+          const currentStops = routePlan.routeStops ?? [];
+          if (
+            currentStops.length !== expectedStopUpdatedAtById.size ||
+            currentStops.some((stop) => (
+              expectedStopUpdatedAtById.get(stop.deliveryStopId) !== stop.deliveryStop.updatedAt?.toISOString()
+            ))
+          ) {
+            return false;
+          }
+
+          await tx.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
+          await persistPlannedRouteEta(tx, input);
+          return true;
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      } catch (error) {
+        if (!isRouteGeometryCommitConflict(error) || attempt === 2) throw error;
+      }
+    }
+    return false;
+  }
+
   private applyRouteGeometryCache(detail: RoutePlanDetail): Promise<RoutePlanDetail> {
     return applyRouteGeometryCache(this.prisma, detail);
   }
@@ -2037,6 +2118,7 @@ async function persistPlannedRouteEta(
         etaStatus
       },
       where: {
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
         deliveryStopId: update.deliveryStopId,
         routePlanId: input.routePlanId,
         sequence: update.sequence
@@ -2409,18 +2491,47 @@ function toDeliveryStopOperationalOverrideWrite(
   };
 }
 
-function hasGeometryAffectingStopOverride(payload: AdminRouteStopOverrideInput['payload']): boolean {
-  return (
-    payload.address1 !== undefined ||
-    payload.address2 !== undefined ||
-    payload.city !== undefined ||
-    payload.countryCode !== undefined ||
-    payload.latitude !== undefined ||
-    payload.longitude !== undefined ||
-    payload.postalCode !== undefined ||
-    payload.province !== undefined ||
-    payload.serviceMinutes !== undefined
-  );
+const GEOMETRY_AFFECTING_STOP_OVERRIDE_FIELDS = new Set([
+  'address1',
+  'address2',
+  'city',
+  'countryCode',
+  'geocodeStatus',
+  'latitude',
+  'longitude',
+  'postalCode',
+  'province',
+  'serviceMinutes'
+]);
+
+function changedDeliveryStopOperationalOverride(
+  current: object,
+  payload: AdminRouteStopOverrideInput['payload']
+): { changed: boolean; data: Prisma.DeliveryStopUpdateManyMutationInput; geometryChanged: boolean } {
+  const currentValues = current as Record<string, unknown>;
+  const desired = toDeliveryStopOperationalOverrideWrite(payload) as Record<string, unknown>;
+  const changedEntries = Object.entries(desired).filter(([field, value]) => (
+    !sameDeliveryStopOverrideValue(field, currentValues[field], value)
+  ));
+  return {
+    changed: changedEntries.length > 0,
+    data: Object.fromEntries(changedEntries),
+    geometryChanged: changedEntries.some(([field]) => GEOMETRY_AFFECTING_STOP_OVERRIDE_FIELDS.has(field))
+  };
+}
+
+function sameDeliveryStopOverrideValue(field: string, current: unknown, desired: unknown): boolean {
+  if (field === 'latitude' || field === 'longitude') {
+    return decimalNumber(current) === decimalNumber(desired);
+  }
+  if (field === 'timeWindowEnd' || field === 'timeWindowStart') {
+    return formatTimeOnlyNullable(current instanceof Date ? current : null) ===
+      formatTimeOnlyNullable(desired instanceof Date ? desired : null);
+  }
+  if (desired instanceof Date) {
+    return current instanceof Date && current.getTime() === desired.getTime();
+  }
+  return current === desired;
 }
 
 function hasLocationAffectingStopOverride(payload: AdminRouteStopOverrideInput['payload']): boolean {
