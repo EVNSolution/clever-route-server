@@ -97,6 +97,7 @@ describe('Driver events route', () => {
         error: null
       });
       expect(recordDriverEvent).toHaveBeenCalledWith({
+        attemptId: 'attempt-id',
         changeRequestId: null,
         clientEventId: 'mobile-event-1',
         deliveryStopId: 'stop-id',

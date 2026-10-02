@@ -57,12 +57,12 @@ export type DriverEventAttemptAdmissionInput = {
   appVersion: string | null;
   assignmentGeneration: string | null;
   clientEventId: string | null;
-  driverContractVersion: 2;
+  driverContractVersion: number;
   driverId: string;
   eventType: string | null;
   expectedRouteVersionId: string | null;
   occurredAt: Date | null;
-  requestId: string;
+  requestId: string | null;
   routePlanId: string | null;
   shopId: string;
   versionCode: number | null;
@@ -576,7 +576,7 @@ export class PrismaDriverEventRepository {
       eventType: input.eventType,
       expectedRouteVersionId: requireExpectedRouteVersionId(input),
       occurredAt: input.occurredAt,
-      requestId: input.requestId ?? randomUUID(),
+      requestId: input.requestId ?? null,
       routePlanId: requireRoutePlanId(input),
       shopId: input.shopId,
       versionCode: input.versionCode ?? null

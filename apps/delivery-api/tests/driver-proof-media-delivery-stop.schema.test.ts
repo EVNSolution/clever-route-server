@@ -13,11 +13,13 @@ describe('driver proof media delivery stop links', () => {
 
     expect(schema).toMatch(/model DriverProofMedia \{[\s\S]*?deliveryStopId\s+String\s+@db\.Uuid/u);
     expect(schema).toContain('model DriverProofMediaDeliveryStop');
-    expect(schema).toContain('proofMedia     DriverProofMedia @relation(fields: [proofMediaId, shopId], references: [id, shopId], onDelete: Cascade)');
-    expect(schema).toContain('deliveryStop   DeliveryStop     @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction)');
-    expect(schema).toContain('routePlan        RoutePlan              @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)');
+    expect(schema).toContain('proofMedia     DriverProofMedia @relation(fields: [proofMediaId, shopId], references: [id, shopId], onDelete: Cascade, map: "driver_proof_media_delivery_stops_proofMediaId_fkey")');
+    expect(schema).toContain('deliveryStop   DeliveryStop     @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction, map: "driver_proof_media_delivery_stops_deliveryStopId_fkey")');
+    expect(schema).toContain('routePlan        RoutePlan              @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction, map: "driver_proof_media_routePlanId_fkey")');
     expect(schema).toContain('driver           Driver?                @relation(fields: [driverId], references: [id], onDelete: SetNull)');
     expect(schema).toContain('@@id([proofMediaId, deliveryStopId])');
+    expect(schema).toContain('@@index([deliveryStopId, proofMediaId], map: "driver_proof_media_delivery_stops_deliveryStopId_proofMediaId_i")');
+    expect(schema).toContain('map: "driver_proof_media_deliveryStopId_fkey"');
     expect(schema).toContain('@@map("driver_proof_media_delivery_stops")');
   });
 
