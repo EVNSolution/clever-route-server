@@ -5,7 +5,7 @@ const PUBLIC_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/privacy';
 const DRIVER_LAST_UPDATED = '2026-09-07';
 const DRIVER_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/driver-app/privacy';
 const DRIVER_SUPPORT_URL = 'https://clever-route-api.cleversystem.ai/driver-app/support';
-const ROUTES_APP_LAST_UPDATED = '2026-09-01';
+const ROUTES_APP_LAST_UPDATED = '2026-10-02';
 const ROUTES_APP_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/routes-app/privacy';
 const ROUTES_APP_SUPPORT_URL = 'https://clever-route-api.cleversystem.ai/routes-app/support';
 const ROUTES_APP_ACCOUNT_DELETION_URL = 'https://clever-route-api.cleversystem.ai/routes-app/account-deletion';
@@ -373,6 +373,9 @@ function renderRoutesAppPrivacyPage(): string {
         <li><strong>알림과 기기:</strong> 푸시 토큰, 제한된 기기 식별자 또는 그 해시, 앱 버전과 플랫폼 정보를 배송 알림, 세션 보호, 중복 기기 감지와 장애 대응에 사용합니다.</li>
       </ul>
       <p>위치 처리는 배송원이 명시적으로 시작한 활성 배송 경로의 수행에 필요한 범위로 제한합니다. 위치 권한은 기기 설정에서 변경할 수 있지만, 권한을 끄면 실시간 경로 기능이 제한될 수 있습니다.</p>
+      <h3>앱 동작 및 장애 진단</h3>
+      <p>로그인한 기기에서 앱의 안정성 확인, 동기화 지연 및 오류 원인 분석과 지원을 위해 기술 진단 정보를 자동으로 처리합니다. 이 정보에는 앱·빌드 및 운영체제 버전, 앱 실행 상태, 네트워크와 위치 권한·서비스 상태, 위치 처리와 이벤트 전송 단계의 시각, 대기·재시도 상태 및 제한된 오류 사유가 포함됩니다. 진단은 활성 배송 경로가 없는 경우에도 동작할 수 있습니다. 별도의 진단 수집 해제 설정은 제공하지 않습니다.</p>
+      <p>진단은 앱 설치 시 생성한 임의 식별자의 해시와 로그인 계정을 연결하여 처리하며, 필요한 경우 배정 경로·배송 이벤트 식별자와 연계합니다. 이 식별자는 하드웨어 일련번호나 광고 식별자가 아니지만 계정에 연결될 수 있으므로 완전한 익명 정보는 아닙니다. 진단용 데이터 본문에는 원시 위치 좌표, 배송 증빙 사진·서명·메모 본문, 이름·전화번호·주소, 비밀번호·PIN·인증 토큰 또는 자유 입력 오류 본문을 포함하지 않습니다. 기존 배송 위치와 증빙 처리는 이 방침의 해당 항목에 따릅니다.</p>
     </section>
 
     <section>
@@ -389,6 +392,7 @@ function renderRoutesAppPrivacyPage(): string {
         <li>설정된 지도, 지오코딩과 경로 계산 제공자는 주소 또는 좌표를 지도 표시와 경로 계산에 사용할 수 있습니다.</li>
         <li>배송원이 외부 길찾기를 선택하면 Google Maps 또는 Waze 같은 선택된 지도 앱으로 배송지 주소 또는 좌표를 전달합니다.</li>
       </ul>
+      <p>기술 진단은 접근이 통제된 연결 서버에서 처리합니다. 당사와 해당 배송사업자의 접근 권한을 가진 담당 운영자가 해당 계정·기기·배송 범위의 진단을 장애 확인, 지원 및 서비스 안정성 개선을 위해 조회할 수 있습니다. 진단 정보를 광고 목적으로 사용하거나 판매하지 않습니다.</p>
       <p>개인정보를 광고 목적으로 판매하지 않습니다. 법령, 이용자 보호 또는 서비스 제공에 필요한 경우를 제외하고 제3자에게 제공하지 않습니다.</p>
     </section>
 
@@ -396,6 +400,10 @@ function renderRoutesAppPrivacyPage(): string {
       <h2>5. 보관, 삭제와 예외 / Retention and deletion</h2>
       <p>실시간 위치 이벤트의 좌표는 운영 목적이 끝난 뒤 최소화하며, 증빙 사진은 기본 365일 보관 정책에 따라 정리합니다. 경로·정차 상태, 처리 시각과 비식별 운영 기록은 배송 이력, 분쟁, 보안, 계약 또는 법적 의무에 필요한 기간 동안 분리 보관할 수 있습니다.</p>
       <p>해결된 순서 이벤트 재시도 증거는 기본 90일 보관 후 정리합니다. 미해결 또는 조정이 필요한 기록은 해결될 때까지 제한적으로 보관할 수 있습니다.</p>
+      <h3>기술 진단의 별도 보관 기준</h3>
+      <p>서버의 진단 기록과 상태 정보는 수신 후 30일을 보관 기준으로 하며, 만료된 정보는 정리 작업에서 삭제합니다. 계정·설치 기기 연결 정보는 마지막 진단 접촉 후 30일이 지나고 관련 진단 기록·상태 및 자격정보가 남아 있지 않으면 정리합니다.</p>
+      <p>전송을 위한 기기 내 진단은 암호화 저장소에 보관하며, 계정별 전송 대기 기록과 전송이 거절되어 별도 보관되는 기록에 각각 최대 1,000건 제한을 적용합니다. 전송 대기 기록은 발생 시각, 별도 보관 기록은 별도 보관을 시작한 시각으로부터 7일을 정리 기준으로 사용합니다. 앱의 해당 저장·복구·전송 또는 별도 보관 작업 때 오래되거나 한도를 초과한 기록을 정리하며, 앱이 실행되지 않거나 저장소에 접근할 수 없는 동안에는 다음 관련 처리 시점까지 정리가 지연될 수 있습니다. 이 제한은 진단 기록에 적용되며 미전송 배송 이벤트와 사진을 삭제하는 기준이 아닙니다.</p>
+      <p>기술 진단 보관 기준은 배송 증빙 및 업무 이벤트 재시도 증거의 별도 보관 정책과 구분됩니다. 관련 개인정보의 열람·정정·처리 정지·삭제 문의와 계정 삭제 요청은 이 방침의 권리 및 문의 항목과 연결된 계정 삭제 절차를 이용할 수 있습니다.</p>
       <p>계정 및 개인정보 삭제 요청 절차, 처리 범위와 예외는 <a href="${ROUTES_APP_ACCOUNT_DELETION_URL}">${ROUTES_APP_ACCOUNT_DELETION_URL}</a>에서 확인할 수 있습니다.</p>
     </section>
 

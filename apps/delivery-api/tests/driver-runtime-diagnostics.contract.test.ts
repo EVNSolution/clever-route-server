@@ -182,6 +182,41 @@ describe('driver diagnostic contract parser', () => {
       blockers: [{ ...blocker(), clientEventId: 'raw arbitrary failure text' }]
     }))).toBeNull();
   });
+
+  test.each(['read', 'write', 'remove'] as const)('round-trips the allowlisted completion assistance %s identifier', (operation) => {
+    const clientEventId = `completion-assistance-${operation}:${REQUEST_ID}`;
+    const payload = envelope();
+    const record = payload.records[0]!;
+    const parsed = parseDriverDiagnosticEnvelope(envelope({
+      records: [{
+        ...record,
+        identifiers: { clientEventId },
+        snapshot: snapshot({ blockers: [blocker({ clientEventId, reason: 'STORAGE_READ_FAILED', stage: 'STORAGE' })] })
+      }]
+    }));
+    expect(parsed?.records[0]?.identifiers?.clientEventId).toBe(clientEventId);
+    expect(parsed?.records[0]?.snapshot.blockers?.[0]?.clientEventId).toBe(clientEventId);
+  });
+
+  test('accepts a strict version-7 UUID completion assistance identifier', () => {
+    const clientEventId = 'completion-assistance-read:018f47a2-4b5c-7def-8abc-0123456789ab';
+    const record = envelope().records[0]!;
+    const parsed = parseDriverDiagnosticEnvelope(envelope({
+      records: [{ ...record, identifiers: { clientEventId } }]
+    }));
+    expect(parsed?.records[0]?.identifiers?.clientEventId).toBe(clientEventId);
+  });
+
+  test('rejects arbitrary completion assistance identifier suffixes', () => {
+    const payload = envelope();
+    const record = payload.records[0]!;
+    expect(parseDriverDiagnosticEnvelopeDetailed(envelope({
+      records: [{ ...record, identifiers: { clientEventId: 'completion-assistance-read:customer-or-error-text' } }]
+    }))).toMatchObject({
+      envelope: { records: [] },
+      rejectedRecords: [{ code: 'INVALID_RECORD', diagnosticId: DIAGNOSTIC_ID }]
+    });
+  });
 });
 
 describe('driver runtime diagnostic projection', () => {
@@ -326,7 +361,7 @@ describe('driver runtime diagnostic projection', () => {
     }).state).toBe('UNKNOWN_STALE_EVIDENCE');
     expect(classify({
       snapshot: snapshot({ lastGpsPersistedAt: '2026-10-02T11:40:00.000Z' })
-    }).state).toBe('UNKNOWN_STALE_EVIDENCE');
+    }).state).toBe('HEALTHY');
   });
 
   test('does not invent collection stopped from an uncertain location observation failure', () => {
@@ -357,13 +392,81 @@ describe('driver runtime diagnostic projection', () => {
       .toBe('GPS_COLLECTION_STOPPED');
   });
 
-  test('requires fresh evidence through persistence, send, ACK, and an empty observed queue for healthy', () => {
+  test('classifies a fresh direct GPS send as healthy without inventing local persistence', () => {
     expect(classify({}).state).toBe('HEALTHY');
     expect(classify({ snapshot: snapshot({ lastGpsPersistedAt: null }) }).state)
+      .toBe('HEALTHY');
+    expect(classify({ snapshot: snapshot({ lastGpsPersistedAt: '2026-10-02T11:40:00.000Z' }) }).state)
+      .toBe('HEALTHY');
+    expect(classify({ snapshot: snapshot({ lastGpsSendAcknowledgedAt: null }) }).state)
       .toBe('UNKNOWN_INSUFFICIENT_EVIDENCE');
+    expect(classify({ snapshot: snapshot({ lastGpsSendAcknowledgedAt: '2026-10-02T11:40:00.000Z' }) }).state)
+      .toBe('UNKNOWN_STALE_EVIDENCE');
     expect(classify({
       snapshot: snapshot({ businessQueue: { ...snapshot().businessQueue, queueDepth: 1 } })
     }).state).toBe('UNKNOWN_INSUFFICIENT_EVIDENCE');
+  });
+
+  test('keeps blockers and missing signal ahead of direct-send healthy evidence', () => {
+    for (const [clientEventId, reason] of [
+      [`completion-assistance-read:${REQUEST_ID}`, 'STORAGE_READ_FAILED'],
+      [`completion-assistance-write:${REQUEST_ID}`, 'STORAGE_WRITE_FAILED']
+    ] as const) {
+      expect(classify({
+        snapshot: snapshot({
+          blockers: [blocker({ clientEventId, reason, stage: 'STORAGE' })],
+          lastGpsPersistedAt: null
+        })
+      }).state).toBe('RUNTIME_OPERATION_BLOCKED');
+    }
+    expect(classify({
+      lastContactAt: new Date('2026-10-02T11:56:59.999Z'),
+      snapshot: snapshot({ lastGpsPersistedAt: null })
+    }).state).toBe('SIGNAL_ABSENT_UNKNOWN');
+  });
+
+  test('reports a non-GPS runtime blocker without requiring active GPS evidence', () => {
+    expect(classify({
+      snapshot: snapshot({
+        blockers: [blocker({
+          clientEventId: `completion-assistance-read:${REQUEST_ID}`,
+          reason: 'STORAGE_READ_FAILED',
+          stage: 'STORAGE'
+        })],
+        lastGpsCallbackAt: null,
+        lastGpsCollectedAt: null,
+        locationTaskExpected: false
+      })
+    }).state).toBe('RUNTIME_OPERATION_BLOCKED');
+  });
+
+  test('prefers a fresh GPS-correlated blocker over an unrelated runtime blocker', () => {
+    const generic = blocker({
+      clientEventId: `completion-assistance-write:${REQUEST_ID}`,
+      reason: 'STORAGE_WRITE_FAILED',
+      stage: 'STORAGE'
+    });
+    const gps = blocker({
+      clientEventId: 'continuous-location-2026-10-02T11:59:00.000Z-0',
+      reason: 'NETWORK_REQUEST_FAILED',
+      requestId: '10000000-0000-4000-8000-000000000099',
+      stage: 'TRANSPORT'
+    });
+    expect(classify({ snapshot: snapshot({ blockers: [generic, gps] }) }).state)
+      .toBe('GPS_POST_COLLECTION_BLOCKED');
+  });
+
+  test('does not let stale blocker history hide a fresh higher-priority blocker', () => {
+    const staleStorage = blocker({
+      clientEventId: `completion-assistance-write:${REQUEST_ID}`,
+      lastObservedAt: '2026-10-02T11:40:00.000Z',
+      reason: 'STORAGE_WRITE_FAILED',
+      since: '2026-10-02T11:40:00.000Z',
+      stage: 'STORAGE'
+    });
+    const freshAuth = blocker({ reason: 'AUTH_REFRESH_FAILED', stage: 'AUTH' });
+    expect(classify({ snapshot: snapshot({ blockers: [staleStorage, freshAuth] }) }).state)
+      .toBe('AUTH_OR_ROUTE_BLOCKED');
   });
 });
 
