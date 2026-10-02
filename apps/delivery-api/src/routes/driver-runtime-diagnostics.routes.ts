@@ -119,7 +119,7 @@ export async function registerDriverRuntimeDiagnosticsRoutes(app: FastifyInstanc
       return reply.code(200).send({ ...result, rejectedDiagnostics });
     });
 
-    diagnostics.get<{ Querystring: { routePlanId?: string } }>('/admin/drivers/runtime-diagnostics', async (request, reply) => {
+    diagnostics.get<{ Querystring: { diagnosticId?: string; routePlanId?: string } }>('/admin/drivers/runtime-diagnostics', async (request, reply) => {
       const token = bearer(request.headers.authorization);
       const verifier = dependencies.sessionTokenVerifier;
       if (token === null || verifier === undefined) return reply.code(401).send(failure('UNAUTHORIZED'));
@@ -133,8 +133,15 @@ export async function registerDriverRuntimeDiagnosticsRoutes(app: FastifyInstanc
         return reply.code(401).send(failure('UNAUTHORIZED'));
       }
       const routePlanId = request.query.routePlanId;
+      const diagnosticId = request.query.diagnosticId;
       if (routePlanId !== undefined && !uuid.test(routePlanId)) return reply.code(400).send(failure('INVALID_ROUTE_ID'));
-      const result = await service.listForShop({ ...scope, ...(routePlanId === undefined ? {} : { routePlanId }) });
+      if (diagnosticId !== undefined && !uuid.test(diagnosticId)) return reply.code(400).send(failure('INVALID_DIAGNOSTIC_ID'));
+      if (diagnosticId !== undefined && routePlanId === undefined) return reply.code(400).send(failure('ROUTE_ID_REQUIRED'));
+      const result = await service.listForShop({
+        ...scope,
+        ...(diagnosticId === undefined ? {} : { diagnosticId }),
+        ...(routePlanId === undefined ? {} : { routePlanId })
+      });
       if (result === null) return reply.code(404).send(failure('NOT_FOUND'));
       const now = dependencies.now?.() ?? new Date();
       return reply.code(200).send({

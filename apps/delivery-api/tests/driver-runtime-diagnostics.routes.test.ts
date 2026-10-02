@@ -9,6 +9,7 @@ const deviceInstanceHash = 'a'.repeat(64);
 const accountId = '10000000-0000-4000-8000-000000000001';
 const recordId = '10000000-0000-4000-8000-000000000002';
 const routePlanId = '10000000-0000-4000-8000-000000000003';
+const reportId = '10000000-0000-4000-8000-000000000004';
 const secret = 'diagnostic-route-test-secret-32bytes';
 
 function envelope() {
@@ -141,10 +142,26 @@ describe('driver runtime diagnostic HTTP boundary', () => {
       const denied = await app.inject({ method: 'GET', url: '/admin/drivers/runtime-diagnostics', headers: { authorization: 'Bearer opaque-diagnostic-token' } });
       expect(denied.statusCode).toBe(401);
       expect(service.listForShop).not.toHaveBeenCalled();
-      const allowed = await app.inject({ method: 'GET', url: `/admin/drivers/runtime-diagnostics?routePlanId=${routePlanId}&shopDomain=other.example`, headers: { authorization: 'Bearer admin-session' } });
+      const allowed = await app.inject({ method: 'GET', url: `/admin/drivers/runtime-diagnostics?routePlanId=${routePlanId}&diagnosticId=${reportId}&shopDomain=other.example`, headers: { authorization: 'Bearer admin-session' } });
       expect(allowed.statusCode).toBe(200);
-      expect(service.listForShop).toHaveBeenCalledWith({ appId: 'clever', shopDomain: 'tenant-a.example', routePlanId });
+      expect(service.listForShop).toHaveBeenCalledWith({ appId: 'clever', diagnosticId: reportId, shopDomain: 'tenant-a.example', routePlanId });
       expect(allowed.json()).toMatchObject({ data: { timeZone: 'America/Toronto', devices: [] } });
+    } finally { await app.close(); }
+  });
+
+  test('requires a valid route-scoped diagnostic ID for exact support report lookup', async () => {
+    const { app, service } = await harness();
+    try {
+      const cases = [
+        { url: `/admin/drivers/runtime-diagnostics?diagnosticId=${reportId}`, code: 'ROUTE_ID_REQUIRED' },
+        { url: `/admin/drivers/runtime-diagnostics?routePlanId=${routePlanId}&diagnosticId=not-a-uuid`, code: 'INVALID_DIAGNOSTIC_ID' },
+      ];
+      for (const item of cases) {
+        const response = await app.inject({ method: 'GET', url: item.url, headers: { authorization: 'Bearer admin-session' } });
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({ error: { code: item.code } });
+      }
+      expect(service.listForShop).not.toHaveBeenCalled();
     } finally { await app.close(); }
   });
   test('random invalid credentials are limited before authentication database work', async () => {

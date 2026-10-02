@@ -458,6 +458,7 @@ export class PrismaDriverRuntimeDiagnosticsRepository {
 
   async listForShop(input: {
     appId: string;
+    diagnosticId?: string;
     routePlanId?: string;
     shopDomain: string;
   }): Promise<DriverRuntimeDiagnosticShopView | null> {
@@ -473,6 +474,20 @@ export class PrismaDriverRuntimeDiagnosticsRepository {
     const recordRouteFilter = input.routePlanId === undefined
       ? Prisma.empty
       : Prisma.sql`AND record."routePlanId" = ${input.routePlanId}::uuid`;
+    const recordDiagnosticFilter = input.diagnosticId === undefined
+      ? Prisma.empty
+      : Prisma.sql`AND record."diagnosticId" = ${input.diagnosticId}::uuid AND record."kind" = 'USER_REPORT'`;
+    const snapshotDiagnosticFilter = input.diagnosticId === undefined
+      ? Prisma.empty
+      : Prisma.sql`AND EXISTS (
+          SELECT 1 FROM "driver_runtime_diagnostic_records" record
+          WHERE record."deviceId" = snapshot."deviceId"
+            AND record."routePlanId" = snapshot."routePlanId"
+            AND record."shopId" = snapshot."shopId"
+            AND record."diagnosticId" = ${input.diagnosticId}::uuid
+            AND record."kind" = 'USER_REPORT'
+            AND record."expiresAt" > ${now}
+        )`;
     const snapshots = await this.prisma.$queryRaw<DiagnosticSnapshotAnchor[]>(Prisma.sql`
       WITH scoped AS (
         SELECT snapshot.*, device."deviceInstanceHash",
@@ -488,6 +503,7 @@ export class PrismaDriverRuntimeDiagnosticsRepository {
           AND snapshot."driverId" IS NOT NULL
           AND snapshot."expiresAt" > ${now}
           ${snapshotRouteFilter}
+          ${snapshotDiagnosticFilter}
       ), route_state AS (
         SELECT scoped."deviceId", scoped."routePlanId",
           MAX(scoped."lastScopedContactAt") AS "routeLastScopedContactAt",
@@ -524,6 +540,7 @@ export class PrismaDriverRuntimeDiagnosticsRepository {
           AND record."driverId" IS NOT NULL
           AND record."expiresAt" > ${now}
           ${recordRouteFilter}
+          ${recordDiagnosticFilter}
           AND NOT EXISTS (
             SELECT 1 FROM "driver_runtime_diagnostic_snapshots" snapshot
             WHERE snapshot."deviceId" = record."deviceId"
@@ -560,6 +577,7 @@ export class PrismaDriverRuntimeDiagnosticsRepository {
         FROM "driver_runtime_diagnostic_records" record
         WHERE record."shopId" = ${shop.id}::uuid AND record."expiresAt" > ${now}
           AND (${Prisma.join(scopeClauses, ' OR ')})
+          ${recordDiagnosticFilter}
       )
       SELECT * FROM ranked WHERE ranked.rank <= ${shopRecordLimit + 1}
     `);

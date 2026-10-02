@@ -30,6 +30,16 @@ evidence store.
   `serverReceivedAt`. Only committed records are acknowledged. A repeated ID with
   identical canonical payload is acknowledged again; conflicting payloads are
   permanently rejected. IDs are scoped to account and device across renewal.
+- A user pressing a recovery screen's Report issue action may add a `USER_REPORT`
+  record to the same encrypted outbox and ingestion request. The report is the
+  allowlisted runtime snapshot identified by its `diagnosticId`; it has no free-text
+  message, raw error, customer data, token, PIN, or coordinates. An ID in
+  `acceptedDiagnosticIds` is the durable server acknowledgement for either first
+  acceptance or an identical replay. `QUEUED` is a mobile state meaning the local
+  append is durable but that ID has no acknowledgement yet. A retryable HTTP or
+  connectivity failure therefore remains queued; a local persistence failure or
+  permanent rejection is a report failure. Reporting never gates the recovery
+  action or changes business data.
 - `DELETE /driver/sync-health/registrations`: an active account JWT and the same
   registration body revoke device credentials. Account status/token-version
   changes also invalidate diagnostic credentials. Invalid, expired, and revoked
@@ -54,7 +64,10 @@ unavailable.
 ## Evidence and operational query
 
 `GET /admin/drivers/runtime-diagnostics?routePlanId=<uuid>` requires the existing
-admin session verifier. Company and app scope come from the verified session,
+admin session verifier. Add `diagnosticId=<uuid>` with `routePlanId` to retrieve an
+exact retained support report even after it falls outside the normal 25-record
+recent window. `diagnosticId` without `routePlanId` is rejected. Company and app
+scope come from the verified session,
 never query parameters or diagnostic payloads. The response includes scoped
 device snapshots, history, server attempt evidence, and the evaluated diagnosis.
 History-only routes have no synthesized live snapshot. The response exposes
@@ -63,6 +76,16 @@ incomplete history cannot be mistaken for a complete audit trail.
 UTC timestamps remain the wire format; display timestamps use `America/Toronto`.
 The API is the server-owned operational surface. A Shopify dashboard rendering
 change belongs to `clever-shopify-app`.
+
+Route-less `USER_REPORT` records are still durably accepted for the signed-in
+account, but tenant operators cannot retrieve them through this endpoint because
+the server cannot safely infer one tenant from an account that may span companies.
+The app should include a verified persisted route context when available and must
+describe a route-less reference as “received by the server,” not “dispatch notified.”
+There is no platform-support HTTP lookup in this contract; only authorized server
+operations personnel following controlled direct-database support procedures can
+locate an account-private route-less record by `diagnosticId`. This contract does
+not add notification, email, or route mutation behavior.
 
 Contact time, client send time, snapshot observation, historical record time,
 and server event receipt remain distinct. Old replay cannot replace a newer live
