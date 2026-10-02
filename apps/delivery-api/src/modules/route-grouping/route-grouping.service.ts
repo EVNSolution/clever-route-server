@@ -21,6 +21,7 @@ import {
 } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import { toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
+import { toRouteDeliveryDisplayStatus } from '../route-plans/kfood-delivery-completion.js';
 import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from '../route-plans/route-plan-summary-normalization.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
@@ -136,6 +137,9 @@ type CurrentOrderRouteVersionWriter = {
 };
 
 type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
+  routePlan: {
+    updateMany(args: Prisma.RoutePlanUpdateManyArgs): Promise<{ count: number }>;
+  };
   routeGroupingChildVersion: {
     create(args: Prisma.RouteGroupingChildVersionCreateArgs): Promise<{ id: string }>;
     updateMany(args: Prisma.RouteGroupingChildVersionUpdateManyArgs): Promise<{ count: number }>;
@@ -340,6 +344,21 @@ export async function replaceCurrentRouteGroupingChildVersion(
     },
     select: { id: true }
   });
+  if (input.routePlanId !== null) {
+    await prisma.routePlan.updateMany({
+      data: {
+        deliveryWorkCompletedAt: null,
+        deliveryWorkCompletedGeneration: null,
+        deliveryWorkCompletedVersionId: null,
+        driverNavigationUntil: null
+      },
+      where: {
+        deliveryWorkCompletedVersionId: input.currentChildId,
+        id: input.routePlanId,
+        shopId: input.shopId
+      }
+    });
+  }
   await rebindCurrentOrdersToRouteVersion(prisma, {
     groupingId: input.groupingId,
     nextRouteVersionId: nextChild.id,
@@ -3594,6 +3613,10 @@ function groupingRoutesListSelect() {
           select: {
             constraints: true,
             createdAt: true,
+            assignmentGeneration: true,
+            deliveryWorkCompletedAt: true,
+            deliveryWorkCompletedGeneration: true,
+            deliveryWorkCompletedVersionId: true,
             driver: { select: { displayName: true } },
             driverEvents: {
               orderBy: { occurredAt: 'desc' as const },
@@ -3602,6 +3625,7 @@ function groupingRoutesListSelect() {
               where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] } }
             },
             driverId: true,
+            driverNavigationUntil: true,
             id: true,
             name: true,
             planDate: true,
@@ -5185,7 +5209,7 @@ function toRoutesListChildDto(
       routeMetrics,
       scheduledStartAt: readScheduledStartAt(routePlan.constraints),
       scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
-      status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+      status: toRouteDeliveryDisplayStatus(routePlan),
       stopsCount: routePlan.routeStops.length,
       totalAmount: normalizeRouteTotalAmount(assignments.map(({ order }) => order)),
       updatedAt: routePlan.updatedAt.toISOString()
@@ -5526,7 +5550,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     routeMetrics,
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
-    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    status: toRouteDeliveryDisplayStatus(routePlan),
     stopsCount: routePlan.routeStops.length,
     totalAmount: normalizeRouteTotalAmount(assignments.map(({ order }) => order)),
     updatedAt: routePlan.updatedAt.toISOString()
@@ -5535,7 +5559,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
 
 export function deriveGroupingDisplayStatus(group: {
   childVersions: Array<{
-    routePlan: { driverEvents: Array<{ eventType: string }>; status: string } | null;
+    routePlan: DeliveryDisplayRoute | null;
     status: string;
     supersededAt: Date | null;
   }>;
@@ -5544,7 +5568,7 @@ export function deriveGroupingDisplayStatus(group: {
   if (group.status === 'CANCELLED') return 'CANCELLED';
   const statuses = group.childVersions
     .filter((child) => isOperationalCurrentChild(child))
-    .map((child) => toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents));
+    .map((child) => toRouteDeliveryDisplayStatus(child.routePlan ?? { status: 'READY' }));
   if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED')) return 'COMPLETED';
   if (statuses.some((status) => status === 'IN_PROGRESS')) return 'IN_PROGRESS';
   if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED' || status === 'INCOMPLETE')) {
@@ -5555,10 +5579,20 @@ export function deriveGroupingDisplayStatus(group: {
 }
 
 function deriveChildDisplayStatus(child: {
-  routePlan: { driverEvents: Array<{ eventType: string }>; status: string } | null;
+  routePlan: DeliveryDisplayRoute | null;
 }): RouteGroupingChildDisplayStatus {
-  return toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents);
+  return toRouteDeliveryDisplayStatus(child.routePlan ?? { status: 'READY' });
 }
+
+type DeliveryDisplayRoute = {
+  assignmentGeneration?: bigint;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
+  driverEvents?: Array<{ eventType: string }>;
+  driverNavigationUntil?: Date | null;
+  status: string;
+};
 
 function normalizeNotificationStatus(status: string): RouteGroupingNotificationStatus {
   if (status === 'SENT' || status === 'FAILED' || status === 'PENDING') return status;

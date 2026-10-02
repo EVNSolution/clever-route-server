@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { Prisma, type PrismaClient, type DriverCompletionRun, type DriverCompletionCandidate, type DeliveryStop } from '@prisma/client';
 import { parseCompletionPolicy, type CompletionPolicy, type CompletionRun, type CompletionCandidate, type CompletionCommand, type CompletionSample, type CompletionAcknowledgement } from './completion-assistance.contract.js';
 import { validateVisitEvidence } from './completion-assistance.evidence.js';
+import { reconcileKfoodDeliveryWorkCompletion } from '../route-plans/kfood-delivery-completion.js';
 
 const DAY_MS = 86_400_000;
 const NONTERMINAL = new Set(['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED']);
@@ -99,7 +100,12 @@ export class PrismaCompletionAssistanceService {
       let result: CompletionAcknowledgement;
       if (command.kind === 'candidate') result = await this.registerCandidate(tx, run, command, now);
       else if (command.kind === 'response') result = await this.respond(tx, run, command, now);
-      else result = ack(command, run.invalidatedAt === null ? 'applied' : 'rejected', null, run.invalidatedAt === null ? undefined : 'run_invalidated');
+      else {
+        result = ack(command, run.invalidatedAt === null ? 'applied' : 'rejected', null, run.invalidatedAt === null ? undefined : 'run_invalidated');
+        if (result.status === 'applied') await reconcileKfoodDeliveryWorkCompletion(tx, {
+          routePlanId: run.routePlanId, shopId: run.shopId, now
+        });
+      }
       await tx.driverCompletionReceipt.create({ data: {
         accountId, commandId: command.commandId, runId: run.id,
         candidateId: result.candidate?.candidateId ?? null,
@@ -324,6 +330,7 @@ export class PrismaCompletionAssistanceService {
       errorCode: 'COMPLETION_ASSISTANCE_NOTIFICATIONS_DISABLED',
       metadata: { driverEventId: eventId, candidateId: row.id, revision: next.revision, source, previousStatus: stop.status, nextStatus: target }
     } });
+    await reconcileKfoodDeliveryWorkCompletion(tx, { routePlanId: run.routePlanId, shopId: run.shopId, now });
     return updated;
   }
 

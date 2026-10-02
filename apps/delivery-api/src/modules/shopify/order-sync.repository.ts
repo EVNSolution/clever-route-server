@@ -30,6 +30,7 @@ import { ordersV2Where, prepareOrdersV2Filters, v2ProgressForRecord, type Orders
 import { orderedDateBoundary } from './ordered-date-range.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
+import { reconcileKfoodDeliveryWorkCompletion } from "../route-plans/kfood-delivery-completion.js";
 import {
   assertShopifyShopPrivacyWriteAllowed,
   lockShopifyOrderPrivacyIdentity,
@@ -38,6 +39,7 @@ import {
 import { isPickupComplete, pickupCompleteAfter, torontoDateOnly } from './pickup-order-completion.js';
 
 const SHOPIFY_UNFULFILLED_STATUSES = ["UNFULFILLED", "OPEN", "RESTOCKED"];
+const TERMINAL_DELIVERY_STOP_STATUSES = new Set<BulkOrderStateValue>(["CANCELLED", "DELIVERED", "FAILED", "SKIPPED"]);
 
 export type OrderSyncReason = "orders_page_open" | "manual_refresh" | "route_create_preflight";
 
@@ -238,6 +240,7 @@ type OrderSyncPrismaClient = Pick<
   | "order"
   | "orderItem"
   | "orderDeliveryFact"
+  | "routePlan"
   | "shopifyOrderRedactionTombstone"
   | "shopifyWebhookEvent"
   | "shop"
@@ -245,7 +248,7 @@ type OrderSyncPrismaClient = Pick<
 
 type OrderSyncWriteClient = Pick<
   PrismaClient,
-  "$queryRaw" | "deliveryStop" | "inventory" | "inventoryEvent" | "inventoryOrder" | "order" | "orderItem" | "orderDeliveryFact" | "shopifyOrderRedactionTombstone" | "shopifyWebhookEvent"
+  "$queryRaw" | "deliveryStop" | "inventory" | "inventoryEvent" | "inventoryOrder" | "order" | "orderItem" | "orderDeliveryFact" | "routePlan" | "shopifyOrderRedactionTombstone" | "shopifyWebhookEvent"
 >;
 
 export type OrderSyncNotificationLogger = {
@@ -720,14 +723,68 @@ export class PrismaOrderSyncRepository {
 
     const orderIds = [...new Set(input.orderIds)];
     const orders = await this.prisma.order.findMany({
-      select: { id: true, rawPayload: true },
+      select: {
+        deliveryStops: {
+          select: {
+            routePlanStops: { select: { routePlanId: true } },
+          },
+        },
+        id: true,
+        rawPayload: true,
+      },
       where: { id: { in: orderIds }, shopId: shop.id },
     });
     if (orders.length === 0) return [];
 
     await this.prisma.$transaction(async (tx) => {
       if (input.field === "state") {
-        for (const order of orders) {
+        const currentMemberships = await tx.order.findMany({
+          select: {
+            deliveryStops: {
+              select: {
+                routePlanStops: { select: { routePlanId: true } },
+              },
+            },
+            id: true,
+            rawPayload: true,
+          },
+          where: { id: { in: orderIds }, shopId: shop.id },
+        });
+        const routePlanIds = routePlanIdsForStatusPatch(currentMemberships);
+        for (const routePlanId of routePlanIds) {
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "route_plans"
+            WHERE "id" = ${routePlanId}::uuid
+              AND "shopId" = ${shop.id}::uuid
+            FOR UPDATE
+          `;
+        }
+        for (const orderId of [...orderIds].sort()) {
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "orders"
+            WHERE "id" = ${orderId}::uuid
+              AND "shopId" = ${shop.id}::uuid
+            FOR UPDATE
+          `;
+        }
+        const revalidatedOrders = await tx.order.findMany({
+          select: {
+            deliveryStops: {
+              select: {
+                routePlanStops: { select: { routePlanId: true } },
+              },
+            },
+            id: true,
+            rawPayload: true,
+          },
+          where: { id: { in: orderIds }, shopId: shop.id },
+        });
+        if (!sameStringArray(routePlanIds, routePlanIdsForStatusPatch(revalidatedOrders))) {
+          throw new OrderSyncRouteLockedError("Order route membership changed during status correction.");
+        }
+        for (const order of revalidatedOrders) {
           await tx.order.update({
             data: {
               rawPayload: toJson({
@@ -746,6 +803,16 @@ export class PrismaOrderSyncRepository {
             },
             update: { status: input.value as BulkOrderStateValue },
             where: { shopId_orderId: { orderId: order.id, shopId: shop.id } },
+          });
+        }
+        const now = this.options.now?.() ?? new Date();
+        const allowStart = TERMINAL_DELIVERY_STOP_STATUSES.has(input.value as BulkOrderStateValue);
+        for (const routePlanId of routePlanIds) {
+          await reconcileKfoodDeliveryWorkCompletion(tx, {
+            allowStart,
+            now,
+            routePlanId,
+            shopId: shop.id,
           });
         }
         return;
@@ -1581,6 +1648,18 @@ async function findExistingOrderForSync(
       ],
     },
   });
+}
+
+function routePlanIdsForStatusPatch(orders: Array<{
+  deliveryStops: Array<{ routePlanStops: Array<{ routePlanId: string }> }>;
+}>): string[] {
+  return [...new Set(orders.flatMap((order) =>
+    order.deliveryStops.flatMap((stop) => stop.routePlanStops.map(({ routePlanId }) => routePlanId)),
+  ))].sort();
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function isRetryableTransactionConflict(error: unknown): boolean {

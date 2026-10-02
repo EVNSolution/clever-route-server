@@ -6,6 +6,11 @@ import {
   ROUTE_DRIVER_VISIBLE_STATUSES,
   toRouteExecutionStatus
 } from '../route-plans/route-plan-lifecycle.js';
+import {
+  hasDeliveryNavigationGraceExpired,
+  KFOOD_DELIVERY_APP_ID,
+  KFOOD_DELIVERY_SHOP_DOMAIN
+} from '../route-plans/kfood-delivery-completion.js';
 
 export type DriverTokenAccessPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount' | 'routePlan'>;
 
@@ -35,7 +40,10 @@ export type DriverRouteAccessScope = {
 };
 
 export class PrismaDriverTokenAccessRepository {
-  constructor(private readonly prisma: DriverTokenAccessPrismaClient) {}
+  constructor(
+    private readonly prisma: DriverTokenAccessPrismaClient,
+    private readonly now: () => Date = () => new Date()
+  ) {}
 
   async isDriverAccountAccessTokenActive(input: DriverAccountTokenAccessCheckInput): Promise<boolean> {
     const account = await this.prisma.driverAccount.findUnique({
@@ -71,6 +79,10 @@ export class PrismaDriverTokenAccessRepository {
 
     const routePlan = await this.prisma.routePlan.findFirst({
       select: {
+        assignmentGeneration: true,
+        deliveryWorkCompletedAt: true,
+        deliveryWorkCompletedGeneration: true,
+        deliveryWorkCompletedVersionId: true,
         driver: {
           select: {
             account: { select: { isStoreReviewAccount: true } },
@@ -78,6 +90,7 @@ export class PrismaDriverTokenAccessRepository {
           }
         },
         id: true,
+        driverNavigationUntil: true,
         isStoreReviewData: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' as const },
@@ -85,7 +98,7 @@ export class PrismaDriverTokenAccessRepository {
           take: 1,
           where: { status: 'CURRENT' as const, supersededAt: null }
         },
-        shop: { select: { id: true, shopDomain: true } },
+        shop: { select: { appId: true, id: true, shopDomain: true } },
         status: true
       },
       where: {
@@ -102,6 +115,9 @@ export class PrismaDriverTokenAccessRepository {
 
     if (
       routePlan === null ||
+      (routePlan.shop.appId === KFOOD_DELIVERY_APP_ID
+        && routePlan.shop.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
+        && hasDeliveryNavigationGraceExpired(routePlan, this.now())) ||
       routePlan.driver === null ||
       routePlan.driver.accountId !== input.accountId ||
       routePlan.driver.authSubject === null ||

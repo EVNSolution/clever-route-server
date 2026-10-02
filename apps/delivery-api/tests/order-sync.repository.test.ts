@@ -350,6 +350,95 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(prisma.order.update).toHaveBeenCalledWith(paymentUpdateMatcher);
   });
 
+  test('bulk delivery correction locks the affected route and starts a valid completion marker', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 1 });
+    prisma.order.findMany
+      .mockResolvedValueOnce([orderStatusPatchRecord()])
+      .mockResolvedValueOnce([orderStatusPatchRecord()])
+      .mockResolvedValueOnce([orderStatusPatchRecord()])
+      .mockResolvedValueOnce([canonicalOrderRecord(1)]);
+    prisma.routePlan.findFirst.mockResolvedValue(orderCompletionReconciliationRoute('DELIVERED'));
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.bulkPatchCanonicalOrderStatus({
+      actor: 'shopify-user-id',
+      field: 'state',
+      orderIds: ['order-id'],
+      shopDomain: 'example.myshopify.com',
+      value: 'DELIVERED'
+    });
+
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    const lockCalls = prisma.$queryRaw.mock.calls as unknown as Array<[TemplateStringsArray, string, string]>;
+    expect(lockCalls[0]?.[1]).toBe('route-plan-id');
+    expect(lockCalls[1]?.[1]).toBe('order-id');
+    const completionUpdate = prisma.routePlan.updateMany.mock.calls.at(-1)?.[0] as unknown as {
+      data: {
+        deliveryWorkCompletedAt: Date;
+        deliveryWorkCompletedGeneration: bigint;
+        deliveryWorkCompletedVersionId: string;
+        driverNavigationUntil: Date;
+      };
+      where: { id: string; shopId: string; status: string };
+    } | undefined;
+    expect(completionUpdate?.data.deliveryWorkCompletedAt).toBeInstanceOf(Date);
+    expect(completionUpdate?.data.deliveryWorkCompletedGeneration).toBe(1n);
+    expect(completionUpdate?.data.deliveryWorkCompletedVersionId).toBe('route-version-id');
+    expect(completionUpdate?.data.driverNavigationUntil).toBeInstanceOf(Date);
+    expect(completionUpdate?.where).toMatchObject({ id: 'route-plan-id', shopId: 'shop-id', status: 'IN_PROGRESS' });
+  });
+
+  test('bulk reopen correction clears a previously valid completion marker under the route lock', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 1 });
+    prisma.order.findMany
+      .mockResolvedValueOnce([orderStatusPatchRecord()])
+      .mockResolvedValueOnce([orderStatusPatchRecord()])
+      .mockResolvedValueOnce([orderStatusPatchRecord()])
+      .mockResolvedValueOnce([canonicalOrderRecord(1)]);
+    prisma.routePlan.findFirst.mockResolvedValue(orderCompletionReconciliationRoute('PENDING', true));
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.bulkPatchCanonicalOrderStatus({
+      actor: 'shopify-user-id',
+      field: 'state',
+      orderIds: ['order-id'],
+      shopDomain: 'example.myshopify.com',
+      value: 'PENDING'
+    });
+
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: {
+        deliveryWorkCompletedAt: null,
+        deliveryWorkCompletedGeneration: null,
+        deliveryWorkCompletedVersionId: null,
+        driverNavigationUntil: null
+      },
+      where: { assignmentGeneration: 1n, id: 'route-plan-id', shopId: 'shop-id', status: 'IN_PROGRESS' }
+    });
+  });
+
+  test('bulk state correction aborts before writes when route membership changes during lock acquisition', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 1 });
+    prisma.order.findMany
+      .mockResolvedValueOnce([orderStatusPatchRecord()])
+      .mockResolvedValueOnce([orderStatusPatchRecord()])
+      .mockResolvedValueOnce([orderStatusPatchRecord('other-route-plan-id')]);
+    const repository = createOrderSyncRepository(prisma);
+
+    await expect(repository.bulkPatchCanonicalOrderStatus({
+      actor: 'shopify-user-id',
+      field: 'state',
+      orderIds: ['order-id'],
+      shopDomain: 'example.myshopify.com',
+      value: 'DELIVERED'
+    })).rejects.toBeInstanceOf(OrderSyncRouteLockedError);
+
+    expect(prisma.order.update).not.toHaveBeenCalled();
+    expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
   test('keeps manual payment override when Shopify sync refreshes the order', async () => {
     const { prisma } = createPrismaHarness({
       existingOrder: {
@@ -2353,6 +2442,7 @@ function createPrismaHarness(input: {
       upsert: ReturnType<typeof vi.fn>;
     };
     orderDeliveryFact: { findMany: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
+    routePlan: { findFirst: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
     shopifyOrderRedactionTombstone: { findUnique: ReturnType<typeof vi.fn> };
     shopifyShopRedactionTombstone: { findUnique: ReturnType<typeof vi.fn> };
     shop: {
@@ -2401,6 +2491,10 @@ function createPrismaHarness(input: {
     orderDeliveryFact: {
       findMany: vi.fn(() => Promise.resolve([])),
       upsert: vi.fn(() => Promise.resolve({ id: 'fact-id' }))
+    },
+    routePlan: {
+      findFirst: vi.fn(() => Promise.resolve(null)),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
     },
     shopifyOrderRedactionTombstone: {
       findUnique: vi.fn(() => Promise.resolve(input.tombstonedOrder === true ? { id: 'tombstone-id' } : null))
@@ -2451,6 +2545,39 @@ function routedExistingOrder(
     id: 'order-id',
     sourceUpdatedAt: new Date('2026-05-07T13:00:00.000Z'),
     updatedAtShopify: new Date('2026-05-07T13:00:00.000Z')
+  };
+}
+
+function orderStatusPatchRecord(routePlanId = 'route-plan-id'): Record<string, unknown> {
+  return {
+    deliveryStops: [{ routePlanStops: [{ routePlanId }] }],
+    id: 'order-id',
+    rawPayload: {}
+  };
+}
+
+function orderCompletionReconciliationRoute(stopStatus: string, completed = false): Record<string, unknown> {
+  const completedAt = completed ? new Date('2026-10-01T22:00:00.000Z') : null;
+  return {
+    assignmentGeneration: 1n,
+    deliveryWorkCompletedAt: completedAt,
+    deliveryWorkCompletedGeneration: completed ? 1n : null,
+    deliveryWorkCompletedVersionId: completed ? 'route-version-id' : null,
+    driverNavigationUntil: completed ? new Date('2026-10-02T00:00:00.000Z') : null,
+    id: 'route-plan-id',
+    routeGroupingChildVersions: [{
+      id: 'route-version-id',
+      snapshot: {
+        membershipSchemaVersion: 1,
+        stops: [{ deliveryStopId: 'stop-id', orderId: 'order-id', sequence: 1 }]
+      }
+    }],
+    routeStops: [{
+      deliveryStop: { order: { currentRouteVersionId: 'route-version-id' }, orderId: 'order-id', status: stopStatus },
+      deliveryStopId: 'stop-id',
+      sequence: 1
+    }],
+    status: 'IN_PROGRESS'
   };
 }
 

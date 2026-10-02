@@ -132,6 +132,52 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('projects a persisted delivery-work completion marker immediately while execution remains in progress', async () => {
+    const completedAt = new Date('2026-10-01T22:00:00.000Z');
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        deliveryWorkCompletedAt: completedAt,
+        deliveryWorkCompletedGeneration: 3n,
+        deliveryWorkCompletedVersionId: 'route-version-id',
+        driverNavigationUntil: new Date('2026-10-02T00:00:00.000Z'),
+        assignmentGeneration: 3n,
+        driverEvents: [{ eventType: 'ROUTE_STARTED' }],
+        status: 'IN_PROGRESS'
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const detail = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(detail?.routePlan.status).toBe('COMPLETED');
+  });
+
+  test('does not project completion from a marker belonging to another assignment generation', async () => {
+    const completedAt = new Date('2026-10-01T22:00:00.000Z');
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        deliveryWorkCompletedAt: completedAt,
+        deliveryWorkCompletedGeneration: 2n,
+        deliveryWorkCompletedVersionId: 'route-version-id',
+        driverNavigationUntil: new Date('2026-10-02T00:00:00.000Z'),
+        assignmentGeneration: 3n,
+        driverEvents: [{ eventType: 'ROUTE_STARTED' }],
+        status: 'IN_PROGRESS'
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const detail = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(detail?.routePlan.status).toBe('IN_PROGRESS');
+  });
+
   test('projects standalone publication attempts but does not inherit them into an unpublished grouped version', async () => {
     const publishedAt = new Date('2026-09-11T13:00:00.000Z');
     const standaloneHarness = createPrismaHarness({
@@ -1392,6 +1438,77 @@ describe('PrismaRoutePlanRepository', () => {
       routePlanId: 'route-plan-id',
       shopId: 'shop-id',
       source: 'ADMIN'
+    });
+  });
+
+  test('admin completion reconciles the delivery-work marker while holding the route row lock', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanStopFindFirst: {
+        deliveryStop: { completionAssistanceCandidateId: null, order: { email: null }, orderId: 'order-1', status: 'ARRIVED' },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce(completionReconciliationRoute('DELIVERED'))
+      .mockResolvedValueOnce(routePlanRecord({ status: 'IN_PROGRESS' }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'complete-last-stop', status: 'COMPLETED' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    const completionUpdate = prisma.routePlan.updateMany.mock.calls.at(-1)?.[0] as unknown as {
+      data: {
+        deliveryWorkCompletedAt: Date;
+        deliveryWorkCompletedGeneration: bigint;
+        deliveryWorkCompletedVersionId: string;
+        driverNavigationUntil: Date;
+      };
+      where: { id: string; shopId: string; status: string };
+    } | undefined;
+    expect(completionUpdate?.data.deliveryWorkCompletedAt).toBeInstanceOf(Date);
+    expect(completionUpdate?.data.deliveryWorkCompletedGeneration).toBe(1n);
+    expect(completionUpdate?.data.deliveryWorkCompletedVersionId).toBe('route-version-id');
+    expect(completionUpdate?.data.driverNavigationUntil).toBeInstanceOf(Date);
+    expect(completionUpdate?.where).toMatchObject({ id: 'route-plan-id', shopId: 'shop-id', status: 'IN_PROGRESS' });
+  });
+
+  test('admin reopen clears a previously valid delivery-work marker under the same route lock', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanStopFindFirst: {
+        deliveryStop: { completionAssistanceCandidateId: null, order: { email: null }, orderId: 'order-1', status: 'DELIVERED' },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce(completionReconciliationRoute('PENDING', true))
+      .mockResolvedValueOnce(routePlanRecord({ status: 'IN_PROGRESS' }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'reopen-last-stop', status: 'READY' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: {
+        deliveryWorkCompletedAt: null,
+        deliveryWorkCompletedGeneration: null,
+        deliveryWorkCompletedVersionId: null,
+        driverNavigationUntil: null
+      },
+      where: { assignmentGeneration: 1n, id: 'route-plan-id', shopId: 'shop-id', status: 'IN_PROGRESS' }
     });
   });
 
@@ -2830,7 +2947,11 @@ function expectRoutePlanVersionClaim(
 function routePlanRecord(input: {
   assignmentGeneration?: bigint;
   constraints?: Record<string, unknown>;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
   driverId?: string | null;
+  driverNavigationUntil?: Date | null;
   driverEvents?: Array<{ eventType: string }>;
   driverRouteNotificationAttempts?: Array<{ createdAt: Date }>;
   metrics?: Record<string, unknown>;
@@ -2843,9 +2964,13 @@ function routePlanRecord(input: {
     assignmentGeneration: input.assignmentGeneration ?? 1n,
     createdAt: new Date('2026-05-07T12:30:00.000Z'),
     constraints: input.constraints ?? {},
+    deliveryWorkCompletedAt: input.deliveryWorkCompletedAt ?? null,
+    deliveryWorkCompletedGeneration: input.deliveryWorkCompletedGeneration ?? null,
+    deliveryWorkCompletedVersionId: input.deliveryWorkCompletedVersionId ?? null,
     depotLatitude: '43.6532',
     depotLongitude: '-79.3832',
     driverId: input.driverId ?? null,
+    driverNavigationUntil: input.driverNavigationUntil ?? null,
     driverEvents: input.driverEvents,
     driverRouteNotificationAttempts: input.driverRouteNotificationAttempts,
     id: 'route-plan-id',
@@ -2857,10 +2982,35 @@ function routePlanRecord(input: {
     },
     name: 'CLEVER route draft',
     planDate: new Date('2026-05-08T00:00:00.000Z'),
-    routeGroupingChildVersions: input.routeGroupingChildVersions,
+    routeGroupingChildVersions: input.routeGroupingChildVersions ?? [],
     routeStops: input.routeStops ?? [],
     status: input.status ?? 'READY',
     updatedAt: input.updatedAt ?? new Date('2026-05-07T12:30:00.000Z')
+  };
+}
+
+function completionReconciliationRoute(stopStatus: string, completed = false): Record<string, unknown> {
+  const completedAt = completed ? new Date('2026-10-01T22:00:00.000Z') : null;
+  return {
+    assignmentGeneration: 1n,
+    deliveryWorkCompletedAt: completedAt,
+    deliveryWorkCompletedGeneration: completed ? 1n : null,
+    deliveryWorkCompletedVersionId: completed ? 'route-version-id' : null,
+    driverNavigationUntil: completed ? new Date('2026-10-02T00:00:00.000Z') : null,
+    id: 'route-plan-id',
+    routeGroupingChildVersions: [{
+      id: 'route-version-id',
+      snapshot: {
+        membershipSchemaVersion: 1,
+        stops: [{ deliveryStopId: 'stop-1', orderId: 'order-1', sequence: 1 }]
+      }
+    }],
+    routeStops: [{
+      deliveryStop: { order: { currentRouteVersionId: 'route-version-id' }, orderId: 'order-1', status: stopStatus },
+      deliveryStopId: 'stop-1',
+      sequence: 1
+    }],
+    status: 'IN_PROGRESS'
   };
 }
 

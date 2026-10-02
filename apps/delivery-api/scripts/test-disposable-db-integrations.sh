@@ -369,3 +369,8 @@ DATABASE_URL="$completion_assistance_url" \
 COMPLETION_ASSISTANCE_DATABASE_URL="$completion_assistance_url" \
 COMPLETION_ASSISTANCE_DATABASE_TARGET_CLASS='safe-local-completion-assistance-disposable' \
 npm test -- completion-assistance.integration.test.ts
+
+DATABASE_URL="$completion_assistance_url" \
+KFOOD_COMPLETION_DATABASE_URL="$completion_assistance_url" \
+KFOOD_COMPLETION_DATABASE_TARGET_CLASS='safe-local-kfood-completion-disposable' \
+npm test -- kfood-delivery-completion.integration.test.ts

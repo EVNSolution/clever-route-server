@@ -55,6 +55,7 @@ import {
   routeGeometryCacheUpsertArgs
 } from './route-plan-geometry-cache.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
+import { reconcileKfoodDeliveryWorkCompletion, toRouteDeliveryDisplayStatus } from './kfood-delivery-completion.js';
 import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from './route-plan-summary-normalization.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
@@ -108,11 +109,15 @@ type RoutePlanRecord = {
   createdAt: Date;
   constraints?: unknown;
   deliveryDate?: Date | null;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
   depotLatitude: unknown;
   depotLongitude: unknown;
   driver?: RoutePlanDriverRecord | null;
   driverEvents?: Array<{ eventType: string }>;
   driverId?: string | null;
+  driverNavigationUntil?: Date | null;
   driverRouteNotificationAttempts?: Array<{ createdAt: Date }>;
   id: string;
   metrics: unknown;
@@ -258,6 +263,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) return { duplicate: false as const, found: false as const };
+
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "route_plans"
+        WHERE "id" = ${input.routePlanId}::uuid
+          AND "shopId" = ${shop.id}::uuid
+        FOR UPDATE
+      `;
 
       const routeStop = await tx.routePlanStop.findFirst({
         select: {
@@ -420,6 +433,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           shopId: shop.id,
           source: 'ADMIN'
         }
+      });
+
+      await reconcileKfoodDeliveryWorkCompletion(tx, {
+        allowStart: input.payload.status === 'COMPLETED',
+        now: new Date(),
+        routePlanId: input.routePlanId,
+        shopId: shop.id
       });
 
       return {
@@ -2776,10 +2796,14 @@ async function collapseRouteGroupingSplitAfterChildDelete(
 
 function routePlanListSelect() {
   return {
+    assignmentGeneration: true,
     constraints: true,
     createdAt: true,
     depotLatitude: true,
     depotLongitude: true,
+    deliveryWorkCompletedAt: true,
+    deliveryWorkCompletedGeneration: true,
+    deliveryWorkCompletedVersionId: true,
     driver: {
       select: {
         _count: { select: { driverEvents: true } },
@@ -2795,6 +2819,7 @@ function routePlanListSelect() {
     },
     driverEvents: routeLifecycleEventQuery(),
     driverId: true,
+    driverNavigationUntil: true,
     id: true,
     metrics: true,
     name: true,
@@ -3068,7 +3093,7 @@ function toRoutePlanListSummary(routePlan: RoutePlanListRecord): RoutePlanSummar
     routeMetrics: cache?.shapeSignature === shapeSignature ? readRouteMetrics(cache.metrics) : null,
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
-    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    status: toRouteDeliveryDisplayStatus(routePlan),
     stopsCount: readFiniteNumber(metrics?.stopsCount) ?? routePlan.routeStops.length,
     totalAmount: normalizeRouteTotalAmount(routePlan.routeStops.map(({ deliveryStop }) => deliveryStop.order)),
     updatedAt: routePlan.updatedAt.toISOString()
@@ -3109,7 +3134,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
     routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
     routeMetrics,
-    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    status: toRouteDeliveryDisplayStatus(routePlan),
     stopsCount: metrics.stopsCount,
     totalAmount: normalizeRouteTotalAmount((routePlan.routeStops ?? []).map(({ deliveryStop }) => deliveryStop.order)),
     updatedAt: routePlan.updatedAt.toISOString()
