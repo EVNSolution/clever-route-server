@@ -825,6 +825,258 @@ describeDatabase('route grouping save database regressions', () => {
     });
   });
 
+  test('adds cross-day and Date Pending orders to a selected child without rewriting delivery dates', async () => {
+    const existing = await seedOrder();
+    const crossDay = await seedOrder({
+      deliveryDate: new Date('2026-09-12T00:00:00.000Z'),
+      routeScopeKey: 'saturday-delivery'
+    });
+    const datePending = await seedOrder({ deliveryDate: null, routeScopeKey: null });
+    await expect(createGrouping('cross-day creation remains guarded', [crossDay.id]))
+      .rejects.toMatchObject({
+        blockers: ['selected orders must fall within grouping date range'],
+        code: 'ROUTE_GROUPING_INVALID'
+      });
+    const grouping = await createGrouping('manual cross-day additions', [existing.id]);
+    const initial = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [draftRoute('selected-child', [existing.id])],
+      shopDomain
+    });
+    const routePlanId = initial!.children[0]!.routePlanId!;
+
+    const updated = await service.updateGroupingOrders({
+      addOrderIds: [crossDay.id, datePending.id],
+      appId,
+      groupingId: grouping.id,
+      shopDomain,
+      targetRoutePlanId: routePlanId
+    });
+    const reloaded = await service.getGrouping({ appId, groupingId: grouping.id, shopDomain });
+
+    expect(updated).toEqual(reloaded);
+    expect(reloaded).toMatchObject({
+      dateRangeEnd: '2026-09-10',
+      dateRangeStart: '2026-09-10',
+      planDate: '2026-09-10',
+      totalOrders: 3
+    });
+    expect(reloaded!.children[0]!.orderIds).toEqual([existing.id, crossDay.id, datePending.id]);
+    await expect(prisma.routePlanStop.findMany({
+      orderBy: { sequence: 'asc' },
+      select: { deliveryStop: { select: { orderId: true } } },
+      where: { routePlanId }
+    })).resolves.toEqual([
+      { deliveryStop: { orderId: existing.id } },
+      { deliveryStop: { orderId: crossDay.id } },
+      { deliveryStop: { orderId: datePending.id } }
+    ]);
+    await expect(prisma.orderDeliveryFact.findMany({
+      select: { deliveryDate: true, orderId: true },
+      where: { orderId: { in: [crossDay.id, datePending.id] } }
+    })).resolves.toEqual(expect.arrayContaining([
+      { deliveryDate: new Date('2026-09-12T00:00:00.000Z'), orderId: crossDay.id },
+      { deliveryDate: null, orderId: datePending.id }
+    ]));
+    await expect(prisma.deliveryStop.findMany({
+      select: { deliveryDate: true, orderId: true },
+      where: { orderId: { in: [crossDay.id, datePending.id] } }
+    })).resolves.toEqual(expect.arrayContaining([
+      { deliveryDate: new Date('2026-09-12T00:00:00.000Z'), orderId: crossDay.id },
+      { deliveryDate: null, orderId: datePending.id }
+    ]));
+  });
+
+  test('keeps manual addition safety guards while allowing cross-day membership', async () => {
+    const existing = await seedOrder();
+    const grouping = await createGrouping('manual addition guards', [existing.id]);
+    const initial = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [draftRoute('guarded-child', [existing.id])],
+      shopDomain
+    });
+    const routePlanId = initial!.children[0]!.routePlanId!;
+    const completed = await seedOrder({ deliveryDate: new Date('2026-09-12T00:00:00.000Z') });
+    await prisma.deliveryStop.update({ data: { status: 'DELIVERED' }, where: { id: completed.deliveryStopId } });
+
+    await expect(service.updateGroupingOrders({
+      addOrderIds: [completed.id], appId, groupingId: grouping.id, shopDomain, targetRoutePlanId: routePlanId
+    })).rejects.toMatchObject({
+      blockers: ['completed orders cannot be added to a route grouping'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+    await expect(prisma.routeGroupingOrder.count({
+      where: { groupingId: grouping.id, orderId: completed.id }
+    })).resolves.toBe(0);
+
+    const missingCoordinates = await seedOrder({ deliveryDate: new Date('2026-09-12T00:00:00.000Z') });
+    await prisma.deliveryStop.update({
+      data: { latitude: null, longitude: null },
+      where: { id: missingCoordinates.deliveryStopId }
+    });
+    await expect(service.updateGroupingOrders({
+      addOrderIds: [missingCoordinates.id], appId, groupingId: grouping.id, shopDomain, targetRoutePlanId: routePlanId
+    })).rejects.toMatchObject({
+      blockers: ['selected orders must have coordinates'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+
+    const foreignShop = await prisma.shop.create({
+      data: { appId, shopDomain: `manual-add-foreign-${randomUUID()}.myshopify.com` }
+    });
+    try {
+      const foreign = await seedOrder({ targetShopId: foreignShop.id });
+      await expect(service.updateGroupingOrders({
+        addOrderIds: [foreign.id], appId, groupingId: grouping.id, shopDomain, targetRoutePlanId: routePlanId
+      })).rejects.toMatchObject({
+        blockers: ['selected orders must have delivery facts'],
+        code: 'ROUTE_GROUPING_INVALID'
+      });
+    } finally {
+      await prisma.shop.delete({ where: { id: foreignShop.id } });
+    }
+
+    const assigned = await seedOrder();
+    await materializedGroup('manual addition ownership source', [assigned.id]);
+    await expect(service.updateGroupingOrders({
+      addOrderIds: [assigned.id], appId, groupingId: grouping.id, shopDomain, targetRoutePlanId: routePlanId
+    })).rejects.toMatchObject({
+      blockers: ['selected orders are already assigned to another route'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+    await expect(prisma.routeGroupingOrder.count({
+      where: { groupingId: grouping.id, orderId: assigned.id }
+    })).resolves.toBe(0);
+
+    const afterCompletion = await seedOrder({ deliveryDate: new Date('2026-09-12T00:00:00.000Z') });
+    await prisma.routePlan.update({ data: { status: 'COMPLETED' }, where: { id: routePlanId } });
+    await expect(service.updateGroupingOrders({
+      addOrderIds: [afterCompletion.id], appId, groupingId: grouping.id, shopDomain, targetRoutePlanId: routePlanId
+    })).rejects.toMatchObject({
+      blockers: ['orders can only be added to a Ready or in-progress child route'],
+      code: 'ROUTE_GROUPING_INVALID'
+    });
+    await expect(prisma.routeGroupingOrder.count({
+      where: { groupingId: grouping.id, orderId: afterCompletion.id }
+    })).resolves.toBe(0);
+  });
+
+  test('concurrent manual additions claim one route atomically without leaving loser membership', async () => {
+    const [firstBase, secondBase, contested] = await seedOrders(3);
+    const firstGroup = await createGrouping('manual add ownership race first', [firstBase!.id]);
+    const secondGroup = await createGrouping('manual add ownership race second', [secondBase!.id]);
+    const firstSaved = await service.saveDraft({
+      appId,
+      groupingId: firstGroup.id,
+      mode: 'MANUAL_ORDER',
+      routes: [draftRoute('race-first', [firstBase!.id])],
+      shopDomain
+    });
+    const secondSaved = await service.saveDraft({
+      appId,
+      groupingId: secondGroup.id,
+      mode: 'MANUAL_ORDER',
+      routes: [draftRoute('race-second', [secondBase!.id])],
+      shopDomain
+    });
+    const firstRoutePlanId = firstSaved!.children[0]!.routePlanId!;
+    const secondRoutePlanId = secondSaved!.children[0]!.routePlanId!;
+
+    const results = await Promise.allSettled([
+      service.updateGroupingOrders({
+        addOrderIds: [contested!.id], appId, groupingId: firstGroup.id, shopDomain,
+        targetRoutePlanId: firstRoutePlanId
+      }),
+      service.updateGroupingOrders({
+        addOrderIds: [contested!.id], appId, groupingId: secondGroup.id, shopDomain,
+        targetRoutePlanId: secondRoutePlanId
+      })
+    ]);
+
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    expect((results.find(({ status }) => status === 'rejected') as PromiseRejectedResult).reason)
+      .toMatchObject({
+        blockers: ['selected orders are already assigned to another route'],
+        code: 'ROUTE_GROUPING_INVALID'
+      });
+
+    const memberships = await prisma.routeGroupingOrder.findMany({
+      select: { groupingId: true },
+      where: { orderId: contested!.id }
+    });
+    const routeStops = await prisma.routePlanStop.findMany({
+      select: { routePlanId: true },
+      where: { deliveryStopId: contested!.deliveryStopId }
+    });
+    expect(memberships).toHaveLength(1);
+    expect(routeStops).toHaveLength(1);
+    const winningGroupingId = memberships[0]!.groupingId;
+    const winningRoutePlanId = routeStops[0]!.routePlanId;
+    expect([
+      [firstGroup.id, firstRoutePlanId],
+      [secondGroup.id, secondRoutePlanId]
+    ]).toContainEqual([winningGroupingId, winningRoutePlanId]);
+
+    const currentOwner = await prisma.order.findUniqueOrThrow({
+      select: { currentRouteVersion: { select: { groupingId: true, routePlanId: true } } },
+      where: { id: contested!.id }
+    });
+    expect(currentOwner.currentRouteVersion).toMatchObject({
+      groupingId: winningGroupingId,
+      routePlanId: winningRoutePlanId
+    });
+    const [firstReloaded, secondReloaded] = await Promise.all([
+      service.getGrouping({ appId, groupingId: firstGroup.id, shopDomain }),
+      service.getGrouping({ appId, groupingId: secondGroup.id, shopDomain })
+    ]);
+    expect([firstReloaded, secondReloaded].filter((group) => group!.assignments.some(({ orderId }) => orderId === contested!.id)))
+      .toHaveLength(1);
+    expect([firstReloaded, secondReloaded].filter((group) => group!.children[0]!.orderIds.includes(contested!.id)))
+      .toHaveLength(1);
+  });
+
+  test('revalidates existing Unassigned group members before appending them to a child route', async () => {
+    const [routed, cancelled, completed, missingCoordinates] = await seedOrders(4);
+    const grouping = await createGrouping('existing Unassigned eligibility', [
+      routed!.id, cancelled!.id, completed!.id, missingCoordinates!.id
+    ]);
+    const saved = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [draftRoute('existing-member-target', [routed!.id])],
+      shopDomain
+    });
+    const routePlanId = saved!.children[0]!.routePlanId!;
+    await prisma.order.update({ data: { cancelledAt: new Date() }, where: { id: cancelled!.id } });
+    await prisma.deliveryStop.update({ data: { status: 'DELIVERED' }, where: { id: completed!.deliveryStopId } });
+    await prisma.deliveryStop.update({
+      data: { latitude: null, longitude: null },
+      where: { id: missingCoordinates!.deliveryStopId }
+    });
+
+    for (const [orderId, blocker] of [
+      [cancelled!.id, 'cancelled orders cannot be added to a route grouping'],
+      [completed!.id, 'completed orders cannot be added to a route grouping'],
+      [missingCoordinates!.id, 'selected orders must have coordinates']
+    ] as const) {
+      await expect(service.updateGroupingOrders({
+        addOrderIds: [orderId], appId, groupingId: grouping.id, shopDomain, targetRoutePlanId: routePlanId
+      })).rejects.toMatchObject({ blockers: [blocker], code: 'ROUTE_GROUPING_INVALID' });
+    }
+
+    const reloaded = await service.getGrouping({ appId, groupingId: grouping.id, shopDomain });
+    expect(reloaded!.children[0]!.orderIds).toEqual([routed!.id]);
+    await expect(prisma.routePlanStop.findMany({
+      select: { deliveryStopId: true }, where: { routePlanId }
+    })).resolves.toEqual([{ deliveryStopId: routed!.deliveryStopId }]);
+  });
+
   test('creates a grouping containing only valid READY_TO_PLAN orders', async () => {
     const orders = await seedOrders(2);
 

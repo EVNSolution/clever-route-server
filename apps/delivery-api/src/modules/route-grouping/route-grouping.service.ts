@@ -1,6 +1,6 @@
 import { assertRouteDispatchOwnership, claimRouteExecutionProjection, hasDispatchReservation, withoutDispatchReservation } from '../route-plans/route-execution-ownership.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { DriverEventType, type DeliveryStopStatus, type DriverRouteNotificationStatus, type Prisma, type PrismaClient } from '@prisma/client';
+import { DriverEventType, Prisma, type DeliveryStopStatus, type DriverRouteNotificationStatus, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type {
   DriverPushProvider,
@@ -1085,6 +1085,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       } else {
         await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       }
+      if (input.targetRoutePlanId !== undefined) {
+        await lockRoutePlanMembership(tx, input.targetRoutePlanId, group.shopId);
+      }
+      await lockManualAdditionOrders(tx, group.shopId, addOrderIds);
 
       if (removeOrderIds.length > 0) {
         const membershipAuthority = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
@@ -1132,7 +1136,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           },
           where: { orderId: { in: newOrderIds }, shopId: group.shopId }
         });
-        const blockers = validateCreateFacts({ dateRange: loadedGroupDateRange(group), facts, orderIds: newOrderIds });
+        const blockers = validateManualAdditionFacts({ facts, orderIds: newOrderIds });
         if (blockers.length > 0) throw new RouteGroupingValidationError(blockers);
         const orderedFacts = newOrderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is typeof facts[number] => fact !== undefined);
         const maxSequence = await tx.routeGroupingOrder.aggregate({ _max: { sourceSequence: true }, where: { groupingId: group.id } });
@@ -1159,7 +1163,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (input.targetRoutePlanId !== undefined) {
         const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
         if (loaded === null) return null;
-        await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds);
+        await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds, {
+          requireCompleteOwnershipRebind: true
+        });
       }
       await recomputeAssignments(tx, group.id);
       return group.id;
@@ -4096,7 +4102,16 @@ type GroupingDateRange = { end: Date; endText: string; planDate: Date; start: Da
 type DeliveryFactForGrouping = {
   deliveryDate: Date | null;
   deliverySession: string | null;
-  order: { cancelledAt: Date | null; deliveryStops: Array<{ latitude: unknown; longitude: unknown; routePlanStops: Array<{ id: string }> }> };
+  order: {
+    cancelledAt: Date | null;
+    currentRouteVersionId: string | null;
+    deliveryStops: Array<{
+      latitude: unknown;
+      longitude: unknown;
+      routePlanStops: Array<{ id: string }>;
+      status: DeliveryStopStatus;
+    }>;
+  };
   orderId: string;
   routeScopeKey: string | null;
   serviceType: string | null;
@@ -4156,7 +4171,36 @@ function sharedFactValue(facts: DeliveryFactForGrouping[], key: 'deliverySession
   return facts.every((fact) => fact[key] === first) ? first : null;
 }
 
-function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
+function validateManualAdditionFacts(input: { facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
+  const blockers = validateCreateFacts({ facts: input.facts, orderIds: input.orderIds });
+  for (const orderId of input.orderIds) {
+    const fact = input.facts.find((candidate) => candidate.orderId === orderId);
+    const stop = fact?.order.deliveryStops[0];
+    if (stop === undefined) continue;
+    if (['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(stop.status)) {
+      blockers.push('completed orders cannot be added to a route grouping');
+    }
+    if (fact?.order.currentRouteVersionId !== null && fact?.order.currentRouteVersionId !== undefined) {
+      blockers.push('selected orders are already assigned to another route');
+    }
+  }
+  return [...new Set(blockers)];
+}
+
+async function lockManualAdditionOrders(tx: Tx, shopId: string, orderIds: string[]): Promise<void> {
+  const ids = normalizeIds(orderIds).sort().map((orderId) => Prisma.sql`${orderId}::uuid`);
+  if (ids.length === 0) return;
+  await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+    FROM "orders"
+    WHERE "shopId" = ${shopId}::uuid
+      AND "id" IN (${Prisma.join(ids)})
+    ORDER BY "id"
+    FOR UPDATE
+  `;
+}
+
+function validateCreateFacts(input: { dateRange?: GroupingDateRange; facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
   const blockers: string[] = [];
   if (input.facts.length !== input.orderIds.length) blockers.push('selected orders must have delivery facts');
   for (const orderId of input.orderIds) {
@@ -4164,7 +4208,8 @@ function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: Deliv
     if (fact === undefined) continue;
     if (fact.order.cancelledAt !== null) blockers.push('cancelled orders cannot be added to a route grouping');
     const deliveryDate = formatDateOnly(fact.deliveryDate);
-    if (deliveryDate !== null && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
+    if (input.dateRange !== undefined && deliveryDate !== null
+      && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
       blockers.push('selected orders must fall within grouping date range');
     }
     const stop = fact.order.deliveryStops[0];
@@ -4470,7 +4515,8 @@ async function appendGroupingOrdersToChildRoute(
   tx: Tx,
   group: LoadedGrouping,
   targetRoutePlanId: string,
-  orderIds: string[]
+  orderIds: string[],
+  options: { requireCompleteOwnershipRebind?: boolean } = {}
 ): Promise<void> {
   const targetChild = group.childVersions
     .filter((child) => isOperationalCurrentChild(child))
@@ -4506,6 +4552,8 @@ async function appendGroupingOrdersToChildRoute(
     return !currentStopIds.has(assignment.deliveryStopId);
   });
   if (additionsToAppend.length === 0) return;
+  const eligibilityBlockers = validateManualChildAdditions(additionsToAppend);
+  if (eligibilityBlockers.length > 0) throw new RouteGroupingValidationError(eligibilityBlockers);
 
   const assignments = [...currentAssignments, ...additionsToAppend];
   assertLockedRoutePlanSuccessorPolicy({
@@ -4522,7 +4570,7 @@ async function appendGroupingOrdersToChildRoute(
   });
   await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
   await replaceCurrentRouteGroupingChildVersion(tx, {
-    planning: true,
+    planning: options.requireCompleteOwnershipRebind !== true,
     currentChildId: targetChild.id,
     driverId: lockedRoutePlan.driverId ?? targetChild.driverId,
     groupingId: group.id,
@@ -4544,6 +4592,23 @@ async function appendGroupingOrdersToChildRoute(
     ),
     version: targetChild.version
   });
+}
+
+function validateManualChildAdditions(assignments: LoadedAssignment[]): string[] {
+  const blockers: string[] = [];
+  for (const assignment of assignments) {
+    if (assignment.order.cancelledAt !== null) blockers.push('cancelled orders cannot be added to a route grouping');
+    if (['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(assignment.deliveryStop.status)) {
+      blockers.push('completed orders cannot be added to a route grouping');
+    }
+    if (decimalNumber(assignment.deliveryStop.latitude) === null || decimalNumber(assignment.deliveryStop.longitude) === null) {
+      blockers.push('selected orders must have coordinates');
+    }
+    if (assignment.order.currentRouteVersionId !== null) {
+      blockers.push('selected orders are already assigned to another route');
+    }
+  }
+  return [...new Set(blockers)];
 }
 
 async function rewriteRoutePlanStops(tx: Tx, shopId: string, routePlanId: string, assignments: LoadedAssignment[]): Promise<void> {

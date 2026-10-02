@@ -337,6 +337,47 @@ describe('PrismaRouteTrackingService', () => {
     expect(snapshot.executionEvidence).not.toHaveProperty('workingTime');
   });
 
+  test.each([
+    { startAt: '2026-07-20T15:00:00.000Z', completedAt: '2026-07-20T14:00:00.000Z', hasStart: true },
+    { startAt: '2026-07-19T15:00:00.000Z', completedAt: '2026-07-19T16:00:00.000Z', hasStart: false },
+    { startAt: '2026-07-20T15:00:00.000Z', completedAt: '2026-07-22T00:00:00.000Z', hasStart: true },
+    { startAt: '2026-07-22T00:01:00.000Z', completedAt: '2026-07-21T23:59:00.000Z', hasStart: false }
+  ])('does not reuse an earlier execution or out-of-window endpoint ($completedAt)', async ({ startAt, completedAt, hasStart }) => {
+    const driverEvent = {
+      findFirst: vi.fn((input: { where?: { eventType?: string } }) => {
+        const eventType = input.where?.eventType;
+        if (eventType !== 'ROUTE_STARTED' && eventType !== 'ROUTE_COMPLETED') return Promise.resolve(null);
+        const occurredAt = new Date(eventType === 'ROUTE_STARTED' ? startAt : completedAt);
+        return Promise.resolve({
+          createdAt: occurredAt,
+          eventType,
+          id: eventType,
+          latitude: '43.6500',
+          longitude: '-79.3800',
+          occurredAt
+        });
+      }),
+      findMany: vi.fn(() => Promise.resolve([]))
+    };
+    const service = new PrismaRouteTrackingService({
+      driverEvent,
+      routePlan: { findUnique: vi.fn(() => Promise.resolve({
+        constraints: { routeEndMode: 'RETURN_TO_DEPOT' },
+        depotLatitude: '43.6500',
+        depotLongitude: '-79.3800'
+      })) },
+      routePlanStop: { findMany: vi.fn(() => Promise.resolve([])) },
+      routeTrackingGeometry: { findUnique: vi.fn(() => Promise.resolve(null)) }
+    } as never);
+
+    const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
+
+    expect(snapshot.executionEvidence.start?.occurredAt ?? null).toBe(hasStart ? startAt : null);
+    expect(snapshot.executionEvidence.completion).toBeNull();
+    expect(snapshot.executionEvidence.returnToDepot.status).toBe('UNAVAILABLE');
+    expect(snapshot.executionEvidence.returnToDepot.observedAt).toBeNull();
+  });
+
   test('preserves nullable-driver admin stop progress in the snapshot', async () => {
     const driverEvent = {
       findFirst: vi.fn((input: { where?: { OR?: unknown } }) => Promise.resolve(
