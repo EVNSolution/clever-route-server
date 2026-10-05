@@ -368,12 +368,6 @@ export function normalizeAddress(address: GeocodingAddress): string | null {
   return normalizeAddressParts(addressParts(address));
 }
 
-export function normalizeAddressQueries(address: GeocodingAddress): string[] {
-  return buildGeocodingQueries(address).flatMap((query) =>
-    query.kind === 'freeform' ? [query.q] : [],
-  );
-}
-
 export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery[] {
   const full = normalizeAddress(address);
   if (full === null) return [];

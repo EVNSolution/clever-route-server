@@ -1,6 +1,3 @@
-import type { TokenEncryptionKey } from '../modules/security/token-encryption.js';
-import { loadTokenEncryptionKey } from '../modules/security/token-encryption.js';
-
 export type AppEnv = {
   nodeEnv: string;
   port: number;
@@ -15,12 +12,6 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     port: parsePort(input.PORT),
     logLevel: input.LOG_LEVEL ?? 'info'
   };
-}
-
-export function loadShopifyTokenEncryptionKey(
-  input: NodeJS.ProcessEnv = process.env
-): TokenEncryptionKey {
-  return loadTokenEncryptionKey(input.SHOPIFY_TOKEN_ENCRYPTION_KEY);
 }
 
 function parsePort(value: string | undefined): number {

@@ -2,20 +2,6 @@ import { Prisma } from '@prisma/client';
 
 type RouteExecutionOwnershipTx = {
   $queryRaw(query: TemplateStringsArray | Prisma.Sql, ...values: unknown[]): Promise<unknown>;
-  routePlanStop: {
-    findFirst(args: {
-      select: { deliveryStopId: true; routePlanId: true };
-      where: {
-        deliveryStopId: { in: string[] };
-        routePlanId: { not: string };
-        routePlan: { shopId: string; status: 'IN_PROGRESS' };
-      };
-    }): Promise<{ deliveryStopId: string; routePlanId: string } | null>;
-    findMany(args: {
-      select: { deliveryStopId: true };
-      where: { routePlanId: string };
-    }): Promise<Array<{ deliveryStopId: string }>>;
-  };
 };
 
 export class RouteExecutionConflictError extends Error {
@@ -40,7 +26,7 @@ export type RouteDispatchConflict = {
 };
 
 export async function lockRouteExecutionStops(
-  tx: Pick<RouteExecutionOwnershipTx, '$queryRaw'>,
+  tx: RouteExecutionOwnershipTx,
   deliveryStopIds: string[]
 ): Promise<void> {
   for (const stopId of [...new Set(deliveryStopIds)].sort()) {
@@ -51,7 +37,7 @@ export async function lockRouteExecutionStops(
 // Planning membership is many-to-many. Dispatch reserves execution, separately
 // from the order's legacy primary-route projection. No stop outcome is reset.
 export async function assertRouteDispatchOwnership(
-  tx: Pick<RouteExecutionOwnershipTx, '$queryRaw'>,
+  tx: RouteExecutionOwnershipTx,
   input: { deliveryStopIds: string[]; routePlanId: string; shopId: string }
 ): Promise<void> {
   const stopIds = [...new Set(input.deliveryStopIds)].sort();
@@ -100,7 +86,7 @@ export function withoutDispatchReservation(value: unknown): Prisma.InputJsonObje
 }
 
 export async function claimRouteExecutionProjection(
-  tx: Pick<RouteExecutionOwnershipTx, '$queryRaw'>,
+  tx: RouteExecutionOwnershipTx,
   input: { routePlanId: string; shopId: string }
 ): Promise<void> {
   // This singular field remains a compatibility projection for order/DSV
@@ -116,52 +102,4 @@ export async function claimRouteExecutionProjection(
     WHERE o.id = d."orderId" AND o."shopId" = d."shopId"
       AND s."routePlanId" = ${input.routePlanId}::uuid AND o."shopId" = ${input.shopId}::uuid
   `);
-}
-
-export async function assertRouteExecutionOwnership(
-  tx: RouteExecutionOwnershipTx,
-  input: {
-    createConflictError?: (conflict: { deliveryStopId: string; routePlanId: string }) => Error;
-    deliveryStopIds: string[];
-    routePlanId: string;
-    shopId: string;
-  }
-): Promise<void> {
-  const deliveryStopIds = [...new Set(input.deliveryStopIds)].sort((left, right) => left.localeCompare(right));
-  if (deliveryStopIds.length === 0) return;
-
-  await lockRouteExecutionStops(tx, deliveryStopIds);
-
-  const conflict = await tx.routePlanStop.findFirst({
-    select: { deliveryStopId: true, routePlanId: true },
-    where: {
-      deliveryStopId: { in: deliveryStopIds },
-      routePlanId: { not: input.routePlanId },
-      routePlan: {
-        shopId: input.shopId,
-        status: 'IN_PROGRESS'
-      }
-    }
-  });
-  if (conflict !== null) {
-    throw input.createConflictError?.(conflict) ?? new RouteExecutionConflictError(conflict.routePlanId, conflict.deliveryStopId);
-  }
-}
-
-export async function assertRoutePlanExecutionOwnership(
-  tx: RouteExecutionOwnershipTx,
-  input: {
-    createConflictError?: (conflict: { deliveryStopId: string; routePlanId: string }) => Error;
-    routePlanId: string;
-    shopId: string;
-  }
-): Promise<void> {
-  const stops = await tx.routePlanStop.findMany({
-    select: { deliveryStopId: true },
-    where: { routePlanId: input.routePlanId }
-  });
-  await assertRouteExecutionOwnership(tx, {
-    ...input,
-    deliveryStopIds: stops.map((stop) => stop.deliveryStopId)
-  });
 }

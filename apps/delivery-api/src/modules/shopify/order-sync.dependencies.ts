@@ -31,14 +31,6 @@ export type AdminOrdersRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<
   string
 >>;
 
-export function loadAdminOrdersDependencies(input: {
-  adminNotificationService?: AdminNotificationServiceApi | undefined;
-  env: AdminOrdersRuntimeEnv;
-  prisma: PrismaClient;
-}): AdminOrdersDependencies | undefined {
-  return loadAdminOrdersRuntime(input)?.dependencies;
-}
-
 export function loadAdminOrdersRuntime(input: {
   adminNotificationService?: AdminNotificationServiceApi | undefined;
   env: AdminOrdersRuntimeEnv;

@@ -54,14 +54,6 @@ export type WooCommerceSyncSingleOrderInput = {
   sourceOrderId: number | string;
 };
 
-export type WooCommerceSyncTier = 'hot' | 'cold';
-
-export type WooCommerceSyncTierClassification = {
-  reason: 'today_or_future_delivery' | 'past_delivery' | 'missing_delivery_date';
-  review: boolean;
-  tier: WooCommerceSyncTier;
-};
-
 type Repository = {
   findCanonicalOrderById?(input: { orderId: string; shopDomain: string; shopId?: string | undefined }): Promise<CanonicalOrderRow | null>;
   listCanonicalOrdersBySourceIdentity(input: ListCanonicalOrdersBySourceIdentityInput): Promise<CanonicalOrderRow[]>;
@@ -401,19 +393,6 @@ export function applyWooModifiedAfterOverlap(
     return modifiedAfter;
   }
   return new Date(modifiedAfter.getTime() - Math.floor(overlapWindowMs));
-}
-
-export function classifyWooCommerceSyncTier(input: {
-  deliveryDate: string | null;
-  today: string;
-}): WooCommerceSyncTierClassification {
-  if (input.deliveryDate === null) {
-    return { reason: 'missing_delivery_date', review: true, tier: 'cold' };
-  }
-  if (input.deliveryDate >= input.today) {
-    return { reason: 'today_or_future_delivery', review: false, tier: 'hot' };
-  }
-  return { reason: 'past_delivery', review: false, tier: 'cold' };
 }
 
 function withUpdatedDeliveryFact(

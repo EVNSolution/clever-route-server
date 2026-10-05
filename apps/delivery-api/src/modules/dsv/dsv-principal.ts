@@ -171,24 +171,3 @@ export function requireDsvScopes(principal: DsvPrincipal, requiredScopes: readon
   if (requiredScopes.every((scope) => granted.has(scope))) return;
   throw new DsvForbiddenError({ principal, requiredScopes });
 }
-
-export function requireCustomerDeliveryPrincipal(input: {
-  customerId?: string;
-  destinationId?: string;
-  principal: DsvPrincipal;
-}): DsvCustomerUserPrincipal {
-  requireDsvScopes(input.principal, ['dsv:customer-deliveries:read']);
-  if (input.principal.principalType !== 'CUSTOMER_USER' || input.principal.customerId === '') {
-    throw new DsvForbiddenError({
-      principal: input.principal,
-      requiredScopes: ['dsv:customer-deliveries:read'],
-    });
-  }
-  if (input.customerId !== undefined && input.customerId !== input.principal.customerId) {
-    throw new DsvForbiddenError({
-      principal: input.principal,
-      requiredScopes: ['dsv:customer-deliveries:read'],
-    });
-  }
-  return input.principal;
-}

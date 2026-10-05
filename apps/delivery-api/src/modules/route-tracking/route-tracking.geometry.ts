@@ -129,35 +129,6 @@ export async function persistRouteTrackingGeometryPosition(
   return document;
 }
 
-export async function rebuildRouteTrackingGeometryForRoute(
-  prisma: RouteTrackingGeometryPrismaClient,
-  routePlanId: string,
-  now = new Date()
-): Promise<RouteTrackingGeometryDocumentV1> {
-  await prisma.$queryRaw(
-    Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${routePlanId}, 0))`
-  );
-  const retentionCutoff = new Date(
-    now.getTime() - ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS * 24 * 60 * 60 * 1000
-  );
-  const eventWindow = await loadRouteTrackingEventWindow(prisma, routePlanId);
-  const document = buildRouteTrackingGeometryDocument(
-    await loadRouteTrackingPositions(prisma, routePlanId, retentionCutoff, eventWindow)
-  );
-  if (document.coordinates.length === 0) return document;
-  const write = createRouteTrackingGeometryWrite(routePlanId, document);
-  await prisma.routeTrackingGeometry.upsert({ create: write, update: write, where: { routePlanId } });
-  const lastSample = document.samples.at(-1)!;
-  if (prisma.routeTrackingRoadMatchJob !== undefined) {
-    await enqueueRouteTrackingRoadMatch(prisma as RouteTrackingGeometryPrismaClient & { routeTrackingRoadMatchJob: Prisma.TransactionClient['routeTrackingRoadMatchJob'] }, {
-      lastInputOccurredAt: new Date(lastSample.occurredAt),
-      routePlanId,
-      sourcePointCount: document.sourcePointCount,
-    });
-  }
-  return document;
-}
-
 export function buildRouteTrackingGeometryDocument(
   positions: RouteTrackingGeometryPositionInput[]
 ): RouteTrackingGeometryDocumentV1 {

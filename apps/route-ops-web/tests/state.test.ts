@@ -11,15 +11,12 @@ import {
 } from '../src/settingsUi';
 import {
   applyClientOrderFilters,
-  buildAreaOptionSourceFilters,
+  applyClientOrderFiltersExcept,
   buildOrderFetchQuery,
   buildOrderQuery,
   createDefaultOrderFilters,
   deriveAreaFilterOptions,
   deriveOrderFilterOptions,
-  deriveRouteStats,
-  geometryLabel,
-  getOrderWorksetUnavailableReasons,
   hasStopSequenceChanged,
   hideSetupActions,
   isAddressReviewRequired,
@@ -28,7 +25,6 @@ import {
   matchesPlanningScope,
   mergeOrderListsById,
   moveStop,
-  moveStopBefore,
   moveStopToDropPosition,
   moveStopToSequence,
   pruneOrderFilters,
@@ -37,11 +33,9 @@ import {
   selectOrdersForClientFilters,
   shouldLoadHistoryOrders,
   storeSettingsToDepotPoint,
-  summarizeOrderWorkset,
-  summarizeSelection,
   toggleWeekdayDeliveryDates
 } from '../src/state';
-import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
+import type { BootstrapPayload, CanonicalOrderDto, RouteStopDto } from '../src/types';
 
 describe('route ops web state helpers', () => {
   test('manages route ops UI reminder and template helpers without rendering real order values', () => {
@@ -250,7 +244,6 @@ describe('route ops web state helpers', () => {
       deliveryArea: 'Toronto West',
       deliveryDate: '2026-05-27'
     };
-    const sourceFilters = buildAreaOptionSourceFilters(filters);
     const orders = [
       order({ deliveryArea: 'Toronto West', deliveryDate: '2026-05-27', orderId: 'west' }),
       order({ deliveryArea: 'Toronto East', deliveryDate: '2026-05-27', orderId: 'east' }),
@@ -259,8 +252,7 @@ describe('route ops web state helpers', () => {
       order({ deliveryArea: null, deliveryDate: '2026-05-27', orderId: 'missing-area' }),
     ];
 
-    expect(sourceFilters).toEqual(expect.objectContaining({ deliveryArea: '', deliveryDate: '2026-05-27' }));
-    const sourceOrders = applyClientOrderFilters(orders, sourceFilters);
+    const sourceOrders = applyClientOrderFiltersExcept(orders, filters, 'deliveryArea');
 
     expect(sourceOrders.map((item) => item.orderId)).toEqual(['west', 'east', 'blank', 'missing-area']);
     expect(deriveAreaFilterOptions(sourceOrders)).toEqual(['Toronto East', 'Toronto West']);
@@ -280,11 +272,10 @@ describe('route ops web state helpers', () => {
     );
   });
 
-  test('classifies planning scope tabs and workset availability reasons', () => {
+  test('classifies planning scope tabs', () => {
     const ready = order({ deliveryDate: '2026-05-29', orderId: 'ready' });
     const planned = order({ deliveryDate: '2026-05-29', orderId: 'planned', planningStatus: 'PLANNED', routePlanId: 'route-1' });
     const missingDate = order({ blockerReasons: ['missing_delivery_date'], deliveryDate: null, metadataResolved: false, orderId: 'missing-date', routeEligible: false });
-    const metadataReview = order({ blockerReasons: ['missing_delivery_area'], metadataResolved: false, orderId: 'metadata-review', routeEligible: false });
     const completed = order({ deliveryDate: '2026-05-29', deliveryStatus: 'completed', orderId: 'completed' });
 
     expect(matchesPlanningScope(ready, '2026-05-29')).toBe(true);
@@ -292,20 +283,6 @@ describe('route ops web state helpers', () => {
     expect(matchesOrderTab(ready, 'unplanned', '2026-05-29')).toBe(true);
     expect(matchesOrderTab(planned, 'planned', '2026-05-29')).toBe(true);
     expect(matchesOrderTab(missingDate, 'needs_review', '2026-05-29')).toBe(true);
-
-    expect(getOrderWorksetUnavailableReasons(planned, { scope: 'planning' }).map((reason) => reason.code)).toContain('already_planned');
-    expect(getOrderWorksetUnavailableReasons(ready, { scope: 'history' })).toEqual([]);
-    expect(getOrderWorksetUnavailableReasons(missingDate, { scope: 'history' }).map((reason) => reason.code)).toEqual(['missing_delivery_date']);
-    expect(getOrderWorksetUnavailableReasons(metadataReview, { scope: 'history' }).map((reason) => reason.code)).toContain('needs_review');
-    const summary = summarizeOrderWorkset([ready, planned, missingDate, metadataReview], new Set(['ready']), { scope: 'planning' });
-    expect(summary).toEqual(expect.objectContaining({ selectableCount: 1, selectedCount: 1, unavailableCount: 3 }));
-    expect(summary.reasonLabels.join(' ')).toContain('Already planned');
-    expect(summary.reasonLabels.join(' ')).toContain('Missing delivery date');
-    expect(summary.reasonLabels.join(' ')).toContain('Other metadata review');
-    const koreanSummary = summarizeOrderWorkset([ready, planned, missingDate, metadataReview], new Set(['ready']), { scope: 'planning' }, 'ko-KR');
-    expect(koreanSummary.reasonLabels.join(' ')).toContain('이미 배정됨');
-    expect(koreanSummary.reasonLabels.join(' ')).toContain('배송 날짜 누락');
-    expect(koreanSummary.reasonLabels.join(' ')).toContain('기타 메타데이터 검토');
   });
 
   test('separates exhausted bulk geocode failures as address review', () => {
@@ -328,13 +305,6 @@ describe('route ops web state helpers', () => {
     });
 
     expect(isAddressReviewRequired(addressReview)).toBe(true);
-    expect(
-      getOrderWorksetUnavailableReasons(addressReview).map((reason) => reason.code)
-    ).toEqual(['address_review']);
-    const summary = summarizeOrderWorkset([addressReview], new Set());
-    expect(summary.reasonLabels).toEqual(['Address Review 1']);
-    expect(summary.reasonsByCode.address_review).toBe(1);
-
     const pendingCoordinates = order({
       blockerReasons: ['missing_coordinates'],
       coordinates: { latitude: null, longitude: null },
@@ -352,9 +322,6 @@ describe('route ops web state helpers', () => {
       }
     });
     expect(isAddressReviewRequired(pendingCoordinates)).toBe(false);
-    expect(
-      getOrderWorksetUnavailableReasons(pendingCoordinates).map((reason) => reason.code)
-    ).toEqual(['missing_coordinates']);
   });
 
   test('separates missing delivery dates from delivery date review blockers', () => {
@@ -375,20 +342,7 @@ describe('route ops web state helpers', () => {
 
     expect(isDeliveryDateReviewRequired(actuallyMissing)).toBe(false);
     expect(isDeliveryDateReviewRequired(reviewNeeded)).toBe(true);
-    expect(
-      getOrderWorksetUnavailableReasons(actuallyMissing).map((reason) => reason.code)
-    ).toEqual(['missing_delivery_date']);
-    expect(
-      getOrderWorksetUnavailableReasons(reviewNeeded).map((reason) => reason.code)
-    ).toEqual(['delivery_date_review']);
 
-    const summary = summarizeOrderWorkset([actuallyMissing, reviewNeeded], new Set());
-    expect(summary.reasonLabels).toEqual([
-      'Delivery date review 1',
-      'Missing delivery date 1'
-    ]);
-    expect(summary.reasonsByCode.delivery_date_review).toBe(1);
-    expect(summary.reasonsByCode.missing_delivery_date).toBe(1);
   });
 
 
@@ -401,13 +355,6 @@ describe('route ops web state helpers', () => {
       '/admin/ui/app/api/routes?shopDomain=explicit.example.test'
     );
     expect(withWorkspaceQuery('/admin/ui/app/api/bootstrap', '')).toBe('/admin/ui/app/api/bootstrap');
-  });
-
-  test('summarizes selected ready orders and blockers', () => {
-    const orders = [order({ orderId: 'ready' }), order({ blockerReasons: ['missing_coordinates'], orderId: 'blocked', planningStatus: 'UNPLANNED' })];
-    const result = summarizeSelection(orders, new Set(['ready', 'blocked']));
-    expect(result.readySelected.map((item) => item.orderId)).toEqual(['ready']);
-    expect(result.blockers).toEqual(['#1001: missing_coordinates']);
   });
 
   test('moves stops using keyboard-compatible reorder helper', () => {
@@ -425,13 +372,6 @@ describe('route ops web state helpers', () => {
   });
 
 
-
-  test('supports drag/drop stop insertion before a target stop', () => {
-    const stops = [stop('a', 1), stop('b', 2), stop('c', 3), stop('d', 4)];
-    expect(moveStopBefore(stops, 'd', 'b').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'd:2', 'b:3', 'c:4']);
-    expect(moveStopBefore(stops, 'b', 'd').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'c:2', 'b:3', 'd:4']);
-    expect(moveStopBefore(stops, 'x', 'd')).toBe(stops);
-  });
 
   test('supports drag/drop stop insertion before or after a preview target', () => {
     const stops = [stop('a', 1), stop('b', 2), stop('c', 3), stop('d', 4)];
@@ -451,38 +391,6 @@ describe('route ops web state helpers', () => {
     expect(moveStopToSequence(stops, 'x', 2)).toBe(stops);
     expect(moveStopToSequence(stops, 'b', 0)).toBe(stops);
     expect(moveStopToSequence(stops, 'b', 5)).toBe(stops);
-  });
-
-  test('derives route stats and geometry labels honestly', () => {
-    const detail: RoutePlanDetailDto = {
-      routeGeometry: null,
-      routePlan: {
-        createdAt: '',
-        deliveryAreas: [],
-        deliveryDate: '2026-05-27',
-        depot: { latitude: 43.7, longitude: -79.4 },
-        driverId: null,
-        id: 'route-1',
-        missingCoordinates: 1,
-        name: 'Route 1',
-        planDate: '2026-05-27',
-        routeEndMode: 'END_AT_LAST_STOP',
-        status: 'DRAFT',
-        stopsCount: 2,
-        updatedAt: ''
-      },
-      routeStopPoints: [],
-      stops: [stop('a', 1, 'COMPLETED'), stop('b', 2, 'ATTEMPTED', null, null)]
-    };
-    expect(deriveRouteStats(detail)).toEqual({ attempted: 1, completed: 1, missingCoordinates: 1, stops: 2 });
-    expect(geometryLabel(null, 'configured')).toBe('No route selected');
-    expect(geometryLabel(detail, 'not_configured')).toBe('Router not configured for ready stops');
-    expect(geometryLabel(detail, 'not_configured', 'ko-KR')).toBe('표시된 정류지의 라우터가 설정되지 않음');
-    expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43], [-79.1, 43.1]], type: 'LineString' } }, 'configured')).toBe('Road path ready');
-    expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43], [-79.1, 43.1]], type: 'LineString' } }, 'configured', 'ko-KR')).toBe('도로 경로');
-    expect(geometryLabel(detail, 'configured')).toBe('Road path not generated for ready stops');
-    expect(geometryLabel({ ...detail, routePlan: { ...detail.routePlan, depot: { latitude: null, longitude: null } }, stops: [stop('a', 1, 'PENDING', null, null)] }, 'configured')).toBe('Need coordinates for road path');
-    expect(geometryLabel({ ...detail, routePlan: { ...detail.routePlan, depot: { latitude: null, longitude: null } }, stops: [stop('a', 1, 'PENDING', null, null)] }, 'configured', 'ko-KR')).toBe('경로 선에 필요한 좌표 부족');
   });
 
   test('keeps map/provider states explicit and plugin mode hides setup actions', () => {

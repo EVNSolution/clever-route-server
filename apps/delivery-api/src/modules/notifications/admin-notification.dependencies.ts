@@ -41,9 +41,3 @@ export function createAdminNotificationRuntime(input: {
     start: () => bridge?.start() ?? Promise.resolve(),
   };
 }
-
-export function createAdminNotificationService(input: {
-  prisma: PrismaClient;
-}): AdminNotificationService {
-  return createAdminNotificationRuntime(input).service;
-}

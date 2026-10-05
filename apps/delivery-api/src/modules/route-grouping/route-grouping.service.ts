@@ -169,31 +169,6 @@ type ChildRouteGeometrySnapshot = {
   routeStopPoints: RoutePlanRouteStopPoint[];
 };
 
-export function currentRouteBindingAuthorityState(
-  childVersionId: string,
-  snapshotOrderIds: string[],
-  assignments: Array<{ orderId: string; order: { currentRouteVersionId: string | null } }>
-): 'EXACT' | 'LEGACY_UNBOUND' | 'MISMATCH' {
-  const snapshotOrderIdSet = new Set(snapshotOrderIds);
-  if (snapshotOrderIdSet.size !== snapshotOrderIds.length) return 'MISMATCH';
-
-  const snapshotAssignments = assignments.filter(({ orderId }) => snapshotOrderIdSet.has(orderId));
-  if (snapshotAssignments.length !== snapshotOrderIds.length) return 'MISMATCH';
-
-  const boundOrderIds = assignments
-    .filter(({ order }) => order.currentRouteVersionId === childVersionId)
-    .map(({ orderId }) => orderId)
-    .sort();
-  const sortedSnapshotOrderIds = [...snapshotOrderIds].sort();
-  const exactBinding = sortedSnapshotOrderIds.length === boundOrderIds.length
-    && sortedSnapshotOrderIds.every((orderId, index) => orderId === boundOrderIds[index]);
-  if (exactBinding) return 'EXACT';
-
-  const entirelyUnbound = boundOrderIds.length === 0
-    && snapshotAssignments.every(({ order }) => order.currentRouteVersionId === null);
-  return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH';
-}
-
 type OptimizedDraftRoute = {
   assignments: LoadedAssignment[];
   routeResult: RoutePlanRouteResult;

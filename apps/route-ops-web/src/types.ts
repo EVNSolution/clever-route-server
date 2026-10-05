@@ -463,45 +463,6 @@ export type RouteSaveResponse = RoutePlanDetailDto & {
   saveOperations?: RouteSaveOperationDto[];
 };
 
-export type RouteOptimizationJobStatus =
-  | "APPLIED"
-  | "CANCELLED"
-  | "FAILED"
-  | "QUEUED"
-  | "RUNNING"
-  | "TIMEOUT";
-
-export type RouteOptimizationJobStep =
-  | "APPLYING_RESULT"
-  | "CALLING_ENGINE"
-  | "COMPLETED"
-  | "QUEUED";
-
-export type RouteOptimizationJobDto = {
-  appliedAt: string | null;
-  createdAt: string;
-  createdBy: string | null;
-  currentStep: RouteOptimizationJobStep;
-  elapsedMs: number | null;
-  engineResultSequence: unknown;
-  errorCode: string | null;
-  errorMessage: string | null;
-  finishedAt: string | null;
-  id: string;
-  invalidatedReason: string | null;
-  routePlanId: string;
-  shopId: string;
-  startedAt: string | null;
-  status: RouteOptimizationJobStatus;
-  timeoutBudgetMs: number;
-  traceId: string;
-  updatedAt: string;
-};
-
-export type RouteOptimizationJobResponse = {
-  job: RouteOptimizationJobDto | null;
-};
-
 export type DriverDto = {
   appLinked: boolean;
   authStatus: string;
@@ -573,44 +534,6 @@ export type RouteScopeConfigDto = {
     startExample: string;
   };
   version: 1;
-};
-
-export type GeocodeOrderResponse = {
-  geocode: {
-    cached: boolean;
-    ok: true;
-    result: {
-      addressLabel: string;
-      latitude: number;
-      longitude: number;
-      provider: string;
-      providerPlaceId: string | null;
-      rawLabel?: string | null;
-    };
-  };
-  order?: CanonicalOrderDto;
-};
-
-export type BulkGeocodeJobDto = {
-  completedAt: string | null;
-  counts: {
-    alreadyHasCoordinates: number;
-    attempted: number;
-    failed: number;
-    matched: number;
-    noAddress: number;
-    succeeded: number;
-  };
-  createdAt: string;
-  error: string | null;
-  jobId: string;
-  results: Array<Record<string, unknown>>;
-  status: "accepted" | "completed" | "failed" | "running";
-  updatedAt: string;
-};
-
-export type BulkGeocodeOrdersResponse = {
-  geocode: BulkGeocodeJobDto;
 };
 
 export type WooSyncRunDto = {

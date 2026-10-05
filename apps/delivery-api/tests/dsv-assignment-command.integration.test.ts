@@ -13,7 +13,7 @@ import type {
   RouteGroupingService,
 } from '../src/modules/route-grouping/route-grouping.types.js';
 import type { DsvAssignmentTransactionClient } from '../src/modules/dsv/dsv-assignment-transaction-port.js';
-import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
 
 const legacySafeTargetClass = 'safe-local-g004-temp-cluster';

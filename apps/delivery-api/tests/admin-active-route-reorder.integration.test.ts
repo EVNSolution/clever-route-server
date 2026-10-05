@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, describe, expect, test } from 'vitest';
 
 import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
-import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 
