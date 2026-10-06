@@ -1,3 +1,4 @@
+import { isVisibleDsvOrder, isVisibleDsvRoute } from './dsv-test-visibility.js';
 import type { PrismaClient } from '@prisma/client';
 import { DsvForbiddenError, type DsvPrincipal } from './dsv-principal.js';
 
@@ -23,6 +24,10 @@ export class PrismaDsvStoreReviewAccess implements DsvStoreReviewAccess {
   constructor(private readonly prisma: PrismaClient) {}
 
   async assertAccessible(principal: DsvPrincipal, references: DsvStoreReviewReferences): Promise<void> {
+    if (references.orderIds?.some(id => !isVisibleDsvOrder(principal.shopId, id))
+      || references.routePlanIds?.some(id => !isVisibleDsvRoute(principal.shopId, id))) {
+      throw new DsvForbiddenError({ principal, requiredScopes: ['dsv:dispatches:read'] });
+    }
     const where = (ids: readonly string[]) => ({
       id: { in: [...ids] }, isStoreReviewData: true, shopId: principal.shopId,
     });

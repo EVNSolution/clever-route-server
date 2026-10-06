@@ -145,6 +145,8 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^apps\/delivery-api\/src\/modules\/route-grouping\/route-grouping\.service\.ts$/,
     /^apps\/delivery-api\/src\/modules\/(commerce|driver|route-plans|route-ops|geocoding|notifications)\//,
     /^apps\/delivery-api\/src\/modules\/shopify\/(auth\.dependencies|session-token-verifier|order-sync\.(dependencies|repository))\.ts$/,
+    /^apps\/delivery-api\/src\/modules\/shopify\/(order-query\.repository|ordered-date-range)\.ts$/,
+    /^apps\/delivery-api\/tests\/route-grouping-save\.integration\.test\.ts$/,
     /^apps\/delivery-api\/src\/modules\/wordpress-plugin\/(wordpress-plugin-auth\.service|wordpress-plugin\.dependencies)\.ts$/,
     /^apps\/delivery-api\/src\/modules\/woocommerce\/woocommerce\.dependencies\.ts$/,
     /^apps\/delivery-api\/src\/scripts\/(.*proof-media.*|refresh-route-geometry-cache)\.ts$/,

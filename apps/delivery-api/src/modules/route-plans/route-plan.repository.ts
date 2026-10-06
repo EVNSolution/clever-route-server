@@ -1,3 +1,5 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
+import { assertRouteDispatchOwnership, claimRouteExecutionProjection } from './route-execution-ownership.js';
 import { DriverEventType, Prisma, type PrismaClient } from '@prisma/client';
 import {
   ITEM_REVIEW_REASONS,
@@ -22,7 +24,7 @@ import { diagnoseRouteStopLocation } from './route-stop-location-diagnostic.js';
 import { assertSafeRouteScopeToken } from '../route-ops/route-scope-config.js';
 import type {
   AdminRouteStopOverrideInput,
-  AdminRouteStopOverrideResult,
+  AdminRouteStopOverrideRepositoryResult,
   AdminRouteStopTransitionInput,
   AdminRouteStopTransitionResult,
   RoutePlanDepotInput,
@@ -53,6 +55,7 @@ import {
   routeGeometryCacheUpsertArgs
 } from './route-plan-geometry-cache.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
+import { reconcileKfoodDeliveryWorkCompletion, toRouteDeliveryDisplayStatus } from './kfood-delivery-completion.js';
 import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from './route-plan-summary-normalization.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
@@ -106,11 +109,15 @@ type RoutePlanRecord = {
   createdAt: Date;
   constraints?: unknown;
   deliveryDate?: Date | null;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
   depotLatitude: unknown;
   depotLongitude: unknown;
   driver?: RoutePlanDriverRecord | null;
   driverEvents?: Array<{ eventType: string }>;
   driverId?: string | null;
+  driverNavigationUntil?: Date | null;
   driverRouteNotificationAttempts?: Array<{ createdAt: Date }>;
   id: string;
   metrics: unknown;
@@ -173,6 +180,7 @@ type DeliveryStopRecord = {
   routePlanStops?: Array<{ id: string }>;
   serviceMinutes: number | null;
   status: string;
+  updatedAt?: Date;
 };
 
 type OrderRecord = {
@@ -256,6 +264,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) return { duplicate: false as const, found: false as const };
+
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "route_plans"
+        WHERE "id" = ${input.routePlanId}::uuid
+          AND "shopId" = ${shop.id}::uuid
+        FOR UPDATE
+      `;
 
       const routeStop = await tx.routePlanStop.findFirst({
         select: {
@@ -420,6 +436,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       });
 
+      await reconcileKfoodDeliveryWorkCompletion(tx, {
+        allowStart: input.payload.status === 'COMPLETED',
+        now: new Date(),
+        routePlanId: input.routePlanId,
+        shopId: shop.id
+      });
+
       return {
         duplicate: false as const,
         found: true as const,
@@ -467,39 +490,49 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     };
   }
 
-  async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null> {
+  async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideRepositoryResult | null> {
     const shopDomain = this.normalizeShopDomain(input.shopDomain);
-    const geometryAffecting = hasGeometryAffectingStopOverride(input.payload);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: { id: true },
         where: this.shopWhere({ appId: input.appId, shopDomain })
       });
-      if (shop === null) return false;
+      if (shop === null) return null;
 
       const routeStop = await tx.routePlanStop.findFirst({
-        select: { id: true },
+        select: { id: true, routePlan: { select: { status: true } } },
         where: {
           deliveryStopId: input.deliveryStopId,
           routePlanId: input.routePlanId,
           shopId: shop.id
         }
       });
-      if (routeStop === null) return false;
+      if (routeStop === null) return null;
+
+      const currentStop = await tx.deliveryStop.findFirst({
+        select: {
+          address1: true,
+          address2: true,
+          city: true,
+          countryCode: true,
+          geocodeStatus: true,
+          instructions: true,
+          latitude: true,
+          longitude: true,
+          phone: true,
+          postalCode: true,
+          province: true,
+          recipientName: true,
+          serviceMinutes: true,
+          timeWindowEnd: true,
+          timeWindowStart: true
+        },
+        where: { id: input.deliveryStopId, shopId: shop.id }
+      });
+      if (currentStop === null) return null;
 
       if (hasLocationAffectingStopOverride(input.payload)) {
-        const currentStop = await tx.deliveryStop.findFirst({
-          select: {
-            countryCode: true,
-            geocodeStatus: true,
-            latitude: true,
-            longitude: true,
-            province: true
-          },
-          where: { id: input.deliveryStopId, shopId: shop.id }
-        });
-        if (currentStop === null) return false;
 
         const locationDiagnostic = diagnoseRouteStopLocation({
           countryCode: input.payload.countryCode === undefined ? currentStop.countryCode : input.payload.countryCode,
@@ -517,39 +550,57 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       }
 
-      await tx.deliveryStop.updateMany({
-        data: toDeliveryStopOperationalOverrideWrite(input.payload),
-        where: {
-          id: input.deliveryStopId,
-          shopId: shop.id
-        }
-      });
-
-      if (geometryAffecting) {
-        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: input.routePlanId } });
-        await tx.routePlanStop.updateMany({
-          data: {
-            distanceFromPreviousMeters: null,
-            durationFromPreviousSeconds: null,
-            estimatedArrivalAt: null,
-            etaCalculatedAt: null,
-            etaFailureCode: null,
-            etaFailureMessage: null,
-            etaInputRouteVersionId: null,
-            etaSource: 'ADMIN_STOP_OVERRIDE',
-            etaStatus: 'STALE'
-          },
+      const override = changedDeliveryStopOperationalOverride(currentStop, input.payload);
+      if (override.changed) {
+        await tx.deliveryStop.updateMany({
+          data: override.data,
           where: {
-            routePlanId: input.routePlanId,
+            id: input.deliveryStopId,
             shopId: shop.id
           }
         });
       }
 
-      return true;
+      if (override.geometryChanged) {
+        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: input.routePlanId } });
+        if (isRouteReadyStatus(routeStop.routePlan.status)) {
+          await tx.routePlanStop.updateMany({
+            data: {
+              distanceFromPreviousMeters: null,
+              durationFromPreviousSeconds: null,
+              estimatedArrivalAt: null,
+              etaCalculatedAt: null,
+              etaFailureCode: null,
+              etaFailureMessage: null,
+              etaInputRouteVersionId: null,
+              etaSource: 'ADMIN_STOP_OVERRIDE',
+              etaStatus: 'STALE'
+            },
+            where: {
+              deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
+              routePlanId: input.routePlanId,
+              shopId: shop.id
+            }
+          });
+        }
+      }
+
+      const refreshInputs = override.geometryChanged
+        ? await tx.routePlan.findFirst({
+          select: {
+            routeStops: {
+              orderBy: { sequence: 'asc' },
+              select: { deliveryStop: { select: { updatedAt: true } }, deliveryStopId: true }
+            },
+            updatedAt: true
+          },
+          where: { id: input.routePlanId, shopId: shop.id }
+        })
+        : null;
+      return { geometryChanged: override.geometryChanged, refreshInputs };
     });
 
-    if (!updated) return null;
+    if (updated === null) return null;
     const detail = await this.findRoutePlanDetail({
       appId: input.appId,
       routePlanId: input.routePlanId,
@@ -558,7 +609,15 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     if (detail === null) return null;
 
     return {
-      geometry: { status: geometryAffecting ? 'stale' : 'preserved' },
+      geometry: { status: updated.geometryChanged ? 'stale' : 'preserved' },
+      refreshGuard: updated.refreshInputs === null ? null : {
+        expectedRoutePlanUpdatedAt: updated.refreshInputs.updatedAt.toISOString(),
+        expectedStopUpdatedAts: updated.refreshInputs.routeStops.map((stop) => ({
+          deliveryStopId: stop.deliveryStopId,
+          updatedAt: stop.deliveryStop.updatedAt.toISOString()
+        })),
+        shapeSignature: computeRouteShapeSignature(detail)
+      },
       routePlan: detail
     };
   }
@@ -642,6 +701,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
+      await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${input.routePlanId}::uuid AND "shopId" = ${shop.id}::uuid FOR UPDATE`;
       const routePlan = (await tx.routePlan.findFirst({
         include: routePlanInclude(),
         where: {
@@ -653,16 +713,23 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
-      if (routePlan.status === 'CANCELLED' || routePlan.status === 'INCOMPLETE') {
+      if (routePlan.status === 'CANCELLED' || routePlan.status === 'INCOMPLETE' || routePlan.status === 'COMPLETED') {
         throw new RoutePlanPublishInvalidError('Cancelled or incomplete routes cannot be published to drivers.');
       }
 
-      if (isRouteReadyStatus(routePlan.status) && routePlan.status !== 'READY') {
-        await tx.routePlan.update({
-          data: { status: 'READY' },
-          where: { id: routePlan.id }
-        });
-      }
+      await assertRouteDispatchOwnership(tx, {
+        deliveryStopIds: (routePlan.routeStops ?? []).map((stop) => stop.deliveryStopId),
+        routePlanId: routePlan.id, shopId: shop.id
+      });
+      await claimRouteExecutionProjection(tx, { routePlanId: routePlan.id, shopId: shop.id });
+      const constraints = toJson(routePlan.constraints ?? {}) as Prisma.InputJsonObject;
+      await tx.routePlan.update({
+        data: {
+          constraints: { ...constraints, cleverDispatchReservedAt: constraints.cleverDispatchReservedAt ?? new Date().toISOString() },
+          ...(isRouteReadyStatus(routePlan.status) ? { status: 'READY' as const } : {})
+        },
+        where: { id: routePlan.id }
+      });
 
       return true;
     });
@@ -1241,6 +1308,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
     const where: Prisma.RoutePlanWhereInput = {
       shopId: shop.id,
+      ...visibleDsvRouteWhere(shop.id),
       ...(input.deliveryDate === undefined ? {} : { planDate: parsePlanDate(input.deliveryDate) })
     };
     const routePlans = await this.prisma.routePlan.findMany({
@@ -1266,7 +1334,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       include: routePlanInclude(),
       where: {
         id: input.routePlanId,
-        shopId: shop.id
+        shopId: shop.id,
+        ...visibleDsvRouteWhere(shop.id)
       }
     });
 
@@ -1290,7 +1359,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       select: { id: true },
       where: {
         id: input.routePlanId,
-        shopId: shop.id
+        shopId: shop.id,
+        ...visibleDsvRouteWhere(shop.id)
       }
     });
     return routePlan !== null;
@@ -1330,6 +1400,50 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             }
           });
           if (activeOptimizationJob !== null) return false;
+
+          await tx.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
+          await persistPlannedRouteEta(tx, input);
+          return true;
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      } catch (error) {
+        if (!isRouteGeometryCommitConflict(error) || attempt === 2) throw error;
+      }
+    }
+    return false;
+  }
+
+  async commitAdminRouteStopGeometryCache(input: RouteGeometryCacheWrite & {
+    appId?: string | undefined;
+    expectedRoutePlanUpdatedAt: string;
+    expectedStopUpdatedAts: Array<{ deliveryStopId: string; updatedAt: string }>;
+    shopDomain: string;
+  }): Promise<boolean> {
+    const shop = await this.findShop(input);
+    if (shop === null) return false;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const routePlan = await tx.routePlan.findFirst({
+            include: routePlanInclude(),
+            where: { id: input.routePlanId, shopId: shop.id }
+          }) as RoutePlanRecord | null;
+          if (routePlan === null) return false;
+          if (routePlan.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) return false;
+          if (computeRouteShapeSignature(toRoutePlanDetail(routePlan)) !== input.shapeSignature) return false;
+
+          const expectedStopUpdatedAtById = new Map(
+            input.expectedStopUpdatedAts.map((stop) => [stop.deliveryStopId, stop.updatedAt])
+          );
+          const currentStops = routePlan.routeStops ?? [];
+          if (
+            currentStops.length !== expectedStopUpdatedAtById.size ||
+            currentStops.some((stop) => (
+              expectedStopUpdatedAtById.get(stop.deliveryStopId) !== stop.deliveryStop.updatedAt?.toISOString()
+            ))
+          ) {
+            return false;
+          }
 
           await tx.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
           await persistPlannedRouteEta(tx, input);
@@ -1667,10 +1781,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
       const orderedOrders = normalizedStops.map((stop) => ordersByGid.get(stop.shopifyOrderGid)!);
       if (currentGroupingChild !== null) {
-        const boundOrderIds = (await tx.order.findMany({
-          select: { id: true },
-          where: { currentRouteVersionId: currentGroupingChild.id }
-        })).map(({ id }) => id);
+        const boundOrderIds = (routePlan.routeStops ?? []).map((stop) => stop.deliveryStop.orderId);
         const nextOrderIds = orderedOrders.map((order) => order.id);
         if (!sameUniqueStringSet(boundOrderIds, nextOrderIds)) {
           throw new RoutePlanStopUpdateInvalidError('Grouped route optimization cannot add or remove route membership.');
@@ -1709,6 +1820,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           throw new RoutePlanStopUpdateInvalidError('Grouped route membership snapshot is malformed.');
         }
         await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: currentGroupingChild.id,
           driverId: currentGroupingChild.driverId,
           groupingId: currentGroupingChild.groupingId,
@@ -2006,6 +2118,7 @@ async function persistPlannedRouteEta(
         etaStatus
       },
       where: {
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
         deliveryStopId: update.deliveryStopId,
         routePlanId: input.routePlanId,
         sequence: update.sequence
@@ -2378,18 +2491,47 @@ function toDeliveryStopOperationalOverrideWrite(
   };
 }
 
-function hasGeometryAffectingStopOverride(payload: AdminRouteStopOverrideInput['payload']): boolean {
-  return (
-    payload.address1 !== undefined ||
-    payload.address2 !== undefined ||
-    payload.city !== undefined ||
-    payload.countryCode !== undefined ||
-    payload.latitude !== undefined ||
-    payload.longitude !== undefined ||
-    payload.postalCode !== undefined ||
-    payload.province !== undefined ||
-    payload.serviceMinutes !== undefined
-  );
+const GEOMETRY_AFFECTING_STOP_OVERRIDE_FIELDS = new Set([
+  'address1',
+  'address2',
+  'city',
+  'countryCode',
+  'geocodeStatus',
+  'latitude',
+  'longitude',
+  'postalCode',
+  'province',
+  'serviceMinutes'
+]);
+
+function changedDeliveryStopOperationalOverride(
+  current: object,
+  payload: AdminRouteStopOverrideInput['payload']
+): { changed: boolean; data: Prisma.DeliveryStopUpdateManyMutationInput; geometryChanged: boolean } {
+  const currentValues = current as Record<string, unknown>;
+  const desired = toDeliveryStopOperationalOverrideWrite(payload) as Record<string, unknown>;
+  const changedEntries = Object.entries(desired).filter(([field, value]) => (
+    !sameDeliveryStopOverrideValue(field, currentValues[field], value)
+  ));
+  return {
+    changed: changedEntries.length > 0,
+    data: Object.fromEntries(changedEntries),
+    geometryChanged: changedEntries.some(([field]) => GEOMETRY_AFFECTING_STOP_OVERRIDE_FIELDS.has(field))
+  };
+}
+
+function sameDeliveryStopOverrideValue(field: string, current: unknown, desired: unknown): boolean {
+  if (field === 'latitude' || field === 'longitude') {
+    return decimalNumber(current) === decimalNumber(desired);
+  }
+  if (field === 'timeWindowEnd' || field === 'timeWindowStart') {
+    return formatTimeOnlyNullable(current instanceof Date ? current : null) ===
+      formatTimeOnlyNullable(desired instanceof Date ? desired : null);
+  }
+  if (desired instanceof Date) {
+    return current instanceof Date && current.getTime() === desired.getTime();
+  }
+  return current === desired;
 }
 
 function hasLocationAffectingStopOverride(payload: AdminRouteStopOverrideInput['payload']): boolean {
@@ -2765,10 +2907,14 @@ async function collapseRouteGroupingSplitAfterChildDelete(
 
 function routePlanListSelect() {
   return {
+    assignmentGeneration: true,
     constraints: true,
     createdAt: true,
     depotLatitude: true,
     depotLongitude: true,
+    deliveryWorkCompletedAt: true,
+    deliveryWorkCompletedGeneration: true,
+    deliveryWorkCompletedVersionId: true,
     driver: {
       select: {
         _count: { select: { driverEvents: true } },
@@ -2784,6 +2930,7 @@ function routePlanListSelect() {
     },
     driverEvents: routeLifecycleEventQuery(),
     driverId: true,
+    driverNavigationUntil: true,
     id: true,
     metrics: true,
     name: true,
@@ -3057,7 +3204,7 @@ function toRoutePlanListSummary(routePlan: RoutePlanListRecord): RoutePlanSummar
     routeMetrics: cache?.shapeSignature === shapeSignature ? readRouteMetrics(cache.metrics) : null,
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
-    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    status: toRouteDeliveryDisplayStatus(routePlan),
     stopsCount: readFiniteNumber(metrics?.stopsCount) ?? routePlan.routeStops.length,
     totalAmount: normalizeRouteTotalAmount(routePlan.routeStops.map(({ deliveryStop }) => deliveryStop.order)),
     updatedAt: routePlan.updatedAt.toISOString()
@@ -3098,7 +3245,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
     routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
     routeMetrics,
-    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    status: toRouteDeliveryDisplayStatus(routePlan),
     stopsCount: metrics.stopsCount,
     totalAmount: normalizeRouteTotalAmount((routePlan.routeStops ?? []).map(({ deliveryStop }) => deliveryStop.order)),
     updatedAt: routePlan.updatedAt.toISOString()

@@ -4,6 +4,7 @@ import { PrismaDriverTokenAccessRepository } from './driver-token-access.reposit
 import { PrismaDriverPushTokenService } from '../route-grouping/driver-push-token.service.js';
 import type { DriverAuthDependencies } from '../../routes/driver-auth.routes.js';
 import { readDriverJwtSecret } from './driver-token-verifier.js';
+import { PrismaDriverRuntimeDiagnosticsRepository } from './driver-runtime-diagnostics.repository.js';
 
 type LoadDriverAuthDependenciesInput = {
   env: Partial<Record<'JWT_SECRET', string>>;
@@ -17,6 +18,7 @@ export function loadDriverAuthDependencies(
   if (jwtSecret === undefined) return undefined;
 
   return {
+    diagnosticsService: new PrismaDriverRuntimeDiagnosticsRepository(input.prisma),
     driverAuthRepository: new PrismaDriverAuthRepository(input.prisma),
     driverTokenAccessRepository: new PrismaDriverTokenAccessRepository(input.prisma),
     pushTokenService: new PrismaDriverPushTokenService(input.prisma),

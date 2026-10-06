@@ -217,7 +217,7 @@ describe('inventory service route-group follower behavior', () => {
               name: '#1001',
               orderItems: [{ id: 'item-1', name: 'Kimchi', options: [], productId: 1, quantity: 2, sku: null, variationId: 0 }],
               phone: null,
-              processedAt: new Date('2026-07-01T12:00:00Z'),
+              processedAt: new Date('2026-01-17T03:30:00Z'),
               rawPayload: {
                 displayFinancialStatus: 'PAID',
                 paymentGatewayNames: ['Email Money Transfer']
@@ -231,14 +231,14 @@ describe('inventory service route-group follower behavior', () => {
             childVersions: [{
               driver: { displayName: 'Driver One', id: 'driver-1', phone: '555-driver' },
               routePlan: {
-                constraints: { departureTime: '09:00' },
+                constraints: { departureTime: '09:00', scheduledStartAt: '2026-07-17T03:00:00Z', scheduledStartTimeZone: 'America/Toronto' },
                 driver: null,
                 id: 'route-1',
                 name: 'Route A',
                 routeStops: [{
                   deliveryStop: { orderId: 'order-1', serviceMinutes: 7 },
                   durationFromPreviousSeconds: 600,
-                  estimatedArrivalAt: new Date('2026-07-02T09:15:00Z'),
+                  estimatedArrivalAt: new Date('2026-07-17T03:30:00Z'),
                   sequence: 1
                 }]
               },
@@ -257,12 +257,18 @@ describe('inventory service route-group follower behavior', () => {
     expect(detail?.linkedRoutes[0]).toEqual(expect.objectContaining({
       driverName: 'Driver One',
       name: 'Route A',
-      startTime: '09:00'
+      startTime: '09:00',
+      scheduledStartAt: '2026-07-17T03:00:00Z',
+      scheduledStartTimeZone: 'America/Toronto'
     }));
+    expect(detail?.linkedRoutes[0]?.stops[0]?.estimatedArrivalAt).toBe('2026-07-17T03:30:00.000Z');
     expect(detail?.orders[0]).toEqual(expect.objectContaining({
       address: '200 Church St, Markham, Ontario, L3P 2M7, CA',
       driveTimeMinutes: 10,
-      eta: '09:15',
+      eta: '03:30',
+      estimatedArrivalAt: '2026-07-17T03:30:00.000Z',
+      processedAt: '2026-01-17',
+      processedAtInstant: '2026-01-17T03:30:00.000Z',
       financialStatus: 'PAID',
       paymentGatewayNames: ['Email Money Transfer'],
       paymentMethodTitle: 'e-Transfer',

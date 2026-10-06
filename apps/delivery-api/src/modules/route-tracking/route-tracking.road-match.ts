@@ -9,7 +9,6 @@ import {
 } from '../route-plans/route-engine-coverage.js';
 import { ROUTE_TRACKING_V1_POLICY } from './route-tracking.policy.js';
 import {
-  readRouteTrackingGeometryDocument,
   type RouteTrackingGeometryDocumentV1,
   type RouteTrackingGeometryPositionInput,
   type RouteTrackingGeometryRecord,
@@ -495,16 +494,6 @@ export function buildRouteTrackingRoadMatchedPath(
     unmatchedRanges: readEmbeddedUnmatchedRanges(record.roadMatchedGeometry, record.roadMatchedUncertainGeometry),
     watermark,
   };
-}
-
-export function shouldRefreshRouteTrackingRoadMatchedPath(record: RouteTrackingGeometryRecord | null | undefined): boolean {
-  if (record === null || record === undefined) return false;
-  const document = readRouteTrackingGeometryDocument(record);
-  if (document.coordinates.length < 2) return false;
-  if (record.roadMatchedSchemaVersion !== ROUTE_TRACKING_ROAD_MATCH_CACHE_VERSION) return true;
-  if ((record.roadMatchedSourcePointCount ?? 0) < record.sourcePointCount) return true;
-  if (record.roadMatchedLastInputOccurredAt === null || record.roadMatchedLastInputOccurredAt === undefined) return true;
-  return false;
 }
 
 export function buildRouteTrackingRoadMatchCacheWrite(path: RouteTrackingRoadMatchedPathV1): {

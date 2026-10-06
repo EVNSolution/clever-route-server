@@ -1,9 +1,7 @@
 import type {
   ApiEnvelope,
   BootstrapPayload,
-  BulkGeocodeOrdersResponse,
   DriversResponse,
-  GeocodeOrderResponse,
   GeocodeSettingsResponse,
   NotificationMutationResponse,
   NotificationsResponse,
@@ -14,7 +12,6 @@ import type {
   OperationalHealthResponse,
   OrdersResponse,
   RouteDeleteResponse,
-  RouteOptimizationJobResponse,
   RouteGroupingDetailDto,
   RoutePlanDetailDto,
   RouteOperationalStateResponse,
@@ -197,64 +194,6 @@ export async function patchOrderMetadata(input: {
   );
 }
 
-export async function patchOrderCoordinates(input: {
-  csrfToken: string;
-  latitude: number;
-  longitude: number;
-  orderId: string;
-  source: "manual" | "map_click";
-}): Promise<OrderMutationResponse> {
-  return apiMutation<OrderMutationResponse>(
-    `/admin/ui/app/api/orders/${encodeURIComponent(input.orderId)}/coordinates`,
-    "PATCH",
-    input.csrfToken,
-    {
-      latitude: input.latitude,
-      longitude: input.longitude,
-      source: input.source,
-    },
-  );
-}
-
-export async function geocodeOrder(input: {
-  address?: Record<string, string | null>;
-  csrfToken: string;
-  orderId: string;
-  save: boolean;
-}): Promise<GeocodeOrderResponse> {
-  return apiMutation<GeocodeOrderResponse>(
-    `/admin/ui/app/api/orders/${encodeURIComponent(input.orderId)}/geocode`,
-    "POST",
-    input.csrfToken,
-    {
-      ...(input.address === undefined ? {} : { address: input.address }),
-      save: input.save,
-    },
-  );
-}
-
-export async function bulkGeocodeOrders(input: {
-  csrfToken: string;
-  query: string;
-}): Promise<BulkGeocodeOrdersResponse> {
-  return apiMutation<BulkGeocodeOrdersResponse>(
-    input.query === ""
-      ? "/admin/ui/app/api/orders/geocode"
-      : `/admin/ui/app/api/orders/geocode?${input.query}`,
-    "POST",
-    input.csrfToken,
-    {},
-  );
-}
-
-export async function getBulkGeocodeJob(
-  jobId: string,
-): Promise<BulkGeocodeOrdersResponse> {
-  return apiGet<BulkGeocodeOrdersResponse>(
-    `/admin/ui/app/api/orders/geocode/${encodeURIComponent(jobId)}`,
-  );
-}
-
 export async function requestWooOrderSync(input: {
   csrfToken: string;
   pageSize?: number;
@@ -275,10 +214,6 @@ export async function getWooOrderSyncRun(
   return apiGet<WooSyncStatusResponse>(
     `/admin/ui/app/api/orders/sync/${encodeURIComponent(syncRunId)}`,
   );
-}
-
-export async function getLatestWooOrderSync(): Promise<WooSyncStatusResponse> {
-  return apiGet<WooSyncStatusResponse>("/admin/ui/app/api/orders/sync/latest");
 }
 
 export async function geocodeSettings(input: {
@@ -363,19 +298,6 @@ export async function saveRouteGroupingPolygons(input: {
   );
 }
 
-export async function resolveRouteGroupingAssignments(input: {
-  assignments: Array<{ assignedDriverId: string; orderId: string }>;
-  csrfToken: string;
-  routeGroupId: string;
-}): Promise<{ routeGroup: RouteGroupingDetailDto }> {
-  return apiMutation<{ routeGroup: RouteGroupingDetailDto }>(
-    `/admin/ui/app/api/route-groups/${encodeURIComponent(input.routeGroupId)}/assignments`,
-    "PATCH",
-    input.csrfToken,
-    { assignments: input.assignments },
-  );
-}
-
 export async function generateRouteGroupingChildRoutes(input: {
   confirmRisk?: boolean;
   csrfToken: string;
@@ -395,24 +317,6 @@ export async function getRouteDetail(
 ): Promise<RoutePlanDetailDto> {
   return apiGet<RoutePlanDetailDto>(
     `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}`,
-  );
-}
-
-export async function createRoute(input: {
-  csrfToken: string;
-  depotAddress: string | null;
-  depotLatitude: number | null;
-  depotLongitude: number | null;
-  orderIds: string[];
-  planDate: string;
-  routeName: string;
-  scope?: "history" | "planning";
-}): Promise<{ routePlan: { id: string } }> {
-  return apiMutation<{ routePlan: { id: string } }>(
-    appendRouteOpsScope("/admin/ui/app/api/routes", input.scope),
-    "POST",
-    input.csrfToken,
-    input,
   );
 }
 
@@ -468,81 +372,6 @@ export async function publishRoute(
     "POST",
     csrfToken,
     {},
-  );
-}
-
-export async function saveStopSequence(
-  routePlanId: string,
-  csrfToken: string,
-  stops: Array<{ deliveryStopId: string; sourceOrderId: string }>,
-): Promise<RoutePlanDetailDto> {
-  return apiMutation<RoutePlanDetailDto>(
-    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/stops`,
-    "PATCH",
-    csrfToken,
-    { stops },
-  );
-}
-
-export async function saveRouteOptions(
-  routePlanId: string,
-  csrfToken: string,
-  routeEndMode: RoutePlanDetailDto["routePlan"]["routeEndMode"],
-): Promise<RoutePlanDetailDto> {
-  return apiMutation<RoutePlanDetailDto>(
-    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/options`,
-    "PATCH",
-    csrfToken,
-    { routeEndMode },
-  );
-}
-
-export async function createRouteOptimizationJob(
-  routePlanId: string,
-  csrfToken: string,
-): Promise<RouteOptimizationJobResponse> {
-  return apiMutation<RouteOptimizationJobResponse>(
-    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/optimize-jobs`,
-    "POST",
-    csrfToken,
-    {},
-  );
-}
-
-export async function getLatestRouteOptimizationJob(
-  routePlanId: string,
-): Promise<RouteOptimizationJobResponse> {
-  return apiGet<RouteOptimizationJobResponse>(
-    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/optimize-jobs/latest`,
-  );
-}
-
-export async function getRouteOptimizationJob(
-  routePlanId: string,
-  jobId: string,
-): Promise<RouteOptimizationJobResponse> {
-  return apiGet<RouteOptimizationJobResponse>(
-    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/optimize-jobs/${encodeURIComponent(jobId)}`,
-  );
-}
-
-export async function optimizeRoute(
-  routePlanId: string,
-  csrfToken: string,
-): Promise<RouteOptimizationJobResponse> {
-  return createRouteOptimizationJob(routePlanId, csrfToken);
-}
-
-export async function assignDriver(
-  routePlanId: string,
-  csrfToken: string,
-  driverId: string | null,
-): Promise<RoutePlanDetailDto> {
-  return apiMutation<RoutePlanDetailDto>(
-    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/driver`,
-    "PATCH",
-    csrfToken,
-    { driverId },
   );
 }
 

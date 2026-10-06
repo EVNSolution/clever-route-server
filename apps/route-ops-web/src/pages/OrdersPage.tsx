@@ -26,7 +26,6 @@ import {
   formatOrderItemName,
   formatOrderItemOptions,
   getOrderItemDisplayKey,
-  getOrderItemSemanticDisplayKey,
   getOrderItems,
 } from "../orderItems";
 import {
@@ -808,59 +807,6 @@ export function RoutePlanPanel(input: {
       ) : null}
     </div>
   );
-}
-
-export type OrderInventoryRow = {
-  orderRefs: string[];
-  product: string;
-  quantity: number;
-};
-
-export function buildOrderInventoryRows(
-  orders: CanonicalOrderDto[],
-): OrderInventoryRow[] {
-  const rows = new Map<
-    string,
-    { orderQuantities: Map<string, number>; product: string; quantity: number }
-  >();
-  for (const order of orders) {
-    const orderRef = formatInventoryOrderRef(order);
-    for (const item of getOrderItems(order.items)) {
-      const key = getOrderItemSemanticDisplayKey(item);
-      const options = formatOrderItemOptions(item);
-      const product =
-        options.length === 0
-          ? formatOrderItemName(item)
-          : `${formatOrderItemName(item)} (${options})`;
-      const row = rows.get(key) ?? {
-        orderQuantities: new Map<string, number>(),
-        product,
-        quantity: 0,
-      };
-      row.quantity += item.quantity;
-      row.orderQuantities.set(
-        orderRef,
-        (row.orderQuantities.get(orderRef) ?? 0) + item.quantity,
-      );
-      rows.set(key, row);
-    }
-  }
-  return [...rows.values()]
-    .map((row) => ({
-      orderRefs: [...row.orderQuantities.entries()]
-        .sort(([first], [second]) =>
-          first.localeCompare(second, undefined, { numeric: true }),
-        )
-        .map(([orderRef, quantity]) => `${quantity}x ${orderRef}`),
-      product: row.product,
-      quantity: row.quantity,
-    }))
-    .sort((first, second) => first.product.localeCompare(second.product));
-}
-
-function formatInventoryOrderRef(order: CanonicalOrderDto): string {
-  const source = order.sourceOrderNumber ?? order.orderName;
-  return source.startsWith('#') ? source : `#${source}`;
 }
 
 function FilterBar({
@@ -1878,16 +1824,6 @@ function statusMeaningForOrder(
   return t.metadataReview;
 }
 
-export function formatOrderReceivedLabel(
-  order: CanonicalOrderDto,
-  locale: string | null | undefined = "en-CA",
-): string {
-  const label = formatOrderReceivedLabelParts(order, locale);
-  return label.updated === null
-    ? label.created
-    : `${label.created}\n${label.updated}`;
-}
-
 export function formatOrderReceivedLabelParts(
   order: CanonicalOrderDto,
   locale: string | null | undefined = "en-CA",
@@ -1973,88 +1909,6 @@ function formatRouteLabel(
   if (order.planningStatus === "UNPLANNED")
     return getOrdersCopy(locale).unplanned;
   return humanizeToken(order.planningStatus, locale);
-}
-
-export function getRouteRepairPrompt(
-  order: CanonicalOrderDto,
-  locale: string | null | undefined = "en-CA",
-): {
-  canGeocode: boolean;
-  routeDetail: string;
-  statusDetail: string | null;
-  statusLabel: string;
-} {
-  const t = getOrdersCopy(locale);
-  if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
-    return {
-      canGeocode: false,
-      routeDetail: t.statusLabels.alreadyPlanned,
-      statusDetail:
-        order.routePlanName ?? humanizeToken(order.planningStatus, locale),
-      statusLabel: t.statusLabels.planned,
-    };
-  }
-  if (isRoutePlanEligible(order)) {
-    return {
-      canGeocode: false,
-      routeDetail: t.statusLabels.routeEligible,
-      statusDetail: null,
-      statusLabel: t.statusLabels.ready,
-    };
-  }
-  if (isAddressReviewRequired(order)) {
-    return {
-      canGeocode: false,
-      routeDetail: t.statusLabels.addressReview,
-      statusDetail: t.statusDetails.verifyAddress,
-      statusLabel: t.statusLabels.addressReview,
-    };
-  }
-  if (isDeliveryDateReviewRequired(order)) {
-    return {
-      canGeocode: false,
-      routeDetail: t.statusLabels.deliveryDateReview,
-      statusDetail: t.statusDetails.verifyDeliveryDate,
-      statusLabel: t.statusLabels.deliveryDateReview,
-    };
-  }
-  if (order.deliveryDate === null) {
-    return {
-      canGeocode: false,
-      routeDetail: t.statusLabels.missingDeliveryDate,
-      statusDetail: t.statusDetails.enterDeliveryDate,
-      statusLabel: t.statusLabels.missingDeliveryDate,
-    };
-  }
-  if (order.metadataResolved !== true) {
-    return {
-      canGeocode: false,
-      routeDetail: t.statusLabels.needsMetadata,
-      statusDetail: geocodeDetail(order, locale),
-      statusLabel: t.statusLabels.metadataReview,
-    };
-  }
-  if (!hasResolvedCoordinates(order)) {
-    const canGeocode = hasGeocodableAddress(order);
-    return {
-      canGeocode,
-      routeDetail: canGeocode
-        ? t.statusLabels.needCoordinates
-        : t.statusLabels.needAddress,
-      statusDetail: canGeocode
-        ? t.statusDetails.useBulkGeocode
-        : t.statusDetails.enterAddressOrCoordinates,
-      statusLabel: canGeocode
-        ? t.statusLabels.needCoordinates
-        : t.statusLabels.missingAddress,
-    };
-  }
-  return {
-    canGeocode: false,
-    routeDetail: t.statusLabels.notRouteEligible,
-    statusDetail: t.statusDetails.reviewRouteConstraints,
-    statusLabel: t.statusLabels.notRouteEligible,
-  };
 }
 
 function geocodeDetail(
@@ -3013,52 +2867,8 @@ function formatAddressSummary(
   };
 }
 
-function formatCoordinateSummary(
-  order: CanonicalOrderDto,
-  locale: string | null | undefined = "en-CA",
-): {
-  primary: string;
-  secondary: string | null;
-} {
-  const t = getOrdersCopy(locale);
-  if (hasResolvedCoordinates(order)) {
-    return {
-      primary: `${order.coordinates.latitude?.toFixed(6)}, ${order.coordinates.longitude?.toFixed(6)}`,
-      secondary: t.coordinatesReady,
-    };
-  }
-  if (isAddressReviewRequired(order)) {
-    return {
-      primary: t.statusLabels.addressReview,
-      secondary: t.statusDetails.verifyAddress,
-    };
-  }
-  if (hasGeocodableAddress(order)) {
-    return {
-      primary: t.coordinatesNeeded,
-      secondary: t.useBulkGeocodeFromList,
-    };
-  }
-  return {
-    primary: t.addressRequired,
-    secondary: t.enterAddressBeforeGeocoding,
-  };
-}
-
 function sanitizeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/gu, "-");
-}
-
-export function filterOrdersByRoutePlan(
-  orders: CanonicalOrderDto[],
-  routePlanId: string | null,
-): CanonicalOrderDto[] | null {
-  if (routePlanId === null) return null;
-  return orders.filter((order) => order.routePlanId === routePlanId);
-}
-
-export function buildRouteDetailPath(routePlanId: string): string {
-  return `/admin/ui/app/routes/${encodeURIComponent(routePlanId)}`;
 }
 
 function orderSelectedOrdersByDraft(
@@ -3208,29 +3018,6 @@ export function buildVisibleSelectedOrderIds(
     .map((order) => order.orderId);
 }
 
-export function buildRouteDraftSelection(
-  orders: CanonicalOrderDto[],
-  requestedSelectedOrderIds: ReadonlySet<string>,
-  locale: string | null | undefined = "en-CA",
-): {
-  deliveryDate: string | null;
-  orderIds: string[];
-  routeType: OrderRouteTypeFilter | null;
-  warning: string | null;
-} {
-  const ordersById = new Map(orders.map((order) => [order.orderId, order]));
-  const requestedOrders = [...requestedSelectedOrderIds]
-    .map((orderId) => ordersById.get(orderId))
-    .filter((order): order is CanonicalOrderDto => order !== undefined);
-
-  return {
-    deliveryDate: getRouteDraftSingleDeliveryDate(requestedOrders),
-    orderIds: requestedOrders.map((order) => order.orderId),
-    routeType: getRouteDraftSingleType(requestedOrders),
-    warning: null,
-  };
-}
-
 export function getRouteDraftCreateReasons(
   selectedOrders: CanonicalOrderDto[],
   locale: string | null | undefined = "en-CA",
@@ -3253,13 +3040,6 @@ export function getRouteDraftCreateReasons(
     reasons.push(t.selectedMustShareType);
   }
   return reasons;
-}
-
-export function getRouteDraftFirstCreateReason(
-  selectedOrders: CanonicalOrderDto[],
-  locale: string | null | undefined = "en-CA",
-): string | null {
-  return getRouteDraftCreateReasons(selectedOrders, locale)[0] ?? null;
 }
 
 function getRouteDraftSingleDeliveryDate(
@@ -3313,16 +3093,4 @@ function formatRoutePlanningType(
   locale: string | null | undefined,
 ): string {
   return humanizeToken(value, locale);
-}
-
-function isRoutePlanEligible(order: CanonicalOrderDto): boolean {
-  if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
-    return false;
-  }
-  return (
-    order.routeEligible === true ||
-    (order.routeEligible !== false &&
-      order.blockerReasons.length === 0 &&
-      order.planningStatus === "UNPLANNED")
-  );
 }

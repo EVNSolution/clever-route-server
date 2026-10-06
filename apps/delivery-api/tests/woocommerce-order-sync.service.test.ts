@@ -5,7 +5,6 @@ import type { UpsertOrderWithDeliveryStopResult } from '../src/modules/shopify/o
 import { GeocodingService } from '../src/modules/geocoding/geocoding.service.js';
 import type { GeocodingQuery } from '../src/modules/geocoding/geocoding.types.js';
 import {
-  classifyWooCommerceSyncTier,
   prePersistGeocodingAddress,
   WooCommerceOrderSyncService
 } from '../src/modules/woocommerce/woocommerce-order-sync.service.js';
@@ -74,25 +73,6 @@ describe('WooCommerceOrderSyncService', () => {
         modifiedAfter: new Date('2026-05-20T00:00:00.000Z')
       })
     );
-  });
-
-  test('classifies hot and cold fallback tiers from CLEVER normalized schedule dates', () => {
-    expect(classifyWooCommerceSyncTier({
-      deliveryDate: '2026-06-05',
-      today: '2026-06-05'
-    })).toEqual({ reason: 'today_or_future_delivery', review: false, tier: 'hot' });
-    expect(classifyWooCommerceSyncTier({
-      deliveryDate: '2026-06-06',
-      today: '2026-06-05'
-    })).toEqual({ reason: 'today_or_future_delivery', review: false, tier: 'hot' });
-    expect(classifyWooCommerceSyncTier({
-      deliveryDate: '2026-06-04',
-      today: '2026-06-05'
-    })).toEqual({ reason: 'past_delivery', review: false, tier: 'cold' });
-    expect(classifyWooCommerceSyncTier({
-      deliveryDate: null,
-      today: '2026-06-05'
-    })).toEqual({ reason: 'missing_delivery_date', review: true, tier: 'cold' });
   });
 
   test('fetches and syncs a single WooCommerce order through the shared mapper pipeline', async () => {

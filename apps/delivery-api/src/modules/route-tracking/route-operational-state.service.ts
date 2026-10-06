@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import type { PrismaClient } from '@prisma/client';
 import type { PrismaDriverSyncHealthService, DriverSyncHealthDto } from '../driver/driver-sync-health.service.js';
 import type { OperationalAlertDto, PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
@@ -5,6 +6,7 @@ import {
   occurredAtWithinRouteTrackingEventWindow,
   resolveRouteTrackingEventWindow,
 } from './route-tracking.event-window.js';
+import { toRouteDeliveryDisplayStatus } from '../route-plans/kfood-delivery-completion.js';
 
 export type RouteOperationalStateV1 = {
   activeAlerts: OperationalAlertDto[];
@@ -15,6 +17,8 @@ export type RouteOperationalStateV1 = {
     totalStopCount: number;
   } | null;
   observedAt: string;
+  deliveryWorkCompletedAt?: string | null;
+  driverNavigationUntil?: string | null;
   physicalPosition: {
     accuracyMeters: number | null;
     distanceMeters: number | null;
@@ -59,7 +63,7 @@ export class PrismaRouteOperationalStateService {
       include: {
         driverEvents: {
           orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
-          select: { occurredAt: true },
+          select: { eventType: true, occurredAt: true },
           take: 1,
           where: { eventType: 'ROUTE_STARTED' },
         },
@@ -72,7 +76,7 @@ export class PrismaRouteOperationalStateService {
         trackingGeometry: { select: { lastEventId: true, lastLatitude: true, lastLongitude: true, lastOccurredAt: true, lastReceivedAt: true } },
         routeStops: { include: { deliveryStop: { select: { latitude: true, longitude: true, status: true, updatedAt: true } } } }
       },
-      where: { id: { in: uniqueRoutePlanIds } }
+      where: { id: { in: uniqueRoutePlanIds }, ...visibleDsvRouteWhere() }
     });
     const trackingGeometryByRouteId = new Map(routes.map((route) => [
       route.id,
@@ -102,7 +106,7 @@ export class PrismaRouteOperationalStateService {
 
 function usableTrackingGeometry<T extends {
   constraints: unknown;
-  driverEvents?: Array<{ occurredAt: Date }>;
+  driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
   planDate: Date;
   trackingGeometry: { lastOccurredAt: Date } | null;
 }>(route: T): T['trackingGeometry'] {
@@ -110,7 +114,7 @@ function usableTrackingGeometry<T extends {
   const eventWindow = resolveRouteTrackingEventWindow({
     constraints: route.constraints,
     planDate: route.planDate,
-    startOccurredAt: route.driverEvents?.[0]?.occurredAt,
+    startOccurredAt: route.driverEvents?.find((event) => event.eventType === 'ROUTE_STARTED')?.occurredAt,
   });
   return eventWindow === null
     || occurredAtWithinRouteTrackingEventWindow(eventWindow, route.trackingGeometry.lastOccurredAt)
@@ -124,7 +128,12 @@ function toOperationalState(input: {
   positionPayload: unknown;
   route: {
     constraints: unknown;
-    driverEvents?: Array<{ occurredAt: Date }>;
+    assignmentGeneration: bigint;
+    deliveryWorkCompletedAt: Date | null;
+    deliveryWorkCompletedGeneration: bigint | null;
+    deliveryWorkCompletedVersionId: string | null;
+    driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
+    driverNavigationUntil: Date | null;
     driverRouteSessionLeases: Array<{ syncSession: { heartbeats: Array<{
       completedStopCount: number | null;
       currentStopSequence: number | null;
@@ -160,9 +169,11 @@ function toOperationalState(input: {
           totalStopCount: latestHeartbeat.totalStopCount
         },
     observedAt: input.now.toISOString(),
+    deliveryWorkCompletedAt: route.deliveryWorkCompletedAt?.toISOString() ?? null,
+    driverNavigationUntil: route.driverNavigationUntil?.toISOString() ?? null,
     physicalPosition,
     routePlanId: route.id,
-    routeStatus: route.status,
+    routeStatus: toRouteDeliveryDisplayStatus({ ...route, driverEvents: [] }),
     serverProgress: {
       deliveredStopCount: delivered.length,
       failedStopCount: failed.length,

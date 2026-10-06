@@ -18,6 +18,9 @@ WordPress/Woo replacement exists.
 - Admin order/driver/route-plan APIs consumed by current admin clients
 - Native driver app APIs for invite/login, assigned routes, events, and proof media
 - Legacy Shopify token/webhook/order-sync compatibility modules
+- Independent driver runtime diagnostics: account/device write credentials,
+  tenant-scoped evidence queries, and conservative failure-stage classification.
+  See [the diagnostic API contract](api/driver-runtime-diagnostics.md).
 
 ## Non-goals for this bootstrap
 

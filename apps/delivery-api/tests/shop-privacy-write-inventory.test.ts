@@ -18,14 +18,19 @@ describe('shop privacy write inventory', () => {
       'modules/driver/admin-driver.repository.ts',
       'modules/route-plans/route-plan.repository.ts',
       'modules/shopify/order-sync.repository.ts',
+      'modules/shopify/shop-token.repository.ts',
       'modules/shopify/webhook-event.repository.ts',
       'scripts/orders-performance-cohorts.ts',
       'scripts/seed-dsv-dispatch-demo.ts',
       'scripts/smoke-dsv-driver-auth.ts'
     ]);
-    for (const writer of writers.filter((path) => !path.endsWith('webhook-event.repository.ts'))) {
+    for (const writer of writers.filter((path) => !path.endsWith('webhook-event.repository.ts') && !path.endsWith('shop-token.repository.ts'))) {
       expect(await readFile(join(sourceRoot.pathname, writer), 'utf8')).toContain('assertShopifyShopPrivacyWriteAllowed');
     }
+    const tokenRepository = await readFile(join(sourceRoot.pathname, 'modules/shopify/shop-token.repository.ts'), 'utf8');
+    expect(tokenRepository).toContain('lockShopifyShopPrivacyIdentity');
+    expect(tokenRepository).toContain('ShopTokenInstallSupersededError');
+    expect(tokenRepository).toContain('shopifyShopRedactionTombstone');
     const migration = await readFile(new URL(
       '../prisma/migrations/20260824240000_preserve_shop_redaction_receipts/migration.sql',
       import.meta.url

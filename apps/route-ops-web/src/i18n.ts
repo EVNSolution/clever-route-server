@@ -1329,9 +1329,6 @@ export const orderDetailLabelsByLocale = {
   }
 } as const;
 
-export const orderDetailLabels = orderDetailLabelsByLocale['en-CA'];
-export const orderBlockerLabels = orderDetailLabels.blockerReasons;
-
 export const orderFieldLabelsByLocale = {
   'en-CA': {
     ...orderDetailLabelsByLocale['en-CA'].diagnosticPaths,
@@ -1364,8 +1361,6 @@ export const orderFieldLabelsByLocale = {
     timeWindowStart: '시간대 시작',
   }
 } as const;
-
-export const orderFieldLabels = orderFieldLabelsByLocale['en-CA'];
 
 export function getAppCopy(locale: string | null | undefined): (typeof appCopy)[AppLocale] {
   return appCopy[resolveLocale(locale)];
@@ -1401,8 +1396,4 @@ export function getOrderDetailLabels(locale: string | null | undefined): (typeof
 
 export function getOrderFieldLabels(locale: string | null | undefined): (typeof orderFieldLabelsByLocale)[AppLocale] {
   return orderFieldLabelsByLocale[resolveLocale(locale)];
-}
-
-export function getOrderBlockerLabels(locale: string | null | undefined): (typeof orderDetailLabelsByLocale)[AppLocale]['blockerReasons'] {
-  return getOrderDetailLabels(locale).blockerReasons;
 }

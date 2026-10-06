@@ -1,3 +1,4 @@
+import { visibleDsvOrderWhere } from './dsv-test-visibility.js';
 import type { Prisma, DeliveryCustomerProfile, DestinationTip, PrismaClient } from '@prisma/client';
 
 import { PrismaDeliveryCustomerProfileService } from '../delivery-customer/delivery-customer-profile.service.js';
@@ -134,7 +135,7 @@ export class PrismaDsvControlRepository implements DsvControlRepository {
         province: true,
         recipientName: true,
       },
-      where: { id: input.deliveryStopId, shopId: shop.id },
+      where: { id: input.deliveryStopId, shopId: shop.id, order: visibleDsvOrderWhere(shop.id) },
     });
     if (stop === null) return null;
 

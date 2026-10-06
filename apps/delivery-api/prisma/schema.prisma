@@ -1434,6 +1434,10 @@ model RoutePlan {
   status                          RoutePlanStatus                  @default(READY)
   driverId                        String?                          @db.Uuid
   assignmentGeneration            BigInt                           @default(1)
+  deliveryWorkCompletedAt         DateTime?                        @db.Timestamptz(6)
+  driverNavigationUntil           DateTime?                        @db.Timestamptz(6)
+  deliveryWorkCompletedGeneration BigInt?
+  deliveryWorkCompletedVersionId  String?                          @db.Uuid
   driver                          Driver?                          @relation(fields: [driverId], references: [id], onDelete: SetNull)
   vehicleId                       String?                          @db.Uuid
   vehicle                         Vehicle?                         @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
@@ -1757,6 +1761,7 @@ model DriverAccount {
 
   @@index([status])
   @@map("driver_accounts")
+  runtimeDiagnosticDevices DriverRuntimeDiagnosticDevice[]
 }
 
 model DsvDriverInquiry {
@@ -1851,9 +1856,9 @@ model DriverProofMedia {
   driverId         String?                @db.Uuid
   driver           Driver?                @relation(fields: [driverId], references: [id], onDelete: SetNull)
   routePlanId      String                 @db.Uuid
-  routePlan        RoutePlan              @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)
+  routePlan        RoutePlan              @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction, map: "driver_proof_media_routePlanId_fkey")
   deliveryStopId   String                 @db.Uuid
-  deliveryStop     DeliveryStop           @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction)
+  deliveryStop     DeliveryStop           @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction, map: "driver_proof_media_deliveryStopId_fkey")
   kind             DriverProofMediaKind   @default(PHOTO)
   source           DriverProofMediaSource
   uploadStatus     DriverProofMediaUploadStatus @default(READY)
@@ -1882,13 +1887,13 @@ model DriverProofMedia {
 model DriverProofMediaDeliveryStop {
   proofMediaId   String           @db.Uuid
   shopId         String           @db.Uuid
-  proofMedia     DriverProofMedia @relation(fields: [proofMediaId, shopId], references: [id, shopId], onDelete: Cascade)
+  proofMedia     DriverProofMedia @relation(fields: [proofMediaId, shopId], references: [id, shopId], onDelete: Cascade, map: "driver_proof_media_delivery_stops_proofMediaId_fkey")
   deliveryStopId String           @db.Uuid
-  deliveryStop   DeliveryStop     @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction)
+  deliveryStop   DeliveryStop     @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction, map: "driver_proof_media_delivery_stops_deliveryStopId_fkey")
   createdAt      DateTime         @default(now()) @db.Timestamptz(6)
 
   @@id([proofMediaId, deliveryStopId])
-  @@index([deliveryStopId, proofMediaId])
+  @@index([deliveryStopId, proofMediaId], map: "driver_proof_media_delivery_stops_deliveryStopId_proofMediaId_i")
   @@map("driver_proof_media_delivery_stops")
 }
 
@@ -3231,4 +3236,102 @@ model DriverCompletionOutcome {
 
   @@unique([candidateId, revision], map: "driver_completion_outcomes_candidateId_revision_key")
   @@map("driver_completion_outcomes")
+}
+
+model DriverRuntimeDiagnosticDevice {
+  id                 String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  accountId          String                              @db.Uuid
+  account            DriverAccount                       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  deviceInstanceHash String                              @db.Text
+  lastContactAt      DateTime?                           @db.Timestamptz(6)
+  lastFailureAt      DateTime?                           @db.Timestamptz(6)
+  lastFailureCode    String?                             @db.Text
+  createdAt          DateTime                            @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime                            @default(now()) @updatedAt @db.Timestamptz(6)
+  credentials        DriverRuntimeDiagnosticCredential[]
+  records            DriverRuntimeDiagnosticRecord[]
+  snapshots          DriverRuntimeDiagnosticSnapshot[]
+
+  @@unique([accountId, deviceInstanceHash])
+  @@index([lastContactAt])
+  @@map("driver_runtime_diagnostic_devices")
+}
+
+model DriverRuntimeDiagnosticCredential {
+  id                  String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deviceId            String                        @db.Uuid
+  device              DriverRuntimeDiagnosticDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  tokenHash           String                        @unique @db.Text
+  accountTokenVersion Int
+  expiresAt           DateTime                      @db.Timestamptz(6)
+  revokedAt           DateTime?                     @db.Timestamptz(6)
+  lastAuthenticatedAt DateTime?                     @db.Timestamptz(6)
+  createdAt           DateTime                      @default(now()) @db.Timestamptz(6)
+
+  @@index([deviceId, expiresAt])
+  @@index([expiresAt, revokedAt])
+  @@map("driver_runtime_diagnostic_credentials")
+}
+
+model DriverRuntimeDiagnosticRecord {
+  id                 String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deviceId           String                        @db.Uuid
+  device             DriverRuntimeDiagnosticDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  diagnosticId       String                        @db.Uuid
+  shopId             String?                       @db.Uuid
+  driverId           String?                       @db.Uuid
+  routePlanId        String?                       @db.Uuid
+  batchId            String                        @db.Uuid
+  bootId             String                        @db.Uuid
+  sequence           Int
+  kind               String                        @db.Text
+  observedAt         DateTime                      @db.Timestamptz(6)
+  sentAt             DateTime                      @db.Timestamptz(6)
+  receivedAt         DateTime                      @db.Timestamptz(6)
+  isHistoricalReplay Boolean                       @default(false)
+  payloadHash        String                        @db.Text
+  context            Json
+  snapshot           Json
+  identifiers        Json?
+  expiresAt          DateTime                      @db.Timestamptz(6)
+  createdAt          DateTime                      @default(now()) @db.Timestamptz(6)
+
+  @@unique([deviceId, diagnosticId])
+  @@index([shopId, routePlanId, observedAt])
+  @@index([driverId, observedAt])
+  @@index([expiresAt])
+  @@map("driver_runtime_diagnostic_records")
+}
+
+model DriverRuntimeDiagnosticSnapshot {
+  id                       String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deviceId                 String                        @db.Uuid
+  device                   DriverRuntimeDiagnosticDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  scopeKey                 String                        @db.Text
+  shopId                   String?                       @db.Uuid
+  driverId                 String?                       @db.Uuid
+  routePlanId              String?                       @db.Uuid
+  bootId                   String                        @db.Uuid
+  sessionGeneration        String?                       @db.Text
+  assignmentGeneration     String?                       @db.Text
+  snapshotObservedAt       DateTime                      @db.Timestamptz(6)
+  snapshotTimeValid        Boolean                       @default(true)
+  firstObservedAt          DateTime                      @db.Timestamptz(6)
+  lastScopedContactAt      DateTime                      @db.Timestamptz(6)
+  sentAt                   DateTime                      @db.Timestamptz(6)
+  receivedAt               DateTime                      @db.Timestamptz(6)
+  lastIngestionFailureAt   DateTime?                     @db.Timestamptz(6)
+  lastIngestionFailureCode String?                       @db.Text
+  discardedRecordCount     Int                           @default(0)
+  context                  Json
+  snapshot                 Json
+  expiresAt                DateTime                      @db.Timestamptz(6)
+  createdAt                DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                      @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([deviceId, scopeKey])
+  @@index([shopId, routePlanId, snapshotObservedAt])
+  @@index([driverId, snapshotObservedAt])
+  @@index([expiresAt])
+  @@map("driver_runtime_diagnostic_snapshots")
 }

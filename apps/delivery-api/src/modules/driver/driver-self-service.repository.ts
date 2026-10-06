@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import { DriverEventType, Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
@@ -22,7 +23,8 @@ import {
   type UpdateDriverProfileInput
 } from './driver-self-service.types.js';
 import { coerceIanaTimezone } from './driver-route-timezone.js';
-import { ROUTE_DRIVER_VISIBLE_STATUSES, toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
+import { ROUTE_DRIVER_VISIBLE_STATUSES } from '../route-plans/route-plan-lifecycle.js';
+import { hasDeliveryWorkCompleted, toRouteDeliveryDisplayStatus } from '../route-plans/kfood-delivery-completion.js';
 
 export type DriverSelfServicePrismaClient = Pick<
   PrismaClient,
@@ -38,6 +40,11 @@ type ScopedDriverRecord = {
 };
 
 type RouteProgressRecord = {
+  assignmentGeneration: bigint;
+  deliveryWorkCompletedAt: Date | null;
+  deliveryWorkCompletedGeneration: bigint | null;
+  deliveryWorkCompletedVersionId: string | null;
+  driverNavigationUntil: Date | null;
   driverEvents: { eventType: string; occurredAt: Date }[];
   routeStops: { deliveryStop: { status: string } }[];
   status: string;
@@ -79,6 +86,7 @@ export class PrismaDriverSelfServiceRepository {
             ...(input.to === null ? {} : { lte: input.to })
           },
           shopId: scoped.shop.id,
+          ...visibleDsvRouteWhere(scoped.shop.id),
           status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] },
           ...(cursor === null ? {} : {
             OR: [
@@ -346,6 +354,7 @@ export class PrismaDriverSelfServiceRepository {
         driverId: input.driverId,
         planDate: { gte: start, lt: end },
         shopId: scoped.shop.id,
+          ...visibleDsvRouteWhere(scoped.shop.id),
         status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });
@@ -447,8 +456,10 @@ function toDriverProfile(driver: {
 
 function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHistoryItem {
   const stopStatuses = routePlan.routeStops.map((stop) => stop.deliveryStop.status);
+  const completedAt = routePlan.driverEvents.find((event) => event.eventType === 'ROUTE_COMPLETED')?.occurredAt
+    ?? (hasDeliveryWorkCompleted(routePlan) ? routePlan.deliveryWorkCompletedAt : null);
   return {
-    completedAt: routePlan.driverEvents.find((event) => event.eventType === 'ROUTE_COMPLETED')?.occurredAt.toISOString() ?? null,
+    completedAt: completedAt?.toISOString() ?? null,
     completedStopCount: stopStatuses.filter((status) => status === 'DELIVERED').length,
     deliveryDate: formatDateOnly(routePlan.planDate),
     failedStopCount: stopStatuses.filter((status) => status === 'FAILED').length,
@@ -463,7 +474,7 @@ function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHisto
 }
 
 function toHistoryStatus(routePlan: RouteProgressRecord): DriverRouteHistoryStatus {
-  const executionStatus = toRouteExecutionStatus(routePlan.status);
+  const executionStatus = toRouteDeliveryDisplayStatus(routePlan);
   if (executionStatus === 'COMPLETED') return 'completed';
   if (executionStatus === 'INCOMPLETE') return 'incomplete';
   if (executionStatus === 'IN_PROGRESS') return 'active';
@@ -480,6 +491,7 @@ function hasRouteCompleted(routePlan: RouteProgressRecord): boolean {
   if (routePlan.driverEvents.some((event) => event.eventType === 'ROUTE_COMPLETED')) return true;
   return routePlan.routeStops.length > 0 && routePlan.routeStops.every((stop) => TERMINAL_STOP_STATUSES.has(stop.deliveryStop.status));
 }
+
 
 function readCompanyDisplayName(value: unknown, shopDomain: string): string {
   const constraints = objectOrNull(value);

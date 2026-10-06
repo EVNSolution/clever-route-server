@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 const cleanupMocks = vi.hoisted(() => ({
   cleanupOperational: vi.fn(),
+  cleanupDiagnostics: vi.fn(),
   cleanupResolvedAttempts: vi.fn(),
   cleanupRouteCompletion: vi.fn(),
   disconnect: vi.fn()
@@ -27,8 +28,15 @@ vi.mock('../src/modules/operations/route-operational-evidence-retention.js', () 
   cleanupRouteOperationalEvidence: cleanupMocks.cleanupOperational
 }));
 
+vi.mock('../src/modules/driver/driver-runtime-diagnostics.repository.js', () => ({
+  PrismaDriverRuntimeDiagnosticsRepository: class {
+    cleanupExpired = cleanupMocks.cleanupDiagnostics;
+  }
+}));
+
 describe('driver event attempt retention script', () => {
   test('requests immediate continuation when email reconciliation audit cleanup has more work', async () => {
+    cleanupMocks.cleanupDiagnostics.mockResolvedValue({ continuationRequired: false, credentials: 0, devices: 0, records: 0, snapshots: 0 });
     cleanupMocks.cleanupResolvedAttempts.mockResolvedValue({ continuationRequired: false, deletedCount: 0 });
     cleanupMocks.cleanupRouteCompletion.mockResolvedValue({ continuationRequired: false, deletedCount: 0 });
     cleanupMocks.cleanupOperational.mockResolvedValue({

@@ -374,6 +374,7 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, route
     deliveryDate: formatDateOnly(order.deliveryFacts[0]?.deliveryDate ?? null) ?? readDateString(raw?.deliveryDate),
     driveTimeMinutes: routeStop?.driveTimeMinutes ?? null,
     eta: routeStop?.eta ?? null,
+    estimatedArrivalAt: routeStop?.estimatedArrivalAt ?? null,
     financialStatus: order.financialStatus ?? null,
     id: orderId,
     items: getInventoryOrderItems(order),
@@ -384,6 +385,7 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, route
     paymentStatus: order.financialStatus ?? null,
     phone: readInventoryPhone(order),
     processedAt: formatDateOnly(order.processedAt),
+    processedAtInstant: order.processedAt?.toISOString() ?? null,
     recipientName: readInventoryRecipientName(order),
     routeStop,
     shopifyPaymentStatus: readString(raw?.displayFinancialStatus),
@@ -424,6 +426,8 @@ function buildInventoryRouteView(inventory: LoadedOrderViewInventory, routePlanI
       id: routePlan.id,
       name: routePlan.name,
       startTime: readDepartureTime(routePlan.constraints),
+      scheduledStartAt: readString(asRecord(routePlan.constraints)?.scheduledStartAt),
+      scheduledStartTimeZone: readString(asRecord(routePlan.constraints)?.scheduledStartTimeZone),
       stops
     };
   });
@@ -456,6 +460,7 @@ function toInventoryRouteStopDto(stop: {
   return {
     driveTimeMinutes: secondsToMinutes(stop.durationFromPreviousSeconds),
     eta: formatTimeOnly(stop.estimatedArrivalAt),
+    estimatedArrivalAt: stop.estimatedArrivalAt?.toISOString() ?? null,
     orderId,
     sequence: stop.sequence,
     stopTimeMinutes: stop.deliveryStop.serviceMinutes

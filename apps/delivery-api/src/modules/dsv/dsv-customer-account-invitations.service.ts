@@ -5,7 +5,6 @@ import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { AdminStoreSettings } from '../commerce/admin-store-settings.service.js';
 import { normalizeDsvOperationalSettings } from './dsv-operational-settings.js';
 import type { DsvManualEmailService } from './dsv-manual-email.service.js';
-import { loadDsvWebPublicOrigin } from './dsv-web-public-origin.js';
 
 export type DsvCustomerAccountInvitePurpose = 'SIGNUP' | 'PASSWORD_RESET';
 export type DsvCustomerAccountApiStatus = 'INVITED' | 'ACTIVE' | 'DISABLED' | 'EXPIRED';
@@ -526,10 +525,6 @@ export class DsvCustomerAccountServiceError extends Error {
     super(message);
     this.name = 'DsvCustomerAccountServiceError';
   }
-}
-
-export function loadDsvCustomerAccountWebPublicOrigin(value: string | undefined): string | undefined {
-  return loadDsvWebPublicOrigin(value);
 }
 
 export function createCustomerSessionSubject(input: { accountId: string; activeSessionId: string }): string {

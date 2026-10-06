@@ -173,6 +173,122 @@ describe('PrismaShopifyWebhookEventRepository privacy compliance handling', () =
     });
     expect(prisma.shopifyWebhookEvent.create).not.toHaveBeenCalled();
   });
+
+  test('records app uninstall as a terminal tombstone and invalidates only the installed token generation', async () => {
+    const prisma = createPrismaHarness();
+    const repository = new PrismaShopifyWebhookEventRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
+    );
+    const triggeredAt = new Date('2026-08-24T00:00:00.000Z');
+
+    const result = await repository.recordWebhook({
+      appId: 'clever-kfood',
+      apiVersion: '2026-07',
+      eventId: 'uninstall-event-id',
+      payload: { email: 'owner@private.invalid', id: 123, name: 'Private Shop' },
+      rawBody: '{"id":123}',
+      shopDomain: 'tenant.myshopify.com',
+      topic: 'app/uninstalled',
+      triggeredAt,
+      webhookId: 'uninstall-webhook-id'
+    });
+
+    expect(result).toEqual({ duplicate: false, status: 'PROCESSED', webhookId: 'uninstall-webhook-id' });
+    expect(readCreateWebhookEventInput(prisma).data).toMatchObject({
+      payload: {
+        redacted: true,
+        schema: 'shopify_webhook_tombstone_v1',
+        terminalStatus: 'PROCESSED'
+      },
+      status: 'PROCESSED',
+      topic: 'app/uninstalled'
+    });
+    expect(JSON.stringify(readCreateWebhookEventInput(prisma).data.payload)).not.toMatch(/owner|private/iu);
+    expect(prisma.shop.updateMany).toHaveBeenCalledWith({
+      data: {
+        adminAccessTokenCiphertext: null,
+        adminAccessTokenExpiresAt: null,
+        adminRefreshTokenCiphertext: null,
+        adminRefreshTokenExpiresAt: null,
+        tokenIssuedAt: null,
+        uninstalledAt: triggeredAt
+      },
+      where: {
+        appId: 'clever-kfood',
+        installedAt: { lte: triggeredAt },
+        OR: [
+          { uninstalledAt: null },
+          { uninstalledAt: { lte: triggeredAt } }
+        ],
+        shopDomain: 'tenant.myshopify.com'
+      }
+    });
+    expect(prisma.shopifyWebhookEvent.create.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.shop.updateMany.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
+    );
+  });
+
+  test('refuses to acknowledge app uninstall without a trusted lifecycle timestamp', async () => {
+    const prisma = createPrismaHarness();
+    const repository = new PrismaShopifyWebhookEventRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
+    );
+
+    await expect(repository.recordWebhook({
+      appId: 'clever-kfood',
+      apiVersion: '2026-07',
+      eventId: 'uninstall-event-id',
+      payload: {},
+      rawBody: '{}',
+      shopDomain: 'tenant.myshopify.com',
+      topic: 'app/uninstalled',
+      triggeredAt: null,
+      webhookId: 'uninstall-webhook-id'
+    })).rejects.toThrow('valid non-future triggeredAt');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  test('records delayed app uninstall as ignored without clearing a newer install', async () => {
+    const prisma = createPrismaHarness();
+    prisma.shop.findUnique.mockResolvedValueOnce({
+      id: 'shop-id',
+      installedAt: new Date('2026-08-24T00:01:00.000Z'),
+      uninstalledAt: null
+    });
+    prisma.shop.upsert.mockResolvedValueOnce({
+      id: 'shop-id',
+      installedAt: new Date('2026-08-24T00:01:00.000Z'),
+      uninstalledAt: null
+    });
+    const repository = new PrismaShopifyWebhookEventRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
+    );
+
+    await expect(repository.recordWebhook({
+      appId: 'clever-kfood',
+      apiVersion: '2026-07',
+      eventId: 'stale-uninstall-event-id',
+      payload: {},
+      rawBody: '{}',
+      shopDomain: 'tenant.myshopify.com',
+      topic: 'app/uninstalled',
+      triggeredAt: new Date('2026-08-24T00:00:00.000Z'),
+      webhookId: 'stale-uninstall-webhook-id'
+    })).resolves.toEqual({
+      duplicate: true,
+      status: 'IGNORED',
+      webhookId: 'stale-uninstall-webhook-id'
+    });
+    expect(readCreateWebhookEventInput(prisma).data).toMatchObject({
+      payload: {
+        redacted: true,
+        schema: 'shopify_webhook_tombstone_v1',
+        terminalStatus: 'IGNORED'
+      },
+      status: 'IGNORED'
+    });
+    expect(prisma.shop.updateMany).not.toHaveBeenCalled();
+  });
 });
 
 
@@ -361,9 +477,18 @@ type PrismaHarness = {
   order: { deleteMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>> };
   shop: {
     deleteMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>>;
-    findUnique: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string } | null>>>;
+    findUnique: ReturnType<typeof vi.fn<(input: unknown) => Promise<{
+      id: string;
+      installedAt: Date;
+      uninstalledAt: Date | null;
+    } | null>>>;
     findUniqueOrThrow: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
-    upsert: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
+    updateMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>>;
+    upsert: ReturnType<typeof vi.fn<(input: unknown) => Promise<{
+      id: string;
+      installedAt: Date;
+      uninstalledAt: Date | null;
+    }>>>;
   };
   shopifyWebhookEvent: {
     create: ReturnType<typeof vi.fn<(input: CreateWebhookEventInput) => Promise<{ id: string }>>>;
@@ -392,13 +517,22 @@ function createPrismaHarness(): PrismaHarness {
     },
     shop: {
       deleteMany: vi.fn(() => Promise.resolve({ count: 1 })),
-      findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' })),
+      findUnique: vi.fn(() => Promise.resolve({
+        id: 'shop-id',
+        installedAt: new Date('2026-08-23T00:00:00.000Z'),
+        uninstalledAt: null
+      })),
       findUniqueOrThrow: vi.fn(() => Promise.resolve({ id: 'shop-id' })),
-      upsert: vi.fn(() => Promise.resolve({ id: 'shop-id' }))
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      upsert: vi.fn(() => Promise.resolve({
+        id: 'shop-id',
+        installedAt: new Date('2026-08-23T00:00:00.000Z'),
+        uninstalledAt: null
+      }))
     },
     shopifyWebhookEvent: {
       create: vi.fn(() => Promise.resolve({ id: 'event-id' })),
-      findUnique: vi.fn(() => Promise.resolve({ status: 'PROCESSED' })),
+      findUnique: vi.fn(() => Promise.resolve(null)),
       updateMany: vi.fn((input: unknown) => {
         void input;
         return Promise.resolve({ count: 1 });
@@ -432,7 +566,7 @@ type OrderWebhookEventStatus = 'RECEIVED' | 'QUEUED' | 'RETRY_WAIT' | 'PROCESSIN
 
 type OrderWebhookPrismaHarness = PrismaHarness & {
   shop: PrismaHarness['shop'] & {
-    findUnique: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string } | null>>>;
+    findUnique: PrismaHarness['shop']['findUnique'];
   };
   shopifyWebhookEvent: PrismaHarness['shopifyWebhookEvent'] & {
     findUnique: ReturnType<
@@ -470,7 +604,11 @@ function createOrderWebhookPrismaHarness(input: {
   const base = createPrismaHarness() as OrderWebhookPrismaHarness;
   base.shop.findUnique = vi.fn((findInput: unknown) => {
     void findInput;
-    return Promise.resolve({ id: 'shop-id' });
+    return Promise.resolve({
+      id: 'shop-id',
+      installedAt: new Date('2026-08-23T00:00:00.000Z'),
+      uninstalledAt: null
+    });
   });
   base.shopifyWebhookEvent.findFirst = vi.fn(() => Promise.resolve({ id: 'event-row-id', status: input.status }));
   base.shopifyWebhookEvent.findMany = vi.fn(() => Promise.resolve([]));

@@ -315,6 +315,10 @@ DRIVER_EVENT_CONTRACT_V2_DATABASE_URL="$g002_url" \
 ROUTE_OPERATIONAL_HEALTH_DATABASE_URL="$g002_url" \
 npm test -- driver-event-contract-v2.integration.test.ts route-operational-health.integration.test.ts
 
+DRIVER_RUNTIME_DIAGNOSTICS_DATABASE_TARGET_CLASS='safe-local-disposable' \
+DRIVER_RUNTIME_DIAGNOSTICS_DATABASE_URL="$g002_url" \
+npm test -- driver-runtime-diagnostics.integration.test.ts driver-runtime-diagnostics.http.integration.test.ts --maxWorkers=1
+
 DATABASE_URL="$email_reconciliation_url" \
 EMAIL_RECONCILIATION_DATABASE_TARGET_CLASS='safe-local-email-reconciliation-disposable' \
 EMAIL_RECONCILIATION_DATABASE_URL="$email_reconciliation_url" \
@@ -348,8 +352,9 @@ G006_DATABASE_TARGET_CLASS='safe-local-g006-disposable' \
 SHOP_PRIVACY_INVARIANT_DATABASE_TARGET_CLASS='safe-local-disposable' \
 DATABASE_URL="$g006_url" \
 DRIVER_ACCOUNT_DELETION_DATABASE_URL="$g006_url" \
+SHOPIFY_TOKEN_AUTHORITY_DATABASE_URL="$g006_url" \
 SHOPIFY_WEBHOOK_DURABILITY_DATABASE_URL="$g006_url" \
-npm test -- shopify-webhook-durability.integration.test.ts shop-privacy-db-invariant.integration.test.ts driver-account-deletion.integration.test.ts dsv-driver-inquiry.integration.test.ts
+npm test -- shopify-webhook-durability.integration.test.ts shop-token-authority.integration.test.ts shop-privacy-db-invariant.integration.test.ts driver-account-deletion.integration.test.ts dsv-driver-inquiry.integration.test.ts
 
 G006_DATABASE_TARGET_CLASS='safe-local-g006-disposable' \
 DATABASE_URL="$g006_url" \
@@ -364,3 +369,8 @@ DATABASE_URL="$completion_assistance_url" \
 COMPLETION_ASSISTANCE_DATABASE_URL="$completion_assistance_url" \
 COMPLETION_ASSISTANCE_DATABASE_TARGET_CLASS='safe-local-completion-assistance-disposable' \
 npm test -- completion-assistance.integration.test.ts
+
+DATABASE_URL="$completion_assistance_url" \
+KFOOD_COMPLETION_DATABASE_URL="$completion_assistance_url" \
+KFOOD_COMPLETION_DATABASE_TARGET_CLASS='safe-local-kfood-completion-disposable' \
+npm test -- kfood-delivery-completion.integration.test.ts

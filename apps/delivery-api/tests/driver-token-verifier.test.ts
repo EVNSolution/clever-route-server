@@ -4,9 +4,7 @@ import { describe, expect, test } from 'vitest';
 import {
   readDriverJwtSecret,
   signDriverRouteToken,
-  signDriverToken,
   verifyDriverRouteToken,
-  verifyDriverToken
 } from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
@@ -25,7 +23,7 @@ describe('readDriverJwtSecret', () => {
   });
 });
 
-describe('verifyDriverToken', () => {
+describe('verifyDriverRouteToken', () => {
   test('signs route access with only the global account and assigned route scope', () => {
     const result = signDriverRouteToken(
       {
@@ -49,90 +47,21 @@ describe('verifyDriverToken', () => {
     expect(decodePayload(result.token)).not.toHaveProperty('shopDomain');
   });
 
-  test('signs a short-lived driver JWT that the verifier accepts', () => {
-    const result = signDriverToken(
-      {
-        driverId: 'driver-id',
-        expiresInSeconds: 900,
-        shopDomain: 'Example.myshopify.com',
-        subject: 'driver:driver-id'
-      },
-      { now, secret }
-    );
-
-    expect(result.expiresAt).toBe('2026-05-07T06:25:00.000Z');
-    expect(verifyDriverToken(result.token, { now, secret })).toEqual({
-      driverId: 'driver-id',
-      issuedAt: new Date('2026-05-07T06:10:00.000Z'),
-      shopDomain: 'example.myshopify.com',
-      subject: 'driver:driver-id',
-      tokenVersion: 0
-    });
-  });
-
-  test('signs and verifies driver JWTs for Woo/customer domains', () => {
-    const result = signDriverToken(
-      {
-        driverId: 'driver-id',
-        expiresInSeconds: 900,
-        shopDomain: 'Dev1.TomatonoFood.com',
-        subject: 'driver:driver-id',
-        tokenVersion: 4
-      },
-      { now, secret }
-    );
-
-    expect(verifyDriverToken(result.token, { now, secret })).toEqual({
-      driverId: 'driver-id',
-      issuedAt: new Date('2026-05-07T06:10:00.000Z'),
-      shopDomain: 'dev1.tomatonofood.com',
-      subject: 'driver:driver-id',
-      tokenVersion: 4
-    });
-  });
-
-  test('accepts a server-issued driver JWT and returns driver context', () => {
-    const token = legacySignDriverToken({
-      aud: 'clever-delivery-driver',
-      driverId: 'driver-id',
-      exp: Math.floor(now.getTime() / 1000) + 60,
-      iat: Math.floor(now.getTime() / 1000),
-      shopDomain: 'example.myshopify.com',
-      sub: 'driver-auth-subject',
-      tokenVersion: 3
-    });
-
-    expect(verifyDriverToken(token, { now, secret })).toEqual({
-      driverId: 'driver-id',
-      issuedAt: new Date('2026-05-07T06:10:00.000Z'),
-      shopDomain: 'example.myshopify.com',
-      subject: 'driver-auth-subject',
-      tokenVersion: 3
-    });
-  });
-
-  test('rejects invalid commerce domains in server-issued tokens', () => {
-    expect(() => signDriverToken(
-      {
-        driverId: 'driver-id',
-        expiresInSeconds: 900,
-        shopDomain: 'localhost',
-        subject: 'driver:driver-id'
-      },
-      { now, secret }
-    )).toThrow('Commerce domain is not a valid customer domain');
+  test.each([
+    [{ aud: 'clever-delivery-driver' }, 'audience mismatch'],
+    [{ aud: 'clever-driver-account' }, 'audience mismatch'],
+    [{ exp: Math.floor(now.getTime() / 1000) }, 'has expired'],
+    [{ nbf: Math.floor(now.getTime() / 1000) + 1 }, 'not active yet'],
+  ])('rejects incompatible scope or time claims %j', (claims, message) => {
+    expect(() => verifyDriverRouteToken(signClaims(claims), { now, secret })).toThrow(message);
   });
 
   test('rejects tokens with invalid signatures', () => {
-    const token = `${legacySignDriverToken({
-      aud: 'clever-delivery-driver',
-      driverId: 'driver-id',
-      exp: Math.floor(now.getTime() / 1000) + 60,
-      shopDomain: 'example.myshopify.com',
-      sub: 'driver-auth-subject'
-    }).slice(0, -1)}x`;
+    const token = signClaims({});
+    const [header, payload, signature] = token.split('.');
+    const invalidSignature = `${signature?.[0] === 'x' ? 'y' : 'x'}${signature?.slice(1)}`;
 
-    expect(() => verifyDriverToken(token, { now, secret })).toThrow('Invalid driver token signature');
+    expect(() => verifyDriverRouteToken(`${header}.${payload}.${invalidSignature}`, { now, secret })).toThrow('Invalid driver token signature');
   });
 });
 
@@ -142,7 +71,17 @@ function decodePayload(token: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as Record<string, unknown>;
 }
 
-function legacySignDriverToken(payload: Record<string, unknown>): string {
+function signClaims(overrides: Record<string, unknown>): string {
+  const issuedAt = Math.floor(now.getTime() / 1000);
+  const payload = {
+    accountId: 'account-id',
+    aud: 'clever-delivery-driver-route',
+    exp: issuedAt + 900,
+    iat: issuedAt,
+    routePlanId: 'route-plan-id',
+    sub: 'driver-account:account-id',
+    ...overrides,
+  };
   const header = { alg: 'HS256', typ: 'JWT' };
   const encodedHeader = Buffer.from(JSON.stringify(header), 'utf8').toString('base64url');
   const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');

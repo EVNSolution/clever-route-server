@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 
 import { resolveRouteTrackingEventWindow } from '../route-tracking/route-tracking.event-window.js';
+import { reconcileKfoodDeliveryWorkCompletion } from './kfood-delivery-completion.js';
 
 export const KFOOD_STALE_ROUTE_APP_ID = 'clever-route-kfood';
 export const KFOOD_STALE_ROUTE_SHOP_DOMAIN = '7hrud1-xq.myshopify.com';
@@ -73,6 +74,55 @@ export class PrismaStaleRouteFinalizationService {
         FOR UPDATE
       `;
       if (locked[0] === undefined) return 'skippedConcurrent';
+
+      const completion = await reconcileKfoodDeliveryWorkCompletion(tx, {
+        allowStart: false,
+        now,
+        routePlanId,
+        shopId
+      });
+      if (completion !== null) {
+        if (completion.navigationUntil.getTime() > now.getTime()) return 'skippedNotDue';
+
+        const route = await tx.routePlan.findFirst({
+          select: {
+            assignmentGeneration: true,
+            deliveryWorkCompletedAt: true,
+            deliveryWorkCompletedGeneration: true,
+            deliveryWorkCompletedVersionId: true,
+            driverNavigationUntil: true,
+            id: true,
+            shopId: true,
+            updatedAt: true
+          },
+          where: {
+            id: routePlanId,
+            shopId,
+            shop: {
+              appId: KFOOD_STALE_ROUTE_APP_ID,
+              shopDomain: KFOOD_STALE_ROUTE_SHOP_DOMAIN
+            },
+            status: 'IN_PROGRESS'
+          }
+        });
+        if (route === null) return 'skippedConcurrent';
+
+        const updated = await tx.routePlan.updateMany({
+          data: { status: 'COMPLETED' },
+          where: {
+            assignmentGeneration: completion.assignmentGeneration,
+            deliveryWorkCompletedAt: completion.completedAt,
+            deliveryWorkCompletedGeneration: completion.assignmentGeneration,
+            deliveryWorkCompletedVersionId: completion.routeVersionId,
+            driverNavigationUntil: completion.navigationUntil,
+            id: route.id,
+            shopId: route.shopId,
+            status: 'IN_PROGRESS',
+            updatedAt: route.updatedAt
+          }
+        });
+        return updated.count === 1 ? 'finalized' : 'skippedConcurrent';
+      }
 
       const route = await tx.routePlan.findFirst({
         select: {

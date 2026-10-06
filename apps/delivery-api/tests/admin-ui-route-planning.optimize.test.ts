@@ -1,12 +1,9 @@
 import { describe, expect, test } from 'vitest';
 
 import type { CanonicalOrderRow } from '../src/modules/shopify/order-sync.mapper.js';
-import {
-  buildRouteOptimizeNotice,
-  toRouteOpsOrderDto,
-} from '../src/routes/admin-ui-route-planning.js';
+import { toRouteOpsOrderDto } from '../src/routes/admin-ui-route-planning.js';
 
-describe('buildRouteOptimizeNotice', () => {
+describe('route planning DTO', () => {
   test('exposes order total and currency to the Route Ops UI DTO', () => {
     const dto = toRouteOpsOrderDto(canonicalOrderRow({
       currencyCode: 'CAD',
@@ -15,25 +12,6 @@ describe('buildRouteOptimizeNotice', () => {
 
     expect(dto.currencyCode).toBe('CAD');
     expect(dto.totalPriceAmount).toBe('42.50');
-  });
-
-  test('labels VROOM optimizer results distinctly from clever fallback', () => {
-    expect(
-      buildRouteOptimizeNotice({
-        missingCoordinateStops: 0,
-        source: 'vroom',
-        stops: [],
-      }),
-    ).toBe('VROOM optimized sequence saved.');
-    expect(
-      buildRouteOptimizeNotice({
-        missingCoordinateStops: 2,
-        source: 'vroom',
-        stops: [],
-      }),
-    ).toBe(
-      'VROOM optimized sequence saved; 2 stop(s) without coordinates stayed at the end.',
-    );
   });
 });
 
