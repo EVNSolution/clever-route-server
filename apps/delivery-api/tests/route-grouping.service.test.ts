@@ -14,6 +14,7 @@ import {
   resetReorderedActiveRouteEta,
   resolveNewChildRouteIdx,
   resolveNextGlobalRouteIdx,
+  syncPublishedRouteGroupingChildExecution,
   syncRoutePlanStopsPreservingRows
 } from '../src/modules/route-grouping/route-grouping.service.js';
 import {
@@ -1141,6 +1142,64 @@ describe('route grouping contracts', () => {
 
     expect(calls).toHaveLength(6);
     expect(source).not.toMatch(/routeGroupingChildVersion\.update\(\{\s*data:\s*\{\s*(?:driverId|snapshot):/u);
+  });
+
+  test('does not create execution state for an unpublished child successor', async () => {
+    const queryRaw = vi.fn(() => Promise.resolve([]));
+    const commandCreate = vi.fn();
+    const commandFindUnique = vi.fn(() => Promise.resolve(null));
+    const contextFindFirst = vi.fn();
+    const contextFindMany = vi.fn();
+    const tx = {
+      $queryRaw: queryRaw,
+      dsvExecutionCommand: { create: commandCreate, findUnique: commandFindUnique },
+      dsvExecutionContext: { findFirst: contextFindFirst, findMany: contextFindMany }
+    };
+
+    await expect(syncPublishedRouteGroupingChildExecution(tx as never, {
+      childId: 'child-unpublished',
+      publishedAt: null,
+      routePlanId: 'route-unpublished',
+      shopId: 'shop-a'
+    })).resolves.toBeUndefined();
+    expect(queryRaw).not.toHaveBeenCalled();
+    expect(commandCreate).not.toHaveBeenCalled();
+    expect(commandFindUnique).not.toHaveBeenCalled();
+    expect(contextFindFirst).not.toHaveBeenCalled();
+    expect(contextFindMany).not.toHaveBeenCalled();
+  });
+
+  test('syncs published draft successors only after every draft projection is complete', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const replacementBody = source.slice(
+      source.indexOf('export async function replaceCurrentRouteGroupingChildVersion'),
+      source.indexOf('export async function syncPublishedRouteGroupingChildExecution')
+    );
+    const publicDraftBody = source.slice(
+      source.indexOf('async saveDraft('),
+      source.indexOf('async saveDraftInTransaction(')
+    );
+    const transactionalDraftBody = source.slice(
+      source.indexOf('async saveDraftInTransaction('),
+      source.indexOf('private async prepareDraftRouteOptimizations(')
+    );
+
+    expect(replacementBody).not.toContain('syncDsvExecutionHook');
+    for (const draftBody of [publicDraftBody, transactionalDraftBody]) {
+      expect(draftBody).toContain('const executionSyncTargets:');
+      expect(draftBody).toContain('targetChild.publishedAt !== null');
+      expect(draftBody).toContain('executionSyncTargets.sort(compareExecutionSyncTargets)');
+      const recomputeIndex = draftBody.indexOf('await recomputeAssignments(tx, group.id)');
+      const readyIndex = draftBody.indexOf("await tx.routeGrouping.update({ data: { status: 'READY' }");
+      const projectionIndex = draftBody.lastIndexOf('await claimRouteExecutionProjection(tx, {');
+      const syncIndex = draftBody.indexOf('await syncPublishedRouteGroupingChildExecution(tx, {');
+      for (const index of [recomputeIndex, readyIndex, projectionIndex, syncIndex]) {
+        expect(index).toBeGreaterThanOrEqual(0);
+      }
+      expect(recomputeIndex).toBeLessThan(syncIndex);
+      expect(readyIndex).toBeLessThan(syncIndex);
+      expect(projectionIndex).toBeLessThan(syncIndex);
+    }
   });
 
   test('archives the prior child snapshot before creating and rebinding its immutable successor', async () => {

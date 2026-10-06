@@ -21,9 +21,11 @@ import {
   PrismaDsvExecutionCommandsService,
   type DsvExecutionDriverEventPort,
 } from '../src/modules/dsv/dsv-execution-commands.service.js';
+import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import { PrismaUvisTelemetryRepository } from '../src/modules/uvis/uvis-telemetry.repository.js';
 import { PrismaDsvDriverExecutionPrincipalResolver } from '../src/routes/dsv-execution.routes.js';
+import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 
 const safeTargetClass = 'safe-local-dsv-operational-disposable';
 const exactDatabaseUrl = 'postgresql://dsv_operational:dsv_operational@127.0.0.1:55496/dsv_operational?schema=public';
@@ -281,6 +283,101 @@ live('DSV operational server PostgreSQL integration', () => {
       await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS dsv_operational_test_fail_context_sync_trigger ON dsv_execution_contexts');
       await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS dsv_operational_test_fail_context_sync()');
     }
+  });
+
+  test('syncs both published children only after production draft projections are complete', async () => {
+    const fixture = await createPublishedMultiChildFixture(prisma, createdShopIds, 'multi-child-save');
+    const beforeContexts = await readExecutionVersions(prisma, fixture.contextIds);
+    await prisma.order.updateMany({
+      data: { rawPayload: { dsv: { normalized: { shippedBoxes: 2 } } } },
+      where: { id: { in: fixture.orderIds } },
+    });
+
+    const saved = await routeGroupingService(prisma).saveDraft(multiChildDraftInput(fixture, 'updated'));
+
+    expect(saved).not.toBeNull();
+    await expect(prisma.routeGrouping.findUniqueOrThrow({ where: { id: fixture.groupingId } }))
+      .resolves.toMatchObject({ status: 'READY' });
+    const currentChildren = await prisma.routeGroupingChildVersion.findMany({
+      orderBy: { routePlanId: 'asc' },
+      select: { id: true, publishedAt: true, routePlanId: true, status: true, supersededAt: true },
+      where: { groupingId: fixture.groupingId, status: 'CURRENT', supersededAt: null },
+    });
+    expect(currentChildren).toHaveLength(2);
+    expect(currentChildren.some(({ id }) => fixture.childVersionIds.includes(id))).toBe(false);
+    expect(currentChildren.every(({ publishedAt }) => publishedAt !== null)).toBe(true);
+    for (const child of currentChildren) {
+      const route = fixture.routes.find(({ routePlanId }) => routePlanId === child.routePlanId)!;
+      await expect(prisma.order.findUniqueOrThrow({ where: { id: route.orderId } }))
+        .resolves.toMatchObject({ currentRouteVersionId: child.id });
+      await expect(prisma.routePlan.findUniqueOrThrow({ where: { id: route.routePlanId } }))
+        .resolves.toMatchObject({ name: `updated-${route.routePlanId}`, status: 'READY' });
+    }
+    const afterContexts = await readExecutionVersions(prisma, fixture.contextIds);
+    expect(afterContexts).toHaveLength(2);
+    for (const context of afterContexts) {
+      const before = beforeContexts.find(({ id }) => id === context.id)!;
+      expect(context).toMatchObject({ assignmentEpoch: before.assignmentEpoch, routeVersion: before.routeVersion + 1 });
+      expect(context.contentSnapshot).toMatchObject({ stops: [{ quantity: 2 }] });
+    }
+    await expect(prisma.dsvOperationalNotification.findMany({
+      orderBy: { executionContextId: 'asc' },
+      select: { assignmentEpoch: true, businessStatus: true, executionContextId: true, kind: true, routeVersion: true },
+      where: { executionContextId: { in: fixture.contextIds }, kind: 'N02' },
+    })).resolves.toEqual(afterContexts.map((context) => ({
+      assignmentEpoch: 1n,
+      businessStatus: 'OPEN',
+      executionContextId: context.id,
+      kind: 'N02',
+      routeVersion: context.routeVersion,
+    })));
+    await expect(prisma.dsvExecutionCommand.count({
+      where: {
+        commandId: { startsWith: 'child-successor:' },
+        commandName: { in: fixture.routePlanIds.map((id) => `SYNC_ROUTE_EXECUTION:${id}`) },
+        shopId: fixture.shopId,
+      },
+    })).resolves.toBe(2);
+  });
+
+  test('rolls every published child projection, context, intent, and receipt back when the later sync fails', async () => {
+    const fixture = await createPublishedMultiChildFixture(prisma, createdShopIds, 'multi-child-rollback');
+    const before = await readPublishedMultiChildState(prisma, fixture);
+    await prisma.order.updateMany({
+      data: { rawPayload: { dsv: { normalized: { shippedBoxes: 2 } } } },
+      where: { id: { in: fixture.orderIds } },
+    });
+    const secondRoutePlanId = [...fixture.routePlanIds].sort()[1]!;
+    const secondContextId = fixture.routes.find(({ routePlanId }) => routePlanId === secondRoutePlanId)!.contextId;
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION dsv_operational_test_fail_later_child_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.id = '${secondContextId}'::uuid THEN
+          RAISE EXCEPTION 'synthetic later child sync failure';
+        END IF;
+        RETURN NEW;
+      END $$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER dsv_operational_test_fail_later_child_sync_trigger
+      BEFORE UPDATE ON dsv_execution_contexts
+      FOR EACH ROW EXECUTE FUNCTION dsv_operational_test_fail_later_child_sync()
+    `);
+    try {
+      await expect(prisma.$transaction((transaction) => (
+        routeGroupingService(prisma).saveDraftInTransaction(
+          transaction,
+          multiChildDraftInput(fixture, 'must-roll-back'),
+        )
+      ))).rejects.toThrow('synthetic later child sync failure');
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'DROP TRIGGER IF EXISTS dsv_operational_test_fail_later_child_sync_trigger ON dsv_execution_contexts',
+      );
+      await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS dsv_operational_test_fail_later_child_sync()');
+    }
+
+    await expect(readPublishedMultiChildState(prisma, fixture)).resolves.toEqual(before);
   });
 
   test('returns one durable result when the same start command arrives simultaneously', async () => {
@@ -1520,6 +1617,111 @@ type OperationalFixture = {
   warningId: string;
 };
 
+type PublishedMultiChildFixture = {
+  childVersionIds: string[];
+  contextIds: string[];
+  groupingId: string;
+  orderIds: string[];
+  routePlanIds: string[];
+  routes: Array<{ childVersionId: string; contextId: string; orderId: string; routePlanId: string }>;
+  shopDomain: string;
+  shopId: string;
+};
+
+function routeGroupingService(prisma: PrismaClient): PrismaRouteGroupingService {
+  return new PrismaRouteGroupingService(
+    prisma,
+    new FakeDriverPushProvider(),
+    undefined,
+    undefined,
+    {
+      buildRoute: () => Promise.resolve({
+        routeGeometry: { coordinates: [[127.01, 37.49], [127.00, 37.50]], type: 'LineString' },
+        routeMetrics: { distanceMeters: 1, durationSeconds: 1 },
+        routeStopPoints: [],
+      }),
+    },
+  );
+}
+
+function multiChildDraftInput(fixture: PublishedMultiChildFixture, labelPrefix: string) {
+  return {
+    appId: 'clever',
+    groupingId: fixture.groupingId,
+    mode: 'MANUAL_ORDER' as const,
+    routes: fixture.routes.map((route) => ({
+      branchId: null,
+      label: `${labelPrefix}-${route.routePlanId}`,
+      orderIds: [route.orderId],
+      routeKey: `routePlan:${route.routePlanId}`,
+      routePlanId: route.routePlanId,
+    })),
+    shopDomain: fixture.shopDomain,
+  };
+}
+
+async function readExecutionVersions(prisma: PrismaClient, contextIds: string[]) {
+  return prisma.dsvExecutionContext.findMany({
+    orderBy: { id: 'asc' },
+    select: {
+      assignmentEpoch: true,
+      contentSnapshot: true,
+      id: true,
+      routePlanId: true,
+      routeVersion: true,
+      status: true,
+    },
+    where: { id: { in: contextIds } },
+  });
+}
+
+async function readPublishedMultiChildState(prisma: PrismaClient, fixture: PublishedMultiChildFixture) {
+  const commandNames = fixture.routePlanIds.map((id) => `SYNC_ROUTE_EXECUTION:${id}`);
+  const [children, contexts, grouping, notifications, orders, receipts, routes, stops] = await Promise.all([
+    prisma.routeGroupingChildVersion.findMany({
+      orderBy: { id: 'asc' },
+      select: { driverId: true, id: true, publishedAt: true, routePlanId: true, snapshot: true, status: true, supersededAt: true },
+      where: { groupingId: fixture.groupingId },
+    }),
+    readExecutionVersions(prisma, fixture.contextIds),
+    prisma.routeGrouping.findUniqueOrThrow({ select: { status: true }, where: { id: fixture.groupingId } }),
+    prisma.dsvOperationalNotification.findMany({
+      orderBy: { id: 'asc' },
+      select: {
+        assignmentEpoch: true,
+        businessStatus: true,
+        executionContextId: true,
+        id: true,
+        kind: true,
+        logicalKey: true,
+        routeVersion: true,
+      },
+      where: { executionContextId: { in: fixture.contextIds } },
+    }),
+    prisma.order.findMany({
+      orderBy: { id: 'asc' },
+      select: { currentRouteVersionId: true, id: true },
+      where: { id: { in: fixture.orderIds } },
+    }),
+    prisma.dsvExecutionCommand.findMany({
+      orderBy: { id: 'asc' },
+      select: { commandId: true, commandName: true, id: true, result: true },
+      where: { commandName: { in: commandNames }, shopId: fixture.shopId },
+    }),
+    prisma.routePlan.findMany({
+      orderBy: { id: 'asc' },
+      select: { assignmentGeneration: true, driverId: true, id: true, name: true, status: true, vehicleId: true },
+      where: { id: { in: fixture.routePlanIds } },
+    }),
+    prisma.routePlanStop.findMany({
+      orderBy: [{ routePlanId: 'asc' }, { sequence: 'asc' }],
+      select: { deliveryStopId: true, etaInputRouteVersionId: true, routePlanId: true, sequence: true },
+      where: { routePlanId: { in: fixture.routePlanIds } },
+    }),
+  ]);
+  return { children, contexts, grouping, notifications, orders, receipts, routes, stops };
+}
+
 function commandService(prisma: PrismaClient): PrismaDsvExecutionCommandsService {
   return new PrismaDsvExecutionCommandsService(prisma, new PrismaDriverEventRepository(prisma));
 }
@@ -1730,6 +1932,106 @@ async function prepareLiveNotification(
 
 async function makeGeofenceJobDue(prisma: PrismaClient, jobId: string, at: Date): Promise<void> {
   await prisma.dsvGeofenceJob.update({ data: { nextAttemptAt: at }, where: { id: jobId } });
+}
+
+async function createPublishedMultiChildFixture(
+  prisma: PrismaClient,
+  createdShopIds: string[],
+  name: string,
+): Promise<PublishedMultiChildFixture> {
+  const first = await createOperationalFixture(prisma, createdShopIds, `${name}-first`);
+  const second = await createSiblingPublishedRoute(prisma, first, `${name}-second`);
+  const [firstChild, secondChild] = await Promise.all([
+    prisma.routeGroupingChildVersion.findUniqueOrThrow({
+      select: { groupingId: true, groupingVersionId: true, id: true },
+      where: { id: first.childVersionId },
+    }),
+    prisma.routeGroupingChildVersion.findUniqueOrThrow({
+      select: { groupingId: true, id: true },
+      where: { id: second.childVersionId },
+    }),
+  ]);
+  await prisma.routeGroupingChildVersion.update({
+    data: { groupingId: firstChild.groupingId, groupingVersionId: firstChild.groupingVersionId },
+    where: { id: secondChild.id },
+  });
+  await prisma.routeGrouping.delete({ where: { id: secondChild.groupingId } });
+  await prisma.routeGroupingOrder.createMany({
+    data: [
+      {
+        deliveryStopId: first.stopId,
+        groupingId: firstChild.groupingId,
+        orderId: first.orderId,
+        shopId: first.shopId,
+        sourceSequence: 1,
+      },
+      {
+        deliveryStopId: second.stopId,
+        groupingId: firstChild.groupingId,
+        orderId: second.orderId,
+        shopId: first.shopId,
+        sourceSequence: 2,
+      },
+    ],
+  });
+  await prisma.shop.update({
+    data: {
+      defaultDepotAddress: 'Synthetic multi-child depot',
+      defaultDepotLatitude: '37.4900000',
+      defaultDepotLongitude: '127.0100000',
+    },
+    where: { id: first.shopId },
+  });
+  await prisma.dsvExecutionContext.delete({ where: { id: first.contextId } });
+  const firstPublication = await prisma.$transaction((transaction) => (
+    new PrismaDsvExecutionContextService(transaction).syncForRoute({
+      commandId: randomUUID(),
+      firstPublication: true,
+      now: new Date('2026-10-06T00:00:00.000Z'),
+      previousPublishedAt: null,
+      routePlanId: first.routePlanId,
+      shopId: first.shopId,
+      tripIntent: 'INITIAL_EXECUTION',
+    })
+  ));
+  const secondPublication = await prisma.$transaction((transaction) => (
+    new PrismaDsvExecutionContextService(transaction).syncForRoute({
+      commandId: randomUUID(),
+      firstPublication: true,
+      now: new Date('2026-10-06T00:01:00.000Z'),
+      previousPublishedAt: null,
+      routePlanId: second.routePlanId,
+      shopId: first.shopId,
+      tripIntent: 'NEW_EXECUTION',
+    })
+  ));
+  if (firstPublication.executionContextId === null || secondPublication.executionContextId === null) {
+    throw new Error('Published multi-child fixture did not create both execution contexts.');
+  }
+  const routes = [
+    {
+      childVersionId: first.childVersionId,
+      contextId: firstPublication.executionContextId,
+      orderId: first.orderId,
+      routePlanId: first.routePlanId,
+    },
+    {
+      childVersionId: second.childVersionId,
+      contextId: secondPublication.executionContextId,
+      orderId: second.orderId,
+      routePlanId: second.routePlanId,
+    },
+  ];
+  return {
+    childVersionIds: routes.map(({ childVersionId }) => childVersionId),
+    contextIds: routes.map(({ contextId }) => contextId),
+    groupingId: firstChild.groupingId,
+    orderIds: routes.map(({ orderId }) => orderId),
+    routePlanIds: routes.map(({ routePlanId }) => routePlanId),
+    routes,
+    shopDomain: first.shopDomain,
+    shopId: first.shopId,
+  };
 }
 
 async function createSiblingPublishedRoute(

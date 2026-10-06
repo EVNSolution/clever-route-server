@@ -73,6 +73,7 @@ import {
   archiveDeletedRouteGroupingChildMembership,
   releaseRouteVersionOrderOwnership,
   replaceCurrentRouteGroupingChildVersion,
+  syncPublishedRouteGroupingChildExecution,
   syncRoutePlanStopsPreservingRows
 } from '../route-grouping/route-grouping.service.js';
 import { RouteGroupingValidationError } from '../route-grouping/route-grouping.types.js';
@@ -1809,6 +1810,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       }
 
       const orderedOrders = normalizedStops.map((stop) => ordersByGid.get(stop.shopifyOrderGid)!);
+      let executionSyncTarget: { childId: string; publishedAt: Date | null } | null = null;
       if (currentGroupingChild !== null) {
         const boundOrderIds = (routePlan.routeStops ?? []).map((stop) => stop.deliveryStop.orderId);
         const nextOrderIds = orderedOrders.map((order) => order.id);
@@ -1848,7 +1850,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         if (currentGroupingChild.snapshot === null || typeof currentGroupingChild.snapshot !== 'object' || Array.isArray(currentGroupingChild.snapshot)) {
           throw new RoutePlanStopUpdateInvalidError('Grouped route membership snapshot is malformed.');
         }
-        await replaceCurrentRouteGroupingChildVersion(tx, {
+        const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
           planning: true,
           currentChildId: currentGroupingChild.id,
           driverId: currentGroupingChild.driverId,
@@ -1872,6 +1874,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           },
           version: currentGroupingChild.version
         });
+        executionSyncTarget = { childId: nextChildVersionId, publishedAt: currentGroupingChild.publishedAt };
       }
 
       if (optimizationJobId !== null && applyingJob !== null) {
@@ -1896,6 +1899,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         if (applied.count !== 1) {
           throw new RoutePlanConflictError('Route optimization result lost its apply claim. No route stops were changed.');
         }
+      }
+      if (executionSyncTarget !== null) {
+        await syncPublishedRouteGroupingChildExecution(tx, {
+          ...executionSyncTarget,
+          routePlanId: input.routePlanId,
+          shopId: shop.id
+        });
       }
 
       return true;
@@ -2791,7 +2801,7 @@ async function updateRouteDriverWithGroupingAuthority(
     ...projectedOrders.map((order) => order.id),
     ...readRouteGroupingSnapshotOrderIds(currentChild.snapshot)
   ])];
-  await replaceCurrentRouteGroupingChildVersion(tx, {
+  const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
     currentChildId: currentChild.id,
     driverId: input.driverId,
     groupingId: currentChild.groupingId,
@@ -2807,6 +2817,12 @@ async function updateRouteDriverWithGroupingAuthority(
       input.assignmentGeneration
     ),
     version: currentChild.version
+  });
+  await syncPublishedRouteGroupingChildExecution(tx, {
+    childId: nextChildVersionId,
+    publishedAt: currentChild.publishedAt,
+    routePlanId: input.routePlanId,
+    shopId: input.shopId
   });
   return true;
 }
