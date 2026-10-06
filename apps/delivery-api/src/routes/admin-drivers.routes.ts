@@ -8,6 +8,7 @@ import {
 
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import { DsvResourceInUseError } from '../modules/dsv/dsv-resource-deletion-guard.js';
+import { DsvDriverAttributionConflictError } from '../modules/dsv/dsv-driver-attribution-lock.js';
 import type { AdminDriverServiceContract, CreatePendingDriverInput } from '../modules/driver/admin-driver.types.js';
 
 export type AdminDriversDependencies = {
@@ -50,6 +51,9 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
 
       return reply.code(201).send({ data: { driver }, error: null });
     } catch (error) {
+      if (error instanceof DsvDriverAttributionConflictError) {
+        return reply.code(409).send(errorResponse(error.code, error.message));
+      }
       request.log.error({ err: error }, 'admin driver creation failed');
       return reply.code(500).send(adminDriverStorageErrorResponse(error));
     }

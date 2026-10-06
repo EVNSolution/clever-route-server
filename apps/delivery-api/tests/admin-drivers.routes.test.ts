@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { DsvResourceInUseError } from '../src/modules/dsv/dsv-resource-deletion-guard.js';
 import type { AdminDriverRow } from '../src/modules/driver/admin-driver.types.js';
+import { DsvDriverAttributionConflictError } from '../src/modules/dsv/dsv-driver-attribution-lock.js';
 import type { AdminDriversDependencies } from '../src/routes/admin-drivers.routes.js';
 
 const pendingDriver: AdminDriverRow = {
@@ -169,6 +170,27 @@ describe('Admin drivers routes', () => {
         phone: '+821089216198',
         shopDomain: 'example.myshopify.com',
         source: 'clever-app-driver-invite'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns attribution topology exhaustion from driver creation as 409', async () => {
+    const { createPendingDriver, dependencies } = createDependencyHarness();
+    createPendingDriver.mockRejectedValueOnce(new DsvDriverAttributionConflictError());
+    const app = await buildApp({ adminDrivers: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: driverInvitePayload(),
+        url: '/admin/drivers'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ATTRIBUTION_CHANGED', message: 'Driver attribution changed. Retry the request.' }
       });
     } finally {
       await app.close();

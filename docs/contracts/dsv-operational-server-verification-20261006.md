@@ -144,7 +144,7 @@ The unchanged original-observations lane initially failed its late-storage fixtu
 - Final original observations: `original-observations-db-final-run4.log`; SHA-256 `cee96c8c5308a7413e1cfddb83cb65b2727b569a839b5778eb5c67a4b386b0c8`.
 - Original clock diagnosis: `original-observations-db-diagnostic.log`; SHA-256 `b4b6d30de50c1183f531d5e1245dcd3cc539bc4a89f2021854b1e6db47489301`.
 
-Independent code and design review verdicts: APPROVE, no unresolved source findings. Reviews include deletion/publication race semantics, immutable serviceDate, final send freshness, and the original-observations fixture correction. Final exact-commit CI is linked from PR #483 after push. The correction report and contract are part of that commit.
+The R1–R3 correction received independent code and design approval at `c3488be92d20d5daeb7604ba753ba60491969e39`. Management subsequently found the account-link/driver-delete lock inversion and withdrew that approval. Those earlier reviews are historical evidence, not the current acceptance verdict. The following account-link section records the additional correction and fresh acceptance checks.
 
 The first full correction typecheck found two test-only type errors: a mock call array typed as a one-element tuple, and an unchecked raw-query row destructure. The mock call type now permits an array; the DB assertion now checks exactly one true result row. No product type or query changed. The fresh typecheck rerun passed.
 
@@ -169,6 +169,70 @@ The three expected proof-media negative-path error logs remain; Vitest reports z
 - API build: `clever-route-server/20261006T220055.338956+0900-90465a872662-dsv-review-final-api-build/summary.json`.
 
 All disposable containers were removed. The task-owned Colima VM was stopped, and Docker context restored to its initial default. Canonical checkout and other worktrees were preserved.
+
+## Account-link and driver-delete lock correction
+
+Reviewed baseline: `c3488be92d20d5daeb7604ba753ba60491969e39`. The same PR #483 branch continues. Target #482 and change-control #310 remain linked. Management's model-level reproduction was followed by actual product-writer PostgreSQL tests.
+
+The baseline deletion guard waited in route → driver order. Admin account approval, DSV registration, DSV login auto-linking, and common invite registration updated the driver before their attribution hook waited for the route. The regression holds a conditional AFTER UPDATE trigger at a transaction advisory gate. It confirms the linking writer's lock wait, starts the actual deletion writer, confirms its lock wait, then releases the gate. It uses PostgreSQL lock state to select the reached driver; no arbitrary sleep determines transaction order.
+
+All four baseline cases reproduced Prisma P2010 with SQLSTATE `40P01` and `ERROR: deadlock detected` in deletion. The linking writer committed, while deletion failed instead of returning RESOURCE_IN_USE. The existing 44 DB cases passed. The SQLSTATE log includes the opposing transaction ShareLock waits. Each target database received the existing 113 migrations.
+
+Log root: `/Users/jiin/.codex/build-logs/dsv-account-link-locks-20261006/`.
+
+- Initial red: `account-link-delete-red.log`, 4 failed / 44 passed; SHA-256 `81754782f6f7a94f31781400ad852baf29e5dfee22c9804765697fee8d31eddc`.
+- Red with raw SQLSTATE: `account-link-delete-red-with-sqlstate.log`, 4 failed / 44 passed; SHA-256 `14b3ea71adeca98ed71f720e7e6a2e1246f831c36065a164abbbad217443922a`.
+
+These red runs are intentional defect evidence. They are not passing verification.
+
+The correction prelocks the global direct-route/ACTIVE-context route union, then the global driver union, both in UUID order. Existing accounts are held before route/driver locks. Fresh route and candidate references must be covered by the actual locked rows. Unknown references cause full rollback and at most three topology-only attempts; no driver-held transaction waits for a newly discovered route or account. SQLSTATE 40P01 and ordinary storage errors are not retried. Exhausted topology changes return ATTRIBUTION_CHANGED 409. Common invite account, linking, attribution, and session now share one transaction.
+
+Independent code review found one additional reachable attribution writer: common admin createPendingDriver updates an existing same-phone/shop driver, including DSV drivers. Its baseline changed accountId without synchronizing execution. Actual PostgreSQL reproduced epoch 1 and a null execution recipient after successful account linking. The existing row branch now uses sorted current/target account advisory and row locks before route/driver locks. It rereads both account references and rejects changed hints without acquiring late account locks. A per-invocation UUID is reused only within topology retry; it prevents an old receipt from suppressing A→B→A relinking. Same-account calls create no epoch, intent, or synchronization receipt. New-driver creation retains its existing behavior. Both common admin and Route Ops JSON APIs map topology exhaustion to 409.
+
+- Common admin red: `admin-existing-account-link-red.log`, 1 failed / 52 passed; SHA-256 `f198fbbeafa35d134c70c87ce02dfdf26446c7d40300e76bd4e32095618c1bb4`.
+- Four-path correction green with refresh and rollback: `account-link-delete-green-final.log`, 52/52; SHA-256 `bd318589c04697f0dcc120e3e47babfa734dea135f261447b78f43def8160714`.
+- Final dedicated lane including common admin and A→B→A: `admin-existing-account-link-green.log`, 54/54; SHA-256 `3370a7b2a6fd67ac84f3fa8b91dcfe2669afba17d164996f5853b46729c8ad89`.
+- Final dedicated lane with complete rollback row snapshots and single-audit assertion: `atomic-snapshots-final.log`, 54/54; SHA-256 `403815c1667fd1c0c648d3eb80378016c71e828dc8a5730225bb719384fc8f2a`.
+
+The final lane invokes actual product repositories/services. It covers admin approval, DSV registration/login/refresh, common invite registration, and common admin existing-row registration against deletion. Linking succeeds; deletion returns RESOURCE_IN_USE, whose HTTP 409 mapping is also tested at the API boundary. No normal race returns a deadlock error. Reverse driver/route UUID fixtures verify the global ordering. A transaction-client proxy pauses after a completed real topology query; an independent route insert commits before linking resumes. The actual account-approval writer rolls back and succeeds on its second complete transaction attempt, with one audit, one epoch increment, and one N01. A conditional trigger rejects the second driver's N01 in signup/invite tests; account, session, driver/profile, contexts, route state, intents, and receipts all retain their pre-call state. A→B→A tests verify epoch 2/3, recipient-specific N03/N01, two distinct command receipts, and unchanged state on same-account repetition.
+
+Test development initially exceeded an existing account name column limit. Synthetic names now fit that limit; phone and invite inputs use each API's accepted format. Two exploratory green runs are not counted as passing evidence. One also timed out an unchanged geofence case under concurrent validation; the cause was not established. The sequential fresh run passed with its original timeout and assertions. Synthetic credential literals use the scanner's existing fixture prefix rules; no scanner rule or secret allowlist changed.
+
+| Fresh account-link PostgreSQL check | Result |
+|---|---|
+| Complete existing disposable profile | PASS, 23 files / 294 distinct cases, including all 54 DSV cases |
+| Strengthened DSV rollback and audit lane | PASS, 54/54; complete driver, profile, route and execution-artifact snapshots; account/session counts unchanged on injected failure |
+| Original observations | PASS, 5/5; fresh 113-migration database |
+
+The final full profile used the final product source. The subsequent dedicated lane strengthened test assertions without changing product code. Its 54 cases are already included in the 294 distinct-case count. Ordinary guarded integration skips are not counted as passing database proof.
+
+- Full profile observer: `clever-route-server/20261006T225946.001495+0900-c3488be92d20-dsv-account-link-final-full-db/summary.json`; output SHA-256 `4c1ac352c001167354a17d50fbb0a1dba36957a983b30787418b587c5ed3e6e3`. One logged proof-media cleanup error is an expected negative-path assertion; the suite has zero failed tests.
+- Original observations observer: `clever-route-server/20261006T230524.690613+0900-c3488be92d20-dsv-account-link-original-db/summary.json`; output SHA-256 `9cc57eb94be48ac098a38a43d411873f1f0c6996a65f0126dccf5220124194a6`.
+
+All disposable containers were removed. The task-owned Colima instance was stopped and the initial Docker `default` context restored. The existing Homebrew database, other worktrees, production data and runtime settings were not changed.
+
+The first full typecheck found two test-adapter type errors: a generic transaction mock returned unknown, and a reduced Prisma adapter omitted the transaction array overload. The helper test now uses a generic callback wrapper with a separate call spy. The topology test now proxies the real Prisma client. Assertions and the real transaction/gate behavior remain unchanged. A fresh full typecheck passed. The final dedicated PostgreSQL lane passed 54/54 after this adapter correction.
+
+| Fresh account-link API gate | Result |
+|---|---|
+| prisma:generate | PASS, Prisma 6.19.3 fresh client |
+| lint | PASS, full API; corrected test adapters also receive fresh focused ESLint |
+| typecheck | PASS, full API and final test adapters |
+| test | PASS, 277 files / 3,255 tests; 24 files / 303 guarded or optional tests skipped |
+| build | PASS, full delivery-api TypeScript build |
+| P0 fixture | PASS, 23 distinct cases, JSON parse, frozen source-byte/SHA-256 behavioral checks |
+| Hygiene, secrets and whitespace | PASS, existing hygiene/scanner contracts and git diff --check; no scanner rules changed |
+
+API gates use a 4,096 MiB Node old-space limit. The ordinary test run logs three expected proof-media negative-path errors and reports zero failed tests. These logs are not test failures. Guarded integration skips remain separate from the disposable database proof.
+
+- Prisma: `clever-route-server/20261006T230843.588340+0900-c3488be92d20-dsv-account-link-prisma/summary.json`.
+- Full lint: `clever-route-server/20261006T230859.856222+0900-c3488be92d20-dsv-account-link-lint/summary.json`.
+- Final full typecheck: `clever-route-server/20261006T231121.670652+0900-c3488be92d20-dsv-account-link-typecheck-final/summary.json`.
+- Full tests: `clever-route-server/20261006T231149.689148+0900-c3488be92d20-dsv-account-link-test/summary.json`.
+- API build: `clever-route-server/20261006T231251.128487+0900-c3488be92d20-dsv-account-link-build/summary.json`.
+- Final adapter DB: `clever-route-server/20261006T231428.463194+0900-c3488be92d20-dsv-account-link-final-adapter-db-rerun/summary.json`; output SHA-256 `78021abd45c61d14b3724b756eed9887bc1366f6df6bfd7f0d6b23c5f676be6f`; 54/54, fresh 113 migrations. An earlier observer invocation used the wrong working-directory-relative script path and exited before creating a database; it is not counted as test proof.
+
+Independent frozen-diff code and design re-review: APPROVE, zero unresolved findings. Both reviews cover the four requested entrypoints, refresh, the additional common admin existing-driver path, global route/driver ordering, topology-only retry, failure atomicity and preserved R1–R3 behavior. Exact correction-commit CI and read-only review evidence are linked on PR #483 after commit/push; historical c3488be9 approval is not substituted for this final verification.
 
 ## Remaining release work
 

@@ -69,6 +69,7 @@ import {
   DsvDriverAccountLinkCandidateError,
   type DsvDriverAccountLinkService,
 } from '../modules/dsv/dsv-driver-account-link.service.js';
+import { DsvDriverAttributionConflictError } from '../modules/dsv/dsv-driver-attribution-lock.js';
 import {
   DsvDriverPasswordResetError,
   type DsvDriverPasswordResetService,
@@ -743,6 +744,9 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         });
         return sendData(reply, { linked });
       } catch (error) {
+        if (error instanceof DsvDriverAttributionConflictError) {
+          return sendError(reply, 409, error.code, error.message);
+        }
         if (error instanceof DsvDriverAccountLinkCandidateError) {
           return error.code === 'NOT_FOUND'
             ? sendError(reply, 404, 'DRIVER_ACCOUNT_LINK_NOT_FOUND', error.message)

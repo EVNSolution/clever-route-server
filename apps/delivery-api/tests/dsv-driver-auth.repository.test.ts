@@ -280,7 +280,13 @@ describe('Prisma DSV driver auth repository', () => {
         inviteCodeExpiresAt: null,
         phone: unlinkedAccount.phone,
       },
-      where: { accountId: null, id: 'driver-id', isStoreReviewData: false },
+      where: {
+        accountId: null,
+        displayName: unlinkedAccount.name,
+        id: 'driver-id',
+        isStoreReviewData: false,
+        status: 'ACTIVE',
+      },
     });
     expect(transaction.dsvDriverProfile.update).toHaveBeenCalledWith({
       data: { lookupName: unlinkedAccount.name },

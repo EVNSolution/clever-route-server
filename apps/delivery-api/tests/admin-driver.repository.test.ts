@@ -90,7 +90,7 @@ describe('PrismaAdminDriverRepository', () => {
         phone: '+821089216198'
       },
       include: { _count: { select: { driverEvents: true } } },
-      where: { id: 'existing-driver-id' }
+      where: { id: 'existing-driver-id', phone: '+821089216198', shopId: 'shop-id' }
     });
     expect(driver.id).toBe('existing-driver-id');
     expect(driver.displayName).toBe('Minji Kim');
@@ -119,6 +119,34 @@ describe('PrismaAdminDriverRepository', () => {
       include: { _count: { select: { driverEvents: true } } }
     });
     expect(driver).toEqual(expect.objectContaining({ authStatus: 'APP_LINKED', inviteCode: null, status: 'ACTIVE' }));
+  });
+
+  test('links an existing shop driver under account-route-driver locks and runs the attribution hook', async () => {
+    const existingDriver = driverRecord({ accountId: null, id: 'existing-driver-id' });
+    const updatedDriver = driverRecord({ accountId: 'account-id', authSubject: 'driver-existing-driver-id', id: 'existing-driver-id' });
+    const { prisma } = createPrismaHarness({ account: { id: 'account-id' }, existingDriver, updatedDriver });
+    const repository = new PrismaAdminDriverRepository(prisma as never);
+
+    await expect(repository.createPendingDriver({
+      displayName: 'Minji Kim',
+      phone: '+821089216198',
+      shopDomain: 'example.myshopify.com'
+    })).resolves.toMatchObject({ authStatus: 'APP_LINKED', id: 'existing-driver-id' });
+
+    expect(prisma.driver.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ accountId: 'account-id', authSubject: 'driver-existing-driver-id' }) as unknown,
+      where: { id: 'existing-driver-id', phone: '+821089216198', shopId: 'shop-id' }
+    }));
+    expect(prisma.dsvExecutionContext.findMany).toHaveBeenCalledWith({
+      orderBy: { routePlanId: 'asc' },
+      select: { routePlanId: true, shopId: true },
+      where: { driverId: 'existing-driver-id', status: 'ACTIVE' }
+    });
+    const sql = prisma.$queryRaw.mock.calls.map(([query]) => (query as { strings?: readonly string[] }).strings?.join(' ') ?? '');
+    expect(sql.findIndex((value) => value.includes('FROM driver_accounts account')))
+      .toBeLessThan(sql.findIndex((value) => value.includes('SELECT DISTINCT attribution_route')));
+    expect(sql.findIndex((value) => value.includes('SELECT DISTINCT attribution_route')))
+      .toBeLessThan(sql.findIndex((value) => value.includes('FROM drivers driver')));
   });
 
   test('regenerates an invite code only for the authenticated shop driver', async () => {
@@ -318,6 +346,7 @@ function createPrismaHarness(input: {
       findFirst: ReturnType<typeof vi.fn>;
       findMany: ReturnType<typeof vi.fn>;
     };
+    routePlan: Record<string, never>;
     driverSession: {
       updateMany: ReturnType<typeof vi.fn>;
     };
@@ -332,14 +361,29 @@ function createPrismaHarness(input: {
   const createdDriver = input.createdDriver ?? driverRecord();
   const queryRaw = vi.fn((query: { strings?: readonly string[] }) => {
     const sql = query.strings?.join(' ') ?? '';
+    if (sql.includes('FROM driver_accounts account')) {
+      return Promise.resolve(input.account === undefined || input.account === null ? [] : [{ id: input.account.id }]);
+    }
+    if (sql.includes('SELECT DISTINCT attribution_route')) {
+      return Promise.resolve(input.activeExecution === undefined || input.activeExecution === null
+        ? []
+        : [{ id: input.activeExecution.routePlanId }]);
+    }
     if (sql.includes('SELECT DISTINCT resource_route')) {
       return Promise.resolve(input.activeExecution === undefined || input.activeExecution === null
         ? []
         : [{ id: input.activeExecution.routePlanId }]);
     }
-    if (sql.includes('FROM drivers driver')) return Promise.resolve([{ id: 'driver-id' }]);
     if (sql.includes('AS blocked')) {
       return Promise.resolve([{ blocked: input.activeExecution !== undefined && input.activeExecution !== null }]);
+    }
+    if (sql.includes('FROM route_plans route_plan')) {
+      return Promise.resolve(input.activeExecution === undefined || input.activeExecution === null
+        ? []
+        : [{ id: input.activeExecution.routePlanId }]);
+    }
+    if (sql.includes('FROM drivers driver')) {
+      return Promise.resolve([{ id: input.existingDriver?.id ?? 'driver-id' }]);
     }
     return Promise.resolve([{ locked: true }]);
   });
@@ -364,6 +408,7 @@ function createPrismaHarness(input: {
           ? []
           : [{ routePlanId: input.activeExecution.routePlanId }]))
       },
+      routePlan: {},
       driverSession: {
         updateMany: vi.fn(() => Promise.resolve({ count: 0 }))
       },

@@ -1,8 +1,15 @@
 import { syncDsvDriverAttributionHook } from './dsv-execution-hooks.js';
+import {
+  isDsvDriverAttributionOperationalTransaction,
+  lockDsvDriverAttributionAccounts,
+  lockDsvDriverAttributionTopology,
+  runWithDsvDriverAttributionRetry,
+} from './dsv-driver-attribution-lock.js';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import { normalizeDsvDriverPhone } from './dsv-driver-identity.js';
+import { lockDsvDriverAccount } from './dsv-driver-account-lock.js';
 
 export type DsvDriverAccountLinkReview = {
   accountId: string;
@@ -102,9 +109,13 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
       where: appScopedShopWhere({ shopDomain: input.shopDomain.trim().toLowerCase() }),
     });
     if (shop === null) throw new DsvDriverAccountLinkCandidateError('NOT_FOUND');
-    return this.prisma.$transaction(async (tx) => {
-      const [account, driver] = await Promise.all([
-        tx.driverAccount.findFirst({
+    return runWithDsvDriverAttributionRetry(this.prisma, async (tx) => {
+      if (isDsvDriverAttributionOperationalTransaction(tx)) {
+        await lockDsvDriverAccount(tx, input.accountId);
+        await lockDsvDriverAttributionAccounts(tx, [input.accountId]);
+      }
+      const lockProof = await lockDsvDriverAttributionTopology(tx, [input.driverId]);
+      const account = await tx.driverAccount.findFirst({
           select: { id: true, isStoreReviewAccount: true, name: true, phone: true, status: true },
           where: {
             drivers: { none: { dsvProfile: { isNot: null }, status: 'ACTIVE' } },
@@ -113,12 +124,11 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
             name: { not: null },
             status: 'ACTIVE',
           },
-        }),
-        tx.driver.findFirst({
+        });
+      const driver = await tx.driver.findFirst({
           select: { accountId: true, displayName: true, id: true, isStoreReviewData: true, phone: true, status: true },
           where: { accountId: null, dsvProfile: { isNot: null }, id: input.driverId, isStoreReviewData: false, shopId: shop.id, status: 'ACTIVE' },
-        }),
-      ]);
+        });
       if (account === null || account.name === null || driver === null) {
         throw new DsvDriverAccountLinkCandidateError('NOT_FOUND');
       }
@@ -168,7 +178,11 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
           shopId: shop.id,
         },
       });
-      await syncDsvDriverAttributionHook(tx, { driverId: driver.id, commandId: `account-link:${input.requestId}:${account.id}` });
+      await syncDsvDriverAttributionHook(tx, {
+        driverId: driver.id,
+        commandId: `account-link:${input.requestId}:${account.id}`,
+        lockProof,
+      });
       return { accountId: account.id, driverId: driver.id };
     });
   }

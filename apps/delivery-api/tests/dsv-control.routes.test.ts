@@ -27,6 +27,7 @@ import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-can
 import { DsvCustomerAccountServiceError, type DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
 import type { DsvAdminOperatorInvitationService } from '../src/modules/dsv/dsv-admin-account-invitations.service.js';
 import type { DsvDriverAccountLinkService } from '../src/modules/dsv/dsv-driver-account-link.service.js';
+import { DsvDriverAttributionConflictError } from '../src/modules/dsv/dsv-driver-attribution-lock.js';
 import { DsvDriverPasswordResetError, type DsvDriverPasswordResetService } from '../src/modules/dsv/dsv-driver-password-reset.service.js';
 import type { DsvStoreReviewAccess } from '../src/modules/dsv/dsv-store-review-access.js';
 
@@ -2231,6 +2232,28 @@ describe('DSV control routes', () => {
         shopDomain: 'tomatonofood.com',
       });
       expect(typeof approvalInput?.requestId).toBe('string');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns account-link attribution topology exhaustion as 409', async () => {
+    const driverAccountLinkService = createDriverAccountLinkService();
+    driverAccountLinkService.approve.mockRejectedValue(new DsvDriverAttributionConflictError());
+    const { app } = await createHarness({ driverAccountLinkService });
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { accountId: customerAccountId },
+        url: `/api/dsv/driver-account-links/${targetDriverId}/approve`,
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        data: null,
+        error: { code: 'ATTRIBUTION_CHANGED', message: 'Driver attribution changed. Retry the request.' },
+      });
     } finally {
       await app.close();
     }

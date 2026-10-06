@@ -16,6 +16,16 @@ import {
   DsvResourceInUseError,
   isResourceDeletionForeignKeyConflict,
 } from '../dsv/dsv-resource-deletion-guard.js';
+import { lockDsvDriverAccount } from '../dsv/dsv-driver-account-lock.js';
+import {
+  assertDsvAttributionAccountsPrelocked,
+  DsvDriverAttributionTopologyChangedError,
+  isDsvDriverAttributionOperationalTransaction,
+  lockDsvDriverAttributionAccounts,
+  lockDsvDriverAttributionTopology,
+  runWithDsvDriverAttributionRetry,
+} from '../dsv/dsv-driver-attribution-lock.js';
+import { syncDsvDriverAttributionHook } from '../dsv/dsv-execution-hooks.js';
 
 type AdminDriverPrismaClient = Pick<PrismaClient, '$transaction' | 'driver' | 'driverAccount' | 'driverSession' | 'shop'>;
 
@@ -71,17 +81,66 @@ export class PrismaAdminDriverRepository {
     });
 
     if (existing !== null) {
-      const driver = await this.prisma.driver.update({
-        data: {
-          accountId: account?.id ?? null,
-          authSubject: account === null ? null : `driver-${existing.id}`,
-          displayName,
-          phone: input.phone,
-          inviteCode,
-          inviteCodeExpiresAt
-        },
-        include: driverInclude,
-        where: { id: existing.id }
+      const attributionCommandId = randomUUID();
+      const driver = await runWithDsvDriverAttributionRetry(this.prisma, async (tx) => {
+        const [hintDriver, hintAccount] = await Promise.all([
+          tx.driver.findFirst({
+            select: { accountId: true, id: true },
+            where: { id: existing.id, phone: input.phone, shopId: shop.id }
+          }),
+          tx.driverAccount.findUnique({ select: { id: true }, where: { phone: input.phone } }),
+        ]);
+        if (hintDriver === null) throw new Error('Driver not found');
+        const accountIds = uniqueSorted([hintDriver.accountId, hintAccount?.id ?? null]);
+        let lockedAccountIds: readonly string[] = [];
+        if (isDsvDriverAttributionOperationalTransaction(tx)) {
+          for (const accountId of accountIds) await lockDsvDriverAccount(tx, accountId);
+          lockedAccountIds = await lockDsvDriverAttributionAccounts(tx, accountIds);
+        }
+        const lockProof = await lockDsvDriverAttributionTopology(tx, [existing.id]);
+        const freshDriver = await tx.driver.findFirst({
+          select: { accountId: true, id: true, phone: true, shopId: true },
+          where: { id: existing.id, phone: input.phone, shopId: shop.id }
+        });
+        const freshAccount = await tx.driverAccount.findUnique({
+          select: { id: true },
+          where: { phone: input.phone }
+        });
+        if (freshDriver === null) throw new Error('Driver not found');
+        if (
+          freshDriver.accountId !== hintDriver.accountId
+          || (freshAccount?.id ?? null) !== (hintAccount?.id ?? null)
+        ) {
+          throw new DsvDriverAttributionTopologyChangedError();
+        }
+        if (lockProof.status === 'LOCKED') {
+          assertDsvAttributionAccountsPrelocked(
+            lockedAccountIds,
+            uniqueSorted([freshDriver.accountId, freshAccount?.id ?? null])
+          );
+        }
+        const updated = await tx.driver.update({
+          data: {
+            accountId: freshAccount?.id ?? null,
+            authSubject: freshAccount === null ? null : `driver-${freshDriver.id}`,
+            displayName,
+            phone: input.phone,
+            inviteCode: freshAccount === null ? generateInviteCode() : null,
+            inviteCodeExpiresAt: freshAccount === null
+              ? new Date(Date.now() + INVITE_CODE_TTL_HOURS * 60 * 60 * 1000)
+              : null
+          },
+          include: driverInclude,
+          where: { id: freshDriver.id, phone: input.phone, shopId: shop.id }
+        });
+        if (freshDriver.accountId !== (freshAccount?.id ?? null)) {
+          await syncDsvDriverAttributionHook(tx, {
+            commandId: `admin-driver:${attributionCommandId}`,
+            driverId: freshDriver.id,
+            lockProof,
+          });
+        }
+        return updated;
       });
       return toAdminDriverRow(driver);
     }
@@ -227,6 +286,11 @@ export class PrismaAdminDriverRepository {
 
     return toAdminDriverRow(driver);
   }
+}
+
+function uniqueSorted(values: readonly (string | null)[]): string[] {
+  return [...new Set(values.filter((value): value is string => value !== null))]
+    .sort((left, right) => left.localeCompare(right));
 }
 
 function toAdminDriverRow(driver: DriverRecord): AdminDriverRow {

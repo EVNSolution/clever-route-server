@@ -1,5 +1,9 @@
 import type { Prisma } from '@prisma/client';
 import { closeDsvExecutionForRoute, syncDsvExecutionForRoute } from './dsv-execution-context.service.js';
+import {
+  assertDsvAttributionRoutesPrelocked,
+  type DsvDriverAttributionLockProof,
+} from './dsv-driver-attribution-lock.js';
 
 // Legacy narrow repository ports and older test doubles have no operational delegates.
 // A generated production transaction always has them; database errors still roll back its domain write.
@@ -24,7 +28,7 @@ export async function closeDsvExecutionHook(value: unknown, input: {
 }
 
 export async function syncDsvDriverAttributionHook(value: unknown, input: {
-  driverId: string; commandId: string;
+  driverId: string; commandId: string; lockProof: DsvDriverAttributionLockProof;
 }): Promise<void> {
   const tx = operationalTransaction(value);
   if (tx === null) return;
@@ -32,6 +36,7 @@ export async function syncDsvDriverAttributionHook(value: unknown, input: {
     where: { driverId: input.driverId, status: 'ACTIVE' }, orderBy: { routePlanId: 'asc' },
     select: { routePlanId: true, shopId: true },
   });
+  assertDsvAttributionRoutesPrelocked(input.lockProof, contexts.map((context) => context.routePlanId));
   for (const context of contexts) {
     await syncDsvExecutionForRoute(tx, { ...context, commandId: `${input.commandId}:${context.routePlanId}` });
   }

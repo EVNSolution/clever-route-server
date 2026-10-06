@@ -6,6 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { DsvResourceInUseError } from "../src/modules/dsv/dsv-resource-deletion-guard.js";
+import { DsvDriverAttributionConflictError } from "../src/modules/dsv/dsv-driver-attribution-lock.js";
 import type { AdminCommerceActor } from "../src/modules/commerce/admin-commerce-auth.js";
 import { loadAdminCommerceConnectionsUiDependencies } from "../src/modules/commerce/admin-commerce-connections.dependencies.js";
 import type { SafeWooCommerceConnection } from "../src/modules/commerce/commerce-connection.service.js";
@@ -4892,6 +4893,34 @@ describe("Admin WooCommerce connection UI routes", () => {
         expect.objectContaining({ appLinked: false, inviteCode: "FACE12" }),
       );
       expect(JSON.stringify(driverData)).not.toContain("authSubject");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns Route Ops driver attribution topology exhaustion as 409", async () => {
+    const createPendingDriver = vi.fn(() => Promise.reject(new DsvDriverAttributionConflictError()));
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver,
+        deleteDriver: vi.fn(),
+        listDrivers: vi.fn(() => Promise.resolve([])),
+        regenerateInviteCode: vi.fn(),
+      },
+      orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([])) },
+    });
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/drivers?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, { displayName: "Alex Driver", phone: "+14165550123" }, csrfToken),
+      });
+      expect(response.statusCode).toBe(409);
+      expect(readApiError(response)).toEqual({
+        code: "ATTRIBUTION_CHANGED",
+        message: "Driver attribution changed. Retry the request.",
+      });
     } finally {
       await app.close();
     }

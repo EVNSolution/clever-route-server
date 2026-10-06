@@ -3,6 +3,11 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { lockDsvDriverAccount } from '../dsv/dsv-driver-account-lock.js';
+import {
+  assertDsvAttributionDriversPrelocked,
+  lockDsvDriverAttributionTopology,
+  runWithDsvDriverAttributionRetry,
+} from '../dsv/dsv-driver-attribution-lock.js';
 
 export type DriverAuthPrismaClient = Pick<
   PrismaClient,
@@ -203,32 +208,57 @@ export class PrismaDriverAuthRepository {
     const pinSalt = randomBytes(16).toString('base64url');
     const pinHash = await hashPin(input.pin, pinSalt);
     const displayName = normalizeDisplayName(input.displayName);
-    const account = await this.prisma.$transaction(async (transaction) => {
+    return runWithDsvDriverAttributionRetry(this.prisma, async (transaction) => {
       const created = await transaction.driverAccount.create({
         data: { phone: input.phone, pinHash, pinSalt }
       });
-      const drivers = await transaction.driver.findMany({
+      const drivers = (await transaction.driver.findMany({
         select: { id: true },
         where: { phone: input.phone, status: 'ACTIVE' }
-      });
-      await Promise.all(drivers.map((candidate) => transaction.driver.update({
-        where: { id: candidate.id },
-        data: {
-          accountId: created.id,
-          authSubject: `driver-${candidate.id}`,
-          inviteCode: null,
-          inviteCodeExpiresAt: null,
-          phone: input.phone,
-          ...(candidate.id === driver.id && displayName !== null ? { displayName } : {})
-        }
-      })));
-      for (const candidate of drivers) {
-        await syncDsvDriverAttributionHook(transaction, { driverId: candidate.id, commandId: `account-invite:${created.id}` });
+      })).sort((left, right) => left.id.localeCompare(right.id));
+      const candidateIds = [...new Set([...drivers.map((candidate) => candidate.id), driver.id])].sort();
+      const lockProof = await lockDsvDriverAttributionTopology(transaction, candidateIds);
+      const freshDrivers = lockProof.status === 'LEGACY_UNAVAILABLE'
+        ? drivers
+        : (await transaction.driver.findMany({
+            select: { id: true },
+            where: { phone: input.phone, status: 'ACTIVE' }
+          })).sort((left, right) => left.id.localeCompare(right.id));
+      assertDsvAttributionDriversPrelocked(lockProof, freshDrivers.map((candidate) => candidate.id));
+      const freshInviteDriver = lockProof.status === 'LEGACY_UNAVAILABLE'
+        ? driver
+        : await transaction.driver.findFirst({
+            where: {
+              id: driver.id,
+              inviteCode: input.inviteCode,
+              inviteCodeExpiresAt: { gt: new Date() },
+              status: 'ACTIVE'
+            },
+            include: { shop: { select: { shopDomain: true } } }
+          });
+      if (freshInviteDriver === null || normalizeLegacyDriverPhone(freshInviteDriver.phone) !== normalizeLegacyDriverPhone(input.phone)) {
+        throw new Error('Invalid or expired invite code');
       }
-      return created;
+      for (const candidate of freshDrivers) {
+        await transaction.driver.update({
+          where: { id: candidate.id },
+          data: {
+            accountId: created.id,
+            authSubject: `driver-${candidate.id}`,
+            inviteCode: null,
+            inviteCodeExpiresAt: null,
+            phone: input.phone,
+            ...(candidate.id === driver.id && displayName !== null ? { displayName } : {})
+          }
+        });
+        await syncDsvDriverAttributionHook(transaction, {
+          driverId: candidate.id,
+          commandId: `account-invite:${created.id}`,
+          lockProof,
+        });
+      }
+      return this.createAccountSession(created.id, created.tokenVersion, transaction);
     });
-
-    return this.createAccountSession(account.id, account.tokenVersion);
   }
 
   private async createAccountSession(

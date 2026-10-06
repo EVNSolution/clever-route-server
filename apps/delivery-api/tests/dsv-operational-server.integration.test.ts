@@ -5,6 +5,9 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 import { PrismaDriverEventRepository } from '../src/modules/driver/driver-event.repository.js';
 import { PrismaAdminDriverRepository } from '../src/modules/driver/admin-driver.repository.js';
+import { PrismaDriverAuthRepository } from '../src/modules/driver/driver-auth.repository.js';
+import { PrismaDsvDriverAccountLinkService } from '../src/modules/dsv/dsv-driver-account-link.service.js';
+import { PrismaDsvDriverAuthRepository } from '../src/modules/dsv/dsv-driver-auth.repository.js';
 import { PrismaDsvExecutionContextService } from '../src/modules/dsv/dsv-execution-context.service.js';
 import { PrismaDsvGeofenceService } from '../src/modules/dsv/dsv-geofence.service.js';
 import type { DsvGeofencePolicy } from '../src/modules/dsv/dsv-geofence-policy.js';
@@ -467,6 +470,353 @@ live('DSV operational server PostgreSQL integration', () => {
       where: { commandId: `publication:${fixture.childVersionId}`, shopId: fixture.shopId },
     })).resolves.toMatchObject({ result: { outcome: 'SKIPPED_NON_DSV' } });
   }, 20_000);
+
+  test('serializes admin account approval before deletion without a driver-route lock cycle', async () => {
+    const identity = accountLinkIdentity('admin-approval');
+    const fixture = await createUnlinkedOperationalFixture(prisma, createdShopIds, 'admin-account-link-delete', identity);
+    const account = await prisma.driverAccount.create({
+      data: { name: identity.name, phone: identity.phone, status: 'ACTIVE' },
+    });
+    await expectAccountLinkDeletionRace(prisma, [fixture], 'admin-account-link', (client) => (
+      new PrismaDsvDriverAccountLinkService(client).approve({
+        accountId: account.id,
+        actorId: 'synthetic-admin',
+        driverId: fixture.driverId,
+        requestId: randomUUID(),
+        shopDomain: fixture.shopDomain,
+      })
+    ), account.id);
+  }, 30_000);
+
+  test('serializes existing admin pending-driver account attribution before deletion', async () => {
+    const identity = accountLinkIdentity('admin-existing-driver');
+    const fixture = await createUnlinkedOperationalFixture(
+      prisma,
+      createdShopIds,
+      'admin-existing-driver-account-link-delete',
+      identity,
+    );
+    const account = await prisma.driverAccount.create({
+      data: { name: identity.name, phone: identity.phone, status: 'ACTIVE' },
+    });
+
+    await expectAccountLinkDeletionRace(prisma, [fixture], 'admin-existing-driver-account-link', (client) => (
+      new PrismaAdminDriverRepository(client).createPendingDriver({
+        appId: 'clever',
+        displayName: identity.name,
+        phone: identity.phone,
+        shopDomain: fixture.shopDomain,
+      })
+    ), account.id);
+
+    const beforeRepeat = await Promise.all([
+      prisma.dsvOperationalNotification.count({ where: { executionContextId: fixture.contextId } }),
+      prisma.dsvExecutionCommand.count({ where: { shopId: fixture.shopId } }),
+    ]);
+    await new PrismaAdminDriverRepository(prisma).createPendingDriver({
+      appId: 'clever',
+      displayName: identity.name,
+      phone: identity.phone,
+      shopDomain: fixture.shopDomain,
+    });
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({ assignmentEpoch: 2n, recipientAccountId: account.id });
+    await expect(Promise.all([
+      prisma.dsvOperationalNotification.count({ where: { executionContextId: fixture.contextId } }),
+      prisma.dsvExecutionCommand.count({ where: { shopId: fixture.shopId } }),
+    ])).resolves.toEqual(beforeRepeat);
+  }, 30_000);
+
+  test('moves an existing admin pending driver from the old recipient to the matched account', async () => {
+    const identity = accountLinkIdentity('admin-reassign');
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'admin-existing-driver-reassign');
+    await addDsvResourceProfiles(prisma, fixture);
+    const replacementAccount = await prisma.driverAccount.create({
+      data: { name: identity.name, phone: identity.phone, status: 'ACTIVE' },
+    });
+    await prisma.driver.update({
+      data: { displayName: identity.name, phone: identity.phone },
+      where: { id: fixture.driverId },
+    });
+
+    await new PrismaAdminDriverRepository(prisma).createPendingDriver({
+      appId: 'clever',
+      displayName: identity.name,
+      phone: identity.phone,
+      shopDomain: fixture.shopDomain,
+    });
+
+    await expect(prisma.driver.findUniqueOrThrow({ where: { id: fixture.driverId } }))
+      .resolves.toMatchObject({ accountId: replacementAccount.id });
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({ assignmentEpoch: 2n, recipientAccountId: replacementAccount.id, status: 'ACTIVE' });
+    await expect(prisma.dsvOperationalNotification.findMany({
+      orderBy: { kind: 'asc' },
+      select: { assignmentEpoch: true, businessStatus: true, kind: true, recipientAccountId: true },
+      where: { executionContextId: fixture.contextId, kind: { in: ['N01', 'N03'] } },
+    })).resolves.toEqual([
+      {
+        assignmentEpoch: 2n,
+        businessStatus: 'OPEN',
+        kind: 'N01',
+        recipientAccountId: replacementAccount.id,
+      },
+      {
+        assignmentEpoch: 1n,
+        businessStatus: 'OPEN',
+        kind: 'N03',
+        recipientAccountId: fixture.accountId,
+      },
+    ]);
+    await expect(prisma.dsvOperationalNotification.findUniqueOrThrow({ where: { id: fixture.warningId } }))
+      .resolves.toMatchObject({ businessStatus: 'RESOLVED', recipientAccountId: fixture.accountId });
+
+    await prisma.$transaction([
+      prisma.driverAccount.update({
+        data: { phone: `+8210${randomUUID().replace(/\D/gu, '').padEnd(8, '0').slice(0, 8)}` },
+        where: { id: replacementAccount.id },
+      }),
+      prisma.driverAccount.update({ data: { phone: identity.phone }, where: { id: fixture.accountId } }),
+    ]);
+    await new PrismaAdminDriverRepository(prisma).createPendingDriver({
+      appId: 'clever',
+      displayName: identity.name,
+      phone: identity.phone,
+      shopDomain: fixture.shopDomain,
+    });
+
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({ assignmentEpoch: 3n, recipientAccountId: fixture.accountId, status: 'ACTIVE' });
+    await expect(prisma.dsvOperationalNotification.findMany({
+      orderBy: { kind: 'asc' },
+      select: { assignmentEpoch: true, businessStatus: true, kind: true, recipientAccountId: true },
+      where: {
+        executionContextId: fixture.contextId,
+        OR: [
+          { assignmentEpoch: 3n, kind: 'N01' },
+          { assignmentEpoch: 2n, kind: 'N03' },
+        ],
+      },
+    })).resolves.toEqual([
+      {
+        assignmentEpoch: 3n,
+        businessStatus: 'OPEN',
+        kind: 'N01',
+        recipientAccountId: fixture.accountId,
+      },
+      {
+        assignmentEpoch: 2n,
+        businessStatus: 'OPEN',
+        kind: 'N03',
+        recipientAccountId: replacementAccount.id,
+      },
+    ]);
+    await expect(prisma.dsvExecutionCommand.count({ where: { shopId: fixture.shopId } })).resolves.toBe(2);
+  });
+
+  test('rolls back and retries account approval when a new driver route commits after topology discovery', async () => {
+    const identity = accountLinkIdentity('admin-topology-retry');
+    const fixture = await createUnlinkedOperationalFixture(prisma, createdShopIds, 'admin-account-link-topology', identity);
+    const account = await prisma.driverAccount.create({
+      data: { name: identity.name, phone: identity.phone, status: 'ACTIVE' },
+    });
+    let releaseTopology!: () => void;
+    let topologyRead!: () => void;
+    const release = new Promise<void>((resolve) => { releaseTopology = resolve; });
+    const read = new Promise<void>((resolve) => { topologyRead = resolve; });
+    let transactionAttempts = 0;
+    let gated = false;
+    const gatedPrisma = new Proxy(prisma, {
+      get(target, property, receiver): unknown {
+        if (property !== '$transaction') return Reflect.get(target, property, receiver);
+        return <T>(operation: (tx: Prisma.TransactionClient) => Promise<T>) => target.$transaction(async (tx) => {
+          transactionAttempts += 1;
+          const gatedTx = new Proxy(tx, {
+            get(target, property, receiver): unknown {
+              if (property !== '$queryRaw') return Reflect.get(target, property, receiver);
+              return async <R>(query: Prisma.Sql): Promise<R> => {
+                const result = await target.$queryRaw<R>(query);
+                if (!gated && query.sql.includes('SELECT DISTINCT attribution_route')) {
+                  gated = true;
+                  topologyRead();
+                  await release;
+                }
+                return result;
+              };
+            },
+          });
+          return operation(gatedTx);
+        });
+      },
+    });
+    const linking = new PrismaDsvDriverAccountLinkService(gatedPrisma).approve({
+      accountId: account.id,
+      actorId: 'synthetic-admin',
+      driverId: fixture.driverId,
+      requestId: randomUUID(),
+      shopDomain: fixture.shopDomain,
+    });
+    await read;
+    const newRoute = await prisma.routePlan.create({
+      data: {
+        constraints: {},
+        driverId: fixture.driverId,
+        metrics: {},
+        name: 'Synthetic late attribution route',
+        optimizerVersion: 'dsv-operational-integration',
+        planDate: new Date('2026-10-06T00:00:00.000Z'),
+        shopId: fixture.shopId,
+        status: 'READY',
+      },
+    });
+    releaseTopology();
+    await expect(linking).resolves.toEqual({ accountId: account.id, driverId: fixture.driverId });
+    expect(transactionAttempts).toBe(2);
+    await expect(prisma.routePlan.findUnique({ where: { id: newRoute.id } })).resolves.not.toBeNull();
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({ assignmentEpoch: 2n, recipientAccountId: account.id });
+    await expect(prisma.dsvOperationalNotification.count({
+      where: { assignmentEpoch: 2n, executionContextId: fixture.contextId, kind: 'N01' },
+    })).resolves.toBe(1);
+    await expect(prisma.dsvAuditEvent.count({
+      where: {
+        entityId: fixture.driverId,
+        entityType: 'DRIVER_ACCOUNT_LINK',
+        eventType: 'DRIVER_ACCOUNT_LINK_APPROVED',
+        shopId: fixture.shopId,
+      },
+    })).resolves.toBe(1);
+  }, 30_000);
+
+  test('serializes DSV registration for multiple reverse-ordered routes before deletion', async () => {
+    const identity = accountLinkIdentity('dsv-register');
+    const fixtures = await Promise.all([
+      createUnlinkedOperationalFixture(prisma, createdShopIds, 'register-account-link-delete-a', identity, {
+        driverId: '87010600-0000-4000-8000-000000000101',
+        routePlanId: '87010600-0000-4000-8000-000000000902',
+      }),
+      createUnlinkedOperationalFixture(prisma, createdShopIds, 'register-account-link-delete-b', identity, {
+        driverId: '87010600-0000-4000-8000-000000000202',
+        routePlanId: '87010600-0000-4000-8000-000000000801',
+      }),
+    ]);
+    expect(fixtures.map(({ driverId }) => driverId).sort()).toEqual([fixtures[0].driverId, fixtures[1].driverId]);
+    expect(fixtures.map(({ routePlanId }) => routePlanId).sort()).toEqual([fixtures[1].routePlanId, fixtures[0].routePlanId]);
+    await expectAccountLinkDeletionRace(prisma, fixtures, 'dsv-register-account-link', (client) => (
+      new PrismaDsvDriverAuthRepository(client).register({
+        loginId: `register-${randomUUID()}@example.test`,
+        name: identity.name,
+        password: 'test-synthetic-password-123!',
+        phone: identity.phone,
+      })
+    ));
+  }, 30_000);
+
+  test('serializes DSV login auto-link before deletion', async () => {
+    const identity = accountLinkIdentity('dsv-login');
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'login-account-link-delete');
+    const loginId = `login-${randomUUID()}@example.test`;
+    const password = 'test-synthetic-password-123!';
+    const registered = await new PrismaDsvDriverAuthRepository(prisma).register({
+      loginId,
+      name: identity.name,
+      password,
+      phone: identity.phone,
+    });
+    await addDsvResourceProfiles(prisma, fixture);
+    await unlinkOperationalFixture(prisma, fixture, identity);
+    await expectAccountLinkDeletionRace(prisma, [fixture], 'dsv-login-account-link', (client) => (
+      new PrismaDsvDriverAuthRepository(client).login({ loginId, password })
+    ), registered.accountId);
+  }, 30_000);
+
+  test('serializes DSV refresh auto-link before deletion', async () => {
+    const identity = accountLinkIdentity('dsv-refresh');
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'refresh-account-link-delete');
+    const registered = await new PrismaDsvDriverAuthRepository(prisma).register({
+      loginId: `refresh-${randomUUID()}@example.test`,
+      name: identity.name,
+      password: 'test-synthetic-password-123!',
+      phone: identity.phone,
+    });
+    await addDsvResourceProfiles(prisma, fixture);
+    await unlinkOperationalFixture(prisma, fixture, identity);
+    await expectAccountLinkDeletionRace(prisma, [fixture], 'dsv-refresh-account-link', (client) => (
+      new PrismaDsvDriverAuthRepository(client).refresh({ refreshToken: registered.refreshToken })
+    ), registered.accountId);
+  }, 30_000);
+
+  test('serializes common invite registration for multiple reverse-ordered routes before deletion', async () => {
+    const identity = accountLinkIdentity('common-invite');
+    const inviteCode = randomUUID().replaceAll('-', '').slice(0, 6).toUpperCase();
+    const fixtures = await Promise.all([
+      createUnlinkedOperationalFixture(prisma, createdShopIds, 'invite-account-link-delete-a', identity, {
+        driverId: '87010600-0000-4000-8000-000000000303',
+        routePlanId: '87010600-0000-4000-8000-000000000704',
+      }),
+      createUnlinkedOperationalFixture(prisma, createdShopIds, 'invite-account-link-delete-b', identity, {
+        driverId: '87010600-0000-4000-8000-000000000404',
+        routePlanId: '87010600-0000-4000-8000-000000000603',
+      }),
+    ]);
+    await prisma.driver.updateMany({
+      data: { inviteCode, inviteCodeExpiresAt: new Date(Date.now() + 60_000) },
+      where: { id: { in: fixtures.map(({ driverId }) => driverId) } },
+    });
+    expect(fixtures.map(({ driverId }) => driverId).sort()).toEqual([fixtures[0].driverId, fixtures[1].driverId]);
+    expect(fixtures.map(({ routePlanId }) => routePlanId).sort()).toEqual([fixtures[1].routePlanId, fixtures[0].routePlanId]);
+    await expectAccountLinkDeletionRace(prisma, fixtures, 'common-invite-account-link', (client) => (
+      new PrismaDriverAuthRepository(client).verifyInvite({
+        displayName: identity.name,
+        inviteCode,
+        phone: identity.phone,
+        pin: '123456',
+      })
+    ));
+  }, 30_000);
+
+  test('rolls back DSV registration account, session, contexts, and intents when a later driver link fails', async () => {
+    const identity = accountLinkIdentity('dsv-register-rollback');
+    const fixtures = await createReverseOrderedUnlinkedFixtures(
+      prisma,
+      createdShopIds,
+      'register-link-rollback',
+      identity,
+      505,
+    );
+    await expectMultiDriverAccountLinkRollback(prisma, fixtures, identity, () => (
+      new PrismaDsvDriverAuthRepository(prisma).register({
+        loginId: `rr-${randomUUID()}@x.test`,
+        name: identity.name,
+        password: 'test-synthetic-password-123!',
+        phone: identity.phone,
+      })
+    ));
+  }, 30_000);
+
+  test('rolls back common invite account, session, contexts, and intents when a later driver link fails', async () => {
+    const identity = accountLinkIdentity('common-invite-rollback');
+    const inviteCode = randomUUID().replaceAll('-', '').slice(0, 6).toUpperCase();
+    const fixtures = await createReverseOrderedUnlinkedFixtures(
+      prisma,
+      createdShopIds,
+      'invite-link-rollback',
+      identity,
+      707,
+    );
+    await prisma.driver.updateMany({
+      data: { inviteCode, inviteCodeExpiresAt: new Date(Date.now() + 60_000) },
+      where: { id: { in: fixtures.map(({ driverId }) => driverId) } },
+    });
+    await expectMultiDriverAccountLinkRollback(prisma, fixtures, identity, () => (
+      new PrismaDriverAuthRepository(prisma).verifyInvite({
+        displayName: identity.name,
+        inviteCode,
+        phone: identity.phone,
+        pin: '123456',
+      })
+    ));
+  }, 30_000);
 
   test('creates one execution and N01 for simultaneous first-publication receipts', async () => {
     const fixture = await createOperationalFixture(prisma, createdShopIds, 'first-publication');
@@ -2240,6 +2590,277 @@ type OperationalFixture = {
   warningId: string;
 };
 
+type AccountLinkIdentity = { name: string; phone: string };
+
+function accountLinkIdentity(name: string): AccountLinkIdentity {
+  const localPhone = randomUUID().replace(/\D/gu, '').padEnd(8, '0').slice(0, 8);
+  return {
+    name: `Synthetic ${name.slice(0, 12)} ${randomUUID().slice(0, 8)}`,
+    phone: name.startsWith('dsv-') ? `010${localPhone}` : `+8210${localPhone}`,
+  };
+}
+
+async function createUnlinkedOperationalFixture(
+  prisma: PrismaClient,
+  createdShopIds: string[],
+  name: string,
+  identity: AccountLinkIdentity,
+  ids: { driverId?: string; routePlanId?: string } = {},
+): Promise<OperationalFixture> {
+  const fixture = await createOperationalFixture(prisma, createdShopIds, name, ids);
+  await addDsvResourceProfiles(prisma, fixture);
+  await unlinkOperationalFixture(prisma, fixture, identity);
+  return fixture;
+}
+
+async function unlinkOperationalFixture(
+  prisma: PrismaClient,
+  fixture: OperationalFixture,
+  identity: AccountLinkIdentity,
+): Promise<void> {
+  await prisma.$transaction([
+    prisma.driver.update({
+      data: { accountId: null, authSubject: null, displayName: identity.name, phone: identity.phone },
+      where: { id: fixture.driverId },
+    }),
+    prisma.dsvExecutionContext.update({
+      data: { recipientAccountId: null },
+      where: { id: fixture.contextId },
+    }),
+    prisma.dsvOperationalNotification.updateMany({
+      data: { recipientAccountId: null },
+      where: { executionContextId: fixture.contextId },
+    }),
+  ]);
+}
+
+async function createReverseOrderedUnlinkedFixtures(
+  prisma: PrismaClient,
+  createdShopIds: string[],
+  name: string,
+  identity: AccountLinkIdentity,
+  seed: number,
+): Promise<[OperationalFixture, OperationalFixture]> {
+  const driverLow = seed.toString().padStart(12, '0');
+  const driverHigh = (seed + 1).toString().padStart(12, '0');
+  const routeLow = (seed + 100).toString().padStart(12, '0');
+  const routeHigh = (seed + 101).toString().padStart(12, '0');
+  return Promise.all([
+    createUnlinkedOperationalFixture(prisma, createdShopIds, `${name}-a`, identity, {
+      driverId: `87010600-0000-4000-8000-${driverLow}`,
+      routePlanId: `87010600-0000-4000-8000-${routeHigh}`,
+    }),
+    createUnlinkedOperationalFixture(prisma, createdShopIds, `${name}-b`, identity, {
+      driverId: `87010600-0000-4000-8000-${driverHigh}`,
+      routePlanId: `87010600-0000-4000-8000-${routeLow}`,
+    }),
+  ]);
+}
+
+async function expectMultiDriverAccountLinkRollback(
+  prisma: PrismaClient,
+  fixtures: [OperationalFixture, OperationalFixture],
+  identity: AccountLinkIdentity,
+  link: () => Promise<unknown>,
+): Promise<void> {
+  const [first, second] = fixtures;
+  const before = await Promise.all([
+    prisma.driverAccount.count(),
+    prisma.driverAccountSession.count(),
+  ]);
+  const beforeFixtureState = await Promise.all(fixtures.map(async (fixture) => ({
+    driver: await prisma.driver.findUniqueOrThrow({ where: { id: fixture.driverId } }),
+    executionArtifacts: await readExecutionArtifactState(prisma, fixture.shopId),
+    profiles: await prisma.dsvDriverProfile.findMany({
+      orderBy: { driverId: 'asc' },
+      where: { driverId: fixture.driverId, shopId: fixture.shopId },
+    }),
+    route: await prisma.routePlan.findUniqueOrThrow({ where: { id: fixture.routePlanId } }),
+  })));
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION dsv_test_fail_second_account_link_intent() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW."executionContextId" = '${second.contextId}'::uuid AND NEW.kind = 'N01' THEN
+        IF NOT EXISTS (
+          SELECT 1 FROM dsv_execution_contexts
+          WHERE id = '${first.contextId}'::uuid
+            AND "assignmentEpoch" = 2
+            AND "recipientAccountId" IS NOT NULL
+        ) THEN
+          RAISE EXCEPTION 'synthetic first attribution was incomplete';
+        END IF;
+        RAISE EXCEPTION 'synthetic second attribution intent failure';
+      END IF;
+      RETURN NEW;
+    END $$
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER dsv_test_fail_second_account_link_intent_trigger
+    BEFORE INSERT ON dsv_operational_notifications
+    FOR EACH ROW EXECUTE FUNCTION dsv_test_fail_second_account_link_intent()
+  `);
+  try {
+    await expect(link()).rejects.toThrow('synthetic second attribution intent failure');
+  } finally {
+    await prisma.$executeRawUnsafe(
+      'DROP TRIGGER IF EXISTS dsv_test_fail_second_account_link_intent_trigger ON dsv_operational_notifications',
+    );
+    await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS dsv_test_fail_second_account_link_intent()');
+  }
+  await expect(prisma.driverAccount.count({ where: { phone: identity.phone } })).resolves.toBe(0);
+  await expect(Promise.all([
+    prisma.driverAccount.count(),
+    prisma.driverAccountSession.count(),
+  ])).resolves.toEqual(before);
+  for (const [index, fixture] of fixtures.entries()) {
+    await expect(Promise.all([
+      prisma.driver.findUniqueOrThrow({ where: { id: fixture.driverId } }),
+      readExecutionArtifactState(prisma, fixture.shopId),
+      prisma.dsvDriverProfile.findMany({
+        orderBy: { driverId: 'asc' },
+        where: { driverId: fixture.driverId, shopId: fixture.shopId },
+      }),
+      prisma.routePlan.findUniqueOrThrow({ where: { id: fixture.routePlanId } }),
+    ])).resolves.toEqual([
+      beforeFixtureState[index]?.driver,
+      beforeFixtureState[index]?.executionArtifacts,
+      beforeFixtureState[index]?.profiles,
+      beforeFixtureState[index]?.route,
+    ]);
+    await expect(prisma.driver.findUniqueOrThrow({ where: { id: fixture.driverId } }))
+      .resolves.toMatchObject({ accountId: null });
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({ assignmentEpoch: 1n, recipientAccountId: null, status: 'ACTIVE' });
+    await expect(prisma.dsvOperationalNotification.findMany({
+      select: { assignmentEpoch: true, businessStatus: true, kind: true, recipientAccountId: true },
+      where: { executionContextId: fixture.contextId },
+    })).resolves.toEqual([
+      { assignmentEpoch: 1n, businessStatus: 'OPEN', kind: 'N05', recipientAccountId: null },
+    ]);
+    await expect(prisma.dsvExecutionCommand.count({ where: { shopId: fixture.shopId } })).resolves.toBe(0);
+  }
+}
+
+async function expectAccountLinkDeletionRace(
+  prisma: PrismaClient,
+  fixtures: OperationalFixture[],
+  applicationPrefix: string,
+  link: (client: PrismaClient) => Promise<unknown>,
+  expectedAccountId?: string,
+): Promise<void> {
+  const linkApplication = `${applicationPrefix}-writer`;
+  const deleteApplication = `${applicationPrefix}-delete`;
+  const blockerApplication = `${applicationPrefix}-blocker`;
+  const linkClient = namedClient(linkApplication);
+  const deleteClient = namedClient(deleteApplication);
+  const blockerClient = namedClient(blockerApplication);
+  const lockFixtures = fixtures.map((fixture, index) => ({ fixture, key: 8_702_100 + index }));
+  const triggerCases = lockFixtures.map(({ fixture, key }) => (
+    `IF NEW.id = '${fixture.driverId}'::uuid THEN PERFORM pg_advisory_xact_lock(${key}); END IF;`
+  )).join('\n');
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION dsv_test_block_account_link() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF OLD."accountId" IS NULL AND NEW."accountId" IS NOT NULL THEN
+        ${triggerCases}
+      END IF;
+      RETURN NEW;
+    END $$
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER dsv_test_block_account_link_trigger
+    AFTER UPDATE OF "accountId" ON drivers
+    FOR EACH ROW EXECUTE FUNCTION dsv_test_block_account_link()
+  `);
+  let releaseGate!: () => void;
+  let gateLocked!: () => void;
+  const release = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const locked = new Promise<void>((resolve) => { gateLocked = resolve; });
+  const blocker = blockerClient.$transaction(async (transaction) => {
+    for (const { key } of lockFixtures) {
+      await transaction.$queryRaw`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(${key})`;
+    }
+    gateLocked();
+    await release;
+  }, { timeout: 25_000 });
+  await locked;
+  let linkResult: PromiseSettledResult<unknown> | undefined;
+  let deletionResult: PromiseSettledResult<void> | undefined;
+  try {
+    const linking = link(linkClient);
+    await waitForLockedApplication(prisma, linkApplication);
+    const waitingKey = await waitForWaitingAdvisoryKey(prisma, linkApplication);
+    const deletionFixture = lockFixtures.find(({ key }) => key === waitingKey)?.fixture;
+    if (deletionFixture === undefined) throw new Error(`Unexpected account-link advisory key: ${waitingKey}`);
+    const deletion = new PrismaDsvResourceService(deleteClient).deleteDriver({
+      driverId: deletionFixture.driverId,
+      principal: createDsvAdminPrincipal({ shopId: deletionFixture.shopId }),
+      shopDomain: deletionFixture.shopDomain,
+    });
+    await waitForLockedApplication(prisma, deleteApplication);
+    releaseGate();
+    [linkResult, deletionResult] = await Promise.allSettled([linking, deletion]);
+    await blocker;
+  } finally {
+    releaseGate();
+    await Promise.allSettled([blocker, linkClient.$disconnect(), deleteClient.$disconnect(), blockerClient.$disconnect()]);
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS dsv_test_block_account_link_trigger ON drivers');
+    await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS dsv_test_block_account_link()');
+  }
+
+  expect(linkResult?.status).toBe('fulfilled');
+  if (deletionResult?.status === 'rejected'
+    && deletionResult.reason instanceof Prisma.PrismaClientKnownRequestError
+    && deletionResult.reason.code === 'P2010') {
+    expect({
+      code: deletionResult.reason.code,
+      message: deletionResult.reason.message,
+      meta: deletionResult.reason.meta,
+    }).toEqual({ code: 'RESOURCE_IN_USE' });
+  }
+  expect(deletionResult).toMatchObject({ status: 'rejected', reason: { code: 'RESOURCE_IN_USE' } });
+  if (deletionResult?.status === 'rejected') {
+    expect(deletionResult.reason).not.toMatchObject({ code: 'P2010' });
+    expect(String(deletionResult.reason)).not.toContain('40P01');
+  }
+  const accountId = expectedAccountId ?? (linkResult?.status === 'fulfilled'
+    && typeof linkResult.value === 'object' && linkResult.value !== null && 'accountId' in linkResult.value
+    && typeof linkResult.value.accountId === 'string' ? linkResult.value.accountId : null);
+  expect(accountId).not.toBeNull();
+  for (const fixture of fixtures) {
+    await expect(prisma.driver.findUniqueOrThrow({ where: { id: fixture.driverId } }))
+      .resolves.toMatchObject({ accountId });
+    await expect(prisma.routePlan.findUniqueOrThrow({ where: { id: fixture.routePlanId } }))
+      .resolves.toMatchObject({ driverId: fixture.driverId });
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({ assignmentEpoch: 2n, recipientAccountId: accountId, status: 'ACTIVE' });
+    await expect(prisma.dsvOperationalNotification.findMany({
+      orderBy: [{ assignmentEpoch: 'asc' }, { kind: 'asc' }],
+      select: { assignmentEpoch: true, businessStatus: true, kind: true, recipientAccountId: true },
+      where: { executionContextId: fixture.contextId },
+    })).resolves.toEqual([
+      { assignmentEpoch: 1n, businessStatus: 'RESOLVED', kind: 'N05', recipientAccountId: null },
+      { assignmentEpoch: 2n, businessStatus: 'OPEN', kind: 'N01', recipientAccountId: accountId },
+    ]);
+  }
+}
+
+async function waitForWaitingAdvisoryKey(prisma: PrismaClient, applicationName: string): Promise<number> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const rows = await prisma.$queryRaw<Array<{ lockKey: bigint }>>`
+      SELECT lock_row.objid::bigint AS "lockKey"
+      FROM pg_locks lock_row
+      JOIN pg_stat_activity activity ON activity.pid = lock_row.pid
+      WHERE activity.application_name = ${applicationName}
+        AND lock_row.locktype = 'advisory'
+        AND lock_row.granted = false
+    `;
+    if (rows[0] !== undefined) return Number(rows[0].lockKey);
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`${applicationName} did not reach its advisory lock boundary.`);
+}
+
 async function addDsvResourceProfiles(prisma: PrismaClient, fixture: OperationalFixture): Promise<void> {
   await Promise.all([
     prisma.dsvDriverProfile.create({
@@ -2872,6 +3493,7 @@ async function createOperationalFixture(
   prisma: PrismaClient,
   createdShopIds: string[],
   name: string,
+  ids: { driverId?: string; routePlanId?: string } = {},
 ): Promise<OperationalFixture> {
   const unique = `${name}-${randomUUID()}`;
   const shopDomain = `dsv-operational-${unique}.example.test`;
@@ -2882,7 +3504,13 @@ async function createOperationalFixture(
   });
   const [driver, vehicle] = await Promise.all([
     prisma.driver.create({
-      data: { accountId: account.id, displayName: `Synthetic Driver ${name}`, shopId: shop.id, status: 'ACTIVE' },
+      data: {
+        accountId: account.id,
+        displayName: `Synthetic Driver ${name}`,
+        ...(ids.driverId === undefined ? {} : { id: ids.driverId }),
+        shopId: shop.id,
+        status: 'ACTIVE',
+      },
     }),
     prisma.vehicle.create({
       data: { label: `Synthetic Vehicle ${name}`, licensePlate: unique.slice(0, 30), shopId: shop.id, status: 'ACTIVE' },
@@ -2928,6 +3556,7 @@ async function createOperationalFixture(
       depotLatitude: '37.4900000',
       depotLongitude: '127.0100000',
       driverId: driver.id,
+      ...(ids.routePlanId === undefined ? {} : { id: ids.routePlanId }),
       metrics: {},
       name: `Synthetic Route ${name}`,
       optimizerVersion: 'dsv-operational-integration',

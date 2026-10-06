@@ -11,6 +11,7 @@ import {
 } from "../modules/commerce/admin-commerce-auth.js";
 import type { AdminDriverServiceContract } from "../modules/driver/admin-driver.types.js";
 import { DsvResourceInUseError } from "../modules/dsv/dsv-resource-deletion-guard.js";
+import { DsvDriverAttributionConflictError } from "../modules/dsv/dsv-driver-attribution-lock.js";
 import type { SafeWooCommerceConnection } from "../modules/commerce/commerce-connection.service.js";
 import type {
   AdminStoreSettings,
@@ -3156,14 +3157,21 @@ function registerRouteOpsAppRoutes(
           );
         }
         const body = readRouteOpsBodyObject(request.body);
-        await dependencies.driverService.createPendingDriver({
-          createdBy: dependencies.actor.subject,
-          displayName: readNullableJsonString(body.displayName),
-          inviteLink: null,
-          phone: readRequiredJsonString(body, "phone"),
-          shopDomain,
-          source: "clever-app-driver-invite",
-        });
+        try {
+          await dependencies.driverService.createPendingDriver({
+            createdBy: dependencies.actor.subject,
+            displayName: readNullableJsonString(body.displayName),
+            inviteLink: null,
+            phone: readRequiredJsonString(body, "phone"),
+            shopDomain,
+            source: "clever-app-driver-invite",
+          });
+        } catch (error) {
+          if (error instanceof DsvDriverAttributionConflictError) {
+            throw new WooCommerceOnboardingError(error.code, error.message, 409);
+          }
+          throw error;
+        }
         const drivers = await dependencies.driverService.listDrivers({
           shopDomain,
         });
