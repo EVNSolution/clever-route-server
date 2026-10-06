@@ -100,13 +100,19 @@ export type RoutePlanSummary = {
     longitude: number | null;
   };
   departureTime?: string | null;
+  deliveredCount?: number;
   driver?: RoutePlanDriverSummary | null;
   driverId?: string | null;
   id: string;
   itemSummary?: RouteItemSummary;
+  etaRange?: {
+    endAt: string;
+    startAt: string;
+  } | null;
   missingCoordinates: number;
   name: string;
   planDate: string;
+  publishedAt?: string | null;
   routeEndMode: RoutePlanEndMode;
   scheduledStartAt?: string | null;
   scheduledStartTimeZone?: string | null;
@@ -118,6 +124,10 @@ export type RoutePlanSummary = {
   routeMetrics?: RoutePlanRouteMetrics | null;
   status: string;
   stopsCount: number;
+  totalAmount?: {
+    amount: string;
+    currencyCode: string;
+  } | null;
   updatedAt: string;
 };
 
@@ -167,6 +177,8 @@ export type RoutePlanDetailStop = {
   phone?: string | null;
   serviceMinutes?: number | null;
   shippingPriceAmount?: string | null;
+  totalShippingPriceAmount?: string | null;
+  totalShippingPriceCurrencyCode?: string | null;
   totalPriceAmount?: string | null;
   orderId: string;
   items?: OrderItemDto[];
@@ -311,6 +323,19 @@ export type AdminRouteStopOverrideResult = {
     status: 'preserved' | 'stale';
   };
   routePlan: RoutePlanDetail;
+};
+
+export type AdminRouteStopGeometryRefreshGuard = {
+  expectedRoutePlanUpdatedAt: string;
+  expectedStopUpdatedAts: Array<{
+    deliveryStopId: string;
+    updatedAt: string;
+  }>;
+  shapeSignature: string;
+};
+
+export type AdminRouteStopOverrideRepositoryResult = AdminRouteStopOverrideResult & {
+  refreshGuard: AdminRouteStopGeometryRefreshGuard | null;
 };
 
 export type UpdateRoutePlanDriverPayload = {

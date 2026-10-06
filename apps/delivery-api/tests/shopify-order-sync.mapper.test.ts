@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import { mapShopifyOrderNodeToDeliveryInputs } from '../src/modules/shopify/order-sync.mapper.js';
-import { buildOrdersUpdatedSinceQuery } from '../src/modules/shopify/order-sync.query.js';
+import { buildOrderByIdQuery, buildOrdersUpdatedSinceQuery } from '../src/modules/shopify/order-sync.query.js';
 
 describe('buildOrdersUpdatedSinceQuery', () => {
   test('builds an updated_at paginated orders query payload', () => {
@@ -18,11 +18,32 @@ describe('buildOrdersUpdatedSinceQuery', () => {
     });
     expect(payload.query).toContain('orders(first: $first, after: $after, query: $query');
     expect(payload.query).toContain('shippingAddress');
+    expect(payload.query).toContain('email');
     expect(payload.query).toContain('coordinatesValidated');
     expect(payload.query).toContain('validationResultSummary');
     expect(payload.query).toContain('currentShippingPriceSet');
+    expect(payload.query).toContain('totalShippingPriceSet');
     expect(payload.query).toContain('paymentGatewayNames');
     expect(payload.query).toContain('tags');
+  });
+
+  test('keeps bulk and webhook refetch queries aligned with every mapped Shopify field', () => {
+    const queries = [
+      buildOrdersUpdatedSinceQuery({ first: 1, updatedSince: new Date('2026-09-08T00:00:00.000Z') }).query,
+      buildOrderByIdQuery({ id: 'gid://shopify/Order/1' }).query,
+    ];
+    const mappedFields = [
+      'id', 'legacyResourceId', 'name', 'email', 'phone', 'displayFinancialStatus',
+      'paymentGatewayNames', 'displayFulfillmentStatus', 'createdAt', 'processedAt',
+      'updatedAt', 'cancelledAt', 'note', 'tags', 'customAttributes', 'lineItems',
+      'currentTotalPriceSet', 'currentShippingPriceSet', 'totalShippingPriceSet', 'shippingAddress', 'address1',
+      'address2', 'city', 'province', 'provinceCode', 'zip', 'countryCodeV2', 'latitude',
+      'longitude', 'coordinatesValidated', 'validationResultSummary',
+    ];
+
+    for (const query of queries) {
+      for (const field of mappedFields) expect(query).toMatch(new RegExp(`\\b${field}\\b`, 'u'));
+    }
   });
 });
 
@@ -38,6 +59,12 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       currentShippingPriceSet: {
         shopMoney: {
           amount: '12.34',
+          currencyCode: 'USD'
+        }
+      },
+      totalShippingPriceSet: {
+        shopMoney: {
+          amount: '15.00',
           currencyCode: 'USD'
         }
       },
@@ -68,9 +95,16 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
     });
 
     expect(mapped.order.rawPayload.id).toBe('gid://shopify/Order/123');
+    expect(mapped.order.rawPayload).not.toHaveProperty('email');
     expect(mapped.order.rawPayload.currentShippingPriceSet).toEqual({
       shopMoney: {
         amount: '12.34',
+        currencyCode: 'USD'
+      }
+    });
+    expect(mapped.order.rawPayload.totalShippingPriceSet).toEqual({
+      shopMoney: {
+        amount: '15.00',
         currencyCode: 'USD'
       }
     });
@@ -719,4 +753,17 @@ test('uses tomatono_delivery_date attributes as ready route scope input', () => 
     })
   );
   expect(mapped.order.rawPayload).toEqual(expect.objectContaining({ deliveryDateRaw: '2026-05-18' }));
+});
+
+
+test('Shopify source order-date instant is retained independently from record creation for delayed imports', () => {
+  const mapped = mapShopifyOrderNodeToDeliveryInputs({
+    id: 'gid://shopify/Order/received-date-fixture', legacyResourceId: '1', name: '#fixture', currentTotalPriceSet: null,
+    createdAt: '2026-10-08T18:00:00Z', processedAt: '2026-10-07T02:00:00-04:00', updatedAt: '2026-10-09T18:00:00Z',
+    email: null, phone: null, displayFinancialStatus: 'PENDING', displayFulfillmentStatus: 'UNFULFILLED',
+    shippingAddress: null
+  });
+  expect(mapped.order.processedAt).toEqual(new Date('2026-10-07T06:00:00Z'));
+  expect(mapped.order.rawPayload.processedAt).toBe('2026-10-07T02:00:00-04:00');
+  expect(mapped.order.rawPayload.createdAt).toBe('2026-10-08T18:00:00Z');
 });

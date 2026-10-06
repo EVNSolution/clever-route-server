@@ -77,24 +77,26 @@ describe('PrismaDriverAuthRepository', () => {
   test('logs in with the account PIN and clears failed attempts', async () => {
     const pinSalt = 'test-salt';
     const pinHash = await derivePin('012345', pinSalt);
-    const { prisma } = createPrismaHarness({
+    const { prisma, transaction } = createPrismaHarness({
       account: accountFixture({ pinHash, pinSalt })
     });
     const repository = new PrismaDriverAuthRepository(prisma as never);
 
     const session = await repository.loginWithPin({ phone: '+14165550123', pin: '012345' });
 
-    expect(prisma.driverAccount.update).toHaveBeenCalledWith({
+    expect(transaction.driverAccount.update).toHaveBeenCalledWith({
       data: { failedPinAttempts: 0, pinLockedUntil: null },
       where: { id: 'account-id' }
     });
+    expect(transaction.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(transaction.driverAccountSession.create).toHaveBeenCalledTimes(1);
     expect(session).toMatchObject({ accountId: 'account-id', kind: 'account', tokenVersion: 0 });
   });
 
   test('locks the account for fifteen minutes after the fifth failed PIN attempt', async () => {
     const pinSalt = 'test-salt';
     const pinHash = await derivePin('012345', pinSalt);
-    const { prisma } = createPrismaHarness({
+    const { prisma, transaction } = createPrismaHarness({
       account: accountFixture({ failedPinAttempts: 4, pinHash, pinSalt })
     });
     const repository = new PrismaDriverAuthRepository(prisma as never);
@@ -102,16 +104,59 @@ describe('PrismaDriverAuthRepository', () => {
     await expect(repository.loginWithPin({ phone: '+14165550123', pin: '999999' }))
       .rejects.toThrow('Invalid phone or PIN');
 
-    expect(prisma.driverAccount.update).toHaveBeenNthCalledWith(1, {
+    expect(transaction.driverAccount.update).toHaveBeenNthCalledWith(1, {
       data: { failedPinAttempts: { increment: 1 } },
       select: { failedPinAttempts: true },
       where: { id: 'account-id' }
     });
-    expect(prisma.driverAccount.update).toHaveBeenNthCalledWith(2, {
+    expect(transaction.driverAccount.update).toHaveBeenNthCalledWith(2, {
       data: { pinLockedUntil: anyDateMatcher },
       where: { id: 'account-id' }
     });
-    expect(prisma.driverAccountSession.create).not.toHaveBeenCalled();
+    expect(transaction.driverAccountSession.create).not.toHaveBeenCalled();
+  });
+
+  test('serializes PIN login with password reset and creates the session from the post-reset account version', async () => {
+    const pinSalt = 'test-salt';
+    const pinHash = await derivePin('012345', pinSalt);
+    let releaseLock!: () => void;
+    let signalLockStarted!: () => void;
+    let resetApplied = false;
+    const lockStarted = new Promise<void>((resolve) => { signalLockStarted = resolve; });
+    const lockReleased = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const transaction = {
+      $queryRaw: vi.fn(async () => {
+        signalLockStarted();
+        await lockReleased;
+        return [{ lock: '1' }];
+      }),
+      driverAccount: {
+        findUnique: vi.fn(() => {
+          expect(resetApplied).toBe(true);
+          return Promise.resolve(accountFixture({ pinHash, pinSalt, tokenVersion: 1 }));
+        }),
+        update: vi.fn(() => Promise.resolve(accountFixture({ pinHash, pinSalt, tokenVersion: 1 })))
+      },
+      driverAccountSession: {
+        create: vi.fn(() => Promise.resolve({ id: 'post-reset-session' }))
+      }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction)),
+      driverAccount: {
+        findUnique: vi.fn(() => Promise.resolve({ id: 'account-id' }))
+      }
+    };
+    const repository = new PrismaDriverAuthRepository(prisma as never);
+
+    const login = repository.loginWithPin({ phone: '+14165550123', pin: '012345' });
+    await lockStarted;
+    expect(transaction.driverAccount.findUnique).not.toHaveBeenCalled();
+    resetApplied = true;
+    releaseLock();
+
+    await expect(login).resolves.toMatchObject({ accountId: 'account-id', tokenVersion: 1 });
+    expect(transaction.driverAccountSession.create).toHaveBeenCalledTimes(1);
   });
 
   test('refreshes an active account session without rotating its refresh token', async () => {
@@ -146,12 +191,24 @@ function createPrismaHarness(input: {
   const accountProfile = account === null ? null : { name: account.name, phone: account.phone };
   const updatedAccountProfile = updatedAccount === null ? null : { name: updatedAccount.name, phone: updatedAccount.phone };
   const transaction = {
+    $queryRaw: vi.fn(() => Promise.resolve([{ lock: '1' }])),
     driver: {
       findMany: vi.fn(() => Promise.resolve([{ id: 'driver-id' }])),
       update: vi.fn(() => Promise.resolve({ id: 'driver-id' }))
     },
     driverAccount: {
-      create: vi.fn(() => Promise.resolve(accountFixture()))
+      create: vi.fn(() => Promise.resolve(accountFixture())),
+      findUnique: vi.fn(() => Promise.resolve(account)),
+      update: vi.fn((query: { data?: { failedPinAttempts?: { increment: number } } }) =>
+        Promise.resolve(
+          query.data?.failedPinAttempts === undefined
+            ? account ?? accountFixture()
+            : { failedPinAttempts: (account?.failedPinAttempts ?? 0) + query.data.failedPinAttempts.increment }
+        )
+      )
+    },
+    driverAccountSession: {
+      create: vi.fn(() => Promise.resolve({ id: 'account-session-id' }))
     }
   };
   const prisma = {

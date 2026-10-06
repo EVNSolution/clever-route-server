@@ -1,4 +1,5 @@
 import type { ShopifyAdminGraphqlRequest } from './admin-graphql.client.js';
+import { SHOPIFY_DELIVERY_SETTINGS_FIELDS } from './order-delivery-settings.js';
 
 export type BuildOrdersUpdatedSinceQueryInput = {
   after?: string | null;
@@ -30,6 +31,7 @@ const ORDER_FIELDS = `#graphql
         id
         legacyResourceId
         name
+        email
         phone
         displayFinancialStatus
         paymentGatewayNames
@@ -65,6 +67,12 @@ const ORDER_FIELDS = `#graphql
             currencyCode
           }
         }
+        totalShippingPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
         shippingAddress {
           name
           phone
@@ -84,6 +92,7 @@ const ORDER_FIELDS = `#graphql
 
 export const ORDERS_UPDATED_SINCE_QUERY = `#graphql
   query CleverDeliveryOrdersUpdatedSince($first: Int!, $after: String, $query: String!) {
+${SHOPIFY_DELIVERY_SETTINGS_FIELDS}
     orders(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
       nodes {
 ${ORDER_FIELDS}      }
@@ -97,6 +106,7 @@ ${ORDER_FIELDS}      }
 
 export const ORDER_BY_ID_QUERY = `#graphql
   query CleverDeliveryOrderById($id: ID!) {
+${SHOPIFY_DELIVERY_SETTINGS_FIELDS}
     node(id: $id) {
       ... on Order {
 ${ORDER_FIELDS}      }

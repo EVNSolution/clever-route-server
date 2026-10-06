@@ -1,9 +1,16 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import {
   ROUTE_DRIVER_OPERATIONAL_STATUSES,
-  ROUTE_DRIVER_VISIBLE_STATUSES
+  ROUTE_DRIVER_VISIBLE_STATUSES,
+  toRouteExecutionStatus
 } from '../route-plans/route-plan-lifecycle.js';
+import {
+  hasDeliveryNavigationGraceExpired,
+  KFOOD_DELIVERY_APP_ID,
+  KFOOD_DELIVERY_SHOP_DOMAIN
+} from '../route-plans/kfood-delivery-completion.js';
 
 export type DriverTokenAccessPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount' | 'routePlan'>;
 
@@ -33,7 +40,10 @@ export type DriverRouteAccessScope = {
 };
 
 export class PrismaDriverTokenAccessRepository {
-  constructor(private readonly prisma: DriverTokenAccessPrismaClient) {}
+  constructor(
+    private readonly prisma: DriverTokenAccessPrismaClient,
+    private readonly now: () => Date = () => new Date()
+  ) {}
 
   async isDriverAccountAccessTokenActive(input: DriverAccountTokenAccessCheckInput): Promise<boolean> {
     const account = await this.prisma.driverAccount.findUnique({
@@ -69,6 +79,10 @@ export class PrismaDriverTokenAccessRepository {
 
     const routePlan = await this.prisma.routePlan.findFirst({
       select: {
+        assignmentGeneration: true,
+        deliveryWorkCompletedAt: true,
+        deliveryWorkCompletedGeneration: true,
+        deliveryWorkCompletedVersionId: true,
         driver: {
           select: {
             account: { select: { isStoreReviewAccount: true } },
@@ -76,11 +90,20 @@ export class PrismaDriverTokenAccessRepository {
           }
         },
         id: true,
+        driverNavigationUntil: true,
         isStoreReviewData: true,
-        shop: { select: { id: true, shopDomain: true } }
+        routeGroupingChildVersions: {
+          orderBy: { updatedAt: 'desc' as const },
+          select: { publishedAt: true },
+          take: 1,
+          where: { status: 'CURRENT' as const, supersededAt: null }
+        },
+        shop: { select: { appId: true, id: true, shopDomain: true } },
+        status: true
       },
       where: {
         id: input.routePlanId,
+        ...visibleDsvRouteWhere(),
         ...(options.allowCompleted === true
           ? { status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] } }
           : {
@@ -92,6 +115,9 @@ export class PrismaDriverTokenAccessRepository {
 
     if (
       routePlan === null ||
+      (routePlan.shop.appId === KFOOD_DELIVERY_APP_ID
+        && routePlan.shop.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
+        && hasDeliveryNavigationGraceExpired(routePlan, this.now())) ||
       routePlan.driver === null ||
       routePlan.driver.accountId !== input.accountId ||
       routePlan.driver.authSubject === null ||
@@ -102,6 +128,13 @@ export class PrismaDriverTokenAccessRepository {
 
     if ((routePlan.isStoreReviewData === true) !== (routePlan.driver.isStoreReviewData === true)
       || (routePlan.driver.isStoreReviewData === true) !== (routePlan.driver.account?.isStoreReviewAccount === true)) {
+      return null;
+    }
+
+    if (
+      toRouteExecutionStatus(routePlan.status) === 'READY'
+      && routePlan.routeGroupingChildVersions?.[0]?.publishedAt == null
+    ) {
       return null;
     }
 

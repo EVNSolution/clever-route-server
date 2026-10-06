@@ -527,21 +527,6 @@ export class DsvCustomerAccountServiceError extends Error {
   }
 }
 
-export function loadDsvCustomerAccountWebPublicOrigin(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  if (normalized === undefined || normalized === '') return undefined;
-  let url: URL;
-  try {
-    url = new URL(normalized);
-  } catch {
-    throw new Error('CLEVER_DSV_WEB_PUBLIC_URL must be an http(s) origin');
-  }
-  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username !== '' || url.password !== '' || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
-    throw new Error('CLEVER_DSV_WEB_PUBLIC_URL must be an http(s) origin');
-  }
-  return url.origin;
-}
-
 export function createCustomerSessionSubject(input: { accountId: string; activeSessionId: string }): string {
   if (!uuidPattern.test(input.accountId) || !uuidPattern.test(input.activeSessionId)) {
     throw new Error('Invalid DSV customer session subject');

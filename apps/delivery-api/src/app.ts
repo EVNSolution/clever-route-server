@@ -31,6 +31,7 @@ import { registerAdminOrdersRoutes, type AdminOrdersDependencies } from './route
 import { registerApiDocsRoutes } from './routes/api-docs.routes.js';
 import { registerDriverEventRoutes, type DriverApiDependencies } from './routes/driver-events.routes.js';
 import { registerDriverAuthRoutes, type DriverAuthDependencies } from './routes/driver-auth.routes.js';
+import { registerDriverRuntimeDiagnosticsRoutes } from './routes/driver-runtime-diagnostics.routes.js';
 import { isInvalidJsonBodyError, registerJsonBodyParser } from './routes/json-body-parser.js';
 import { registerPrivacyRoutes } from './routes/privacy.routes.js';
 import { registerHealthRoutes } from './routes/health.routes.js';
@@ -73,6 +74,7 @@ export type BuildAppOptions = {
   dsvDriverAppRelease?: DsvDriverAppReleaseDependencies;
   dsvV1Read?: DsvV1ReadDependencies;
   logger?: FastifyServerOptions['logger'];
+  trustedProxyAddresses?: string[];
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
   wooCommerceWebhook?: WooCommerceWebhookDependencies;
@@ -95,7 +97,15 @@ const dsvDispatchLoadListPaths = new Set([
 const dsvDispatchDiagnosticPath = '/api/dsv/v1/diagnostics/dispatch-load';
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: withSafeRequestLogging(options.logger ?? false) });
+  const app = Fastify({
+    logger: withSafeRequestLogging(options.logger ?? false),
+    trustProxy: (address, hop) => hop === 0
+      && (options.trustedProxyAddresses ?? []).includes(address.replace(/^::ffff:/u, '')),
+  });
+  app.addHook('onRequest', (request, reply, done) => {
+    if (isDsvPasswordResetPath(pathname(request.url))) reply.header('Cache-Control', 'no-store');
+    done();
+  });
   app.addHook('onResponse', (request, reply, done) => {
     logDsvApiSurfaceRequest(request, reply);
     logShopifyAdminApiSurfaceRequest(request, reply);
@@ -222,6 +232,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.driverAuth !== undefined) {
     registerDriverAuthRoutes(app, options.driverAuth);
+    if (options.driverAuth.diagnosticsService !== undefined) {
+      await registerDriverRuntimeDiagnosticsRoutes(app, {
+        service: options.driverAuth.diagnosticsService,
+        jwtSecret: options.driverAuth.jwtSecret,
+        ...(options.adminDrivers === undefined ? {} : { sessionTokenVerifier: options.adminDrivers.sessionTokenVerifier })
+      });
+    }
   }
 
   const dsvControl = options.dsvControl;
@@ -252,7 +269,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   if (options.shopifyAuth !== undefined) {
-    registerShopifyAuthRoutes(app, options.shopifyAuth);
+    const shopifyAuth = options.shopifyAuth;
+    await app.register(async (shopifyAuthApp) => {
+      await shopifyAuthApp.register(rateLimit, { global: false });
+      registerShopifyAuthRoutes(shopifyAuthApp, shopifyAuth);
+    });
   }
 
   if (options.shopifyWebhook !== undefined) {
@@ -339,6 +360,7 @@ function serializeRequestForLog(request: FastifyRequest): {
 export function redactSensitiveUrl(value: string): string {
   const path = pathname(value);
   if (dsvDispatchLoadListPaths.has(path) || path === dsvDispatchDiagnosticPath) return path;
+  if (isDsvPasswordResetPath(path)) return path;
   if (value.startsWith('/driver/route-map-preview/')) {
     try {
       const url = new URL(value, 'https://clever-route.local');
@@ -510,4 +532,10 @@ function pathWithQuery(url: string): string {
   } catch {
     return url;
   }
+}
+
+function isDsvPasswordResetPath(path: string): boolean {
+  return path === '/api/dsv/driver/auth/password-reset/validate'
+    || path === '/api/dsv/driver/auth/password-reset/complete'
+    || /^\/api\/dsv\/drivers\/[^/]+\/password-reset-link$/u.test(path);
 }

@@ -14,15 +14,12 @@ type ConfigRow = {
 
 const S3_REQUIRED_KEYS = [
   'DRIVER_PROOF_MEDIA_S3_BUCKET',
-  'DRIVER_PROOF_MEDIA_S3_REGION',
-  'DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID',
-  'DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY'
+  'DRIVER_PROOF_MEDIA_S3_REGION'
 ] as const;
 
 const S3_OPTIONAL_KEYS = [
   'DRIVER_PROOF_MEDIA_S3_ENDPOINT',
-  'DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE',
-  'DRIVER_PROOF_MEDIA_S3_SESSION_TOKEN'
+  'DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE'
 ] as const;
 
 export function buildDriverProofMediaEvidenceSeed(input: DriverProofMediaEvidenceSeedInput): string {
@@ -32,13 +29,14 @@ export function buildDriverProofMediaEvidenceSeed(input: DriverProofMediaEvidenc
   const rows: ConfigRow[] = [
     { name: 'Storage backend', status: code(storageBackend), note: storageBackend === 's3' ? 'production object storage selected' : 'local/dev storage; not production proof' },
     ...S3_REQUIRED_KEYS.map((key) => ({ name: code(key), status: presence(input.env[key]), note: 'required for s3 backend; value intentionally omitted' })),
+    { name: code('DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER'), status: code(normalizeBackend(input.env.DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER, 'ec2-iam-role')), note: 'EC2 IAM role temporary credentials; static AWS keys are unsupported' },
     ...S3_OPTIONAL_KEYS.map((key) => ({ name: code(key), status: presence(input.env[key]), note: 'optional s3-compatible control; value intentionally omitted' })),
     { name: code('DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS'), status: statusOrDefault(input.env.DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS, '300 default'), note: 'signed/read access lifetime; value may be non-secret but verify privately' },
-    { name: code('DRIVER_PROOF_MEDIA_RETENTION_DAYS'), status: statusOrDefault(input.env.DRIVER_PROOF_MEDIA_RETENTION_DAYS, '180 default'), note: 'cleanup retention window; value may be non-secret but verify privately' },
-    { name: code('DRIVER_PROOF_MEDIA_SCANNER_BACKEND'), status: code(scannerBackend), note: scannerBackend === 'http' ? 'scanner adapter selected' : 'scanner disabled; production evidence missing' },
+    { name: code('DRIVER_PROOF_MEDIA_RETENTION_DAYS'), status: statusOrDefault(input.env.DRIVER_PROOF_MEDIA_RETENTION_DAYS, '365 default'), note: 'cleanup retention window; value may be non-secret but verify privately' },
+    { name: code('DRIVER_PROOF_MEDIA_SCANNER_BACKEND'), status: code(scannerBackend), note: scannerBackend === 'http' ? 'optional scanner adapter selected' : 'scanner deliberately disabled; record approval privately' },
     { name: code('DRIVER_PROOF_MEDIA_SCANNER_URL'), status: presence(input.env.DRIVER_PROOF_MEDIA_SCANNER_URL), note: 'scanner endpoint value intentionally omitted' },
     { name: code('DRIVER_PROOF_MEDIA_SCANNER_BEARER_TOKEN'), status: presence(input.env.DRIVER_PROOF_MEDIA_SCANNER_BEARER_TOKEN), note: 'scanner credential value intentionally omitted' },
-    { name: code('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND'), status: code(scanMonitorBackend), note: scanMonitorBackend === 'http' ? 'scan monitor adapter selected' : 'scan monitoring disabled; production alert evidence missing' },
+    { name: code('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND'), status: code(scanMonitorBackend), note: scanMonitorBackend === 'http' ? 'optional scan monitor adapter selected' : 'scan monitoring deliberately disabled; record approval privately' },
     { name: code('DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL'), status: presence(input.env.DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL), note: 'monitor endpoint value intentionally omitted' },
     { name: code('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BEARER_TOKEN'), status: presence(input.env.DRIVER_PROOF_MEDIA_SCAN_MONITOR_BEARER_TOKEN), note: 'monitor credential value intentionally omitted' },
     { name: code('DRIVER_PROOF_MEDIA_CLEANUP_EVIDENCE_REF'), status: presence(input.env.DRIVER_PROOF_MEDIA_CLEANUP_EVIDENCE_REF), note: 'private evidence reference value intentionally omitted' }
@@ -47,7 +45,7 @@ export function buildDriverProofMediaEvidenceSeed(input: DriverProofMediaEvidenc
   return [
     '# Driver proof media production evidence seed',
     '',
-    'This seed is not proof that production storage, scanner, monitoring, or cleanup scheduler is deployed. Copy it into the approved private evidence workspace, then fill real bucket/IAM, signed URL, scanner, alerting, and scheduler evidence there.',
+    'This seed is not proof that production storage or cleanup is deployed. Copy it into the approved private evidence workspace, then fill real bucket/IAM, signed URL, upload-safety policy, and scheduler evidence there.',
     '',
     '## Source revision',
     '',
@@ -64,11 +62,11 @@ export function buildDriverProofMediaEvidenceSeed(input: DriverProofMediaEvidenc
     '',
     '## Private evidence still required',
     '',
-    '- Bucket ownership and IAM least-privilege approval',
-    '- Credential custody and rotation owner approval',
+    '- Bucket ownership, Block Public Access, disabled versioning/Object Lock, and IAM least-privilege approval',
+    '- EC2 instance profile attachment, IMDSv2-only, container hop-limit, and temporary credential evidence',
     '- Signed read URL smoke evidence with synthetic proof media',
-    '- Scanner deployment evidence plus clean/rejected scan smoke',
-    '- Scanner monitor or alert routing evidence and incident response owner',
+    '- Scanner-free risk acceptance, or HTTP scanner deployment plus clean/rejected scan smoke when http is selected',
+    '- Upload authentication, MIME allowlist, byte-signature, size-limit, and JPEG EXIF-stripping evidence',
     '- Cleanup scheduler deployment evidence and sanitized cleanup run reference',
     '- Private evidence storage location for release sign-off',
     '',

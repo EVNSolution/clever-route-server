@@ -294,6 +294,7 @@ describe('API documentation routes', () => {
         { method: 'get', path: '/api/dsv/v1/drivers' },
         { method: 'get', path: '/api/dsv/v1/map/profile' },
         { method: 'get', path: '/api/dsv/v1/operational-notifications' },
+        { method: 'get', path: '/api/dsv/v1/proof-media/:mediaId/access' },
         { method: 'get', path: '/api/dsv/v1/records' },
         { method: 'post', path: '/api/dsv/v1/seller-order-assignments/reassign' },
         { method: 'post', path: '/api/dsv/v1/seller-order-assignments/unassign' },
@@ -439,8 +440,9 @@ describe('API documentation routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('PICKUP_COMPLETED');
       expect(response.body).toContain('DriverRouteEtaSnapshot:');
-      expect(response.body).toContain('required: [deliveryDate, depot, etaSnapshot, id, name, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]');
+      expect(response.body).toContain('required: [deliveryDate, depot, etaSnapshot, id, name, routeEndMode, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]');
       expect(response.body).toMatch(/DriverAssignedRoute:[\s\S]*scheduledStartAt:[\s\S]*format: date-time/u);
+      expect(response.body).toMatch(/DriverAssignedRoute:[\s\S]*routeEndMode:[\s\S]*enum: \[END_AT_LAST_STOP, RETURN_TO_DEPOT\]/u);
       expect(response.body).toContain('etaSnapshot:');
       expect(response.body).toContain('PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null.');
       expect(response.body).toContain('clientEventId: pickup-2026-05-07T06-09-30Z');
@@ -696,6 +698,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'patch', path: '/admin/route-plans/:routePlanId/driver' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/operational-state' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/options' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/publish' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/refresh-order-data' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/start-time' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/stops' },

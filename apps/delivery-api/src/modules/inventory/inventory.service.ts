@@ -23,6 +23,7 @@ type InventoryItemRecord = OrderItemDto & { id?: string | null };
 type InventoryRouteView = {
   linkedRoutes: InventoryLinkedRouteDto[];
   routeOrderByOrderId: Map<string, number>;
+  routeOrderIds: Set<string> | null;
   routeStopsByOrderId: Map<string, InventoryRouteStopDto>;
 };
 
@@ -69,12 +70,12 @@ export class PrismaInventoryService implements InventoryService {
     return inventory === null ? null : toInventoryDto(inventory);
   }
 
-  async getInventoryOrderView(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null> {
+  async getInventoryOrderView(input: { appId?: string | undefined; inventoryId: string; routePlanId?: string; shopDomain: string }): Promise<InventoryDto | null> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return null;
     const inventory = await this.prisma.inventory.findFirst({ include: inventoryOrderViewInclude(), where: { id: input.inventoryId, shopId: shop.id } });
     if (inventory === null) return null;
-    const routeView = buildInventoryRouteView(inventory);
+    const routeView = buildInventoryRouteView(inventory, input.routePlanId);
     return toInventoryDto(inventory, routeView);
   }
 
@@ -334,11 +335,14 @@ async function createInventoryEvents(tx: InventoryBaseWriteClient, shopId: strin
 
 function toInventoryDto(
   inventory: LoadedInventory,
-  routeView: InventoryRouteView = { linkedRoutes: [], routeOrderByOrderId: new Map(), routeStopsByOrderId: new Map() }
+  routeView: InventoryRouteView = { linkedRoutes: [], routeOrderByOrderId: new Map(), routeOrderIds: null, routeStopsByOrderId: new Map() }
 ): InventoryDto {
-  const inventoryOrders = routeView.routeOrderByOrderId.size === 0
+  const selectedOrders = routeView.routeOrderIds === null
     ? inventory.orders
-    : [...inventory.orders].sort((left, right) =>
+    : inventory.orders.filter((entry) => routeView.routeOrderIds?.has(entry.orderId));
+  const inventoryOrders = routeView.routeOrderByOrderId.size === 0
+    ? selectedOrders
+    : [...selectedOrders].sort((left, right) =>
       (routeView.routeOrderByOrderId.get(left.orderId) ?? Number.MAX_SAFE_INTEGER)
       - (routeView.routeOrderByOrderId.get(right.orderId) ?? Number.MAX_SAFE_INTEGER));
   const orderIds = inventoryOrders.map((entry) => entry.orderId);
@@ -347,7 +351,9 @@ function toInventoryDto(
     createdAt: inventory.createdAt.toISOString(),
     id: inventory.id,
     itemSummary: aggregateOrderItems(items),
-    lastChange: inventory.events.map(toChangeItemDto),
+    lastChange: inventory.events
+      .filter((event) => routeView.routeOrderIds === null || routeView.routeOrderIds.has(event.orderId))
+      .map(toChangeItemDto),
     linkedRoutes: routeView.linkedRoutes,
     name: inventory.name,
     note: inventory.note,
@@ -368,6 +374,7 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, route
     deliveryDate: formatDateOnly(order.deliveryFacts[0]?.deliveryDate ?? null) ?? readDateString(raw?.deliveryDate),
     driveTimeMinutes: routeStop?.driveTimeMinutes ?? null,
     eta: routeStop?.eta ?? null,
+    estimatedArrivalAt: routeStop?.estimatedArrivalAt ?? null,
     financialStatus: order.financialStatus ?? null,
     id: orderId,
     items: getInventoryOrderItems(order),
@@ -378,6 +385,7 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, route
     paymentStatus: order.financialStatus ?? null,
     phone: readInventoryPhone(order),
     processedAt: formatDateOnly(order.processedAt),
+    processedAtInstant: order.processedAt?.toISOString() ?? null,
     recipientName: readInventoryRecipientName(order),
     routeStop,
     shopifyPaymentStatus: readString(raw?.displayFinancialStatus),
@@ -386,7 +394,7 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, route
   };
 }
 
-function buildInventoryRouteView(inventory: LoadedOrderViewInventory): InventoryRouteView {
+function buildInventoryRouteView(inventory: LoadedOrderViewInventory, routePlanId?: string): InventoryRouteView {
   const routeOrderByOrderId = new Map<string, number>();
   const routeStopsByOrderId = new Map<string, InventoryRouteStopDto>();
   const currentChildren = (inventory.routeGrouping?.childVersions ?? [])
@@ -394,8 +402,14 @@ function buildInventoryRouteView(inventory: LoadedOrderViewInventory): Inventory
     .map((child, index) => ({ child, order: readRouteChildOrder(child.snapshot, index + 1) }))
     .sort((left, right) => left.order - right.order)
     .map(({ child }) => child);
+  const selectedChildren = routePlanId === undefined
+    ? currentChildren
+    : currentChildren.filter((child) => child.routePlan?.id === routePlanId);
+  if (routePlanId !== undefined && selectedChildren.length === 0) {
+    throw new InventoryValidationError(['route plan does not belong to the inventory route group']);
+  }
   let routeOrder = 0;
-  const linkedRoutes = currentChildren.map((child) => {
+  const linkedRoutes = selectedChildren.map((child) => {
     const routePlan = child.routePlan;
     if (routePlan === null) throw new Error('unreachable');
     const stops = [...routePlan.routeStops].sort((left, right) => left.sequence - right.sequence).flatMap((stop) => {
@@ -412,11 +426,18 @@ function buildInventoryRouteView(inventory: LoadedOrderViewInventory): Inventory
       id: routePlan.id,
       name: routePlan.name,
       startTime: readDepartureTime(routePlan.constraints),
+      scheduledStartAt: readString(asRecord(routePlan.constraints)?.scheduledStartAt),
+      scheduledStartTimeZone: readString(asRecord(routePlan.constraints)?.scheduledStartTimeZone),
       stops
     };
   });
 
-  return { linkedRoutes, routeOrderByOrderId, routeStopsByOrderId };
+  return {
+    linkedRoutes,
+    routeOrderByOrderId,
+    routeOrderIds: routePlanId === undefined ? null : new Set(routeStopsByOrderId.keys()),
+    routeStopsByOrderId
+  };
 }
 
 function readRouteChildOrder(snapshotValue: unknown, fallback: number): number {
@@ -439,6 +460,7 @@ function toInventoryRouteStopDto(stop: {
   return {
     driveTimeMinutes: secondsToMinutes(stop.durationFromPreviousSeconds),
     eta: formatTimeOnly(stop.estimatedArrivalAt),
+    estimatedArrivalAt: stop.estimatedArrivalAt?.toISOString() ?? null,
     orderId,
     sequence: stop.sequence,
     stopTimeMinutes: stop.deliveryStop.serviceMinutes

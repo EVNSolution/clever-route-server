@@ -650,6 +650,23 @@ describe('Admin orders routes', () => {
     }
   });
 
+  test('ordered-date IANA zone is validated and forwarded for the authenticated shop', async () => {
+    const { dependencies, listCanonicalOrders } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+    try {
+      const response = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET',
+        url: '/admin/orders?orderedDateFrom=2026-10-06&orderedDateTo=2026-10-06&orderedDateTimeZone=America%2FToronto' });
+      expect(response.statusCode).toBe(200);
+      expect(listCanonicalOrders).toHaveBeenCalledWith({ appId: 'clever', shopDomain: 'example.myshopify.com',
+        filters: { orderedDateFrom: '2026-10-06', orderedDateTo: '2026-10-06', orderedDateTimeZone: 'America/Toronto' } });
+      listCanonicalOrders.mockClear();
+      const invalid = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET',
+        url: '/admin/orders?orderedDateTimeZone=Invalid%2FZone' });
+      expect(invalid.statusCode).toBe(400);
+      expect(listCanonicalOrders).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   test('bulk-updates selected order payment for the token shop', async () => {
     const { bulkPatchCanonicalOrderStatus, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminOrders: dependencies });

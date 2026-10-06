@@ -462,6 +462,27 @@ paths:
         '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
         '403': { $ref: '#/components/responses/DsvV1Forbidden' }
         '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/proof-media/{mediaId}/access:
+    get:
+      tags: [DSV API v1]
+      summary: Create short-lived DSV administrator access for proof media
+      operationId: getDsvV1ProofMediaAccess
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:records:read']
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/MediaId'
+      responses:
+        '200':
+          description: Store-scoped proof metadata and short-lived private object access.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1ProofMediaAccessEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
   /api/dsv/v1/drivers:
     get:
       tags: [DSV API v1]
@@ -563,9 +584,13 @@ paths:
           in: query
           required: false
           schema: { type: string, format: date }
+        - name: includeDailyRoute
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
       responses:
         '200':
-          description: Vehicle GPS trail sessions and stale-gap segments from UVIS vehicle GPS telemetry samples only.
+          description: Vehicle GPS trail sessions split at stale gaps and implausible raw jumps, with an optional daily route.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1VehicleGpsTrailHistoryEnvelope' }
@@ -1257,6 +1282,112 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/dsv/drivers/{driverId}/password-reset-link:
+    post:
+      tags: [DSV Control]
+      summary: Issue an administrator-approved DriverAccount password reset link
+      description: The selected driver must be linked to an active DriverAccount in the authenticated shop. The raw token is returned only in the URL fragment and stored only as a SHA-256 hash. A newer link revokes older pending links.
+      operationId: issueDsvDriverPasswordResetLink
+      x-clever-audience: dsv-admin-web
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - name: driverId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '201':
+          description: A 30-minute administrator link was issued. Issuance is limited to three links per DriverAccount in 15 minutes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, error]
+                properties:
+                  data:
+                    type: object
+                    required: [passwordReset]
+                    properties:
+                      passwordReset:
+                        type: object
+                        required: [expiresAt, method, setupUrl]
+                        properties:
+                          expiresAt: { type: string, format: date-time }
+                          method: { type: string, enum: [ADMIN_LINK] }
+                          setupUrl: { type: string, format: uri }
+                  error: { type: 'null' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { description: Per-account reset-link issuance limit exceeded. }
+  /api/dsv/driver/auth/password-reset/validate:
+    post:
+      tags: [DSV Driver Auth]
+      summary: Validate a DriverAccount password reset link without exposing account identity
+      operationId: validateDsvDriverPasswordResetLink
+      x-clever-audience: dsv-driver-app-and-public-reset-ui
+      x-side-effect: read
+      x-source-file: src/routes/dsv-driver-auth.routes.ts
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 43, maxLength: 43, writeOnly: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Returns only validity, method, and expiry; no DriverAccount identity fields are exposed.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401':
+          description: Malformed, unknown, expired, revoked, and consumed tokens share the same response.
+        '429': { description: Client request limit exceeded. }
+  /api/dsv/driver/auth/password-reset/complete:
+    post:
+      tags: [DSV Driver Auth]
+      summary: Consume a DriverAccount reset link and replace the password
+      description: Atomically consumes the link once, rotates the password hash and salt, clears password lockout, increments token versions, revokes account and linked-driver sessions, and preserves driver links, route assignments, and vehicle assignments.
+      operationId: completeDsvDriverPasswordReset
+      x-clever-audience: dsv-driver-app-and-public-reset-ui
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/dsv-driver-auth.routes.ts
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, token]
+              properties:
+                password: { type: string, format: password, minLength: 12, maxLength: 128, writeOnly: true }
+                token: { type: string, minLength: 43, maxLength: 43, writeOnly: true }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Password changed and all existing DriverAccount and linked legacy driver sessions revoked.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401':
+          description: Malformed, unknown, expired, revoked, and consumed tokens share the same response.
+        '409': { description: Current password reuse was rejected. }
+        '429': { description: Client request limit exceeded. }
   /api/dsv/customer/auth/invitations/validate:
     post:
       tags: [DSV Control]
@@ -2094,7 +2225,7 @@ paths:
   /shopify/auth/token-exchange:
     post:
       tags: [Shopify Embedded Admin]
-      summary: Exchange a Shopify session token and store Admin API token metadata
+      summary: Ensure a canonical Shopify offline token and return metadata only
       operationId: exchangeShopifySessionToken
       x-source-file: src/routes/shopify-auth.routes.ts
       security:
@@ -2111,7 +2242,7 @@ paths:
                   shopDomain: example.myshopify.com
       responses:
         '200':
-          description: Token material was exchanged and stored without exposing plaintext tokens.
+          description: Canonical token was reused, refreshed or acquired without exposing plaintext tokens.
           content:
             application/json:
               schema:
@@ -2133,6 +2264,57 @@ paths:
                     error:
                       code: SHOPIFY_TOKEN_EXCHANGE_FAILED
                       message: Shopify token exchange failed
+  /shopify/auth/offline-token:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Obtain the canonical offline token for a trusted app server
+      description: |
+        Server-to-server only. HMAC-SHA256 binds the canonical JSON body, timestamp,
+        method and path using the app client secret. Timestamp tolerance is 60 seconds.
+        Browser session tokens alone cannot authorize this endpoint. The response
+        contains an access token and an opaque refresh routing marker; the real
+        Shopify refresh credential never leaves the Delivery API.
+      operationId: obtainShopifyOfflineToken
+      x-source-file: src/routes/shopify-auth.routes.ts
+      security:
+        - ShopifyTokenBrokerHmac: []
+      parameters:
+        - in: header
+          name: x-clever-token-timestamp
+          required: true
+          schema: { type: string, pattern: '^\d{10}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [clientId, shopDomain, operation]
+              properties:
+                clientId: { type: string }
+                shopDomain: { type: string }
+                operation: { type: string, enum: [exchange, refresh] }
+                sessionToken:
+                  type: string
+                  description: Required for exchange; forbidden for refresh.
+      responses:
+        '200':
+          description: Canonical offline access with remaining lifetimes, always Cache-Control no-store.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, scope, refresh_token]
+                properties:
+                  access_token: { type: string }
+                  scope: { type: string }
+                  expires_in: { type: integer, minimum: 0 }
+                  refresh_token: { type: string, enum: [clever-route-managed-v1] }
+                  refresh_token_expires_in: { type: integer, minimum: 0 }
+        '401': { description: Invalid authority proof or merchant reauthorization required. }
+        '429': { description: Source IP exceeded the per-process request limit. }
+        '502': { description: Token authority temporarily unavailable. }
   /shopify/webhooks:
     post:
       tags: [Shopify Webhooks]
@@ -2210,6 +2392,17 @@ paths:
                       message: Invalid order sync payload
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Shopify installation delivery settings or shop timezone are unavailable; no snapshot orders are written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                data: null
+                error:
+                  code: SHOPIFY_DELIVERY_SETTINGS_UNAVAILABLE
+                  message: Shopify delivery settings or shop timezone are unavailable; retry synchronization.
   /admin/orders:
     get:
       tags: [Shopify Embedded Admin]
@@ -2233,6 +2426,12 @@ paths:
           in: query
           schema:
             enum: [SUNDAY, MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY]
+            type: string
+        - name: serviceCategory
+          in: query
+          description: DELIVERY includes day and evening deliveries; PICKUP includes pickups only. Omit for all categories. Combines with other filters using AND.
+          schema:
+            enum: [DELIVERY, PICKUP]
             type: string
         - name: serviceType
           in: query
@@ -3553,8 +3752,11 @@ paths:
       tags: [Shopify Embedded Admin]
       summary: Save versioned manual customer delivery email settings
       description: >-
-        Payload must include `version: 1`, `nearbyStopsThreshold`, sender
-        fields, and all five templates with `enabled`, `subject`, and `body`.
+        Legacy v1/v2 payloads must include `nearbyStopsThreshold`,
+        sender name, and all five templates with `enabled`, `subject`, and
+        `body`. The company-managed sender email may be omitted or repeated
+        with case/whitespace normalization; attempts to change it fail with
+        `CUSTOMER_EMAIL_SENDER_MANAGED`.
       operationId: saveAdminCustomerEmailSettings
       x-clever-audience: shopify-embedded-admin
       x-side-effect: write-clever-db
@@ -3567,7 +3769,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [version, senderName, senderEmail, nearbyStopsThreshold, templates]
+              required: [version, senderName, nearbyStopsThreshold, templates]
               additionalProperties: false
       responses:
         '200':
@@ -3582,10 +3784,17 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /admin/customer-email/settings/global:
     patch:
       tags: [Shopify Embedded Admin]
       summary: Patch global manual customer delivery email settings
+      description: >-
+        Uses `expectedVersion` compare-and-swap semantics. The company-managed
+        sender email may be omitted or repeated with case/whitespace
+        normalization; attempts to change it fail with
+        `CUSTOMER_EMAIL_SENDER_MANAGED`.
       operationId: patchAdminCustomerEmailGlobalSettings
       x-clever-audience: shopify-embedded-admin
       x-side-effect: write-clever-db
@@ -3596,7 +3805,13 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, additionalProperties: true }
+            schema:
+              type: object
+              properties:
+                senderEmail:
+                  type: string
+                  description: The current company-managed sender address, or the canonical empty value while unconfigured.
+              additionalProperties: true
       responses:
         '200':
           description: Saved settings envelope with `data.customerEmailSettings`.
@@ -3610,6 +3825,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /admin/customer-email/settings/templates/{signal}:
     parameters:
       - name: signal
@@ -3699,7 +3916,10 @@ paths:
     post:
       tags: [Shopify Embedded Admin]
       summary: Send an administrator-triggered test customer email
-      description: Sends only to the arbitrary test recipient in the request. The Brevo API key remains server-side.
+      description: >-
+        Requires the literal boolean `confirmed: true` before any provider
+        request. Sends only to the arbitrary test recipient in the request.
+        The Brevo API key remains server-side.
       operationId: sendAdminCustomerEmailTest
       x-clever-audience: shopify-embedded-admin
       x-side-effect: external-email-send
@@ -3712,8 +3932,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [recipientEmail]
+              required: [confirmed, recipientEmail]
               properties:
+                confirmed: { type: boolean, const: true }
                 recipientEmail: { type: string, format: email }
                 signal:
                   type: string
@@ -3822,6 +4043,35 @@ paths:
                 $ref: '#/components/schemas/GenericDataEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /admin/route-plans/{routePlanId}/publish:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Publish a route and notify its assigned driver
+      operationId: publishAdminRoutePlan
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db-and-driver-push
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      description: >-
+        Uses Shopify session authentication and optional x-clever-app-id tenant selection.
+        Does not start the route or send customer email. Repeating a sent child-version
+        publication reuses its notification receipt. SENT means provider acceptance,
+        not confirmed device receipt. A null publishedAt means publication was not confirmed.
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route publication and separate driver notification result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanPublicationEnvelope'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501':
+          description: Route publication is unavailable in this runtime.
   /admin/route-plans/{routePlanId}/refresh-order-data:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -4056,7 +4306,12 @@ paths:
     post:
       tags: [Shopify Embedded Admin]
       summary: Preview manual customer delivery email recipients for a route
-      description: Does not send email or enqueue automatic notification facts. Response is `data.preview`.
+      description: >-
+        Does not send email or enqueue automatic notification facts. Response
+        is `data.preview` and always includes a generic rendered `example`,
+        route/status exclusions, sendable/missing/status-excluded counts, and a
+        `previewToken`. The example remains available when the selected signal
+        does not apply to a completed route.
       operationId: previewAdminRoutePlanCustomerEmail
       x-clever-audience: shopify-embedded-admin
       x-side-effect: read
@@ -4091,7 +4346,17 @@ paths:
       description: >-
         Requires `confirmed: true` and `commandId`. Uses a separate manual
         dispatch audit model; it never claims existing queued
-        `CustomerRouteNotificationFact` rows.
+        `CustomerRouteNotificationFact` rows. Replaying a command performs no
+        new provider send and preserves the legacy `DUPLICATE` status and
+        counts while returning the original recipient/provider evidence in
+        `originalStatus`, `providerStatus`, `providerEventAt`, and `sentAt`.
+        Original `PENDING` or `UNKNOWN` outcomes are never treated as failed or
+        retried automatically. A supplied `previewToken` binds the route,
+        template, sender settings, and stop data while allowing a verified
+        subset of the previewed stops. Different command IDs for the same
+        route stop and signal are serialized before provider delivery. Durable
+        provider attempt evidence can recover a recipient result when the
+        recipient-row write fails.
       operationId: sendAdminRoutePlanCustomerEmail
       x-clever-audience: shopify-embedded-admin
       x-side-effect: external-email-send
@@ -4840,7 +5105,7 @@ paths:
           in: query
           required: false
           schema:
-            enum: [pending, active, completed]
+            enum: [pending, active, completed, incomplete]
             type: string
         - name: cursor
           in: query
@@ -5322,6 +5587,11 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
 components:
   securitySchemes:
+    ShopifyTokenBrokerHmac:
+      type: apiKey
+      in: header
+      name: x-clever-token-signature
+      description: App-server HMAC; see shopify-token-authority.md for canonical signing input.
     DsvSessionCookie:
       type: apiKey
       in: cookie
@@ -5688,6 +5958,13 @@ components:
           type: boolean
         commandId:
           type: string
+        missingValuesConfirmed:
+          type: boolean
+        previewToken:
+          type: string
+          pattern: '^v1:[a-f0-9]{64}$'
+        resendConfirmed:
+          type: boolean
       additionalProperties: false
     RoutesAppInstallUnavailableResponse:
       type: object
@@ -5723,6 +6000,19 @@ components:
         distributionChannel:
           type: string
           const: direct
+          deprecated: true
+          description: Legacy compatibility discriminator retained for CLEVER Routes 1.3.0 clients. Use distribution for the authoritative destination when present.
+        distribution:
+          type: object
+          required: [channel, url]
+          properties:
+            channel:
+              type: string
+              const: google_play
+            url:
+              type: string
+              format: uri
+          additionalProperties: false
         installation:
           type: object
           required:
@@ -5750,6 +6040,7 @@ components:
         installUrl:
           type: string
           format: uri
+          description: Direct installations use the server-owned guide URL; Google Play releases use the store listing URL.
         latestVersionCode:
           type: integer
           minimum: 1
@@ -7156,6 +7447,65 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DsvV1VehicleGpsTrailSession'
+        dailyRoute:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DsvV1VehicleDailyRoute'
+      additionalProperties: false
+    DsvV1VehicleDailyRoute:
+      type: object
+      description: Continuous daily line; bridge edges are unverified and do not prove travel along the connection.
+      required: [type, coordinates, anchors, bridges, sourceSampleCount]
+      properties:
+        type:
+          type: string
+          enum: [LineString]
+        coordinates:
+          type: array
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items: { type: number }
+        anchors:
+          type: array
+          items:
+            type: object
+            required: [observedAt, coordinateIndex]
+            properties:
+              observedAt: { type: string, format: date-time }
+              coordinateIndex: { type: integer, minimum: 0 }
+            additionalProperties: false
+        bridges:
+          type: array
+          items:
+            type: object
+            required: [fromObservedAt, toObservedAt, reason]
+            properties:
+              fromObservedAt: { type: string, format: date-time }
+              toObservedAt: { type: string, format: date-time }
+              reason: { type: string, enum: [GPS_GAP, IMPLAUSIBLE_JUMP, NO_MATCH] }
+              inferredTunnel:
+                type: object
+                description: Dotted-display candidate on one reviewed tunnel corridor after a later observed road witness; not observed GPS or confirmed travel.
+                required: [type, coordinates, corridorId, fromObservedAt, toObservedAt, confirmedByObservedAt, source]
+                properties:
+                  type: { type: string, enum: [LineString] }
+                  coordinates:
+                    type: array
+                    items:
+                      type: array
+                      minItems: 2
+                      maxItems: 2
+                      items: { type: number }
+                  corridorId: { type: string }
+                  fromObservedAt: { type: string, format: date-time }
+                  toObservedAt: { type: string, format: date-time }
+                  confirmedByObservedAt: { type: string, format: date-time }
+                  source: { type: string, enum: [CURATED_OSM_TUNNEL_CORRIDOR] }
+                additionalProperties: false
+            additionalProperties: false
+        sourceSampleCount: { type: integer, minimum: 2 }
       additionalProperties: false
     DsvV1DriverListPage:
       type: object
@@ -7615,6 +7965,20 @@ components:
       type: object
       required: [source, reason, orders]
       properties:
+        deliveryCycle:
+          description: Legacy snapshot hint; the Shopify runtime uses server-resolved installation settings and shop.ianaTimezone.
+          type: object
+          required: [cutoffWeekday, cutoffTime, timeZone]
+          properties:
+            cutoffWeekday:
+              type: string
+              enum: [SUNDAY, MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY]
+            cutoffTime:
+              type: string
+              pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+            timeZone:
+              type: string
+              description: IANA timezone identifier.
         source:
           const: clever-app-orders
         reason:
@@ -7778,6 +8142,21 @@ components:
             - 'null'
         name:
           type: string
+        note:
+          description: Source commerce order note. Empty string represents an explicit source-side clear.
+          type:
+            - string
+            - 'null'
+        customerNote:
+          description: Source customer profile note when supplied by the commerce source. This is distinct from delivery stop instructions.
+          type:
+            - string
+            - 'null'
+        deliveryInstructions:
+          description: Instructions attached to the canonical delivery stop.
+          type:
+            - string
+            - 'null'
         readiness:
           $ref: '#/components/schemas/CanonicalOrderReadiness'
         planningStatus:
@@ -8149,6 +8528,27 @@ components:
           properties:
             routePlan:
               $ref: '#/components/schemas/RoutePlanSummary'
+        error:
+          type: 'null'
+    RoutePlanPublicationEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [routePlan, dispatch]
+          properties:
+            routePlan:
+              $ref: '#/components/schemas/RoutePlanSummary'
+            dispatch:
+              type: object
+              required: [routePlanId, publishedAt, notificationStatus]
+              properties:
+                routePlanId: { type: string, format: uuid }
+                publishedAt: { type: [string, 'null'], format: date-time }
+                notificationStatus: { type: string, enum: [SENT, FAILED, SKIPPED] }
+                notificationErrorCode: { type: string }
+                providerMessageId: { type: string }
         error:
           type: 'null'
     RoutePlansListEnvelope:
@@ -8702,7 +9102,7 @@ components:
         error: { type: 'null' }
     DriverAssignedRoute:
       type: object
-      required: [deliveryDate, depot, etaSnapshot, id, name, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]
+      required: [deliveryDate, depot, etaSnapshot, id, name, routeEndMode, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]
       properties:
         id:
           type: string
@@ -8725,6 +9125,10 @@ components:
               type: [number, 'null']
         etaSnapshot:
           $ref: '#/components/schemas/DriverRouteEtaSnapshot'
+        routeEndMode:
+          description: Persisted plan policy that tells the driver whether the route ends at the last stop or returns to the depot.
+          enum: [END_AT_LAST_STOP, RETURN_TO_DEPOT]
+          type: string
         scheduledStartAt:
           description: Canonical scheduled route start instant used for the pre-pickup departure countdown.
           format: date-time
@@ -8974,7 +9378,7 @@ components:
           type: string
           description: Valid IANA timezone. Server falls back to UTC rather than device-local time when route config is missing.
         status:
-          enum: [pending, active, completed]
+          enum: [pending, active, completed, incomplete]
           type: string
         stopCount:
           type: integer
@@ -9203,6 +9607,7 @@ components:
           enum: [camera, library]
           type: string
         file:
+          description: One JPEG, PNG, WebP, HEIC, or HEIF image up to 10 MiB. The declared MIME type must match the file signature.
           format: binary
           type: string
     DriverProofMediaEnvelope:
@@ -9215,12 +9620,18 @@ components:
           type: 'null'
     DriverProofMediaReference:
       type: object
-      required: [contentType, kind, mediaId, source, storageKey, uploadedAt]
+      required: [contentType, deliveryStopIds, kind, mediaId, source, storageKey, uploadedAt]
       properties:
         kind:
           const: photo
         mediaId:
           type: string
+        deliveryStopIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
         storageKey:
           type: string
         contentType:
@@ -9255,6 +9666,47 @@ components:
               type: string
             expiresAt:
               format: date-time
+              type: string
+        error:
+          type: 'null'
+    DsvV1ProofMediaAccessEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [contentType, deliveryStopIds, expiresAt, kind, mediaId, sha256, sizeBytes, source, uploadedAt, url]
+          properties:
+            contentType:
+              type: string
+            deliveryStopIds:
+              type: array
+              minItems: 1
+              uniqueItems: true
+              items:
+                type: string
+            expiresAt:
+              format: date-time
+              type: string
+            kind:
+              const: photo
+            mediaId:
+              format: uuid
+              type: string
+            sha256:
+              type: string
+            sizeBytes:
+              minimum: 0
+              type: integer
+            source:
+              enum: [camera, library]
+              type: string
+            uploadedAt:
+              format: date-time
+              type: string
+            url:
+              format: uri
               type: string
         error:
           type: 'null'

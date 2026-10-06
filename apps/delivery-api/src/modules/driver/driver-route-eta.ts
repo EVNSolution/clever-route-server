@@ -304,7 +304,7 @@ function etaFailureFor(updatedStops: DriverRouteEtaStopUpdate[]): { code: string
 }
 
 function etaSnapshotFailureFor(stops: DriverRouteEtaStop[]): { code: string; message: string } | null {
-  return stops.length === 0 || stops.some((stop) => stop.estimatedArrivalAt === null)
+  return stops.some((stop) => stop.estimatedArrivalAt === null)
     ? {
         code: 'ETA_INPUT_DURATION_UNAVAILABLE',
         message: 'ETA could not be calculated because route leg durations are unavailable.'

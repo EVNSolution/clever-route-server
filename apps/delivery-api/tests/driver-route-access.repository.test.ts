@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../src/modules/dsv/dsv-test-visibility.js';
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
@@ -21,6 +22,9 @@ describe('PrismaDriverRouteAccessRepository', () => {
       select: {
         assignmentGeneration: true,
         constraints: true,
+        deliveryWorkCompletedAt: true,
+        deliveryWorkCompletedGeneration: true,
+        deliveryWorkCompletedVersionId: true,
         driver: {
           select: {
             account: { select: { id: true, isStoreReviewAccount: true, status: true, tokenVersion: true } },
@@ -32,21 +36,23 @@ describe('PrismaDriverRouteAccessRepository', () => {
           }
         },
         id: true,
+        driverNavigationUntil: true,
         isStoreReviewData: true,
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true },
+          select: { id: true, publishedAt: true },
           take: 1,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { shopDomain: true } },
+        shop: { select: { appId: true, shopDomain: true } },
         status: true
       },
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routePlanId,
+        AND: [visibleDsvRouteWhere()],
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -108,6 +114,9 @@ describe('PrismaDriverRouteAccessRepository', () => {
       select: {
         assignmentGeneration: true,
         constraints: true,
+        deliveryWorkCompletedAt: true,
+        deliveryWorkCompletedGeneration: true,
+        deliveryWorkCompletedVersionId: true,
         driver: {
           select: {
             account: { select: { id: true, isStoreReviewAccount: true, status: true, tokenVersion: true } },
@@ -119,16 +128,17 @@ describe('PrismaDriverRouteAccessRepository', () => {
           }
         },
         id: true,
+        driverNavigationUntil: true,
         isStoreReviewData: true,
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true },
+          select: { id: true, publishedAt: true },
           take: 1,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { shopDomain: true } },
+        shop: { select: { appId: true, shopDomain: true } },
         status: true
       },
       where: {
@@ -188,6 +198,114 @@ describe('PrismaDriverRouteAccessRepository', () => {
         status: 'ROUTES_FOUND',
         routes: [{ routeAccess: { routePlanId: routePlanId } }]
       });
+  });
+
+  test('hides ready routes until Dispatch publishes their current version', async () => {
+    const unpublishedReady = routePlanRecord({ publishedAt: null });
+    const exactRepository = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ routePlan: unpublishedReady }).prisma as never
+    );
+
+    await expect(exactRepository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: routePlanId,
+    })).resolves.toEqual({ status: 'NOT_FOUND' });
+
+    const activeRouteId = '33333333-3333-4333-8333-333333333333';
+    const { prisma } = createPrismaHarness({
+      phoneRoutePlans: [
+        unpublishedReady,
+        routePlanRecord({ id: activeRouteId, publishedAt: null, status: 'IN_PROGRESS' }),
+      ],
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({
+        status: 'ROUTES_FOUND',
+        routes: [{ routeAccess: { routePlanId: activeRouteId } }],
+      });
+  });
+
+  test('keeps delivery-complete navigation visible until the exact two-hour boundary', async () => {
+    const completedAt = new Date('2026-10-01T16:00:00.000Z');
+    const routePlan = routePlanRecord({
+      appId: 'clever-route-kfood',
+      deliveryWorkCompletedAt: completedAt,
+      deliveryWorkCompletedGeneration: 1n,
+      deliveryWorkCompletedVersionId: '22222222-2222-4222-8222-222222222222',
+      driverNavigationUntil: new Date('2026-10-01T18:00:00.000Z'),
+      shopDomain: '7hrud1-xq.myshopify.com',
+      status: 'IN_PROGRESS'
+    });
+    const beforeBoundary = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ routePlan }).prisma as never,
+      undefined,
+      () => new Date('2026-10-01T17:59:59.999Z')
+    );
+    const atBoundary = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ routePlan }).prisma as never,
+      undefined,
+      () => new Date('2026-10-01T18:00:00.000Z')
+    );
+
+    await expect(beforeBoundary.lookupRouteAccess({ accountId: 'account-id', routeContext: routePlanId }))
+      .resolves.toMatchObject({ status: 'INVITED' });
+    await expect(atBoundary.lookupRouteAccess({ accountId: 'account-id', routeContext: routePlanId }))
+      .resolves.toEqual({ status: 'NOT_FOUND' });
+  });
+
+  test('hides an expired route from the account list but ignores stale markers from an older assignment', async () => {
+    const marker = {
+      deliveryWorkCompletedAt: new Date('2026-10-01T16:00:00.000Z'),
+      deliveryWorkCompletedVersionId: '22222222-2222-4222-8222-222222222222',
+      driverNavigationUntil: new Date('2026-10-01T18:00:00.000Z'),
+      status: 'IN_PROGRESS'
+    } as const;
+    const now = () => new Date('2026-10-01T18:00:00.000Z');
+    const saveDraft = vi.fn();
+    const expired = new PrismaDriverRouteAccessRepository(createPrismaHarness({
+      phoneRoutePlans: [routePlanRecord({
+        ...marker, appId: 'clever-route-kfood', deliveryWorkCompletedGeneration: 1n,
+        shopDomain: '7hrud1-xq.myshopify.com'
+      })]
+    }).prisma as never, { saveDraft } as never, now);
+    const reassigned = new PrismaDriverRouteAccessRepository(createPrismaHarness({
+      phoneRoutePlans: [routePlanRecord({
+        ...marker, appId: 'clever-route-kfood', assignmentGeneration: 2n, deliveryWorkCompletedGeneration: 1n,
+        shopDomain: '7hrud1-xq.myshopify.com'
+      })]
+    }).prisma as never, undefined, now);
+    const foreignTenant = new PrismaDriverRouteAccessRepository(createPrismaHarness({
+      phoneRoutePlans: [routePlanRecord({ ...marker, deliveryWorkCompletedGeneration: 1n })]
+    }).prisma as never, undefined, now);
+
+    await expect(expired.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toEqual({ status: 'ROUTES_FOUND', routes: [] });
+    expect(saveDraft).not.toHaveBeenCalled();
+    await expect(reassigned.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ status: 'INVITED' }] });
+    await expect(foreignTenant.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ status: 'INVITED' }] });
+  });
+
+  test('excludes unpublished ready routes before resolving a shared-scope ambiguity', async () => {
+    const publishedRouteId = '33333333-3333-4333-8333-333333333333';
+    const { prisma } = createPrismaHarness({
+      sharedRoutePlans: [
+        routePlanRecord({ publishedAt: null }),
+        routePlanRecord({ id: publishedRouteId }),
+      ],
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: 'toronto-shared-route-scope',
+    })).resolves.toMatchObject({
+      status: 'INVITED',
+      routeAccess: { routePlanId: publishedRouteId },
+    });
   });
 
   test('does not issue route access for active drivers that have not verified an invite code', async () => {
@@ -444,6 +562,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routePlanId,
+        AND: [visibleDsvRouteWhere()],
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     }));
@@ -471,10 +590,13 @@ describe('PrismaDriverRouteAccessRepository', () => {
     });
 
     expect(prisma.routePlan.findMany).toHaveBeenCalledWith({
-      orderBy: [{ planDate: 'asc' }, { name: 'asc' }],
+      orderBy: [{ planDate: 'asc' }, { name: 'asc' }, { id: 'asc' }],
       select: {
         assignmentGeneration: true,
         constraints: true,
+        deliveryWorkCompletedAt: true,
+        deliveryWorkCompletedGeneration: true,
+        deliveryWorkCompletedVersionId: true,
         driver: {
           select: {
             account: { select: { id: true, isStoreReviewAccount: true, status: true, tokenVersion: true } },
@@ -486,20 +608,30 @@ describe('PrismaDriverRouteAccessRepository', () => {
           }
         },
         id: true,
+        driverNavigationUntil: true,
         isStoreReviewData: true,
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true },
+          select: { id: true, publishedAt: true },
           take: 1,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { shopDomain: true } },
+        shop: { select: { appId: true, shopDomain: true } },
         status: true
       },
       take: 3,
       where: {
+        ...visibleDsvRouteWhere(),
+        OR: [
+          { status: 'IN_PROGRESS' },
+          {
+            routeGroupingChildVersions: {
+              some: { publishedAt: { not: null }, status: 'CURRENT', supersededAt: null }
+            }
+          }
+        ],
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: 'toronto-shared-route-scope' },
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
@@ -534,6 +666,46 @@ describe('PrismaDriverRouteAccessRepository', () => {
     expect(JSON.stringify(result)).not.toContain('routePlanId');
     expect(JSON.stringify(result)).not.toContain('routeAccess');
     expect(JSON.stringify(result)).not.toContain('address1');
+  });
+
+  test('pages past forty expired K-food routes without retaining them before finding a valid shared route', async () => {
+    const expiredMarker = {
+      appId: 'clever-route-kfood',
+      deliveryWorkCompletedAt: new Date('2026-10-01T16:00:00.000Z'),
+      deliveryWorkCompletedGeneration: 1n,
+      deliveryWorkCompletedVersionId: '22222222-2222-4222-8222-222222222222',
+      driverNavigationUntil: new Date('2026-10-01T18:00:00.000Z'),
+      shopDomain: '7hrud1-xq.myshopify.com',
+      status: 'IN_PROGRESS'
+    } as const;
+    const validRouteId = '55555555-5555-4555-8555-555555555555';
+    const expiredRoutes = Array.from({ length: 40 }, (_, index) => routePlanRecord({
+      ...expiredMarker,
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
+    }));
+    const sharedRoutePlanResponses = Array.from({ length: 13 }, (_, index) => (
+      expiredRoutes.slice(index * 3, index * 3 + 3)
+    ));
+    sharedRoutePlanResponses.push([expiredRoutes[39]!, routePlanRecord({ id: validRouteId, name: 'Later valid route' })]);
+    const { prisma } = createPrismaHarness({
+      sharedRoutePlanResponses
+    });
+    const repository = new PrismaDriverRouteAccessRepository(
+      prisma as never,
+      undefined,
+      () => new Date('2026-10-01T18:00:00.000Z')
+    );
+
+    await expect(repository.lookupRouteAccess({
+      accountId: 'account-id', routeContext: 'toronto-shared-route-scope'
+    })).resolves.toMatchObject({ status: 'INVITED', routeAccess: { routePlanId: validRouteId } });
+
+    expect(prisma.routePlan.findMany).toHaveBeenCalledTimes(14);
+    expect(prisma.routePlan.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      cursor: { id: '00000000-0000-4000-8000-000000000039' },
+      skip: 1,
+      take: 3
+    }));
   });
 
   test('maps one shared route scope match to invited route access', async () => {
@@ -599,6 +771,7 @@ function createPrismaHarness(
     }>;
     routePlan?: ReturnType<typeof routePlanRecord> | null;
     sharedRoutePlans?: ReturnType<typeof routePlanRecord>[];
+    sharedRoutePlanResponses?: Array<ReturnType<typeof routePlanRecord>[]>;
     phoneRoutePlans?: ReturnType<typeof routePlanRecord>[];
     phoneRoutePlanResponses?: Array<ReturnType<typeof routePlanRecord>[]>;
     publicRouteContext?: { groupingId: string } | null;
@@ -621,6 +794,7 @@ function createPrismaHarness(
     ? routePlanRecord(overrides.driverStatus === undefined ? {} : { driverStatus: overrides.driverStatus })
     : overrides.routePlan;
   const phoneRoutePlanResponses = [...(overrides.phoneRoutePlanResponses ?? [])];
+  const sharedRoutePlanResponses = [...(overrides.sharedRoutePlanResponses ?? [])];
   return {
     prisma: {
       driver: {
@@ -633,6 +807,8 @@ function createPrismaHarness(
         findMany: vi.fn((query?: unknown) => {
           const text = JSON.stringify(query);
           if (text.includes('routeScopeKey')) {
+            const response = sharedRoutePlanResponses.shift();
+            if (response !== undefined) return Promise.resolve(response);
             return Promise.resolve(overrides.sharedRoutePlans ?? []);
           }
 
@@ -649,12 +825,18 @@ function createPrismaHarness(
 function routePlanRecord(
   overrides: {
     assignmentGeneration?: bigint;
+    appId?: string;
     authSubject?: string | null;
+    deliveryWorkCompletedAt?: Date | null;
+    deliveryWorkCompletedGeneration?: bigint | null;
+    deliveryWorkCompletedVersionId?: string | null;
     driverStatus?: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+    driverNavigationUntil?: Date | null;
     id?: string;
     legacyContract?: boolean;
     name?: string;
     planDate?: string;
+    publishedAt?: Date | null;
     routeVersionId?: string;
     shopDomain?: string;
     status?: string;
@@ -664,6 +846,10 @@ function routePlanRecord(
   const shopDomain = overrides.shopDomain ?? 'tomatono.myshopify.com';
   return {
     ...(overrides.legacyContract === true ? {} : { assignmentGeneration: overrides.assignmentGeneration ?? 1n }),
+    deliveryWorkCompletedAt: overrides.deliveryWorkCompletedAt ?? null,
+    deliveryWorkCompletedGeneration: overrides.deliveryWorkCompletedGeneration ?? null,
+    deliveryWorkCompletedVersionId: overrides.deliveryWorkCompletedVersionId ?? null,
+    driverNavigationUntil: overrides.driverNavigationUntil ?? null,
     constraints: {
       companyDisplayName: shopDomain === 'north-market.myshopify.com' ? 'North Market' : 'Tomatono Toronto',
       driverInstructions: ['Bring insulated bag'],
@@ -690,8 +876,16 @@ function routePlanRecord(
     planDate: new Date(`${overrides.planDate ?? '2026-05-12'}T00:00:00.000Z`),
     ...(overrides.legacyContract === true
       ? {}
-      : { routeGroupingChildVersions: [{ id: overrides.routeVersionId ?? '22222222-2222-4222-8222-222222222222' }] }),
+      : {
+          routeGroupingChildVersions: [{
+            id: overrides.routeVersionId ?? '22222222-2222-4222-8222-222222222222',
+            publishedAt: overrides.publishedAt === undefined
+              ? new Date('2026-05-11T12:00:00.000Z')
+              : overrides.publishedAt,
+          }],
+        }),
     shop: {
+      appId: overrides.appId ?? 'clever-route-shopify',
       shopDomain
     },
     status: overrides.status ?? 'READY',

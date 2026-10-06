@@ -15,6 +15,7 @@ export type StoreDriverProofMediaInput = {
 
 export type StoreDriverProofMediaResult = {
   contentType: string;
+  deliveryStopIds: string[];
   kind: 'photo';
   mediaId: string;
   sha256: string;
@@ -37,6 +38,24 @@ export type CreateDriverProofMediaReadAccessResult = {
   expiresAt: string;
   kind: 'photo';
   mediaId: string;
+  url: string;
+};
+
+export type CreateAdminDriverProofMediaReadAccessInput = {
+  mediaId: string;
+  shopId: string;
+};
+
+export type CreateAdminDriverProofMediaReadAccessResult = {
+  contentType: string;
+  deliveryStopIds: string[];
+  expiresAt: string;
+  kind: 'photo';
+  mediaId: string;
+  sha256: string;
+  sizeBytes: number;
+  source: DriverProofMediaSource;
+  uploadedAt: string;
   url: string;
 };
 
@@ -92,8 +111,8 @@ export class DriverProofMediaScanRejectedError extends Error {
 }
 
 export class DriverProofMediaAccessUnavailableError extends Error {
-  constructor(message = 'Proof media read access is not configured') {
-    super(message);
+  constructor(message = 'Proof media read access is not configured', options?: ErrorOptions) {
+    super(message, options);
     this.name = 'DriverProofMediaAccessUnavailableError';
   }
 }

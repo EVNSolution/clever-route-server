@@ -7,32 +7,49 @@ import type {
 } from './driver-proof-media.repository.js';
 
 export type S3DriverProofMediaStorageOptions = {
-  accessKeyId: string;
   bucket: string;
+  credentials: S3Credentials | S3CredentialsProvider;
   endpoint?: string | undefined;
   fetch?: S3Fetch | undefined;
   forcePathStyle?: boolean | undefined;
   now?: (() => Date) | undefined;
   region: string;
+};
+
+export type S3Credentials = {
+  accessKeyId: string;
+  expiresAt?: Date | undefined;
   secretAccessKey: string;
   sessionToken?: string | undefined;
 };
 
+export type S3CredentialsProvider = () => Promise<S3Credentials>;
+
 type S3Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
+export type Ec2IamRoleCredentialsProviderOptions = {
+  fetch?: S3Fetch | undefined;
+  now?: (() => Date) | undefined;
+  requestTimeoutMs?: number | undefined;
+};
+
 type NormalizedS3Options = {
-  accessKeyId: string;
   bucket: string;
+  credentials: S3CredentialsProvider;
   endpoint: string;
   fetch: S3Fetch;
   forcePathStyle: boolean;
   now: () => Date;
   region: string;
-  secretAccessKey: string;
-  sessionToken: string | undefined;
 };
 
+type SigningOptions = NormalizedS3Options & S3Credentials;
+
 const ALGORITHM = 'AWS4-HMAC-SHA256';
+const EC2_IMDS_BASE_URL = 'http://169.254.169.254/latest';
+const EC2_IMDS_TOKEN_TTL_SECONDS = 6 * 60 * 60;
+const EC2_CREDENTIAL_REFRESH_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_EC2_IMDS_REQUEST_TIMEOUT_MS = 2_000;
 const MAX_PRESIGNED_URL_EXPIRES_SECONDS = 7 * 24 * 60 * 60;
 const SERVICE = 's3';
 const UNSIGNED_PAYLOAD = 'UNSIGNED-PAYLOAD';
@@ -47,16 +64,114 @@ export function createS3DriverProofMediaStorage(options: S3DriverProofMediaStora
   };
 }
 
+export function createEc2IamRoleCredentialsProvider(
+  options: Ec2IamRoleCredentialsProviderOptions = {}
+): S3CredentialsProvider {
+  const fetchImplementation = options.fetch ?? globalThis.fetch?.bind(globalThis);
+  if (fetchImplementation === undefined) {
+    throw new Error('EC2 IAM role credentials require a fetch implementation');
+  }
+  const now = options.now ?? (() => new Date());
+  const requestTimeoutMs = normalizePositiveInteger(
+    options.requestTimeoutMs ?? DEFAULT_EC2_IMDS_REQUEST_TIMEOUT_MS,
+    'requestTimeoutMs'
+  );
+  let cached: S3Credentials | undefined;
+  let pending: Promise<S3Credentials> | undefined;
+
+  return async () => {
+    const current = now();
+    if (
+      cached?.expiresAt !== undefined
+      && cached.expiresAt.getTime() - current.getTime() > EC2_CREDENTIAL_REFRESH_WINDOW_MS
+    ) {
+      return cached;
+    }
+    pending ??= loadEc2IamRoleCredentials({ fetch: fetchImplementation, now, requestTimeoutMs })
+      .then((credentials) => {
+        cached = credentials;
+        return credentials;
+      })
+      .finally(() => {
+        pending = undefined;
+      });
+    return pending;
+  };
+}
+
+async function loadEc2IamRoleCredentials(input: {
+  fetch: S3Fetch;
+  now: () => Date;
+  requestTimeoutMs: number;
+}): Promise<S3Credentials> {
+  const token = await fetchImdsText(input, `${EC2_IMDS_BASE_URL}/api/token`, {
+    headers: { 'X-aws-ec2-metadata-token-ttl-seconds': String(EC2_IMDS_TOKEN_TTL_SECONDS) },
+    method: 'PUT'
+  });
+  const metadataHeaders = { 'X-aws-ec2-metadata-token': token };
+  const roleName = await fetchImdsText(input, `${EC2_IMDS_BASE_URL}/meta-data/iam/security-credentials/`, {
+    headers: metadataHeaders,
+    method: 'GET'
+  });
+  if (!/^[A-Za-z0-9+=,.@_-]{1,128}$/u.test(roleName)) {
+    throw new Error('EC2 IAM role credentials returned an invalid role name');
+  }
+  const responseText = await fetchImdsText(
+    input,
+    `${EC2_IMDS_BASE_URL}/meta-data/iam/security-credentials/${encodeURIComponent(roleName)}`,
+    { headers: metadataHeaders, method: 'GET' }
+  );
+  let value: unknown;
+  try {
+    value = JSON.parse(responseText);
+  } catch {
+    throw new Error('EC2 IAM role credentials returned invalid JSON');
+  }
+  if (!isRecord(value) || value.Code !== 'Success') {
+    throw new Error('EC2 IAM role credentials request was not successful');
+  }
+  const expiresAt = typeof value.Expiration === 'string' ? new Date(value.Expiration) : new Date(Number.NaN);
+  const credentials = normalizeCredentials({
+    accessKeyId: typeof value.AccessKeyId === 'string' ? value.AccessKeyId : '',
+    expiresAt,
+    secretAccessKey: typeof value.SecretAccessKey === 'string' ? value.SecretAccessKey : '',
+    sessionToken: typeof value.Token === 'string' ? value.Token : ''
+  });
+  if (credentials.sessionToken === undefined || expiresAt.getTime() <= input.now().getTime()) {
+    throw new Error('EC2 IAM role credentials are missing a valid temporary session');
+  }
+  return credentials;
+}
+
+async function fetchImdsText(
+  input: { fetch: S3Fetch; requestTimeoutMs: number },
+  url: string,
+  init: RequestInit
+): Promise<string> {
+  const response = await input.fetch(url, {
+    ...init,
+    redirect: 'error',
+    signal: AbortSignal.timeout(input.requestTimeoutMs)
+  });
+  if (!response.ok) {
+    throw new Error(`EC2 IAM role credentials request failed with HTTP ${response.status}`);
+  }
+  const text = (await response.text()).trim();
+  if (text === '') throw new Error('EC2 IAM role credentials returned an empty response');
+  return text;
+}
+
 async function writeObject(
   options: NormalizedS3Options,
   input: DriverProofMediaStorageWriteInput,
   signal: AbortSignal
 ): Promise<void> {
+  const signingOptions = await signingOptionsFor(options);
   const url = buildObjectUrl(options, input.storageKey);
   const payloadHash = sha256Hex(input.fileBytes);
   const signed = signHeaderRequest({
     method: 'PUT',
-    options,
+    options: signingOptions,
     payloadHash,
     url
   });
@@ -77,10 +192,11 @@ async function removeObject(
   storageKey: string,
   signal: AbortSignal
 ): Promise<'missing' | 'removed'> {
+  const signingOptions = await signingOptionsFor(options);
   const url = buildObjectUrl(options, storageKey);
   const signed = signHeaderRequest({
     method: 'DELETE',
-    options,
+    options: signingOptions,
     payloadHash: sha256Hex(Buffer.alloc(0)),
     url
   });
@@ -100,10 +216,11 @@ async function removeObject(
   return 'removed';
 }
 
-function createReadAccess(
+async function createReadAccess(
   options: NormalizedS3Options,
   input: DriverProofMediaStorageReadAccessInput
 ): Promise<{ url: string }> {
+  const signingOptions = await signingOptionsFor(options);
   const url = buildObjectUrl(options, input.storageKey);
   const now = options.now();
   const expiresSeconds = Math.floor((input.expiresAt.getTime() - now.getTime()) / 1000);
@@ -113,7 +230,7 @@ function createReadAccess(
 
   const { amzDate, dateStamp } = formatAmzTimestamp(now);
   const credentialScope = buildCredentialScope({ dateStamp, region: options.region });
-  const credential = `${options.accessKeyId}/${credentialScope}`;
+  const credential = `${signingOptions.accessKeyId}/${credentialScope}`;
   const queryParameters: [string, string][] = [
     ['X-Amz-Algorithm', ALGORITHM],
     ['X-Amz-Credential', credential],
@@ -121,8 +238,8 @@ function createReadAccess(
     ['X-Amz-Expires', String(expiresSeconds)],
     ['X-Amz-SignedHeaders', 'host']
   ];
-  if (options.sessionToken !== undefined) {
-    queryParameters.push(['X-Amz-Security-Token', options.sessionToken]);
+  if (signingOptions.sessionToken !== undefined) {
+    queryParameters.push(['X-Amz-Security-Token', signingOptions.sessionToken]);
   }
 
   const canonicalQuery = canonicalQueryString(queryParameters);
@@ -137,19 +254,19 @@ function createReadAccess(
   const signature = signString({
     canonicalRequest,
     dateStamp,
-    options,
+    options: signingOptions,
     region: options.region,
     timestamp: amzDate
   });
 
-  return Promise.resolve({
+  return {
     url: `${url.origin}${url.pathname}?${canonicalQuery}&X-Amz-Signature=${signature}`
-  });
+  };
 }
 
 function signHeaderRequest(input: {
   method: 'DELETE' | 'PUT';
-  options: NormalizedS3Options;
+  options: SigningOptions;
   payloadHash: string;
   url: URL;
 }): { headers: Record<string, string> } {
@@ -196,7 +313,7 @@ function signHeaderRequest(input: {
 function signString(input: {
   canonicalRequest: string;
   dateStamp: string;
-  options: NormalizedS3Options;
+  options: SigningOptions;
   region: string;
   timestamp: string;
 }): string {
@@ -320,16 +437,36 @@ function normalizeOptions(options: S3DriverProofMediaStorageOptions): Normalized
   }
 
   const endpoint = readRequired(options.endpoint ?? `https://s3.${readRequired(options.region, 'region')}.amazonaws.com`, 'endpoint');
+  const credentials = options.credentials;
   return {
-    accessKeyId: readRequired(options.accessKeyId, 'accessKeyId'),
     bucket: readRequired(options.bucket, 'bucket'),
+    credentials: typeof credentials === 'function'
+      ? credentials
+      : () => Promise.resolve(normalizeCredentials(credentials)),
     endpoint,
     fetch: fetchImplementation,
     forcePathStyle: options.forcePathStyle ?? false,
     now: options.now ?? (() => new Date()),
-    region: readRequired(options.region, 'region'),
-    secretAccessKey: readRequired(options.secretAccessKey, 'secretAccessKey'),
-    sessionToken: readOptional(options.sessionToken)
+    region: readRequired(options.region, 'region')
+  };
+}
+
+async function signingOptionsFor(options: NormalizedS3Options): Promise<SigningOptions> {
+  return { ...options, ...normalizeCredentials(await options.credentials()) };
+}
+
+function normalizeCredentials(credentials: S3Credentials): S3Credentials {
+  const expiresAt = credentials.expiresAt;
+  if (expiresAt !== undefined && Number.isNaN(expiresAt.getTime())) {
+    throw new Error('S3 proof media storage requires a valid credential expiry');
+  }
+  return {
+    accessKeyId: readRequired(credentials.accessKeyId, 'accessKeyId'),
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    secretAccessKey: readRequired(credentials.secretAccessKey, 'secretAccessKey'),
+    ...(readOptional(credentials.sessionToken) === undefined
+      ? {}
+      : { sessionToken: readOptional(credentials.sessionToken) })
   };
 }
 
@@ -348,4 +485,15 @@ function readOptional(value: string | undefined): string | undefined {
   }
 
   return value.trim();
+}
+
+function normalizePositiveInteger(value: number, name: string): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`EC2 IAM role credentials require a positive ${name}`);
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

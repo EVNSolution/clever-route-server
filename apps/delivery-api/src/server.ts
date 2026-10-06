@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises';
 import { PrismaClient } from '@prisma/client';
 
 import { buildApp } from './app.js';
@@ -13,10 +14,13 @@ import { PrismaEmailRuntimeHealthService } from './modules/customer-email/email-
 import { EmailRuntimeHealthRuntime } from './modules/customer-email/email-runtime-health.runtime.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
 import { DriverOperationalHealthRuntime } from './modules/driver/driver-operational-health.runtime.js';
+import { CompletionAssistanceRuntime } from './modules/driver/completion-assistance.runtime.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
 import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
 import { createCustomerDeliveryNotificationRuntime } from './modules/route-plans/customer-delivery-notification.runtime.js';
+import { StaleRouteFinalizationRuntime } from './modules/route-plans/stale-route-finalization.runtime.js';
+import { PrismaStaleRouteFinalizationService } from './modules/route-plans/stale-route-finalization.service.js';
 import { loadAdminOrdersRuntime } from './modules/shopify/order-sync.dependencies.js';
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
 import { loadShopifyWebhookRuntime } from './modules/shopify/webhook.dependencies.js';
@@ -24,6 +28,7 @@ import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocom
 import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
 import { PrismaOperationalAlertRepository } from './modules/notifications/operational-alert.repository.js';
 import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.stream.js';
+import { createRouteTrackingRoadMatchRuntime } from './modules/route-tracking/route-tracking-road-match.runtime.js';
 import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
 import { loadDsvV1ReadDependencies } from './modules/dsv/dsv-v1-read.dependencies.js';
 import { loadDsvDriverAuthDependencies } from './modules/dsv/dsv-driver-auth.dependencies.js';
@@ -59,7 +64,7 @@ const adminCustomerEmail = loadAdminCustomerEmailDependencies({ env: process.env
 const routeGroupingService = createRouteGroupingService({ env: process.env, prisma });
 const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma, routeGroupingService });
 const routeTrackingStreamHub = new RouteTrackingStreamHub();
-const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, operationalAlertRepository, prisma, routeTrackingStreamHub });
+const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, operationalAlertRepository, prisma, routeGroupingService, routeTrackingStreamHub });
 const adminNotificationRuntime = createAdminNotificationRuntime({
   ...(process.env.DATABASE_URL === undefined
     ? {}
@@ -123,8 +128,12 @@ const wordPressPlugin = loadWordPressPluginDependencies({
   prisma
 });
 const logger = env.nodeEnv === 'test' ? false : { level: env.logLevel };
-const app = await buildApp(
-  createBuildAppOptions({
+const trustedProxyAddresses = process.env.CLEVER_TRUST_CADDY_PROXY === 'true'
+  ? (await lookup('caddy', { all: true })).map(({ address }) => address)
+  : [];
+const app = await buildApp({
+  trustedProxyAddresses,
+  ...createBuildAppOptions({
     adminCommerceConnections,
     adminCommerceConnectionsUi,
     adminCustomerEmail,
@@ -146,13 +155,23 @@ const app = await buildApp(
     wooCommerceWebhook,
     wordPressPlugin
   })
-);
+});
 shopifyWebhookRuntime?.worker?.attachLogger(app.log);
 const customerDeliveryNotificationRuntime = createCustomerDeliveryNotificationRuntime({
   env: process.env,
   logger: app.log,
   prisma
 });
+const routeTrackingRoadMatchRuntime = createRouteTrackingRoadMatchRuntime({
+  env: process.env,
+  logger: app.log,
+  prisma
+});
+const staleRouteFinalizationRuntime = new StaleRouteFinalizationRuntime(
+  new PrismaStaleRouteFinalizationService(prisma),
+  process.env.KFOOD_STALE_ROUTE_FINALIZATION_ENABLED === 'true',
+  app.log
+);
 const emailSenderConfigured = typeof process.env.BREVO_API_KEY === 'string' && process.env.BREVO_API_KEY.trim() !== '';
 const emailHealthRuntime = new EmailRuntimeHealthRuntime(
   prisma,
@@ -166,6 +185,13 @@ const emailHealthRuntime = new EmailRuntimeHealthRuntime(
 const driverOperationalHealthRuntime = driverApi?.driverOperationalHealthService === undefined
   ? null
   : new DriverOperationalHealthRuntime(driverApi.driverOperationalHealthService, app.log);
+const completionAssistanceRuntime = driverApi?.completionAssistanceService === undefined
+  ? null
+  : new CompletionAssistanceRuntime(
+      driverApi.completionAssistanceService,
+      process.env.COMPLETION_ASSISTANCE_WORKER_ENABLED === 'true',
+      app.log
+    );
 const uvisTelemetryRuntime = createUvisTelemetryRuntime({
   env: process.env,
   logger: app.log,
@@ -176,8 +202,11 @@ try {
   await app.listen({ host: '0.0.0.0', port: env.port });
   await adminNotificationRuntime.start();
   await customerDeliveryNotificationRuntime.start();
+  routeTrackingRoadMatchRuntime.start();
+  staleRouteFinalizationRuntime.start();
   emailHealthRuntime.start();
   driverOperationalHealthRuntime?.start();
+  completionAssistanceRuntime?.start();
   await dsvV1Read?.driverNotificationRuntime?.start();
   uvisTelemetryRuntime.start();
   shopifyWebhookRuntime?.worker?.start();
@@ -189,8 +218,11 @@ try {
     app.close(),
     adminNotificationRuntime.close(),
     customerDeliveryNotificationRuntime.close(),
+    routeTrackingRoadMatchRuntime.close(),
+    staleRouteFinalizationRuntime.close(),
     emailHealthRuntime.close(),
     driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
+    completionAssistanceRuntime?.close() ?? Promise.resolve(),
     dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
     uvisTelemetryRuntime.close(),
     shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
@@ -206,8 +238,11 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       void Promise.all([
         adminNotificationRuntime.close(),
         customerDeliveryNotificationRuntime.close(),
+        routeTrackingRoadMatchRuntime.close(),
+        staleRouteFinalizationRuntime.close(),
         emailHealthRuntime.close(),
         driverOperationalHealthRuntime?.close() ?? Promise.resolve(),
+        completionAssistanceRuntime?.close() ?? Promise.resolve(),
         dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
         uvisTelemetryRuntime.close(),
         shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),

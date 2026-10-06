@@ -1,3 +1,4 @@
+import { projectVisibleDsvGrouping } from '../modules/dsv/dsv-test-visibility.js';
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -538,7 +539,7 @@ export type AdminCommerceConnectionsUiDependencies = {
 };
 
 export type RoutesAppAndroidReleaseConfig = {
-  distributionChannel: "direct";
+  distributionChannel: "direct" | "google_play";
   latestVersionCode: number;
   latestVersionName: string;
   minimumSupportedVersionCode: number;
@@ -614,20 +615,31 @@ export function registerAdminCommerceConnectionsUiRoutes(
       });
     }
     const release = releaseState.release;
+    const googlePlayDistribution = release.distributionChannel === "google_play"
+      ? {
+        distribution: {
+          channel: "google_play" as const,
+          url: releaseState.downloadUrl,
+        },
+      }
+      : {};
 
     return sendPublicApiEnvelope(reply, 200, {
-      distributionChannel: release.distributionChannel,
+      distributionChannel: "direct",
+      ...googlePlayDistribution,
       installation: {
         guideUrl: `${resolveBaseUrl(request, dependencies)}${LEGACY_DRIVER_APP_INSTALL_PATH}`,
         mode: "package_migration",
         replacesPackageIds: [LEGACY_DRIVER_APP_PACKAGE_ID],
         targetPackageId: release.packageId,
       },
-      installUrl: `${resolveBaseUrl(request, dependencies)}${
-        request.url.startsWith(LEGACY_DRIVER_APP_INSTALL_PATH)
-          ? LEGACY_DRIVER_APP_INSTALL_PATH
-          : ROUTES_APP_INSTALL_PATH
-      }`,
+      installUrl: release.distributionChannel === "google_play"
+        ? releaseState.downloadUrl
+        : `${resolveBaseUrl(request, dependencies)}${
+          request.url.startsWith(LEGACY_DRIVER_APP_INSTALL_PATH)
+            ? LEGACY_DRIVER_APP_INSTALL_PATH
+            : ROUTES_APP_INSTALL_PATH
+        }`,
       latestVersionCode: release.latestVersionCode,
       latestVersionName: release.latestVersionName,
       minimumSupportedVersionCode: release.minimumSupportedVersionCode,
@@ -2406,12 +2418,16 @@ function registerRouteOpsAppRoutes(
           ...(deliveryDate === null ? {} : { deliveryDate }),
           shopDomain,
         };
-        const [routePlans, routeGroups] = await Promise.all([
+        const [routePlans, rawRouteGroups] = await Promise.all([
           services.routePlanService.listRoutePlans(routeListInput),
           services.routeGroupingService === undefined
             ? Promise.resolve([])
             : services.routeGroupingService.listGroupings(routeListInput),
         ]);
+        const routeGroups = rawRouteGroups.flatMap(group => {
+          const visible = projectVisibleDsvGrouping({ shopDomain }, group);
+          return visible === null ? [] : [visible];
+        });
         const childRoutePlanIds = new Set(
           routeGroups.flatMap((group) =>
             group.children
@@ -2536,10 +2552,11 @@ function registerRouteOpsAppRoutes(
             groupingId: request.params.routeGroupId,
             shopDomain,
           });
-          if (grouping === null) {
+          const visible = grouping === null ? null : projectVisibleDsvGrouping({ shopDomain }, grouping);
+          if (visible === null) {
             throw new WooCommerceOnboardingError("NOT_FOUND", "Route grouping not found", 404);
           }
-          return routeOpsData({ routeGroup: grouping });
+          return routeOpsData({ routeGroup: visible });
         },
       ),
   );
@@ -3088,6 +3105,9 @@ function registerRouteOpsAppRoutes(
             });
             return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
           } catch (error) {
+            if (error instanceof RouteExecutionConflictError) {
+              throw new WooCommerceOnboardingError(error.code, error.message, 409);
+            }
             if (error instanceof RoutePlanPublishInvalidError) {
               throw new WooCommerceOnboardingError(
                 error.code,
@@ -3389,6 +3409,9 @@ function registerRouteOpsAppRoutes(
 async function readRoutesAppDownloadUrl(
   dependencies: AdminCommerceConnectionsUiDependencies,
 ): Promise<string | undefined> {
+  if (dependencies.routesAppAndroidRelease?.distributionChannel === "google_play") {
+    return dependencies.routesAppDownloadUrl;
+  }
   const release = await dependencies.routesAppReleaseRepository?.getAndroidRelease();
   return release?.downloadUrl ?? dependencies.routesAppDownloadUrl;
 }
@@ -3396,6 +3419,19 @@ async function readRoutesAppDownloadUrl(
 async function readRoutesAppReleaseState(
   dependencies: AdminCommerceConnectionsUiDependencies,
 ): Promise<RoutesAppReleaseState | null> {
+  if (
+    dependencies.routesAppAndroidRelease?.distributionChannel === "google_play"
+    && dependencies.routesAppDownloadUrl !== undefined
+  ) {
+    return {
+      downloadUrl: dependencies.routesAppDownloadUrl,
+      release: {
+        ...dependencies.routesAppAndroidRelease,
+        packageId: dependencies.routesAppAndroidRelease.packageId ?? ROUTES_APP_PACKAGE_ID,
+      },
+    };
+  }
+
   const release = await dependencies.routesAppReleaseRepository?.getAndroidRelease();
   if (release !== undefined && release !== null) {
     return {
@@ -4843,6 +4879,9 @@ function requireRouteGroupingService(
 }
 
 function toRouteGroupingHttpError(error: unknown): Error {
+  if (error instanceof RouteExecutionConflictError) {
+    return createRouteOpsHttpError(error.code, error.message, 409);
+  }
   if (error instanceof RouteGroupingBranchLockConflictError) {
     return createRouteOpsHttpError(error.code, error.message, 409);
   }

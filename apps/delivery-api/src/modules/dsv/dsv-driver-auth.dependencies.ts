@@ -4,9 +4,11 @@ import type { DsvDriverAuthDependencies } from '../../routes/dsv-driver-auth.rou
 import { readDriverJwtSecret } from '../driver/driver-token-verifier.js';
 import { PrismaDsvDriverAuthRepository } from './dsv-driver-auth.repository.js';
 import { PrismaDsvDriverInquiryRepository } from './dsv-driver-inquiry.repository.js';
+import { PrismaDsvDriverPasswordResetService } from './dsv-driver-password-reset.service.js';
+import { loadDsvWebPublicOrigin } from './dsv-web-public-origin.js';
 
 export type DsvDriverAuthRuntimeEnv = Partial<Record<
-  'CLEVER_DSV_DRIVER_AUTH_ENABLED' | 'JWT_SECRET',
+  'CLEVER_DSV_DRIVER_AUTH_ENABLED' | 'CLEVER_DSV_WEB_PUBLIC_URL' | 'JWT_SECRET',
   string
 >>;
 
@@ -22,10 +24,14 @@ export function loadDsvDriverAuthDependencies(input: {
   if (jwtSecret === undefined) {
     throw new Error('CLEVER_DSV_DRIVER_AUTH_ENABLED=true requires JWT_SECRET');
   }
+  const webPublicOrigin = loadDsvWebPublicOrigin(input.env.CLEVER_DSV_WEB_PUBLIC_URL, input.nodeEnv);
   return {
     jwtSecret,
     repository: new PrismaDsvDriverAuthRepository(input.prisma),
     inquiryRepository: new PrismaDsvDriverInquiryRepository(input.prisma),
+    ...(webPublicOrigin === undefined ? {} : {
+      passwordResetService: new PrismaDsvDriverPasswordResetService(input.prisma, { webPublicOrigin }),
+    }),
   };
 }
 

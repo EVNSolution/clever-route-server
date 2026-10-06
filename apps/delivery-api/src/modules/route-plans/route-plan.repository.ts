@@ -1,3 +1,5 @@
+import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
+import { assertRouteDispatchOwnership, claimRouteExecutionProjection } from './route-execution-ownership.js';
 import { DriverEventType, Prisma, type PrismaClient } from '@prisma/client';
 import {
   ITEM_REVIEW_REASONS,
@@ -22,7 +24,7 @@ import { diagnoseRouteStopLocation } from './route-stop-location-diagnostic.js';
 import { assertSafeRouteScopeToken } from '../route-ops/route-scope-config.js';
 import type {
   AdminRouteStopOverrideInput,
-  AdminRouteStopOverrideResult,
+  AdminRouteStopOverrideRepositoryResult,
   AdminRouteStopTransitionInput,
   AdminRouteStopTransitionResult,
   RoutePlanDepotInput,
@@ -45,8 +47,16 @@ import type {
   RoutePlanRouteScopeInput,
   RoutePlanSummary
 } from './route-plan.types.js';
-import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
+import {
+  applyCachedRouteGeometry,
+  computeRouteShapeSignature,
+  computeRouteShapeSignatureFromParts,
+  readRouteMetrics,
+  routeGeometryCacheUpsertArgs
+} from './route-plan-geometry-cache.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
+import { reconcileKfoodDeliveryWorkCompletion, toRouteDeliveryDisplayStatus } from './kfood-delivery-completion.js';
+import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from './route-plan-summary-normalization.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
 import { resolveNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
@@ -58,11 +68,18 @@ import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from '../shopify/shopify-api-versio
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 import {
   archiveDeletedRouteGroupingChildMembership,
-  replaceCurrentRouteGroupingChildVersion
+  releaseRouteVersionOrderOwnership,
+  replaceCurrentRouteGroupingChildVersion,
+  syncRoutePlanStopsPreservingRows
 } from '../route-grouping/route-grouping.service.js';
 import { RouteGroupingValidationError } from '../route-grouping/route-grouping.types.js';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
 const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
+const ROUTE_COPY_SOURCE_KIND = 'CLEVER_ROUTE_COPY';
+
+function suppressCustomerNotification(order: { sellerOrderSourceKind: string | null; sourcePlatform: string } | null): boolean {
+  return order?.sourcePlatform === 'CUSTOM' || order?.sellerOrderSourceKind === ROUTE_COPY_SOURCE_KIND;
+}
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
@@ -83,15 +100,25 @@ type RoutePlanGeometryCacheRecord = {
 type RoutePlanGeometryCacheSummaryRecord = Omit<RoutePlanGeometryCacheRecord, 'geometry' | 'stopPoints'>;
 type RoutePlanGeometryCacheMetadataRecord = Omit<RoutePlanGeometryCacheRecord, 'geometry' | 'metrics' | 'stopPoints'>;
 
+type RoutePlanListRecord = Prisma.RoutePlanGetPayload<{
+  select: ReturnType<typeof routePlanListSelect>;
+}>;
+
 type RoutePlanRecord = {
+  assignmentGeneration: bigint;
   createdAt: Date;
   constraints?: unknown;
   deliveryDate?: Date | null;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
   depotLatitude: unknown;
   depotLongitude: unknown;
   driver?: RoutePlanDriverRecord | null;
   driverEvents?: Array<{ eventType: string }>;
   driverId?: string | null;
+  driverNavigationUntil?: Date | null;
+  driverRouteNotificationAttempts?: Array<{ createdAt: Date }>;
   id: string;
   metrics: unknown;
   name: string;
@@ -105,6 +132,7 @@ type RoutePlanRecord = {
 
 type RouteGroupingChildVersionRecord = {
   groupingId: string;
+  publishedAt?: Date | null;
   status: string;
   version: number;
 };
@@ -152,6 +180,7 @@ type DeliveryStopRecord = {
   routePlanStops?: Array<{ id: string }>;
   serviceMinutes: number | null;
   status: string;
+  updatedAt?: Date;
 };
 
 type OrderRecord = {
@@ -236,9 +265,17 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       });
       if (shop === null) return { duplicate: false as const, found: false as const };
 
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "route_plans"
+        WHERE "id" = ${input.routePlanId}::uuid
+          AND "shopId" = ${shop.id}::uuid
+        FOR UPDATE
+      `;
+
       const routeStop = await tx.routePlanStop.findFirst({
         select: {
-          deliveryStop: { select: { order: { select: { email: true, sourcePlatform: true } }, orderId: true, status: true } },
+          deliveryStop: { select: { completionAssistanceCandidateId: true, order: { select: { email: true, sellerOrderSourceKind: true, sourcePlatform: true } }, orderId: true, status: true } },
           deliveryStopId: true,
           routePlan: { select: { status: true } }
         },
@@ -277,7 +314,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             factId: existingNotification?.id ?? null,
             orderId: existingNotification?.orderId ?? routeStop.deliveryStop.orderId,
             recipientEmail: routeStop.deliveryStop.order?.email ?? null,
-            status: routeStop.deliveryStop.order?.sourcePlatform === 'CUSTOM'
+            status: suppressCustomerNotification(routeStop.deliveryStop.order)
               ? 'SKIPPED' as const
               : existingNotification?.status ?? 'QUEUED'
           },
@@ -285,7 +322,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         };
       }
 
-      if (routeStop.deliveryStop.status === deliveryStopStatus) {
+      if (routeStop.deliveryStop.status === deliveryStopStatus && routeStop.deliveryStop.completionAssistanceCandidateId == null) {
         return {
           duplicate: true as const,
           found: true as const,
@@ -293,7 +330,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             factId: null,
             orderId: routeStop.deliveryStop.orderId,
             recipientEmail: routeStop.deliveryStop.order?.email ?? null,
-            status: routeStop.deliveryStop.order?.sourcePlatform === 'CUSTOM' ? 'SKIPPED' as const : 'QUEUED' as const
+            status: suppressCustomerNotification(routeStop.deliveryStop.order) ? 'SKIPPED' as const : 'QUEUED' as const
           },
           trackingEvent: null
         };
@@ -331,7 +368,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         driverEvent = event;
       }
 
-      const notificationFact = routeStop.deliveryStop.order?.sourcePlatform === 'CUSTOM' ? null : await tx.customerRouteNotificationFact.upsert({
+      const notificationFact = suppressCustomerNotification(routeStop.deliveryStop.order) ? null : await tx.customerRouteNotificationFact.upsert({
         create: {
           deliveryStopId: input.deliveryStopId,
           idempotencyKey: notificationIdempotencyKey,
@@ -399,6 +436,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       });
 
+      await reconcileKfoodDeliveryWorkCompletion(tx, {
+        allowStart: input.payload.status === 'COMPLETED',
+        now: new Date(),
+        routePlanId: input.routePlanId,
+        shopId: shop.id
+      });
+
       return {
         duplicate: false as const,
         found: true as const,
@@ -446,39 +490,49 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     };
   }
 
-  async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null> {
+  async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideRepositoryResult | null> {
     const shopDomain = this.normalizeShopDomain(input.shopDomain);
-    const geometryAffecting = hasGeometryAffectingStopOverride(input.payload);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: { id: true },
         where: this.shopWhere({ appId: input.appId, shopDomain })
       });
-      if (shop === null) return false;
+      if (shop === null) return null;
 
       const routeStop = await tx.routePlanStop.findFirst({
-        select: { id: true },
+        select: { id: true, routePlan: { select: { status: true } } },
         where: {
           deliveryStopId: input.deliveryStopId,
           routePlanId: input.routePlanId,
           shopId: shop.id
         }
       });
-      if (routeStop === null) return false;
+      if (routeStop === null) return null;
+
+      const currentStop = await tx.deliveryStop.findFirst({
+        select: {
+          address1: true,
+          address2: true,
+          city: true,
+          countryCode: true,
+          geocodeStatus: true,
+          instructions: true,
+          latitude: true,
+          longitude: true,
+          phone: true,
+          postalCode: true,
+          province: true,
+          recipientName: true,
+          serviceMinutes: true,
+          timeWindowEnd: true,
+          timeWindowStart: true
+        },
+        where: { id: input.deliveryStopId, shopId: shop.id }
+      });
+      if (currentStop === null) return null;
 
       if (hasLocationAffectingStopOverride(input.payload)) {
-        const currentStop = await tx.deliveryStop.findFirst({
-          select: {
-            countryCode: true,
-            geocodeStatus: true,
-            latitude: true,
-            longitude: true,
-            province: true
-          },
-          where: { id: input.deliveryStopId, shopId: shop.id }
-        });
-        if (currentStop === null) return false;
 
         const locationDiagnostic = diagnoseRouteStopLocation({
           countryCode: input.payload.countryCode === undefined ? currentStop.countryCode : input.payload.countryCode,
@@ -496,39 +550,57 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       }
 
-      await tx.deliveryStop.updateMany({
-        data: toDeliveryStopOperationalOverrideWrite(input.payload),
-        where: {
-          id: input.deliveryStopId,
-          shopId: shop.id
-        }
-      });
-
-      if (geometryAffecting) {
-        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: input.routePlanId } });
-        await tx.routePlanStop.updateMany({
-          data: {
-            distanceFromPreviousMeters: null,
-            durationFromPreviousSeconds: null,
-            estimatedArrivalAt: null,
-            etaCalculatedAt: null,
-            etaFailureCode: null,
-            etaFailureMessage: null,
-            etaInputRouteVersionId: null,
-            etaSource: 'ADMIN_STOP_OVERRIDE',
-            etaStatus: 'STALE'
-          },
+      const override = changedDeliveryStopOperationalOverride(currentStop, input.payload);
+      if (override.changed) {
+        await tx.deliveryStop.updateMany({
+          data: override.data,
           where: {
-            routePlanId: input.routePlanId,
+            id: input.deliveryStopId,
             shopId: shop.id
           }
         });
       }
 
-      return true;
+      if (override.geometryChanged) {
+        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: input.routePlanId } });
+        if (isRouteReadyStatus(routeStop.routePlan.status)) {
+          await tx.routePlanStop.updateMany({
+            data: {
+              distanceFromPreviousMeters: null,
+              durationFromPreviousSeconds: null,
+              estimatedArrivalAt: null,
+              etaCalculatedAt: null,
+              etaFailureCode: null,
+              etaFailureMessage: null,
+              etaInputRouteVersionId: null,
+              etaSource: 'ADMIN_STOP_OVERRIDE',
+              etaStatus: 'STALE'
+            },
+            where: {
+              deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
+              routePlanId: input.routePlanId,
+              shopId: shop.id
+            }
+          });
+        }
+      }
+
+      const refreshInputs = override.geometryChanged
+        ? await tx.routePlan.findFirst({
+          select: {
+            routeStops: {
+              orderBy: { sequence: 'asc' },
+              select: { deliveryStop: { select: { updatedAt: true } }, deliveryStopId: true }
+            },
+            updatedAt: true
+          },
+          where: { id: input.routePlanId, shopId: shop.id }
+        })
+        : null;
+      return { geometryChanged: override.geometryChanged, refreshInputs };
     });
 
-    if (!updated) return null;
+    if (updated === null) return null;
     const detail = await this.findRoutePlanDetail({
       appId: input.appId,
       routePlanId: input.routePlanId,
@@ -537,7 +609,15 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     if (detail === null) return null;
 
     return {
-      geometry: { status: geometryAffecting ? 'stale' : 'preserved' },
+      geometry: { status: updated.geometryChanged ? 'stale' : 'preserved' },
+      refreshGuard: updated.refreshInputs === null ? null : {
+        expectedRoutePlanUpdatedAt: updated.refreshInputs.updatedAt.toISOString(),
+        expectedStopUpdatedAts: updated.refreshInputs.routeStops.map((stop) => ({
+          deliveryStopId: stop.deliveryStopId,
+          updatedAt: stop.deliveryStop.updatedAt.toISOString()
+        })),
+        shapeSignature: computeRouteShapeSignature(detail)
+      },
       routePlan: detail
     };
   }
@@ -621,6 +701,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
+      await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${input.routePlanId}::uuid AND "shopId" = ${shop.id}::uuid FOR UPDATE`;
       const routePlan = (await tx.routePlan.findFirst({
         include: routePlanInclude(),
         where: {
@@ -632,16 +713,23 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
-      if (routePlan.status === 'CANCELLED') {
-        throw new RoutePlanPublishInvalidError('Cancelled routes cannot be published to drivers.');
+      if (routePlan.status === 'CANCELLED' || routePlan.status === 'INCOMPLETE' || routePlan.status === 'COMPLETED') {
+        throw new RoutePlanPublishInvalidError('Cancelled or incomplete routes cannot be published to drivers.');
       }
 
-      if (isRouteReadyStatus(routePlan.status) && routePlan.status !== 'READY') {
-        await tx.routePlan.update({
-          data: { status: 'READY' },
-          where: { id: routePlan.id }
-        });
-      }
+      await assertRouteDispatchOwnership(tx, {
+        deliveryStopIds: (routePlan.routeStops ?? []).map((stop) => stop.deliveryStopId),
+        routePlanId: routePlan.id, shopId: shop.id
+      });
+      await claimRouteExecutionProjection(tx, { routePlanId: routePlan.id, shopId: shop.id });
+      const constraints = toJson(routePlan.constraints ?? {}) as Prisma.InputJsonObject;
+      await tx.routePlan.update({
+        data: {
+          constraints: { ...constraints, cleverDispatchReservedAt: constraints.cleverDispatchReservedAt ?? new Date().toISOString() },
+          ...(isRouteReadyStatus(routePlan.status) ? { status: 'READY' as const } : {})
+        },
+        where: { id: routePlan.id }
+      });
 
       return true;
     });
@@ -728,8 +816,11 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         hasDepartureTimeChange ||
         hasScheduledStartChange;
 
-      if (routePlan.status === 'IN_PROGRESS' && hasStopSequenceChange) {
-        throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
+      const inProgressStops = hasStopSequenceChange && normalizedStops !== undefined
+        ? await inProgressStopOrder(tx, shop.id, routePlan, normalizedStops)
+        : null;
+      if (inProgressStops !== null && (hasDriverChange || hasRouteEndModeChange || hasDepartureTimeChange || hasScheduledStartChange)) {
+        throw new RoutePlanStopUpdateInvalidError('In-progress stop reordering cannot change the driver or route options.');
       }
       if (hasStopSequenceChange && await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
         throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
@@ -824,6 +915,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (input.payload.stops !== undefined && normalizedStops !== undefined) {
         if (!hasStopSequenceChange) {
           operations.push({ name: 'stops', reason: 'unchanged', status: 'skipped' });
+        } else if (inProgressStops !== null) {
+          await reorderInProgressStops(tx, shop.id, routePlan.id, inProgressStops);
+          operations.push({ name: 'stops', reason: 'sequence_changed', status: 'applied' });
         } else {
           const routeDate = deriveRouteDate(routePlan);
           const orderGids = normalizedStops.map((stop) => stop.shopifyOrderGid);
@@ -1214,15 +1308,16 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
     const where: Prisma.RoutePlanWhereInput = {
       shopId: shop.id,
+      ...visibleDsvRouteWhere(shop.id),
       ...(input.deliveryDate === undefined ? {} : { planDate: parsePlanDate(input.deliveryDate) })
     };
     const routePlans = await this.prisma.routePlan.findMany({
-      include: routePlanSummaryInclude(),
       orderBy: { createdAt: 'desc' },
+      select: routePlanListSelect(),
       where
     });
 
-    return (routePlans as RoutePlanRecord[]).map((routePlan) => toRoutePlanSummary(routePlan));
+    return (routePlans as RoutePlanListRecord[]).map(toRoutePlanListSummary);
   }
 
   async findRoutePlanDetail(input: {
@@ -1239,7 +1334,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       include: routePlanInclude(),
       where: {
         id: input.routePlanId,
-        shopId: shop.id
+        shopId: shop.id,
+        ...visibleDsvRouteWhere(shop.id)
       }
     });
 
@@ -1263,7 +1359,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       select: { id: true },
       where: {
         id: input.routePlanId,
-        shopId: shop.id
+        shopId: shop.id,
+        ...visibleDsvRouteWhere(shop.id)
       }
     });
     return routePlan !== null;
@@ -1315,6 +1412,50 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     return false;
   }
 
+  async commitAdminRouteStopGeometryCache(input: RouteGeometryCacheWrite & {
+    appId?: string | undefined;
+    expectedRoutePlanUpdatedAt: string;
+    expectedStopUpdatedAts: Array<{ deliveryStopId: string; updatedAt: string }>;
+    shopDomain: string;
+  }): Promise<boolean> {
+    const shop = await this.findShop(input);
+    if (shop === null) return false;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const routePlan = await tx.routePlan.findFirst({
+            include: routePlanInclude(),
+            where: { id: input.routePlanId, shopId: shop.id }
+          }) as RoutePlanRecord | null;
+          if (routePlan === null) return false;
+          if (routePlan.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) return false;
+          if (computeRouteShapeSignature(toRoutePlanDetail(routePlan)) !== input.shapeSignature) return false;
+
+          const expectedStopUpdatedAtById = new Map(
+            input.expectedStopUpdatedAts.map((stop) => [stop.deliveryStopId, stop.updatedAt])
+          );
+          const currentStops = routePlan.routeStops ?? [];
+          if (
+            currentStops.length !== expectedStopUpdatedAtById.size ||
+            currentStops.some((stop) => (
+              expectedStopUpdatedAtById.get(stop.deliveryStopId) !== stop.deliveryStop.updatedAt?.toISOString()
+            ))
+          ) {
+            return false;
+          }
+
+          await tx.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
+          await persistPlannedRouteEta(tx, input);
+          return true;
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      } catch (error) {
+        if (!isRouteGeometryCommitConflict(error) || attempt === 2) throw error;
+      }
+    }
+    return false;
+  }
+
   private applyRouteGeometryCache(detail: RoutePlanDetail): Promise<RoutePlanDetail> {
     return applyRouteGeometryCache(this.prisma, detail);
   }
@@ -1346,7 +1487,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       return { routePlanId: input.routePlanId, deleted: false };
     }
     const preflightGroupingIds = [...new Set(routePlan.routeGroupingChildVersions.map((child) => child.groupingId))].sort();
-    await this.prisma.$transaction(async (tx) => {
+    try {
+      await this.prisma.$transaction(async (tx) => {
       if (preflightGroupingIds.length > 0) {
         await tx.$queryRaw(Prisma.sql`
           SELECT "id"
@@ -1405,7 +1547,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         deletedChildVersions: currentChildren.map((child) => ({ groupingId: child.groupingId, id: child.id })),
         shopId: shop.id
       });
-    });
+      });
+    } catch (error) {
+      if (isRetainedProofMediaForeignKeyConflict(error)) {
+        throw new RoutePlanDeleteBlockedError('Route has retained delivery records and cannot be deleted yet.');
+      }
+      throw error;
+    }
 
     return { routePlanId: input.routePlanId, deleted: true };
   }
@@ -1505,13 +1653,18 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (routePlan === null) {
         return false;
       }
-      if (routePlan.status === 'IN_PROGRESS') {
-        throw new RoutePlanStopUpdateInvalidError('Route stops cannot be changed after route execution starts.');
-      }
+      const inProgressStops = await inProgressStopOrder(tx, shop.id, routePlan, normalizedStops);
 
       const currentGroupingChild = await readCurrentRouteGroupingChild(tx, routePlan.id);
       if (currentGroupingChild !== null && input.mutationContext?.source !== 'route_optimization_job') {
         throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
+      }
+      if (inProgressStops !== null) {
+        if (input.mutationContext?.source === 'route_optimization_job') {
+          throw new RoutePlanStopUpdateInvalidError('Automatic optimization cannot replace an in-progress route.');
+        }
+        await reorderInProgressStops(tx, shop.id, routePlan.id, inProgressStops);
+        return true;
       }
 
       const optimizationJobId =
@@ -1628,10 +1781,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
       const orderedOrders = normalizedStops.map((stop) => ordersByGid.get(stop.shopifyOrderGid)!);
       if (currentGroupingChild !== null) {
-        const boundOrderIds = (await tx.order.findMany({
-          select: { id: true },
-          where: { currentRouteVersionId: currentGroupingChild.id }
-        })).map(({ id }) => id);
+        const boundOrderIds = (routePlan.routeStops ?? []).map((stop) => stop.deliveryStop.orderId);
         const nextOrderIds = orderedOrders.map((order) => order.id);
         if (!sameUniqueStringSet(boundOrderIds, nextOrderIds)) {
           throw new RoutePlanStopUpdateInvalidError('Grouped route optimization cannot add or remove route membership.');
@@ -1670,6 +1820,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           throw new RoutePlanStopUpdateInvalidError('Grouped route membership snapshot is malformed.');
         }
         await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: currentGroupingChild.id,
           driverId: currentGroupingChild.driverId,
           groupingId: currentGroupingChild.groupingId,
@@ -1967,6 +2118,7 @@ async function persistPlannedRouteEta(
         etaStatus
       },
       where: {
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
         deliveryStopId: update.deliveryStopId,
         routePlanId: input.routePlanId,
         sequence: update.sequence
@@ -2244,6 +2396,66 @@ function assertNoDuplicateStopUpdateInputs(stops: UpdateRoutePlanStopsInput['pay
   }
 }
 
+async function inProgressStopOrder(
+  tx: Prisma.TransactionClient,
+  shopId: string,
+  routePlan: RoutePlanRecord,
+  stops: ReturnType<typeof normalizeStopUpdateInputs>
+): Promise<RoutePlanStopRecord[] | null> {
+  let lifecycleEvents: Array<{ eventType: string }> = [];
+  if (!['IN_PROGRESS', 'COMPLETED', 'INCOMPLETE', 'CANCELLED'].includes(routePlan.status)
+    && routePlan.driverId != null && (routePlan.driverEvents?.length ?? 0) > 0) {
+    const latestEvent = await tx.driverEvent.findFirst({
+      orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
+      select: { eventType: true },
+      where: {
+        driverId: routePlan.driverId,
+        eventType: { in: ['ROUTE_STARTED', 'ROUTE_PAUSED', 'ROUTE_COMPLETED'] },
+        OR: [{ assignmentGeneration: null }, { assignmentGeneration: routePlan.assignmentGeneration }],
+        routePlanId: routePlan.id,
+        shopId
+      }
+    });
+    if (latestEvent !== null) lifecycleEvents = [latestEvent];
+  }
+  const status = toRouteExecutionStatus(routePlan.status, lifecycleEvents);
+  if (status === 'COMPLETED' || status === 'INCOMPLETE' || status === 'CANCELLED') {
+    throw new RoutePlanStopUpdateInvalidError('Completed, incomplete, or cancelled route stops cannot be changed.');
+  }
+  if (status !== 'IN_PROGRESS') return null;
+
+  const currentStops = routePlan.routeStops ?? [];
+  const byOrder = new Map(currentStops.map((stop) => [stop.deliveryStop.order.shopifyOrderGid, stop]));
+  if (stops.length !== currentStops.length || stops.some((stop) => {
+    const current = byOrder.get(stop.shopifyOrderGid);
+    return current === undefined || (stop.deliveryStopId !== null && stop.deliveryStopId !== current.deliveryStopId);
+  })) {
+    throw new RoutePlanStopUpdateInvalidError('In-progress routes can only reorder their existing stops.');
+  }
+  return stops.map((stop) => byOrder.get(stop.shopifyOrderGid)!);
+}
+
+async function reorderInProgressStops(
+  tx: Prisma.TransactionClient,
+  shopId: string,
+  routePlanId: string,
+  stops: RoutePlanStopRecord[]
+): Promise<void> {
+  await syncRoutePlanStopsPreservingRows(tx, shopId, routePlanId, stops);
+  await tx.routePlanStop.updateMany({
+    data: {
+      estimatedArrivalAt: null,
+      etaCalculatedAt: null,
+      etaFailureCode: null,
+      etaFailureMessage: null,
+      etaSource: null,
+      etaStatus: 'PENDING'
+    },
+    where: { routePlanId, shopId, deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } }
+  });
+  await tx.routePlan.update({ data: { updatedAt: new Date() }, where: { id: routePlanId } });
+}
+
 function toDeliveryStopStatus(status: AdminRouteStopTransitionInput['payload']['status']): 'DELIVERED' | 'EN_ROUTE' | 'PENDING' {
   if (status === 'COMPLETED') return 'DELIVERED';
   if (status === 'IN_PROGRESS') return 'EN_ROUTE';
@@ -2279,18 +2491,47 @@ function toDeliveryStopOperationalOverrideWrite(
   };
 }
 
-function hasGeometryAffectingStopOverride(payload: AdminRouteStopOverrideInput['payload']): boolean {
-  return (
-    payload.address1 !== undefined ||
-    payload.address2 !== undefined ||
-    payload.city !== undefined ||
-    payload.countryCode !== undefined ||
-    payload.latitude !== undefined ||
-    payload.longitude !== undefined ||
-    payload.postalCode !== undefined ||
-    payload.province !== undefined ||
-    payload.serviceMinutes !== undefined
-  );
+const GEOMETRY_AFFECTING_STOP_OVERRIDE_FIELDS = new Set([
+  'address1',
+  'address2',
+  'city',
+  'countryCode',
+  'geocodeStatus',
+  'latitude',
+  'longitude',
+  'postalCode',
+  'province',
+  'serviceMinutes'
+]);
+
+function changedDeliveryStopOperationalOverride(
+  current: object,
+  payload: AdminRouteStopOverrideInput['payload']
+): { changed: boolean; data: Prisma.DeliveryStopUpdateManyMutationInput; geometryChanged: boolean } {
+  const currentValues = current as Record<string, unknown>;
+  const desired = toDeliveryStopOperationalOverrideWrite(payload) as Record<string, unknown>;
+  const changedEntries = Object.entries(desired).filter(([field, value]) => (
+    !sameDeliveryStopOverrideValue(field, currentValues[field], value)
+  ));
+  return {
+    changed: changedEntries.length > 0,
+    data: Object.fromEntries(changedEntries),
+    geometryChanged: changedEntries.some(([field]) => GEOMETRY_AFFECTING_STOP_OVERRIDE_FIELDS.has(field))
+  };
+}
+
+function sameDeliveryStopOverrideValue(field: string, current: unknown, desired: unknown): boolean {
+  if (field === 'latitude' || field === 'longitude') {
+    return decimalNumber(current) === decimalNumber(desired);
+  }
+  if (field === 'timeWindowEnd' || field === 'timeWindowStart') {
+    return formatTimeOnlyNullable(current instanceof Date ? current : null) ===
+      formatTimeOnlyNullable(desired instanceof Date ? desired : null);
+  }
+  if (desired instanceof Date) {
+    return current instanceof Date && current.getTime() === desired.getTime();
+  }
+  return current === desired;
 }
 
 function hasLocationAffectingStopOverride(payload: AdminRouteStopOverrideInput['payload']): boolean {
@@ -2572,10 +2813,21 @@ function readDeletionPredecessorId(snapshot: Prisma.JsonValue): string | null {
 }
 
 async function clearRouteGroupingChildVersionRoutePlanRefs(
-  tx: Pick<PrismaClient, 'routeGroupingChildVersion'>,
+  tx: Pick<PrismaClient, 'order' | 'routeGroupingChildVersion'>,
   input: { routePlanIds: string[]; shopId: string }
 ): Promise<void> {
   if (input.routePlanIds.length === 0) return;
+  const discardedVersions = await tx.routeGroupingChildVersion.findMany({
+    select: { id: true },
+    where: {
+      routePlanId: { in: input.routePlanIds },
+      shopId: input.shopId
+    }
+  });
+  await releaseRouteVersionOrderOwnership(tx, {
+    routeVersionIds: discardedVersions.map(({ id }) => id),
+    shopId: input.shopId
+  });
   await tx.routeGroupingChildVersion.updateMany({
     data: { routePlanId: null },
     where: {
@@ -2586,7 +2838,7 @@ async function clearRouteGroupingChildVersionRoutePlanRefs(
 }
 
 async function collapseRouteGroupingSplitAfterChildDelete(
-  tx: Pick<PrismaClient, 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanStop'>,
+  tx: Pick<PrismaClient, 'order' | 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanStop'>,
   input: { deletedChildVersions: Array<{ groupingId: string; id: string }>; shopId: string }
 ): Promise<void> {
   const groupingIds = [...new Set(input.deletedChildVersions.map((child) => child.groupingId))];
@@ -2594,17 +2846,32 @@ async function collapseRouteGroupingSplitAfterChildDelete(
 
   await tx.routeGroupingChildVersion.updateMany({
     data: { status: 'ARCHIVED', supersededAt: new Date() },
-    where: { id: { in: input.deletedChildVersions.map((child) => child.id) }, shopId: input.shopId, status: 'CURRENT' }
+    where: {
+      id: { in: input.deletedChildVersions.map((child) => child.id) },
+      shopId: input.shopId,
+      status: 'CURRENT',
+      supersededAt: null
+    }
   });
 
   for (const groupingId of groupingIds) {
     const currentChildren = await tx.routeGroupingChildVersion.findMany({
-      select: { routePlanId: true },
-      where: { groupingId, shopId: input.shopId, status: 'CURRENT' }
+      select: { id: true, routePlanId: true },
+      where: { groupingId, shopId: input.shopId, status: 'CURRENT', supersededAt: null }
     });
     const remainingRoutePlanIds = [...new Set(currentChildren.map((child) => child.routePlanId).filter((id): id is string => id !== null))];
     if (remainingRoutePlanIds.length > 1) continue;
 
+    const discardedSiblingVersions = remainingRoutePlanIds.length === 0
+      ? []
+      : await tx.routeGroupingChildVersion.findMany({
+          select: { id: true },
+          where: {
+            groupingId,
+            routePlanId: { in: remainingRoutePlanIds },
+            shopId: input.shopId
+          }
+        });
     if (remainingRoutePlanIds.length > 0) {
       const remainingRoutes = await tx.routePlan.findMany({
         select: { id: true, status: true },
@@ -2622,66 +2889,113 @@ async function collapseRouteGroupingSplitAfterChildDelete(
       }
       await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: remainingRoutePlanIds } } });
     }
+    await releaseRouteVersionOrderOwnership(tx, {
+      routeVersionIds: [
+        ...currentChildren.map(({ id }) => id),
+        ...discardedSiblingVersions.map(({ id }) => id)
+      ],
+      shopId: input.shopId
+    });
     await tx.routeGroupingChildVersion.updateMany({
       data: { status: 'ARCHIVED', supersededAt: new Date() },
-      where: { groupingId, shopId: input.shopId, status: 'CURRENT' }
+      where: { groupingId, shopId: input.shopId, status: 'CURRENT', supersededAt: null }
     });
     await tx.routeGroupingBranchOrderLock.deleteMany({ where: { groupingId, shopId: input.shopId } });
     await tx.routeGroupingBranch.deleteMany({ where: { groupingId, shopId: input.shopId } });
   }
 }
 
-function routePlanSummaryInclude() {
+function routePlanListSelect() {
   return {
-    driverEvents: routeLifecycleEventQuery(),
+    assignmentGeneration: true,
+    constraints: true,
+    createdAt: true,
+    depotLatitude: true,
+    depotLongitude: true,
+    deliveryWorkCompletedAt: true,
+    deliveryWorkCompletedGeneration: true,
+    deliveryWorkCompletedVersionId: true,
     driver: {
-      include: {
-        _count: {
-          select: {
-            driverEvents: true
-          }
-        }
+      select: {
+        _count: { select: { driverEvents: true } },
+        authSubject: true,
+        createdAt: true,
+        displayName: true,
+        id: true,
+        lastSeenAt: true,
+        phone: true,
+        status: true,
+        updatedAt: true
       }
+    },
+    driverEvents: routeLifecycleEventQuery(),
+    driverId: true,
+    driverNavigationUntil: true,
+    id: true,
+    metrics: true,
+    name: true,
+    planDate: true,
+    routeGeometryCaches: {
+      orderBy: { generatedAt: 'desc' as const },
+      select: routeGeometryCacheSummarySelect(),
+      take: 1
     },
     routeGroupingChildVersions: {
       orderBy: { createdAt: 'desc' as const },
-      select: {
-        groupingId: true,
-        status: true,
-        version: true
-      },
-      take: 1
-    },
-    routeGeometryCaches: {
-      orderBy: { generatedAt: 'desc' as const },
-      select: routeGeometryCacheSummarySelect()
+      select: { groupingId: true, status: true, version: true },
+      take: 1,
+      where: { status: 'CURRENT' as const, supersededAt: null }
     },
     routeStops: {
-      include: {
+      orderBy: { sequence: 'asc' as const },
+      select: {
         deliveryStop: {
-          include: {
+          select: {
+            deliveryDate: true,
+            id: true,
+            latitude: true,
+            longitude: true,
             order: {
-              include: {
+              select: {
+                currencyCode: true,
+                id: true,
                 orderItems: {
-                  orderBy: { lineIndex: 'asc' as const }
+                  orderBy: { lineIndex: 'asc' as const },
+                  select: {
+                    name: true,
+                    options: true,
+                    productId: true,
+                    quantity: true,
+                    sku: true,
+                    variationId: true
+                  }
                 },
-                deliveryCustomerProfileLinks: {
-                  include: { profile: true },
-                  take: 1
-                }
+                totalPriceAmount: true
               }
-            }
+            },
+            orderId: true,
+            status: true
           }
-        }
-      },
-      orderBy: { sequence: 'asc' as const }
-    }
-  };
+        },
+        deliveryStopId: true,
+        estimatedArrivalAt: true,
+        sequence: true
+      }
+    },
+    status: true,
+    updatedAt: true
+  } as const;
 }
 
 function routePlanInclude() {
   return {
     driverEvents: routeLifecycleEventQuery(),
+    driverRouteNotificationAttempts: {
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+      take: 1,
+      where: { groupingId: null }
+    },
     driver: {
       include: {
         _count: {
@@ -2695,10 +3009,12 @@ function routePlanInclude() {
       orderBy: { createdAt: 'desc' },
       select: {
         groupingId: true,
+        publishedAt: true,
         status: true,
         version: true
       },
-      take: 1
+      take: 1,
+      where: { status: 'CURRENT', supersededAt: null }
     },
     routeStops: {
       include: {
@@ -2729,12 +3045,19 @@ function isRouteGeometryCommitConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
 }
 
+function isRetainedProofMediaForeignKeyConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2003') return false;
+  return Object.values(error.meta ?? {}).some(
+    (value) => typeof value === 'string' && value.includes('driver_proof_media')
+  );
+}
+
 function routeLifecycleEventQuery() {
   return {
     orderBy: { occurredAt: 'desc' as const },
     select: { eventType: true },
     take: 1,
-    where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_COMPLETED] } }
+    where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] } }
   };
 }
 
@@ -2834,6 +3157,60 @@ type RoutePlanSummaryOptions = {
   includeRouteMetrics?: boolean;
 };
 
+function toRoutePlanListSummary(routePlan: RoutePlanListRecord): RoutePlanSummary {
+  const metrics = objectOrNull(routePlan.metrics);
+  const itemSummary = aggregateOrderItems(
+    routePlan.routeStops.flatMap(({ deliveryStop }) => deliveryStop.order.orderItems.map(toOrderItemDto)),
+    isRouteReadyStatus(routePlan.status) ? null : readString(metrics?.itemFingerprint)
+  );
+  const depot = {
+    latitude: decimalNumber(routePlan.depotLatitude),
+    longitude: decimalNumber(routePlan.depotLongitude)
+  };
+  const cache = routePlan.routeGeometryCaches[0] ?? null;
+  const shapeSignature = computeRouteShapeSignatureFromParts({
+    depot,
+    routeEndMode: readRouteEndMode(routePlan.constraints),
+    stops: routePlan.routeStops.map((stop) => ({
+      coordinates: {
+        latitude: decimalNumber(stop.deliveryStop.latitude),
+        longitude: decimalNumber(stop.deliveryStop.longitude)
+      },
+      deliveryStopId: stop.deliveryStopId,
+      orderId: stop.deliveryStop.orderId,
+      sequence: stop.sequence
+    }))
+  });
+
+  return {
+    createdAt: routePlan.createdAt.toISOString(),
+    deliveredCount: routePlan.routeStops.filter(({ deliveryStop }) => deliveryStop.status === 'DELIVERED').length,
+    deliveryAreas: readStringArray(metrics?.deliveryAreas) ?? [],
+    deliveryDate: deriveRouteDate(routePlan as unknown as RoutePlanRecord),
+    deliveryDays: readStringArray(metrics?.deliveryDays) ?? [],
+    depot,
+    departureTime: readDepartureTime(routePlan.constraints),
+    driver: toRoutePlanDriverSummary(routePlan.driver),
+    driverId: routePlan.driverId,
+    etaRange: normalizeRouteEtaRange(routePlan.routeStops.map(({ estimatedArrivalAt }) => estimatedArrivalAt)),
+    id: routePlan.id,
+    itemSummary,
+    missingCoordinates: readFiniteNumber(metrics?.missingCoordinates)
+      ?? routePlan.routeStops.filter(({ deliveryStop }) => deliveryStop.latitude === null || deliveryStop.longitude === null).length,
+    name: routePlan.name,
+    planDate: formatDateOnly(routePlan.planDate),
+    routeEndMode: readRouteEndMode(routePlan.constraints),
+    routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
+    routeMetrics: cache?.shapeSignature === shapeSignature ? readRouteMetrics(cache.metrics) : null,
+    scheduledStartAt: readScheduledStartAt(routePlan.constraints),
+    scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
+    status: toRouteDeliveryDisplayStatus(routePlan),
+    stopsCount: readFiniteNumber(metrics?.stopsCount) ?? routePlan.routeStops.length,
+    totalAmount: normalizeRouteTotalAmount(routePlan.routeStops.map(({ deliveryStop }) => deliveryStop.order)),
+    updatedAt: routePlan.updatedAt.toISOString()
+  };
+}
+
 function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanOrderInput[], options: RoutePlanSummaryOptions = {}): RoutePlanSummary {
   const metrics = readMetrics(routePlan.metrics, inputOrders, routePlan.routeStops ?? []);
   const routeMetrics = options.includeRouteMetrics === false ? null : readRoutePlanSummaryMetrics(routePlan);
@@ -2845,6 +3222,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
   );
   return {
     createdAt: routePlan.createdAt.toISOString(),
+    deliveredCount: (routePlan.routeStops ?? []).filter(({ deliveryStop }) => deliveryStop.status === 'DELIVERED').length,
     deliveryDate: deriveRouteDate(routePlan),
     deliveryAreas: metrics.deliveryAreas,
     deliveryDays: metrics.deliveryDays,
@@ -2855,17 +3233,21 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     departureTime: readDepartureTime(routePlan.constraints),
     driver: toRoutePlanDriverSummary(routePlan.driver ?? null),
     driverId: routePlan.driverId ?? routePlan.driver?.id ?? null,
+    etaRange: normalizeRouteEtaRange((routePlan.routeStops ?? []).map(({ estimatedArrivalAt }) => estimatedArrivalAt)),
     id: routePlan.id,
     itemSummary,
     missingCoordinates: metrics.missingCoordinates,
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate),
+    publishedAt: readRoutePublishedAt(routePlan),
     routeEndMode: readRouteEndMode(routePlan.constraints),
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
+    scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
     routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
     routeMetrics,
-    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    status: toRouteDeliveryDisplayStatus(routePlan),
     stopsCount: metrics.stopsCount,
+    totalAmount: normalizeRouteTotalAmount((routePlan.routeStops ?? []).map(({ deliveryStop }) => deliveryStop.order)),
     updatedAt: routePlan.updatedAt.toISOString()
   };
 }
@@ -2900,6 +3282,12 @@ function toRouteGroupingChildSummary(childVersions: RouteGroupingChildVersionRec
   };
 }
 
+function readRoutePublishedAt(routePlan: RoutePlanRecord): string | null {
+  const currentChild = routePlan.routeGroupingChildVersions?.[0];
+  if (currentChild !== undefined) return currentChild.publishedAt?.toISOString() ?? null;
+  return routePlan.driverRouteNotificationAttempts?.[0]?.createdAt.toISOString() ?? null;
+}
+
 function toRoutePlanDriverSummary(driver: RoutePlanDriverRecord | null): RoutePlanDriverSummary | null {
   if (driver === null) {
     return null;
@@ -2926,6 +3314,7 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
   const rawPayload = objectOrNull(order.rawPayload);
   const shippingAddress = readShippingAddress(order.shippingAddress, deliveryStop);
   const attributes = readAttributes(rawPayload);
+  const totalShippingPrice = readTotalShippingPrice(rawPayload);
 
   return {
     address: shippingAddress,
@@ -2964,6 +3353,8 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     phone: deliveryStop.phone ?? order.phone ?? null,
     serviceMinutes: deliveryStop.serviceMinutes,
     shippingPriceAmount: readShippingPriceAmount(rawPayload),
+    totalShippingPriceAmount: totalShippingPrice.amount,
+    totalShippingPriceCurrencyCode: totalShippingPrice.currencyCode,
     totalPriceAmount: stringOrNull(order.totalPriceAmount),
     orderId: order.id,
     locationDiagnostic: diagnoseRouteStopLocation({
@@ -2986,6 +3377,18 @@ function readShippingPriceAmount(rawPayload: Record<string, unknown> | null): st
   const shippingPriceSet = objectOrNull(rawPayload?.currentShippingPriceSet);
   const shopMoney = objectOrNull(shippingPriceSet?.shopMoney);
   return readString(shopMoney?.amount);
+}
+
+function readTotalShippingPrice(rawPayload: Record<string, unknown> | null): {
+  amount: string | null;
+  currencyCode: string | null;
+} {
+  const shippingPriceSet = objectOrNull(rawPayload?.totalShippingPriceSet);
+  const shopMoney = objectOrNull(shippingPriceSet?.shopMoney);
+  return {
+    amount: readString(shopMoney?.amount),
+    currencyCode: readString(shopMoney?.currencyCode)
+  };
 }
 
 function createMetrics(orders: RoutePlanOrderInput[]): Prisma.InputJsonObject {
@@ -3142,6 +3545,17 @@ function readScheduledStartAt(value: unknown): string | null {
   if (scheduledStartAt === null || !scheduledStartAt.includes('T')) return null;
   const instant = new Date(scheduledStartAt);
   return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
+}
+
+function readScheduledStartTimeZone(value: unknown): string | null {
+  const scheduledStartTimeZone = readString(objectOrNull(value)?.scheduledStartTimeZone);
+  if (scheduledStartTimeZone === null) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: scheduledStartTimeZone }).format(new Date(0));
+    return scheduledStartTimeZone;
+  } catch {
+    return null;
+  }
 }
 
 function readRouteEndMode(value: unknown): RoutePlanEndMode {

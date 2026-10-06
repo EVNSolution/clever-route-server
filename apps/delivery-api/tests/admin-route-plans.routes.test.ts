@@ -1,10 +1,14 @@
 import { describe, expect, test, vi } from 'vitest';
 
+import { RouteExecutionConflictError } from '../src/modules/route-plans/route-execution-ownership.js';
 import { buildApp } from '../src/app.js';
 import { RouteOptimizationJobActiveError } from '../src/modules/route-plans/route-optimization-job.types.js';
 import {
+  RoutePlanBatchInvalidError,
+  RoutePlanDeleteBlockedError,
   RoutePlanGeometryRefreshFailedError,
   RoutePlanOrderAlreadyPlannedError,
+  RoutePlanPublishInvalidError,
   RoutePlanRefreshNotAllowedError,
   RoutePlanStopOverrideInvalidError,
   RoutePlanStopUpdateInvalidError
@@ -36,6 +40,133 @@ const routePlanSummary = {
 type SaveRoutePlan = NonNullable<AdminRoutePlanDependencies['routePlanService']['saveRoutePlan']>;
 
 describe('Admin route plan routes', () => {
+  test('publishes a tenant-scoped route and reports accepted driver notification', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: {
+          authorization: 'Bearer session-token',
+          'x-clever-app-id': 'clever'
+        },
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/publish'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          dispatch: {
+            notificationStatus: 'SENT',
+            providerMessageId: 'push-message-1',
+            publishedAt: '2026-09-10T09:00:00.000Z',
+            routePlanId: 'route-plan-id'
+          },
+          routePlan: { id: 'route-plan-id', status: 'ASSIGNED' }
+        },
+        error: null
+      });
+      expect(publishRoutePlan).toHaveBeenCalledWith({
+        appId: 'clever',
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+      expect(recordChildRoutePublished).toHaveBeenCalledWith({
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns the safe conflict explanation without publishing or notifying any part of the route', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    const message = '배차할 수 없습니다. 주문 #1001 (경로: Friday North)이 이미 배차되어 있습니다.';
+    publishRoutePlan.mockRejectedValueOnce(new RouteExecutionConflictError('other-route', 'stop-1', message));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+    try {
+      const response = await app.inject({ headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever' },
+        method: 'POST', url: '/admin/route-plans/route-plan-id/publish' });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ data: null, error: { code: 'ROUTE_EXECUTION_CONFLICT', message } });
+      expect(recordChildRoutePublished).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  test('reports driver notification failure without disguising it as sent', async () => {
+    const { dependencies, recordChildRoutePublished } = createDependencyHarness();
+    recordChildRoutePublished.mockResolvedValueOnce({ errorCode: 'NO_ACTIVE_TOKEN', publishedAt: '2026-09-10T09:00:00.000Z', status: 'SKIPPED' });
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/publish'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          dispatch: {
+            notificationErrorCode: 'NO_ACTIVE_TOKEN',
+            notificationStatus: 'SKIPPED',
+            routePlanId: 'route-plan-id'
+          }
+        },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects route publish without a Shopify session token', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/publish'
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'UNAUTHORIZED', message: 'Missing bearer session token' }
+      });
+      expect(publishRoutePlan).not.toHaveBeenCalled();
+      expect(recordChildRoutePublished).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not notify for a missing or foreign tenant route', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    publishRoutePlan.mockResolvedValueOnce(null);
+    const app = await buildApp({ adminRoutePlans: dependencies });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/admin/route-plans/foreign-route/publish', headers: { authorization: 'Bearer session-token' } });
+      expect(response.statusCode).toBe(404);
+      expect(recordChildRoutePublished).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  test('keeps publication rejection distinct from a push failure', async () => {
+    const { dependencies, publishRoutePlan, recordChildRoutePublished } = createDependencyHarness();
+    publishRoutePlan.mockRejectedValueOnce(new RoutePlanPublishInvalidError('Cancelled routes cannot be published.'));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/admin/route-plans/route-plan-id/publish', headers: { authorization: 'Bearer session-token' } });
+      expect(response.statusCode).toBe(400);
+      expect(recordChildRoutePublished).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   test('refreshes route geometry and ETA from the latest canonical order data', async () => {
     const { dependencies, refreshRouteGeometryForRoutePlan } = createDependencyHarness();
     const app = await buildApp({ adminRoutePlans: dependencies });
@@ -401,6 +532,100 @@ describe('Admin route plan routes', () => {
     }
   });
 
+  test('creates a route plan from shop-scoped selected order ids without accepting client order fields', async () => {
+    const { createRoutePlan, createRoutePlanFromOrderIds, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: {
+          depot: { address: 'Shopify departure location', latitude: 43.6532, longitude: -79.3832 },
+          name: 'CLEVER route draft',
+          orderIds: ['order-1', 'order-2'],
+          planDate: '2026-05-08'
+        },
+        url: '/admin/route-plans'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { routePlan: routePlanSummary }, error: null });
+      expect(createRoutePlan).not.toHaveBeenCalled();
+      expect(createRoutePlanFromOrderIds).toHaveBeenCalledWith({
+        appId: 'clever',
+        createdBy: 'shopify-user-id',
+        payload: {
+          depot: { address: 'Shopify departure location', latitude: 43.6532, longitude: -79.3832 },
+          name: 'CLEVER route draft',
+          orderIds: ['order-1', 'order-2'],
+          planDate: '2026-05-08'
+        },
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects mixed full-order and selected-order-id route creation payloads', async () => {
+    const { createRoutePlan, createRoutePlanFromOrderIds, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { ...routePlanPayload(), orderIds: ['order-1'] },
+        url: '/admin/route-plans'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid route plan payload' }
+      });
+      expect(createRoutePlan).not.toHaveBeenCalled();
+      expect(createRoutePlanFromOrderIds).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns selected-order validation failures without falling back to full-order creation', async () => {
+    const { createRoutePlan, createRoutePlanFromOrderIds, dependencies } = createDependencyHarness();
+    createRoutePlanFromOrderIds.mockRejectedValueOnce(
+      new RoutePlanBatchInvalidError(['other-shop-order-id: delivery facts not found'])
+    );
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: {
+          depot: { address: null, latitude: null, longitude: null },
+          name: 'CLEVER route draft',
+          orderIds: ['other-shop-order-id'],
+          planDate: '2026-05-08'
+        },
+        url: '/admin/route-plans'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_PLAN_BATCH_INVALID',
+          message: 'Cannot create route from selected orders: other-shop-order-id: delivery facts not found'
+        }
+      });
+      expect(createRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
 
   test('creates a route plan when every order matches the requested route scope', async () => {
     const { createRoutePlan, dependencies } = createDependencyHarness();
@@ -684,6 +909,34 @@ describe('Admin route plan routes', () => {
         appId: 'clever',
         routePlanId: 'route-plan-id',
         shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns persisted publication evidence on a fresh route detail request', async () => {
+    const { dependencies, getRoutePlanDetail } = createDependencyHarness();
+    getRoutePlanDetail.mockResolvedValueOnce({
+      routePlan: { ...routePlanSummary, publishedAt: '2026-09-11T13:00:00.000Z', status: 'COMPLETED' },
+      routeGeometry: null,
+      routeMetrics: null,
+      routeStopPoints: [],
+      stops: []
+    });
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/route-plans/route-plan-id'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: { routePlan: { publishedAt: '2026-09-11T13:00:00.000Z', status: 'COMPLETED' } },
+        error: null
       });
     } finally {
       await app.close();
@@ -1262,6 +1515,61 @@ describe('Admin route plan routes', () => {
     }
   });
 
+  test.each([
+    'In-progress routes cannot be deleted.',
+    'Route has retained delivery records and cannot be deleted yet.'
+  ])('returns a conflict with the route deletion block reason: %s', async (message) => {
+    const { dependencies, deleteRoutePlan } = createDependencyHarness();
+    deleteRoutePlan.mockRejectedValueOnce(new RoutePlanDeleteBlockedError(message));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'DELETE',
+        url: '/admin/route-plans/route-plan-id'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ROUTE_DELETE_BLOCKED', message }
+      });
+      expect(deleteRoutePlan).toHaveBeenCalledExactlyOnceWith({
+        appId: 'clever',
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('keeps unexpected route deletion failures as internal server errors', async () => {
+    const { dependencies, deleteRoutePlan } = createDependencyHarness();
+    deleteRoutePlan.mockRejectedValueOnce(new Error('Private database failure detail'));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'DELETE',
+        url: '/admin/route-plans/route-plan-id'
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'An internal server error occurred.'
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('deletes a route plan for the token shop', async () => {
     const { dependencies, deleteRoutePlan } = createDependencyHarness();
     const app = await buildApp({ adminRoutePlans: dependencies });
@@ -1299,6 +1607,9 @@ function createDependencyHarness(): {
   createRoutePlan: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['createRoutePlan']>
   >;
+  createRoutePlanFromOrderIds: ReturnType<
+    typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routePlanService']['createRoutePlanFromOrderIds']>>
+  >;
   dependencies: AdminRoutePlanDependencies;
   getRoutePlanDetail: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['getRoutePlanDetail']>
@@ -1311,6 +1622,9 @@ function createDependencyHarness(): {
   >;
   publishRoutePlan: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['publishRoutePlan']>
+  >;
+  recordChildRoutePublished: ReturnType<
+    typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routeGroupingService']>['recordChildRoutePublished']>
   >;
   refreshRouteGeometryForRoutePlan: ReturnType<
     typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routePlanService']['refreshRouteGeometryForRoutePlan']>>
@@ -1338,6 +1652,9 @@ function createDependencyHarness(): {
   const createRoutePlan = vi.fn<AdminRoutePlanDependencies['routePlanService']['createRoutePlan']>(
     () => Promise.resolve(routePlanSummary)
   );
+  const createRoutePlanFromOrderIds = vi.fn<
+    NonNullable<AdminRoutePlanDependencies['routePlanService']['createRoutePlanFromOrderIds']>
+  >(() => Promise.resolve(routePlanSummary));
   const assignRoutePlanDriver = vi.fn<
     AdminRoutePlanDependencies['routePlanService']['assignRoutePlanDriver']
   >(() =>
@@ -1392,6 +1709,9 @@ function createDependencyHarness(): {
       ]
     })
   );
+  const recordChildRoutePublished = vi.fn<
+    NonNullable<AdminRoutePlanDependencies['routeGroupingService']>['recordChildRoutePublished']
+  >(() => Promise.resolve({ providerMessageId: 'push-message-1', publishedAt: '2026-09-10T09:00:00.000Z', status: 'SENT' }));
   const refreshRouteGeometryForRoutePlan = vi.fn<
     NonNullable<AdminRoutePlanDependencies['routePlanService']['refreshRouteGeometryForRoutePlan']>
   >(() =>
@@ -1497,10 +1817,13 @@ function createDependencyHarness(): {
   return {
     assignRoutePlanDriver,
     createRoutePlan,
+    createRoutePlanFromOrderIds,
     dependencies: {
+      routeGroupingService: { recordChildRoutePublished },
       routePlanService: {
         assignRoutePlanDriver,
         createRoutePlan,
+        createRoutePlanFromOrderIds,
         deleteRoutePlan,
         getRoutePlanDetail,
         listRoutePlans,
@@ -1520,6 +1843,7 @@ function createDependencyHarness(): {
     deleteRoutePlan,
     listRoutePlans,
     publishRoutePlan,
+    recordChildRoutePublished,
     refreshRouteGeometryForRoutePlan,
     saveRoutePlan,
     transitionAdminRouteStop,

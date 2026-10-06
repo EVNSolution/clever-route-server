@@ -1,11 +1,8 @@
+import { visibleDsvOrderWhere, visibleDsvVehicleWhere, visibleDsvRouteWhere, visibleDsvAssignmentWhere, visibleDsvOrderCountSql } from './dsv-test-visibility.js';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 
-import {
-  canAccessDsvStoreReviewData,
-  type DsvAdminPrincipal,
-  type DsvCustomerUserPrincipal,
-} from './dsv-principal.js';
+import type { DsvAdminPrincipal, DsvCustomerUserPrincipal } from './dsv-principal.js';
 import type {
   DsvV1ConditionListItemRow,
   DsvV1ControlSummaryInput,
@@ -31,11 +28,18 @@ import {
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { dsvDestinationIdentitySqlAddress, dsvDestinationIdentitySqlText } from './dsv-destination-identity.js';
 import {
+  filterDistantRoadMatchedAnchors,
   UVIS_VEHICLE_TRAIL_SCHEMA_VERSION,
   type UvisVehicleTrailDocumentV1,
   type UvisVehicleTrailMarker,
 } from '../uvis/uvis-vehicle-trail-materializer.js';
+import { buildUvisVehicleDailyRoute } from '../uvis/uvis-vehicle-daily-route.js';
+import { hasImplausibleGpsJump } from '../uvis/uvis-vehicle-trail-evidence.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
+import {
+  occurredAtWithinRouteTrackingEventWindow,
+  resolveRouteTrackingEventWindow,
+} from '../route-tracking/route-tracking.event-window.js';
 
 export const dsvV1ReadDefaultLimit = 50;
 export const dsvV1ReadMaxLimit = 100;
@@ -130,6 +134,7 @@ export type DsvV1VehicleTemperatureHistoryResult = {
 };
 
 export type DsvV1VehicleGpsTrailHistoryInput = {
+  includeDailyRoute?: boolean;
   serviceDate?: string | null;
   vehicleId: string;
 };
@@ -169,6 +174,7 @@ export type DsvV1VehicleGpsTrailSession = {
 };
 
 export type DsvV1VehicleGpsTrailHistoryResult = {
+  dailyRoute?: ReturnType<typeof buildUvisVehicleDailyRoute>;
   serviceDate: string;
   sessions: DsvV1VehicleGpsTrailSession[];
   timezone: string;
@@ -405,13 +411,12 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     principal: DsvCustomerUserPrincipal,
     input: DsvV1CustomerDeliveriesInput = {},
   ): Promise<DsvV1CustomerDeliveryReadResult> {
-    return this.listCustomerDeliveriesWithReviewAccess(principal, input, false);
+    return this.listCustomerDeliveriesWithoutReviewData(principal, input);
   }
 
-  private async listCustomerDeliveriesWithReviewAccess(
+  private async listCustomerDeliveriesWithoutReviewData(
     principal: DsvCustomerUserPrincipal,
     input: DsvV1CustomerDeliveriesInput,
-    includeStoreReviewData: boolean,
   ): Promise<DsvV1CustomerDeliveryReadResult> {
     if (principal.customerId === '') {
       const dates = await this.resolveTenantDates(principal.shopId);
@@ -451,7 +456,8 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       take: limit + 1,
       where: {
         customerId: principal.customerId,
-        ...(includeStoreReviewData ? {} : { isStoreReviewData: false }),
+        isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
         ...orderCursorWhere(page.cursor),
         deliveryStops: {
@@ -477,32 +483,32 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     customerId: string,
     input: DsvV1CustomerDeliveriesInput = {},
   ): Promise<DsvV1CustomerDeliveryReadResult> {
-    return this.listCustomerDeliveriesWithReviewAccess({
+    return this.listCustomerDeliveriesWithoutReviewData({
       customerId,
       principalType: 'CUSTOMER_USER',
       scopes: ['dsv:customer-deliveries:read'],
       shopId: principal.shopId,
-    }, input, canAccessDsvStoreReviewData(principal));
+    }, input);
   }
 
   async listCustomerRouteScope(
     principal: DsvCustomerUserPrincipal,
     serviceDate: string,
   ): Promise<DsvV1CustomerRouteScopeRow[]> {
-    return this.listCustomerRouteScopeWithReviewAccess(principal, serviceDate, false);
+    return this.listCustomerRouteScopeWithoutReviewData(principal, serviceDate);
   }
 
-  private async listCustomerRouteScopeWithReviewAccess(
+  private async listCustomerRouteScopeWithoutReviewData(
     principal: DsvCustomerUserPrincipal,
     serviceDate: string,
-    includeStoreReviewData: boolean,
   ): Promise<DsvV1CustomerRouteScopeRow[]> {
     assertIsoDate(serviceDate);
     const rows = await this.prisma.order.findMany({
       select: customerRouteScopeOrderSelect,
       where: {
         customerId: principal.customerId,
-        ...(includeStoreReviewData ? {} : { isStoreReviewData: false }),
+        isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
         deliveryStops: {
           some: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId: principal.shopId },
@@ -517,12 +523,12 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     customerId: string,
     serviceDate: string,
   ): Promise<DsvV1CustomerRouteScopeRow[]> {
-    return this.listCustomerRouteScopeWithReviewAccess({
+    return this.listCustomerRouteScopeWithoutReviewData({
       customerId,
       principalType: 'CUSTOMER_USER',
       scopes: ['dsv:customer-deliveries:read'],
       shopId: principal.shopId,
-    }, serviceDate, canAccessDsvStoreReviewData(principal));
+    }, serviceDate);
   }
 
   async listCustomerGpsTrailHistories(
@@ -530,14 +536,13 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     serviceDate: string,
     scope: readonly DsvV1CustomerRouteScopeRow[],
   ): Promise<DsvV1VehicleGpsTrailHistoryResult[]> {
-    return this.listCustomerGpsTrailHistoriesWithReviewAccess(principal, serviceDate, scope, false);
+    return this.listCustomerGpsTrailHistoriesWithoutReviewData(principal, serviceDate, scope);
   }
 
-  private async listCustomerGpsTrailHistoriesWithReviewAccess(
+  private async listCustomerGpsTrailHistoriesWithoutReviewData(
     principal: DsvCustomerUserPrincipal,
     serviceDate: string,
     scope: readonly DsvV1CustomerRouteScopeRow[],
-    includeStoreReviewData: boolean,
   ): Promise<DsvV1VehicleGpsTrailHistoryResult[]> {
     assertIsoDate(serviceDate);
     const routePlanIdsByVehicle = new Map<string, Set<string>>();
@@ -550,7 +555,6 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       const history = await this.listVehicleGpsTrailHistoryForShop(
         principal.shopId,
         { serviceDate, vehicleId },
-        includeStoreReviewData,
       );
       return {
         ...history,
@@ -564,12 +568,12 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     serviceDate: string,
     scope: readonly DsvV1CustomerRouteScopeRow[],
   ): Promise<DsvV1VehicleGpsTrailHistoryResult[]> {
-    return this.listCustomerGpsTrailHistoriesWithReviewAccess({
+    return this.listCustomerGpsTrailHistoriesWithoutReviewData({
       customerId: '',
       principalType: 'CUSTOMER_USER',
       scopes: ['dsv:customer-deliveries:read'],
       shopId: principal.shopId,
-    }, serviceDate, scope, canAccessDsvStoreReviewData(principal));
+    }, serviceDate, scope);
   }
 
   async listDispatches(
@@ -595,7 +599,8 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       select: customerDeliveryOrderSelect(serviceDate, principal.shopId),
       take: limit + 1,
       where: {
-        ...(canAccessDsvStoreReviewData(principal) ? {} : { isStoreReviewData: false }),
+        isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
         ...orderCursorWhere(page.cursor),
         ...(orderNumber === undefined
@@ -639,7 +644,8 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       orderBy: [{ sellerOrderKey: 'asc' }, { id: 'asc' }],
       select: customerDeliveryOrderSelect(serviceDate, principal.shopId),
       where: {
-        ...(canAccessDsvStoreReviewData(principal) ? {} : { isStoreReviewData: false }),
+        isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
         deliveryStops: {
           some: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId: principal.shopId },
@@ -670,7 +676,8 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     const where: Prisma.DeliveryStopWhereInput = {
       ...(serviceDate === undefined ? {} : { deliveryDate: serviceDateAsDbDate(serviceDate) }),
       order: {
-        ...(canAccessDsvStoreReviewData(principal) ? {} : { isStoreReviewData: false }),
+        isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
       },
       shopId: principal.shopId,
@@ -716,7 +723,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         take: page.limit + 1,
         where: {
           dsvProfile: { isNot: null },
-          ...(canAccessDsvStoreReviewData(principal) ? {} : { isStoreReviewData: false }),
+          isStoreReviewData: false,
           shopId: principal.shopId,
           ...labelCursorWhere(page.cursor, 'displayName'),
         },
@@ -755,12 +762,11 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
           vehicleType: true,
         },
         take: page.limit + 1,
-        where: { dsvProfile: { isNot: null }, shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'label') },
+        where: { dsvProfile: { isNot: null }, shopId: principal.shopId, ...visibleDsvVehicleWhere(principal.shopId), ...labelCursorWhere(page.cursor, 'label') },
       });
       const assignmentsByVehicleId = await this.listVehicleDriverAssignments(
         principal.shopId,
         rows.map((row) => row.id),
-        canAccessDsvStoreReviewData(principal),
       );
       const telemetryByVehicleId = await this.listVehicleTelemetry(principal.shopId, rows.map((row) => row.id));
       const telemetryActivity = await this.getTelemetryActivity(principal.shopId);
@@ -807,12 +813,13 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
             FROM orders
             WHERE orders."shopId" = customers."shopId"
               AND orders."customerId" = customers.id
-              ${canAccessDsvStoreReviewData(principal) ? Prisma.empty : Prisma.sql`AND orders."isStoreReviewData" = false`}
+              AND orders."isStoreReviewData" = false
+              ${visibleDsvOrderCountSql(principal.shopId)}
           ) AS "orderCount",
           status::text AS status
         FROM customers
         WHERE "shopId" = ${principal.shopId}::uuid
-          ${canAccessDsvStoreReviewData(principal) ? Prisma.empty : Prisma.sql`AND "isStoreReviewData" = false`}
+          AND "isStoreReviewData" = false
           ${effectiveLabelCursorSql(
             page.cursor,
             Prisma.sql`COALESCE("displayName", "externalCustomerCode")`,
@@ -852,7 +859,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
           WHERE "shopId" = ${principal.shopId}::uuid
             AND "mergedIntoProfileId" IS NULL
             AND NULLIF(BTRIM(COALESCE("normalizedAddress"->>'address', "normalizedAddress"->>'address1', '')), '') IS NOT NULL
-            ${canAccessDsvStoreReviewData(principal) ? Prisma.empty : Prisma.sql`AND "isStoreReviewData" = false`}
+            AND "isStoreReviewData" = false
         ), grouped_destinations AS (
           SELECT
             (ARRAY_AGG(id ORDER BY "createdAt" ASC, id ASC))[1] AS id,
@@ -970,7 +977,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
   ): Promise<DsvV1VehicleTemperatureHistoryResult> {
     const vehicle = await this.prisma.vehicle.findFirst({
       select: { id: true },
-      where: { id: input.vehicleId, shopId: principal.shopId },
+      where: { id: input.vehicleId, shopId: principal.shopId, ...visibleDsvVehicleWhere(principal.shopId) },
     });
     if (vehicle === null) throw new DsvV1ReadQueryError('NOT_FOUND', 'Vehicle not found.');
     const to = input.to ?? this.clock();
@@ -1007,20 +1014,18 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     return this.listVehicleGpsTrailHistoryForShop(
       principal.shopId,
       input,
-      canAccessDsvStoreReviewData(principal),
     );
   }
 
   private async listVehicleGpsTrailHistoryForShop(
     shopId: string,
     input: DsvV1VehicleGpsTrailHistoryInput,
-    includeStoreReviewData: boolean,
   ): Promise<DsvV1VehicleGpsTrailHistoryResult> {
     const serviceDate = await this.resolveAdminServiceDate(shopId, input.serviceDate);
     const timezone = await this.resolveTenantTimezone(shopId);
     const vehicle = await this.prisma.vehicle.findFirst({
       select: { id: true },
-      where: { id: input.vehicleId, shopId },
+      where: { id: input.vehicleId, shopId, ...visibleDsvVehicleWhere(shopId) },
     });
     if (vehicle === null) throw new DsvV1ReadQueryError('NOT_FOUND', 'Vehicle not found.');
 
@@ -1045,10 +1050,11 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         planDate: true,
       },
       where: {
-        ...(includeStoreReviewData ? {} : { isStoreReviewData: false }),
+        isStoreReviewData: false,
         planDate: serviceDateAsDbDate(serviceDate),
         shopId,
         status: { not: 'CANCELLED' },
+        ...visibleDsvRouteWhere(shopId),
         vehicleId: vehicle.id,
       },
     });
@@ -1113,6 +1119,16 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       vehicleId: vehicle.id,
     });
     return {
+      ...(input.includeDailyRoute === true ? {
+        dailyRoute: buildUvisVehicleDailyRoute(validSamples.map((sample) => ({
+          ignitionOn: sample.ignitionOn,
+          latitude: sample.latitude,
+          longitude: sample.longitude,
+          observedAt: sample.observedAt.toISOString(),
+          speedKph: decimalToNumber(sample.speedKph),
+          staleAfter: sample.staleAfter.toISOString(),
+        })), materializedTrail),
+      } : {}),
       serviceDate,
       sessions: sortGpsTrailSessions([...sessions, ...uncoveredSessions]),
       timezone,
@@ -1211,15 +1227,15 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
   private async listVehicleDriverAssignments(
     shopId: string,
     vehicleIds: readonly string[],
-    includeStoreReviewData: boolean,
   ): Promise<Map<string, Array<{ assignmentId: string; driverId: string }>>> {
     if (vehicleIds.length === 0) return new Map();
     const rows = await this.prisma.dsvVehicleDriverAssignment.findMany({
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { driverId: true, id: true, vehicleId: true },
       where: {
-        ...(includeStoreReviewData ? {} : { driver: { isStoreReviewData: false } }),
+        driver: { isStoreReviewData: false },
         shopId,
+        ...visibleDsvAssignmentWhere(shopId),
         vehicleId: { in: [...vehicleIds] },
       },
     });
@@ -1491,10 +1507,19 @@ const customerRouteScopeOrderSelect = {
       routePlanId: true,
       routePlan: {
         select: {
+            constraints: true,
+            driverEvents: {
+              orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+              select: { eventType: true, occurredAt: true },
+              take: 1,
+              where: { eventType: 'ROUTE_STARTED' },
+            },
+            planDate: true,
             trackingGeometry: {
               select: {
                 lastLatitude: true,
                 lastLongitude: true,
+                lastOccurredAt: true,
               },
             },
             vehicleId: true,
@@ -1523,6 +1548,8 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
         routePlanId: true,
         routePlan: {
           select: {
+            constraints: true,
+            planDate: true,
             vehicle: {
               select: {
                 id: true,
@@ -1535,6 +1562,7 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
               select: {
                 lastLatitude: true,
                 lastLongitude: true,
+                lastOccurredAt: true,
               },
             },
             driverEvents: {
@@ -1658,10 +1686,10 @@ function recordStopSelect(shopId: string) {
       select: recordEventSelect,
       where: { eventType: { in: [...recordEventAllowlist] }, shopId },
     },
-    driverProofMedia: {
-      orderBy: [{ uploadedAt: 'desc' }, { id: 'desc' }],
-      select: recordProofMediaSelect,
-      where: { shopId, uploadStatus: 'READY' },
+    driverProofMediaLinks: {
+      orderBy: [{ proofMedia: { uploadedAt: 'desc' } }, { proofMediaId: 'desc' }],
+      select: { proofMedia: { select: recordProofMediaSelect } },
+      where: { proofMedia: { shopId, uploadStatus: 'READY' } },
     },
     id: true,
     order: {
@@ -1726,7 +1754,7 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
   const stop = requireSelectedCustomerDeliveryStop(row.deliveryStops[0] ?? null, row.id);
   const eta = selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
   const vehicle = row.currentRouteVersion?.routePlan?.vehicle ?? null;
-  const vehiclePosition = row.currentRouteVersion?.routePlan?.trackingGeometry ?? null;
+  const vehiclePosition = usableDsvTrackingGeometry(row.currentRouteVersion?.routePlan ?? null);
   const currentRouteStop = selectCurrentRouteStop(stop.routePlanStops, row.currentRouteVersion?.routePlanId ?? null);
   const routePlanId = currentRouteStop?.routePlanId ?? eta?.routePlanId ?? row.currentRouteVersion?.routePlanId ?? null;
   return {
@@ -1756,7 +1784,7 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
 function toCustomerRouteScopeRow(row: CustomerRouteScopeOrderRow): DsvV1CustomerRouteScopeRow[] {
   const routeVersion = row.currentRouteVersion;
   const routePlan = routeVersion?.routePlan ?? null;
-  const vehiclePosition = routePlan?.trackingGeometry ?? null;
+  const vehiclePosition = usableDsvTrackingGeometry(routePlan);
   const vehicleLatitude = decimalToNumber(vehiclePosition?.lastLatitude ?? null);
   const vehicleLongitude = decimalToNumber(vehiclePosition?.lastLongitude ?? null);
   if (
@@ -1772,6 +1800,26 @@ function toCustomerRouteScopeRow(row: CustomerRouteScopeOrderRow): DsvV1Customer
     vehicleLatitude,
     vehicleLongitude,
   }];
+}
+
+function usableDsvTrackingGeometry<T extends {
+  constraints: unknown;
+  driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
+  planDate: Date;
+  trackingGeometry: { lastOccurredAt: Date } | null;
+}>(routePlan: T | null): T['trackingGeometry'] | null {
+  if (routePlan?.trackingGeometry === null || routePlan === null) return null;
+  const eventWindow = resolveRouteTrackingEventWindow({
+    constraints: routePlan.constraints,
+    planDate: routePlan.planDate,
+    startOccurredAt: (routePlan.driverEvents ?? [])
+      .filter((event) => event.eventType === 'ROUTE_STARTED')
+      .sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime())[0]?.occurredAt,
+  });
+  return eventWindow === null
+    || occurredAtWithinRouteTrackingEventWindow(eventWindow, routePlan.trackingGeometry.lastOccurredAt)
+    ? routePlan.trackingGeometry
+    : null;
 }
 
 function requireSelectedCustomerDeliveryStop(
@@ -1955,7 +2003,7 @@ function toRecordRow(stop: RecordStopRow): RecordCursorRow {
     ...etaFields(eta),
     etaStatus: fallbackEtaStatus(stop.order.currentRouteVersionId, eta),
     eventRows: stop.driverEvents.map(toRecordDtoEventRow),
-    proofRows: stop.driverProofMedia.map(toRecordDtoProofRow),
+    proofRows: stop.driverProofMediaLinks.map(({ proofMedia }) => toRecordDtoProofRow(proofMedia)),
     rawNote: constraintState.rawNote,
     reviewStatus: constraintState.reviewStatus,
     routeConstraintStatus: constraintState.routeConstraintStatus,
@@ -2001,7 +2049,7 @@ function toDtoEventRow(row: { eventType: string; id: string; occurredAt: Date })
   };
 }
 
-function toRecordDtoProofRow(row: RecordStopRow['driverProofMedia'][number]): DsvV1ProofRowInput {
+function toRecordDtoProofRow(row: RecordStopRow['driverProofMediaLinks'][number]['proofMedia']): DsvV1ProofRowInput {
   return {
     contentType: row.contentType,
     deletedAt: row.deletedAt,
@@ -2232,7 +2280,9 @@ function splitGpsTrailSegments(samples: GpsTrailSampleRow[]): GpsTrailSampleRow[
   for (const sample of samples) {
     const current = segments[segments.length - 1] ?? null;
     const previous = current?.[current.length - 1] ?? null;
-    if (current === null || previous === null || previous.staleAfter.getTime() < sample.observedAt.getTime()) {
+    if (current === null || previous === null
+      || previous.staleAfter.getTime() < sample.observedAt.getTime()
+      || hasImplausibleGpsJump(previous, sample)) {
       segments.push([sample]);
     } else {
       current.push(sample);
@@ -2250,7 +2300,9 @@ function buildGpsTrailSegments(
     const enrichment = segmentTrailEnrichment(segment, materializedTrail);
     return {
       ...base,
-      ...(enrichment.roadMatchedGeometry === undefined ? {} : { roadMatchedGeometry: enrichment.roadMatchedGeometry }),
+      ...(enrichment.roadMatchedGeometry === undefined ? {} : {
+        roadMatchedGeometry: filterDistantRoadMatchedAnchors(enrichment.roadMatchedGeometry, base.samples),
+      }),
       ...(enrichment.trailMarker === undefined ? {} : { trailMarker: enrichment.trailMarker }),
     };
   });

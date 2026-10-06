@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { DriverEventType, type DriverRouteNotificationStatus, type Prisma, type PrismaClient } from '@prisma/client';
+import { assertRouteDispatchOwnership, claimRouteExecutionProjection, hasDispatchReservation, lockRouteExecutionStops, withoutDispatchReservation } from '../route-plans/route-execution-ownership.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { DriverEventType, Prisma, type DeliveryStopStatus, type DriverRouteNotificationStatus, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type {
   DriverPushProvider,
@@ -11,9 +12,17 @@ import type {
   RouteOptimizationService,
   RouteOptimizationStopSequence
 } from '../route-plans/route-optimization.types.js';
-import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheCreateData } from '../route-plans/route-plan-geometry-cache.js';
+import {
+  applyCachedRouteGeometry,
+  computeRouteShapeSignature,
+  computeRouteShapeSignatureFromParts,
+  readRouteMetrics,
+  routeGeometryCacheCreateData
+} from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import { toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
+import { toRouteDeliveryDisplayStatus } from '../route-plans/kfood-delivery-completion.js';
+import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from '../route-plans/route-plan-summary-normalization.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
 import { aggregateOrderItems, toOrderItemDto } from '../order-items/order-items.js';
@@ -26,14 +35,15 @@ import {
 import {
   CustomOrderReferenceCopyNotAllowedError,
   RouteGroupingBranchLockConflictError,
-  RouteGroupingCopyLockedError,
   RouteGroupingConflictError,
   RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingStopMembershipConflictError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
+  type CopyStandaloneRoutePlanInput,
   type CopyRouteGroupingInput,
+  type CreateRouteGroupingFromRoutePlanInput,
   type CreateCustomRouteGroupingStopInput,
   type CreateRouteGroupingBranchInput,
   type CreateRouteGroupingInput,
@@ -53,10 +63,14 @@ import {
   type RouteGroupingOptimizationPreviewResult,
   type RouteGroupingNotificationStatus,
   type RouteGroupingPolygonDto,
+  type RouteGroupingRoutesListChildDto,
+  type RouteGroupingRoutesListDto,
   type RouteGroupingService,
+  type RoutePublicationResult,
   type RouteGroupingSummaryDto,
   type RouteGroupingWarningDto,
   type SaveRouteGroupingDraftInput,
+  type StandaloneRoutePlanCopyDto,
   type SaveRouteGroupingPolygonsInput,
   type UpdateRouteGroupingBranchInput,
   type UpdateRouteGroupingBranchOrdersInput,
@@ -123,6 +137,9 @@ type CurrentOrderRouteVersionWriter = {
 };
 
 type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
+  routePlan: {
+    updateMany(args: Prisma.RoutePlanUpdateManyArgs): Promise<{ count: number }>;
+  };
   routeGroupingChildVersion: {
     create(args: Prisma.RouteGroupingChildVersionCreateArgs): Promise<{ id: string }>;
     updateMany(args: Prisma.RouteGroupingChildVersionUpdateManyArgs): Promise<{ count: number }>;
@@ -130,6 +147,8 @@ type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
 };
 
 type LoadedGrouping = Prisma.RouteGroupingGetPayload<{ include: ReturnType<typeof groupingInclude> }>;
+type LoadedRoutesListGrouping = Prisma.RouteGroupingGetPayload<{ select: ReturnType<typeof groupingRoutesListSelect> }>;
+type LoadedStandaloneRouteCopySource = Prisma.RoutePlanGetPayload<{ include: ReturnType<typeof standaloneRouteCopyInclude> }>;
 type LoadedChild = LoadedGrouping['childVersions'][number];
 type LoadedAssignment = LoadedGrouping['orders'][number];
 type LoadedBranch = LoadedGrouping['branches'][number];
@@ -150,31 +169,6 @@ type ChildRouteGeometrySnapshot = {
   routeStopPoints: RoutePlanRouteStopPoint[];
 };
 
-export function currentRouteBindingAuthorityState(
-  childVersionId: string,
-  snapshotOrderIds: string[],
-  assignments: Array<{ orderId: string; order: { currentRouteVersionId: string | null } }>
-): 'EXACT' | 'LEGACY_UNBOUND' | 'MISMATCH' {
-  const snapshotOrderIdSet = new Set(snapshotOrderIds);
-  if (snapshotOrderIdSet.size !== snapshotOrderIds.length) return 'MISMATCH';
-
-  const snapshotAssignments = assignments.filter(({ orderId }) => snapshotOrderIdSet.has(orderId));
-  if (snapshotAssignments.length !== snapshotOrderIds.length) return 'MISMATCH';
-
-  const boundOrderIds = assignments
-    .filter(({ order }) => order.currentRouteVersionId === childVersionId)
-    .map(({ orderId }) => orderId)
-    .sort();
-  const sortedSnapshotOrderIds = [...snapshotOrderIds].sort();
-  const exactBinding = sortedSnapshotOrderIds.length === boundOrderIds.length
-    && sortedSnapshotOrderIds.every((orderId, index) => orderId === boundOrderIds[index]);
-  if (exactBinding) return 'EXACT';
-
-  const entirelyUnbound = boundOrderIds.length === 0
-    && snapshotAssignments.every(({ order }) => order.currentRouteVersionId === null);
-  return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH';
-}
-
 type OptimizedDraftRoute = {
   assignments: LoadedAssignment[];
   routeResult: RoutePlanRouteResult;
@@ -192,6 +186,7 @@ type ChildSnapshot = {
   membershipDeleted: boolean;
   planDate: string;
   predecessorChildVersionId: string | null;
+  reorderCompatibility?: { assignmentGeneration: string };
   routeIdx?: number;
   sortOrder?: number;
   routeScope: { deliverySession: string | null; routeScopeKey: string | null; serviceType: string | null };
@@ -242,8 +237,9 @@ type RouteGroupingServiceOptions = {
 
 type DriverRouteNotificationTarget = {
   accountId: string;
-  childVersion: number;
-  routeGroupingId: string;
+  childVersion?: number;
+  publicationVersion?: string;
+  routeGroupingId?: string;
   routePlanId: string;
 };
 
@@ -262,7 +258,7 @@ type PublishedRouteChild = Prisma.RouteGroupingChildVersionGetPayload<{
 
 export async function rebindCurrentOrdersToRouteVersion(
   prisma: CurrentOrderRouteVersionWriter,
-  input: { groupingId: string; nextRouteVersionId: string; orderIds: string[]; shopId: string }
+  input: { groupingId: string; nextRouteVersionId: string; orderIds: string[]; shopId: string; planning?: boolean }
 ): Promise<number> {
   const orderIds = [...new Set(input.orderIds)];
   if (orderIds.length === 0) return 0;
@@ -277,7 +273,7 @@ export async function rebindCurrentOrdersToRouteVersion(
       shopId: input.shopId
     }
   });
-  if (result.count !== orderIds.length) {
+  if (input.planning !== true && result.count !== orderIds.length) {
     throw new RouteGroupingConflictError('route order ownership changed; reload and retry');
   }
   return result.count;
@@ -292,6 +288,7 @@ export async function replaceCurrentRouteGroupingChildVersion(
     groupingVersionId: string;
     notificationStatus: DriverRouteNotificationStatus;
     orderIds: string[];
+    planning?: boolean;
     publishedAt: Date | null;
     routePlanId: string | null;
     shopId: string;
@@ -322,9 +319,25 @@ export async function replaceCurrentRouteGroupingChildVersion(
     },
     select: { id: true }
   });
+  if (input.routePlanId !== null) {
+    await prisma.routePlan.updateMany({
+      data: {
+        deliveryWorkCompletedAt: null,
+        deliveryWorkCompletedGeneration: null,
+        deliveryWorkCompletedVersionId: null,
+        driverNavigationUntil: null
+      },
+      where: {
+        deliveryWorkCompletedVersionId: input.currentChildId,
+        id: input.routePlanId,
+        shopId: input.shopId
+      }
+    });
+  }
   await rebindCurrentOrdersToRouteVersion(prisma, {
     groupingId: input.groupingId,
     nextRouteVersionId: nextChild.id,
+    planning: input.planning ?? false,
     orderIds: input.orderIds,
     shopId: input.shopId
   });
@@ -379,6 +392,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
       if (shop === null) throw new RouteGroupingValidationError(['shop not found']);
+      if (input.initialRoute !== undefined) {
+        const requestId = input.initialRoute.requestId;
+        await lockRouteGroupingDraftSave(tx, requestId);
+        const existing = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: requestId } });
+        if (existing !== null) {
+          if (existing.shopId !== shop.id || existing.name !== input.name
+            || formatDateOnly(existing.planDate) !== formatDateOnly(dateRange.planDate)
+            || !sameStringSequence(existing.orders.map(({ orderId }) => orderId), orderIds)) {
+            throw new RouteGroupingConflictError('initial route request changed; start a new request');
+          }
+          return existing.id;
+        }
+      }
       if (hasValidDepotCoordinates(input.depot)) {
         await tx.shop.update({
           data: {
@@ -404,6 +430,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const orderedFacts = orderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is typeof facts[number] => fact !== undefined);
       const grouping = await tx.routeGrouping.create({
         data: {
+          ...(input.initialRoute === undefined ? {} : { id: input.initialRoute.requestId }),
           createdBy: input.createdBy,
           dateRangeEnd: dateRange.end,
           dateRangeStart: dateRange.start,
@@ -439,6 +466,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         orderIds,
         shopId: shop.id
       });
+      if (input.initialRoute !== undefined) {
+        const saved = await this.saveDraftInTransaction(tx, {
+          appId: input.appId,
+          groupingId: grouping.id,
+          mode: 'MANUAL_ORDER',
+          routes: [{ branchId: null, label: input.name, orderIds, routePlanId: null,
+            routeKey: `initial:${grouping.id}`, tempId: grouping.id }],
+          shopDomain: input.shopDomain
+        }, { materializeUnassignedRoutes: true, initialRouteName: input.name });
+        if (saved === null || saved.children.length !== 1 || saved.children[0]?.routePlanId === null) {
+          throw new RouteGroupingValidationError(['initial route was not created']);
+        }
+      }
       return grouping.id;
     });
     const detail = await this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
@@ -453,6 +493,25 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
       });
       if (shop === null) return null;
+      // Serialize a logical request across tenants and sources before locking its source.
+      // The first version retains the immutable fingerprint even after later route edits.
+      const copyRequestReason = input.requestId === undefined ? undefined : `copy-request:v1:${createHash('sha256').update(JSON.stringify({
+        actor: input.actor, expectedUpdatedAt: parseExpectedUpdatedAt(input.expectedUpdatedAt).toISOString(),
+        groupingId: input.groupingId, mode: input.mode, shopId: shop.id
+      })).digest('hex')}`;
+      if (input.requestId !== undefined) {
+        await lockRouteGroupingDraftSave(tx, input.requestId);
+        const existing = await tx.routeGrouping.findUnique({ select: { id: true, shopId: true }, where: { id: input.requestId } });
+        if (existing !== null) {
+          const receipt = await tx.routeGroupingVersion.findUnique({
+            select: { changeReason: true }, where: { groupingId_version: { groupingId: existing.id, version: 1 } }
+          });
+          if (existing.shopId !== shop.id || receipt?.changeReason !== copyRequestReason) {
+            throw new RouteGroupingConflictError('copy request changed; start a new request');
+          }
+          return existing.id;
+        }
+      }
       await lockRouteGroupingCopySource(tx, input.groupingId, shop.id);
       const source = await tx.routeGrouping.findFirst({
         include: groupingInclude(),
@@ -469,11 +528,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         if (customOrderIds.length > 0) {
           throw new CustomOrderReferenceCopyNotAllowedError();
         }
-        await assertReferenceCopyOrdersUnlocked(tx, source);
       }
 
       const copy = await tx.routeGrouping.create({
         data: {
+          ...(input.requestId === undefined ? {} : { id: input.requestId }),
           createdBy: input.actor,
           dateRangeEnd: source.dateRangeEnd,
           dateRangeStart: source.dateRangeStart,
@@ -487,8 +546,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         },
         select: { id: true }
       });
-      await tx.routeGroupingVersion.create({
-        data: { actor: input.actor, groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 }
+      const copyVersion = await tx.routeGroupingVersion.create({
+        data: { actor: input.actor, ...(copyRequestReason === undefined ? {} : { changeReason: copyRequestReason }), groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 },
+        select: { id: true }
       });
 
       const copiedMemberships = input.mode === 'REFERENCE'
@@ -508,10 +568,281 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         orderIds: copiedMemberships.map((membership) => membership.orderId),
         shopId: source.shopId
       });
+      const sourceChildren = source.childVersions.filter(isOperationalCurrentChild);
+      // Both modes preserve planning partitions; Reference retains the actual order identities.
+      if (sourceChildren.length > 0 || source.orders.length > 0) {
+        const loadedCopy = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: copy.id } });
+        if (loadedCopy === null) throw new RouteGroupingValidationError(['copied grouping not found']);
+        const copiedAssignmentBySequence = new Map(loadedCopy.orders.map((assignment) => [assignment.sourceSequence, assignment]));
+        const orderedChildren = sourceChildren.sort((a, b) =>
+          (readChildSnapshot(a.snapshot).sortOrder ?? 0) - (readChildSnapshot(b.snapshot).sortOrder ?? 0));
+        for (const [index, child] of orderedChildren.entries()) {
+          const assignments = readCurrentChildAssignments(source, child).map((assignment) => {
+            const copied = copiedAssignmentBySequence.get(assignment.sourceSequence);
+            if (copied === undefined) throw new RouteGroupingValidationError(['copied route order not found']);
+            return copied;
+          });
+          const routeIdx = await nextGlobalRouteIdx(tx, source.shopId);
+          await createDraftChildRoutePlan(tx, loadedCopy, {
+            assignments, color: readChildSnapshot(child.snapshot).color, driverId: null,
+            groupingVersionId: copyVersion.id, name: child.routePlan?.name ?? childRouteSlotName(child),
+            optimized: null, preserveName: true, routeIdx, sortOrder: index + 1
+          });
+        }
+        if (sourceChildren.length === 0) {
+          await createDraftChildRoutePlan(tx, loadedCopy, {
+            assignments: loadedCopy.orders, color: null, driverId: null,
+            groupingVersionId: copyVersion.id, name: `${source.name} Copy`, optimized: null,
+            preserveName: true, routeIdx: await nextGlobalRouteIdx(tx, source.shopId), sortOrder: 1
+          });
+        }
+        await recomputeAssignments(tx, copy.id);
+      }
       return copy.id;
     });
     if (groupingId === null) return null;
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
+  async copyStandaloneRoutePlan(input: CopyStandaloneRoutePlanInput): Promise<StandaloneRoutePlanCopyDto | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+      });
+      if (shop === null) return null;
+
+      const exists = await tx.routePlan.findFirst({ select: { id: true }, where: { id: input.routePlanId, shopId: shop.id } });
+      if (exists === null) return null;
+      const locked = await lockRoutePlanMembership(tx, input.routePlanId, shop.id);
+      if (locked.currentRouteVersionId !== null) {
+        throw new RouteGroupingConflictError('route already belongs to a group; reload and retry');
+      }
+      if (locked.status !== 'READY') {
+        throw new RouteGroupingValidationError(['only Ready standalone routes can be copied']);
+      }
+      if (locked.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) {
+        throw new RouteGroupingConflictError();
+      }
+
+      const source = await tx.routePlan.findFirst({
+        include: standaloneRouteCopyInclude(),
+        where: { id: input.routePlanId, shopId: shop.id }
+      });
+      if (source === null) return null;
+
+      const copiedStops: Array<{ deliveryStopId: string; source: LoadedStandaloneRouteCopySource['routeStops'][number] }> = [];
+      for (const sourceRouteStop of source.routeStops) {
+        const copied = await createStandaloneVirtualOrderCopy(tx, sourceRouteStop.deliveryStop, shop.id);
+        copiedStops.push({ deliveryStopId: copied.deliveryStopId, source: sourceRouteStop });
+      }
+
+      const copy = await tx.routePlan.create({
+        data: {
+          constraints: withoutDispatchReservation(toJson(source.constraints)),
+          createdBy: input.actor,
+          depotLatitude: source.depotLatitude,
+          depotLongitude: source.depotLongitude,
+          driverId: null,
+          isStoreReviewData: source.isStoreReviewData,
+          metrics: toJson(source.metrics),
+          name: `${source.name} Copy`,
+          optimizerVersion: source.optimizerVersion,
+          planDate: source.planDate,
+          shopId: source.shopId,
+          status: 'READY',
+          vehicleId: null
+        },
+        select: {
+          constraints: true,
+          createdAt: true,
+          depotLatitude: true,
+          depotLongitude: true,
+          id: true,
+          name: true,
+          planDate: true,
+          updatedAt: true
+        }
+      });
+      if (copiedStops.length > 0) {
+        await tx.routePlanStop.createMany({
+          data: copiedStops.map(({ deliveryStopId, source: sourceRouteStop }) => ({
+            deliveryStopId,
+            distanceFromPreviousMeters: sourceRouteStop.distanceFromPreviousMeters,
+            durationFromPreviousSeconds: sourceRouteStop.durationFromPreviousSeconds,
+            estimatedArrivalAt: sourceRouteStop.estimatedArrivalAt,
+            routePlanId: copy.id,
+            sequence: sourceRouteStop.sequence,
+            shopId: shop.id
+          }))
+        });
+      }
+
+      return {
+        createdAt: copy.createdAt.toISOString(),
+        departureTime: readDepartureTime(copy.constraints),
+        depot: { latitude: decimalNumber(copy.depotLatitude), longitude: decimalNumber(copy.depotLongitude) },
+        driverId: null,
+        id: copy.id,
+        name: copy.name,
+        planDate: formatDateOnly(copy.planDate) ?? '',
+        scheduledStartAt: readScheduledStartAt(copy.constraints),
+        scheduledStartTimeZone: readScheduledStartTimeZone(copy.constraints),
+        status: 'READY',
+        stopsCount: copiedStops.length,
+        updatedAt: copy.updatedAt.toISOString(),
+        vehicleId: null
+      };
+    });
+  }
+
+  async createGroupingFromRoutePlan(input: CreateRouteGroupingFromRoutePlanInput): Promise<RouteGroupingDetailDto | null> {
+    const routes = normalizeDraftRoutes(input.routes);
+    if (routes.length < 2) throw new RouteGroupingValidationError(['split draft must include at least two routes']);
+    const sourceRows = routes.filter((route) => route.routePlanId === input.routePlanId);
+    if (sourceRows.length !== 1 || routes.some((route) => route.routePlanId !== null && route.routePlanId !== input.routePlanId)) {
+      throw new RouteGroupingValidationError(['split draft must contain the source route exactly once and no other existing routes']);
+    }
+    const submittedOrderIds = routes.flatMap((route) => route.orderIds);
+    if (new Set(submittedOrderIds).size !== submittedOrderIds.length) {
+      throw new RouteGroupingValidationError(['route draft order ids must be unique']);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+      });
+      if (shop === null) return null;
+
+      const lockedRoutePlan = await lockRoutePlanMembership(tx, input.routePlanId, shop.id);
+      if (lockedRoutePlan.currentRouteVersionId !== null) {
+        throw new RouteGroupingConflictError('route already belongs to a group; reload and retry');
+      }
+      if (lockedRoutePlan.status !== 'READY') {
+        throw new RouteGroupingValidationError(['only Ready standalone routes can be split']);
+      }
+      if (lockedRoutePlan.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) {
+        throw new RouteGroupingConflictError();
+      }
+
+      const sourceRoutePlan = await tx.routePlan.findFirst({
+        include: {
+          routeStops: {
+            include: { deliveryStop: { select: { orderId: true } } },
+            orderBy: { sequence: 'asc' }
+          }
+        },
+        where: { id: input.routePlanId, shopId: shop.id }
+      });
+      if (sourceRoutePlan === null) return null;
+      const sourceOrderIds = sourceRoutePlan.routeStops.map((stop) => stop.deliveryStop.orderId);
+      if (!sameStringSet(sourceOrderIds, submittedOrderIds)) {
+        throw new RouteGroupingValidationError(['split draft must partition every source route order exactly once']);
+      }
+
+      const dateRange = readGroupingDateRange({ planDate: formatDateOnly(sourceRoutePlan.planDate) ?? '' });
+      const facts = await tx.orderDeliveryFact.findMany({
+        include: {
+          order: {
+            include: {
+              deliveryStops: { include: { routePlanStops: { select: { id: true } } }, take: 1 }
+            }
+          }
+        },
+        where: { orderId: { in: sourceOrderIds }, shopId: shop.id }
+      });
+      const blockers = validateCreateFacts({ dateRange, facts, orderIds: sourceOrderIds });
+      if (blockers.length > 0) throw new RouteGroupingValidationError(blockers);
+      const orderedFacts = sourceOrderIds
+        .map((orderId) => facts.find((fact) => fact.orderId === orderId))
+        .filter((fact): fact is typeof facts[number] => fact !== undefined);
+      const grouping = await tx.routeGrouping.create({
+        data: {
+          createdBy: input.actor,
+          dateRangeEnd: dateRange.end,
+          dateRangeStart: dateRange.start,
+          deliverySession: sharedFactValue(orderedFacts, 'deliverySession'),
+          name: sourceRoutePlan.name,
+          planDate: sourceRoutePlan.planDate,
+          routeScopeKey: sharedFactValue(orderedFacts, 'routeScopeKey'),
+          serviceType: sharedFactValue(orderedFacts, 'serviceType'),
+          shopId: shop.id,
+          status: 'READY'
+        },
+        select: { id: true }
+      });
+      const groupingVersion = await tx.routeGroupingVersion.create({
+        data: { actor: input.actor, groupingId: grouping.id, shopId: shop.id, status: 'CURRENT', version: 1 },
+        select: { id: true }
+      });
+      await tx.routeGroupingOrder.createMany({
+        data: orderedFacts.map((fact, index) => ({
+          deliveryStopId: fact.order.deliveryStops[0]?.id ?? '',
+          groupingId: grouping.id,
+          orderId: fact.orderId,
+          shopId: shop.id,
+          sourceSequence: index + 1
+        }))
+      });
+      await createRouteGroupingInventory(tx, {
+        actor: input.actor,
+        groupingId: grouping.id,
+        name: sourceRoutePlan.name,
+        orderIds: sourceOrderIds,
+        shopId: shop.id
+      });
+
+      const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: grouping.id } });
+      if (loaded === null) throw new RouteGroupingValidationError(['created grouping not found']);
+      const sourceRoute = sourceRows[0];
+      if (sourceRoute === undefined) throw new RouteGroupingValidationError(['split source route is required']);
+      const sourceRouteIdx = resolveNewChildRouteIdx(sourceRoute.routeIdx, await nextGlobalRouteIdx(tx, shop.id));
+      const sourceAssignmentsById = new Map(loaded.orders.map((assignment) => [assignment.orderId, assignment]));
+      const sourceAssignments = sourceOrderIds
+        .map((orderId) => sourceAssignmentsById.get(orderId))
+        .filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
+      const sourceChild = await tx.routeGroupingChildVersion.create({
+        data: {
+          driverId: lockedRoutePlan.driverId,
+          groupingId: grouping.id,
+          groupingVersionId: groupingVersion.id,
+          notificationStatus: 'SKIPPED',
+          routePlanId: input.routePlanId,
+          shopId: shop.id,
+          snapshot: createChildSnapshot(
+            loaded,
+            sourceAssignments,
+            lockedRoutePlan.driverId,
+            lockedRoutePlan.name,
+            1,
+            null,
+            sourceRoute.sortOrder ?? sourceRouteIdx,
+            sourceRouteIdx
+          ),
+          status: 'CURRENT',
+          version: 1
+        },
+        select: { id: true }
+      });
+      await rebindCurrentOrdersToRouteVersion(tx, {
+        groupingId: grouping.id,
+        nextRouteVersionId: sourceChild.id,
+        planning: true,
+        orderIds: sourceOrderIds,
+        shopId: shop.id
+      });
+
+      return this.saveDraftInTransaction(tx, {
+        appId: input.appId,
+        groupingId: grouping.id,
+        mode: input.mode ?? 'MANUAL_ORDER',
+        routes: routes.map((route) => route.routePlanId === input.routePlanId
+          ? { ...route, expectedRoutePlanUpdatedAt: input.expectedRoutePlanUpdatedAt, routeIdx: sourceRouteIdx }
+          : route),
+        shopDomain: input.shopDomain
+      }, { materializeUnassignedRoutes: true });
+    });
   }
 
   async getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null> {
@@ -639,16 +970,24 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     return deletion.result;
   }
 
-  async listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]> {
+  async listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string; view?: 'routes-list' }): Promise<RouteGroupingRoutesListDto[] | RouteGroupingSummaryDto[]> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return [];
     const rangeFilter = routeGroupingRangeFilter(input);
+    if (input.view === 'routes-list') {
+      const groups = await this.prisma.routeGrouping.findMany({
+        orderBy: { createdAt: 'desc' },
+        select: groupingRoutesListSelect(),
+        where: { shopId: shop.id, ...rangeFilter }
+      });
+      return groups.map((group) => toGroupingRoutesListDto(group));
+    }
     const groups = await this.prisma.routeGrouping.findMany({
-      include: groupingInclude(),
+      include: groupingListInclude(),
       orderBy: { createdAt: 'desc' },
       where: { shopId: shop.id, ...rangeFilter }
     });
-    return groups.map((group) => toGroupingSummaryDto(group));
+    return groups.map((group) => toGroupingSummaryDto(group as unknown as LoadedGrouping));
   }
 
 
@@ -721,6 +1060,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       } else {
         await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       }
+      if (input.targetRoutePlanId !== undefined) {
+        await lockRoutePlanMembership(tx, input.targetRoutePlanId, group.shopId);
+      }
+      await lockManualAdditionOrders(tx, group.shopId, addOrderIds, input.targetRoutePlanId);
 
       if (removeOrderIds.length > 0) {
         const membershipAuthority = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
@@ -768,7 +1111,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           },
           where: { orderId: { in: newOrderIds }, shopId: group.shopId }
         });
-        const blockers = validateCreateFacts({ dateRange: loadedGroupDateRange(group), facts, orderIds: newOrderIds });
+        const blockers = validateManualAdditionFacts({ facts, orderIds: newOrderIds });
         if (blockers.length > 0) throw new RouteGroupingValidationError(blockers);
         const orderedFacts = newOrderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is typeof facts[number] => fact !== undefined);
         const maxSequence = await tx.routeGroupingOrder.aggregate({ _max: { sourceSequence: true }, where: { groupingId: group.id } });
@@ -998,6 +1341,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
         const snapshot = readChildSnapshot(child.snapshot);
         await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: child.id,
           driverId: lockedRoutePlan.driverId ?? child.driverId,
           groupingId: group.id,
@@ -1092,6 +1436,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
     });
     if (baseline === null) return null;
+    assertDraftSchedulePlanDates(baseline.planDate, routes);
     assertDraftOrderPartition(baseline, routes, removedOrderIds);
     assertDraftRoutePlanEnvelope(baseline, routes, deletedRoutePlanIds);
     assertDraftRestrictedChildStopMembershipChanges(baseline, routes, removedOrderIds);
@@ -1203,12 +1548,15 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           const routeIdx = savedRouteIdx ?? await nextGlobalRouteIdx(tx, group.shopId);
           const previousSnapshot = readChildSnapshot(targetChild.snapshot);
           const currentAssignments = currentChildAssignments(loaded, targetChild);
+          const lockedRoutePlan = targetChild.routePlanId === null ? undefined : lockedRoutePlans.get(targetChild.routePlanId);
           const routeDetailsChanged = (draftOptimization !== undefined && input.mode !== 'MANUAL_ORDER')
-            || driverId !== (targetChild.routePlanId === null ? targetChild.driverId : lockedRoutePlans.get(targetChild.routePlanId)?.driverId ?? null)
-            || (route.label !== null && route.label !== undefined && route.label !== (lockedRoutePlans.get(targetChild.routePlanId ?? '')?.name ?? childRouteSlotName(targetChild)))
-            || route.scheduledStartAt !== undefined
-            || route.scheduledStartTimeZone !== undefined
-            || route.vehicleId !== undefined
+            || driverId !== (targetChild.routePlanId === null ? targetChild.driverId : lockedRoutePlan?.driverId ?? null)
+            || (route.label !== null && route.label !== undefined && route.label !== (lockedRoutePlan?.name ?? childRouteSlotName(targetChild)))
+            || (route.scheduledStartAt !== undefined
+              && route.scheduledStartAt !== readScheduledStartAt(lockedRoutePlan?.constraints))
+            || (route.scheduledStartTimeZone !== undefined
+              && route.scheduledStartTimeZone !== readScheduledStartTimeZone(lockedRoutePlan?.constraints))
+            || (route.vehicleId !== undefined && vehicleId !== (lockedRoutePlan?.vehicleId ?? null))
             || (route.color !== undefined && route.color !== (previousSnapshot.color ?? null))
             || (previousSnapshot.sortOrder !== undefined && route.sortOrder !== previousSnapshot.sortOrder);
           const assignmentsChanged = !sameStringSequence(
@@ -1216,8 +1564,14 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             assignments.map((assignment) => assignment.orderId)
           );
           if (!assignmentsChanged && !routeDetailsChanged) continue;
+          if (assignmentsChanged && targetChild.routePlanId !== null
+            && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
+            await assertRouteDispatchOwnership(tx, {
+              deliveryStopIds: assignments.map((assignment) => assignment.deliveryStopId),
+              routePlanId: targetChild.routePlanId, shopId: group.shopId
+            });
+          }
           if (targetChild.routePlanId !== null) {
-            const lockedRoutePlan = lockedRoutePlans.get(targetChild.routePlanId);
             if (lockedRoutePlan === undefined) throw new RouteGroupingValidationError(['route plan changed; reload and retry']);
             assertLockedRoutePlanChildAuthority(lockedRoutePlan, targetChild.id, route.expectedRoutePlanUpdatedAt);
             assertLockedRoutePlanSuccessorPolicy({
@@ -1237,7 +1591,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
                   constraints: updateRouteConstraintsSchedule(
                     lockedRoutePlan.constraints,
                     route.scheduledStartAt,
-                    route.scheduledStartTimeZone
+                    route.scheduledStartTimeZone,
+                    group.planDate
                   )
                 }),
                 metrics: routeMetrics(assignments),
@@ -1250,7 +1605,15 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               await createDraftRouteGeometryCache(tx, targetChild.routePlanId, draftOptimization);
             }
           }
-          await replaceCurrentRouteGroupingChildVersion(tx, {
+          const reorderCompatibility = lockedRoutePlan === undefined ? undefined : activeReorderCompatibility({
+            assignmentsChanged,
+            currentOrderIds: currentAssignments.map((assignment) => assignment.orderId),
+            lockedRoutePlan,
+            nextOrderIds: assignments.map((assignment) => assignment.orderId),
+            routeDetailsChanged
+          });
+          const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
+            planning: true,
             currentChildId: targetChild.id,
             driverId,
             groupingId: group.id,
@@ -1268,10 +1631,26 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               loaded.currentVersion,
               route.color ?? previousSnapshot.color ?? null,
               route.sortOrder ?? previousSnapshot.sortOrder ?? routeIdx,
-              routeIdx
+              routeIdx,
+              reorderCompatibility
             ),
             version: loaded.currentVersion
           });
+          if (assignmentsChanged && targetChild.routePlanId !== null
+            && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
+            await claimRouteExecutionProjection(tx, { routePlanId: targetChild.routePlanId, shopId: group.shopId });
+          }
+          if (
+            targetChild.routePlanId !== null
+            && lockedRoutePlan?.status === 'IN_PROGRESS'
+            && assignmentsChanged
+            && sameStringSet(
+              currentAssignments.map((assignment) => assignment.orderId),
+              assignments.map((assignment) => assignment.orderId)
+            )
+          ) {
+            await resetReorderedActiveRouteEta(tx, group.shopId, targetChild.routePlanId, nextChildVersionId);
+          }
           if (route.optimized !== undefined && targetChild.routePlanId !== null) {
             logIgnoredExistingRouteOptimizedPayload(group.id, targetChild.routePlanId, route.routeKey ?? null);
           }
@@ -1304,7 +1683,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
-  async saveDraftInTransaction(tx: Tx, input: SaveRouteGroupingDraftInput): Promise<RouteGroupingDetailDto | null> {
+  async saveDraftInTransaction(
+    tx: Tx,
+    input: SaveRouteGroupingDraftInput,
+    options: { initialRouteName?: string; materializeUnassignedRoutes?: boolean } = {}
+  ): Promise<RouteGroupingDetailDto | null> {
     const routes = normalizeDraftRoutes(input.routes);
     const deletedRoutePlanIds = normalizeExplicitDraftIds(input.deletedRoutePlanIds ?? [], 'deletedRoutePlanIds');
     const removedOrderIds = normalizeExplicitDraftIds(input.removedOrderIds ?? [], 'removedOrderIds');
@@ -1318,6 +1701,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     await lockRouteGroupingDraftSave(tx, group.id);
     const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
     if (loaded === null) return null;
+    assertDraftSchedulePlanDates(loaded.planDate, routes);
     assertDraftOrderPartition(loaded, routes, removedOrderIds);
     assertDraftRoutePlanEnvelope(loaded, routes, deletedRoutePlanIds);
     assertDraftRestrictedChildStopMembershipChanges(loaded, routes, removedOrderIds);
@@ -1409,12 +1793,21 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         );
         const routeDetailsChanged = driverId !== (targetChild.routePlanId === null ? targetChild.driverId : lockedRoutePlan?.driverId ?? null)
           || (route.label !== null && route.label !== undefined && route.label !== (lockedRoutePlan?.name ?? childRouteSlotName(targetChild)))
-          || route.scheduledStartAt !== undefined
-          || route.scheduledStartTimeZone !== undefined
-          || route.vehicleId !== undefined
+          || (route.scheduledStartAt !== undefined
+            && route.scheduledStartAt !== readScheduledStartAt(lockedRoutePlan?.constraints))
+          || (route.scheduledStartTimeZone !== undefined
+            && route.scheduledStartTimeZone !== readScheduledStartTimeZone(lockedRoutePlan?.constraints))
+          || (route.vehicleId !== undefined && vehicleId !== (lockedRoutePlan?.vehicleId ?? null))
           || (route.color !== undefined && route.color !== (previousSnapshot.color ?? null))
           || (previousSnapshot.sortOrder !== undefined && route.sortOrder !== previousSnapshot.sortOrder);
         if (!assignmentsChanged && !routeDetailsChanged) continue;
+        if (assignmentsChanged && targetChild.routePlanId !== null
+          && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
+          await assertRouteDispatchOwnership(tx, {
+            deliveryStopIds: assignments.map((assignment) => assignment.deliveryStopId),
+            routePlanId: targetChild.routePlanId, shopId: group.shopId
+          });
+        }
         if (lockedRoutePlan !== null && lockedRoutePlan !== undefined) {
           assertLockedRoutePlanChildAuthority(lockedRoutePlan, targetChild.id, route.expectedRoutePlanUpdatedAt);
           assertLockedRoutePlanSuccessorPolicy({
@@ -1441,7 +1834,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
                 constraints: updateRouteConstraintsSchedule(
                   lockedRoutePlan?.constraints ?? targetChild.routePlan?.constraints,
                   route.scheduledStartAt,
-                  route.scheduledStartTimeZone
+                  route.scheduledStartTimeZone,
+                  group.planDate
                 )
               }),
               metrics: routeMetrics(assignments),
@@ -1450,7 +1844,15 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             where: { id: targetChild.routePlanId }
           });
         }
-        await replaceCurrentRouteGroupingChildVersion(tx, {
+        const reorderCompatibility = lockedRoutePlan === null || lockedRoutePlan === undefined ? undefined : activeReorderCompatibility({
+          assignmentsChanged,
+          currentOrderIds: currentChildAssignments(loaded, targetChild).map((assignment) => assignment.orderId),
+          lockedRoutePlan,
+          nextOrderIds: assignments.map((assignment) => assignment.orderId),
+          routeDetailsChanged
+        });
+        const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: targetChild.id,
           driverId,
           groupingId: group.id,
@@ -1468,16 +1870,32 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             loaded.currentVersion,
             route.color ?? previousSnapshot.color ?? null,
             route.sortOrder ?? previousSnapshot.sortOrder ?? routeIdx,
-            routeIdx
+            routeIdx,
+            reorderCompatibility
           ),
           version: loaded.currentVersion
         });
+        if (assignmentsChanged && targetChild.routePlanId !== null
+          && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
+          await claimRouteExecutionProjection(tx, { routePlanId: targetChild.routePlanId, shopId: group.shopId });
+        }
+        if (
+          targetChild.routePlanId !== null
+          && lockedRoutePlan?.status === 'IN_PROGRESS'
+          && assignmentsChanged
+          && sameStringSet(
+            currentChildAssignments(loaded, targetChild).map((assignment) => assignment.orderId),
+            assignments.map((assignment) => assignment.orderId)
+          )
+        ) {
+          await resetReorderedActiveRouteEta(tx, group.shopId, targetChild.routePlanId, nextChildVersionId);
+        }
         continue;
       }
 
       if (route.routePlanId !== null) throw new RouteGroupingValidationError(['route draft route plans must belong to the current route grouping']);
       const routeIdx = resolveNewChildRouteIdx(route.routeIdx, await nextGlobalRouteIdx(tx, group.shopId));
-      if (driverId === null) {
+      if (driverId === null && options.materializeUnassignedRoutes !== true) {
         await tx.routeGroupingChildVersion.create({
           data: {
             driverId: null,
@@ -1507,8 +1925,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         color: route.color,
         driverId,
         groupingVersionId: currentGroupingVersion.id,
-        name: newChildRouteName(route.label, routeIdx),
+        name: options.initialRouteName ?? newChildRouteName(route.label, routeIdx),
         optimized: null,
+        preserveName: options.initialRouteName !== undefined,
         routeIdx,
         scheduledStartAt: route.scheduledStartAt,
         scheduledStartTimeZone: route.scheduledStartTimeZone,
@@ -1707,6 +2126,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await rebindCurrentOrdersToRouteVersion(tx, {
           groupingId: loaded.id,
           nextRouteVersionId: childVersion.id,
+          planning: true,
           orderIds: numberedCandidate.assignments.map((assignment) => assignment.orderId),
           shopId: loaded.shopId
         });
@@ -1862,6 +2282,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: candidate.routePlanId } });
           await createChildRouteGeometryCache(tx, candidate.routePlanId, authoritativeCandidate);
           await replaceCurrentRouteGroupingChildVersion(tx, {
+            planning: true,
             currentChildId: currentChild.id,
             driverId: authoritativeCandidate.driverId,
             groupingId: loaded.id,
@@ -1898,6 +2319,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await rebindCurrentOrdersToRouteVersion(tx, {
           groupingId: loaded.id,
           nextRouteVersionId: childVersion.id,
+          planning: true,
           orderIds: numberedCandidate.assignments.map((assignment) => assignment.orderId),
           shopId: loaded.shopId
         });
@@ -1979,6 +2401,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await rebindCurrentOrdersToRouteVersion(tx, {
           groupingId: loaded.id,
           nextRouteVersionId: childVersion.id,
+          planning: true,
           orderIds: assignments.map((assignment) => assignment.orderId),
           shopId: loaded.shopId
         });
@@ -2020,7 +2443,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     }
   }
 
-  async recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void> {
+  async recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<RoutePublicationResult> {
     const child = await this.prisma.routeGroupingChildVersion.findFirst({
       include: {
         grouping: { include: { shop: { select: { shopDomain: true } } } },
@@ -2034,34 +2457,180 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       },
       where: { routePlanId: input.routePlanId, status: 'CURRENT', supersededAt: null }
     });
-    if (child === null || child.grouping.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) return;
+    if (child === null) {
+      return this.recordStandaloneRoutePublished(input).catch((error: unknown) => {
+        console.warn('[route-grouping] standalone driver route notification failed after publish commit', {
+          errorName: error instanceof Error ? error.name : typeof error,
+          routePlanId: input.routePlanId
+        });
+        return { errorCode: 'NOTIFICATION_PROCESSING_FAILED', publishedAt: null, status: 'FAILED' as const };
+      });
+    }
+    if (child.grouping.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) {
+      return { errorCode: 'ROUTE_NOT_FOUND_OR_OUT_OF_SCOPE', publishedAt: null, status: 'SKIPPED' };
+    }
     const publishedAt = new Date();
     await this.prisma.$transaction([
       this.prisma.routeGroupingChildVersion.update({ data: { publishedAt }, where: { id: child.id } }),
       this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } } })
     ]);
-    await this.recordPublishedRouteNotification(child, input.routePlanId).catch((error: unknown) => {
+    const notification = await this.recordPublishedRouteNotification(child, input.routePlanId).catch((error: unknown) => {
       console.warn('[route-grouping] driver route notification failed after publish commit', {
         errorName: error instanceof Error ? error.name : typeof error,
         routePlanId: input.routePlanId
       });
+      return { errorCode: 'NOTIFICATION_PROCESSING_FAILED', status: 'FAILED' as const };
     });
+    return { ...notification, publishedAt: publishedAt.toISOString() };
+  }
+
+  private async recordStandaloneRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<RoutePublicationResult> {
+    const routePlan = await this.prisma.routePlan.findFirst({
+      select: {
+        assignmentGeneration: true,
+        constraints: true,
+        depotLatitude: true,
+        depotLongitude: true,
+        driver: { select: { accountId: true } },
+        driverId: true,
+        name: true,
+        routeStops: {
+          orderBy: { sequence: 'asc' },
+          select: {
+            deliveryStop: {
+              select: {
+                address1: true,
+                address2: true,
+                city: true,
+                countryCode: true,
+                instructions: true,
+                latitude: true,
+                longitude: true,
+                order: {
+                  select: {
+                    currencyCode: true,
+                    email: true,
+                    id: true,
+                    name: true,
+                    orderItems: {
+                      orderBy: { lineIndex: 'asc' },
+                      select: { name: true, options: true, productId: true, quantity: true, sku: true, variationId: true }
+                    },
+                    phone: true,
+                    totalPriceAmount: true
+                  }
+                },
+                phone: true,
+                postalCode: true,
+                province: true,
+                recipientName: true,
+                serviceMinutes: true,
+                timeWindowEnd: true,
+                timeWindowStart: true
+              }
+            },
+            deliveryStopId: true,
+            distanceFromPreviousMeters: true,
+            durationFromPreviousSeconds: true,
+            estimatedArrivalAt: true,
+            sequence: true
+          }
+        },
+        shop: { select: { id: true, shopDomain: true } },
+      },
+      where: { id: input.routePlanId }
+    });
+    if (routePlan === null || routePlan.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) {
+      return { errorCode: 'ROUTE_NOT_FOUND_OR_OUT_OF_SCOPE', publishedAt: null, status: 'SKIPPED' };
+    }
+    if (
+      routePlan.driverId === null
+      || routePlan.driver?.accountId === null
+      || routePlan.driver?.accountId === undefined
+    ) return { errorCode: 'NO_ASSIGNED_DRIVER', publishedAt: null, status: 'SKIPPED' };
+
+    const publicationVersion = standaloneRoutePublicationVersion(routePlan);
+    const keyPrefix = `${routePlan.shop.id}:${input.routePlanId}:${routePlan.driverId}:${publicationVersion}`;
+    const assignedKey = `${keyPrefix}:ASSIGNED`;
+    const changedKey = `${keyPrefix}:CHANGED`;
+    const currentAttempt = await this.prisma.driverRouteNotificationAttempt.findFirst({
+      orderBy: { createdAt: 'asc' },
+      where: { idempotencyKey: { in: [assignedKey, changedKey] } }
+    });
+    if (currentAttempt?.status === 'SENT') {
+      return {
+        ...(currentAttempt.providerMessageId === null ? {} : { providerMessageId: currentAttempt.providerMessageId }),
+        publishedAt: currentAttempt.createdAt.toISOString(),
+        status: 'SENT'
+      };
+    }
+
+    const action = currentAttempt?.action
+      ?? (await this.prisma.driverRouteNotificationAttempt.count({
+        where: { driverId: routePlan.driverId, groupingId: null, routePlanId: input.routePlanId, status: 'SENT' }
+      }) > 0 ? 'CHANGED' : 'ASSIGNED');
+    const idempotencyKey = action === 'CHANGED' ? changedKey : assignedKey;
+    const pending = await this.prisma.driverRouteNotificationAttempt.upsert({
+      create: {
+        action,
+        driverId: routePlan.driverId,
+        idempotencyKey,
+        metadata: {
+          assignmentGeneration: routePlan.assignmentGeneration.toString(),
+          kind: 'STANDALONE_ROUTE_PUBLICATION',
+          publicationVersion
+        },
+        provider: this.pushProvider.providerName,
+        routePlanId: input.routePlanId,
+        shopId: routePlan.shop.id,
+        status: 'PENDING'
+      },
+      update: { attemptedAt: new Date(), provider: this.pushProvider.providerName, status: 'PENDING' },
+      where: { idempotencyKey }
+    });
+    const result = await this.sendRouteNotificationToAccount({
+      accountId: routePlan.driver.accountId,
+      action: action === 'ASSIGNED' ? 'assigned' : 'changed',
+      publicationVersion,
+      routePlanId: input.routePlanId
+    });
+    await this.prisma.driverRouteNotificationAttempt.update({
+      data: {
+        completedAt: new Date(),
+        errorCode: result.errorCode ?? null,
+        errorMessage: result.errorMessage ?? null,
+        providerMessageId: result.providerMessageId ?? null,
+        status: result.status
+      },
+      where: { id: pending.id }
+    });
+    return { ...result, publishedAt: pending.createdAt.toISOString() };
   }
 
   private async recordPublishedRouteNotification(
     child: PublishedRouteChild,
     routePlanId: string
-  ): Promise<void> {
+  ): Promise<DriverRoutePushResult> {
     if (
       child.routePlan?.driverId === null
       || child.routePlan?.driverId === undefined
       || child.routePlan.driver?.accountId === null
       || child.routePlan.driver?.accountId === undefined
-    ) return;
-    const action = await this.hasPriorSentAttempt(child.groupingId, child.routePlan.driverId) ? 'CHANGED' : 'ASSIGNED';
-    const idempotencyKey = `${child.shopId}:${child.groupingId}:${child.version}:${child.id}:${child.routePlan.driverId}:${action}`;
-    const existing = await this.prisma.driverRouteNotificationAttempt.findUnique({ where: { idempotencyKey } });
-    if (existing?.status === 'SENT') return;
+    ) return { errorCode: 'NO_ASSIGNED_DRIVER', status: 'SKIPPED' };
+    const keyPrefix = `${child.shopId}:${child.groupingId}:${child.version}:${child.id}:${child.routePlan.driverId}`;
+    const existing = await this.prisma.driverRouteNotificationAttempt.findFirst({
+      orderBy: { createdAt: 'asc' },
+      where: { idempotencyKey: { in: [`${keyPrefix}:ASSIGNED`, `${keyPrefix}:CHANGED`] } }
+    });
+    if (existing?.status === 'SENT') {
+      return {
+        ...(existing.providerMessageId === null ? {} : { providerMessageId: existing.providerMessageId }),
+        status: 'SENT'
+      };
+    }
+    const action = existing?.action
+      ?? (await this.hasPriorSentAttempt(child.groupingId, child.routePlan.driverId) ? 'CHANGED' : 'ASSIGNED');
+    const idempotencyKey = `${keyPrefix}:${action}`;
     const pending = await this.prisma.driverRouteNotificationAttempt.upsert({
       create: {
         action,
@@ -2096,6 +2665,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       where: { id: pending.id }
     });
     await this.prisma.routeGroupingChildVersion.update({ data: { notificationStatus: result.status }, where: { id: child.id } });
+    return result;
   }
 
   private async hasPriorSentAttempt(groupingId: string, driverId: string): Promise<boolean> {
@@ -2121,9 +2691,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const tokenResults = await Promise.all(tokens.map(async (token) => ({
       result: await this.pushProvider.sendRouteNotification({
         action: input.action,
-        childVersion: input.childVersion,
         devicePushToken: token.devicePushToken,
-        routeGroupingId: input.routeGroupingId,
+        ...(input.childVersion === undefined ? {} : { childVersion: input.childVersion }),
+        ...(input.publicationVersion === undefined ? {} : { publicationVersion: input.publicationVersion }),
+        ...(input.routeGroupingId === undefined ? {} : { routeGroupingId: input.routeGroupingId }),
         routePlanId: input.routePlanId
       }),
       token
@@ -2237,6 +2808,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 }
 
 type LockedRoutePlanMembership = {
+  assignmentGeneration: bigint;
   constraints: Prisma.JsonValue;
   currentRouteVersionId: string | null;
   driverId: string | null;
@@ -2246,15 +2818,21 @@ type LockedRoutePlanMembership = {
   vehicleId: string | null;
 };
 
+type LockedRoutePlanMembershipRow = LockedRoutePlanMembership & {
+  lastLifecycleEventType: string | null;
+};
+
 async function lockRoutePlanMembership(tx: Tx, routePlanId: string, shopId: string): Promise<LockedRoutePlanMembership> {
-  const rows = await tx.$queryRaw<LockedRoutePlanMembership[]>`
+  const rows = await tx.$queryRaw<LockedRoutePlanMembershipRow[]>`
     SELECT route_plan."constraints",
+           route_plan."assignmentGeneration",
            route_plan."driverId",
            route_plan."name",
            route_plan."status",
            route_plan."updatedAt",
            route_plan."vehicleId",
-           current_child."id" AS "currentRouteVersionId"
+           current_child."id" AS "currentRouteVersionId",
+           lifecycle_event."eventType" AS "lastLifecycleEventType"
     FROM "route_plans" route_plan
     LEFT JOIN LATERAL (
       SELECT child."id"
@@ -2265,13 +2843,30 @@ async function lockRoutePlanMembership(tx: Tx, routePlanId: string, shopId: stri
         AND child."supersededAt" IS NULL
       LIMIT 1
     ) current_child ON true
+    LEFT JOIN LATERAL (
+      SELECT event."eventType"
+      FROM "driver_events" event
+      WHERE event."routePlanId" = route_plan."id"
+        AND event."shopId" = route_plan."shopId"
+        AND event."driverId" = route_plan."driverId"
+        AND (event."assignmentGeneration" IS NULL OR event."assignmentGeneration" = route_plan."assignmentGeneration")
+        AND event."eventType" IN ('ROUTE_STARTED', 'ROUTE_PAUSED', 'ROUTE_COMPLETED')
+      ORDER BY event."occurredAt" DESC, event."createdAt" DESC
+      LIMIT 1
+    ) lifecycle_event ON true
     WHERE route_plan."id" = ${routePlanId}::uuid
       AND route_plan."shopId" = ${shopId}::uuid
     FOR UPDATE OF route_plan
   `;
   const routePlan = rows[0];
   if (routePlan === undefined) throw new RouteGroupingValidationError(['route plan changed; reload and retry']);
-  return routePlan;
+  return {
+    ...routePlan,
+    status: toRouteExecutionStatus(
+      routePlan.status,
+      routePlan.lastLifecycleEventType === null ? [] : [{ eventType: routePlan.lastLifecycleEventType }]
+    )
+  };
 }
 
 async function lockReadyRoutePlanMembership(tx: Tx, routePlanId: string, shopId: string): Promise<LockedRoutePlanMembership> {
@@ -2293,22 +2888,60 @@ function assertLockedRoutePlanChildAuthority(
   }
 }
 
-function assertLockedRoutePlanSuccessorPolicy(input: {
+export function assertLockedRoutePlanSuccessorPolicy(input: {
   currentOrderIds: string[];
   nextOrderIds: string[];
   routeDetailsChanged: boolean;
   status: string;
 }): void {
   if (input.status === 'READY') return;
+  const reordersSameMembership = input.status === 'IN_PROGRESS'
+    && !input.routeDetailsChanged
+    && sameStringSet(input.currentOrderIds, input.nextOrderIds);
+  if (reordersSameMembership) return;
   const appendsOnly = input.status === 'IN_PROGRESS'
     && !input.routeDetailsChanged
     && input.nextOrderIds.length > input.currentOrderIds.length
     && input.currentOrderIds.every((orderId, index) => input.nextOrderIds[index] === orderId);
   if (appendsOnly) return;
   if (input.status === 'IN_PROGRESS') {
-    throw new RouteGroupingValidationError(['in-progress route drafts may only append orders']);
+    throw new RouteGroupingValidationError(['in-progress route drafts may only reorder existing orders or append orders']);
   }
   throw new RouteGroupingValidationError(['route membership cannot change after route completion']);
+}
+
+export async function resetReorderedActiveRouteEta(
+  tx: Tx,
+  shopId: string,
+  routePlanId: string,
+  nextRouteVersionId: string
+): Promise<void> {
+  await tx.routePlanStop.updateMany({
+    data: { etaInputRouteVersionId: nextRouteVersionId },
+    where: {
+      routePlanId,
+      shopId,
+      deliveryStop: { status: { in: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }
+    }
+  });
+  await tx.routePlanStop.updateMany({
+    data: {
+      distanceFromPreviousMeters: null,
+      durationFromPreviousSeconds: null,
+      estimatedArrivalAt: null,
+      etaCalculatedAt: null,
+      etaFailureCode: null,
+      etaFailureMessage: null,
+      etaInputRouteVersionId: nextRouteVersionId,
+      etaSource: null,
+      etaStatus: 'PENDING'
+    },
+    where: {
+      routePlanId,
+      shopId,
+      deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } }
+    }
+  });
 }
 
 
@@ -2365,6 +2998,31 @@ function normalizeDraftScheduledStartAt(value: string | null): string | null {
   return instant.toISOString();
 }
 
+export function assertDraftSchedulePlanDates(planDate: Date, routes: RouteGroupingDraftRouteInput[]): void {
+  for (const route of routes) {
+    assertSchedulePlanDate(planDate, route.scheduledStartAt, route.scheduledStartTimeZone);
+  }
+}
+
+function assertSchedulePlanDate(
+  planDate: Date,
+  scheduledStartAt: string | null | undefined,
+  scheduledStartTimeZone: string | null | undefined
+): void {
+  if (scheduledStartAt === undefined || scheduledStartAt === null
+    || scheduledStartTimeZone === undefined || scheduledStartTimeZone === null) return;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: scheduledStartTimeZone,
+    year: 'numeric'
+  }).formatToParts(new Date(scheduledStartAt));
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((entry) => entry.type === type)?.value ?? '';
+  if (`${part('year')}-${part('month')}-${part('day')}` !== formatDateOnly(planDate)) {
+    throw new RouteGroupingValidationError(['route draft scheduledStartAt must use the route group plan date in scheduledStartTimeZone']);
+  }
+}
+
 function assertChildOnlyDraftRouteEnvelope(routes: RouteGroupingDraftRouteInput[]): void {
   const routeKeys = routes.map((route) => route.routeKey ?? '');
   if (new Set(routeKeys).size !== routeKeys.length) throw new RouteGroupingValidationError(['route draft route keys must be unique']);
@@ -2386,18 +3044,28 @@ function normalizeExplicitDraftIds(values: string[], field: string): string[] {
 
 function assertDraftOrderPartition(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[], removedOrderIds: string[]): void {
   const currentOrderIds = group.orders.map((order) => order.orderId);
+  const currentOrderIdSet = new Set(currentOrderIds);
   const submittedOrderIds = routes.flatMap((route) => route.orderIds);
   const submittedOrderIdSet = new Set(submittedOrderIds);
   const removedOrderIdSet = new Set(removedOrderIds);
   if (submittedOrderIds.some((orderId) => removedOrderIdSet.has(orderId))) {
     throw new RouteGroupingValidationError(['route draft orders cannot be both routed and removed']);
   }
-  if (removedOrderIds.some((orderId) => !currentOrderIds.includes(orderId))) {
+  if (removedOrderIds.some((orderId) => !currentOrderIdSet.has(orderId))) {
     throw new RouteGroupingValidationError(['route draft removed orders must belong to the current route grouping']);
   }
+  if (submittedOrderIds.some((orderId) => !currentOrderIdSet.has(orderId))) {
+    throw new RouteGroupingValidationError(['route draft orders must belong to the current route grouping']);
+  }
+  const currentChildOrderIds = new Set(group.childVersions
+    .filter(isOperationalCurrentChild)
+    .flatMap((child) => readCurrentChildAssignments(group, child).map((assignment) => assignment.orderId)));
+  // Older clients omit the Unassigned pool. Only explicit removedOrderIds delete group membership.
+  const retainedUnassignedOrderIds = currentOrderIds.filter((orderId) => !currentChildOrderIds.has(orderId));
   const partition = new Set([...submittedOrderIds, ...removedOrderIds]);
+  for (const orderId of retainedUnassignedOrderIds) partition.add(orderId);
   if (partition.size !== currentOrderIds.length || currentOrderIds.some((orderId) => !partition.has(orderId))) {
-    throw new RouteGroupingValidationError(['route draft must include every current route group order exactly once across routes and removedOrderIds']);
+    throw new RouteGroupingValidationError(['route draft must include every current child route order exactly once across routes and removedOrderIds']);
   }
   if (submittedOrderIdSet.size !== submittedOrderIds.length) {
     throw new RouteGroupingValidationError(['route draft order ids must be unique']);
@@ -2534,7 +3202,7 @@ function findDraftChild(group: LoadedGrouping, route: RouteGroupingDraftRouteInp
     .find((child) => child.routePlanId === routePlanId) ?? null;
 }
 
-function isOperationalCurrentChild(child: Pick<LoadedChild, 'status' | 'supersededAt'>): boolean {
+function isOperationalCurrentChild(child: { status: string; supersededAt: Date | null }): boolean {
   return child.status === 'CURRENT' && child.supersededAt === null;
 }
 
@@ -2662,7 +3330,7 @@ function dedupeDriverNotificationTargets(
   for (const target of targets) {
     const key = `${target.accountId}:${target.routePlanId}`;
     const existing = uniqueTargets.get(key);
-    if (existing === undefined || target.childVersion > existing.childVersion) {
+    if (existing === undefined || (target.childVersion ?? 0) > (existing.childVersion ?? 0)) {
       uniqueTargets.set(key, target);
     }
   }
@@ -2816,6 +3484,7 @@ async function invalidateCustomStopChildRoutes(tx: Tx, groupingId: string, deliv
     await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
     const snapshot = readChildSnapshot(child.snapshot);
     await replaceCurrentRouteGroupingChildVersion(tx, {
+      planning: true,
       currentChildId: child.id,
       driverId: lockedRoutePlan.driverId ?? child.driverId,
       groupingId: loaded.id,
@@ -2863,7 +3532,7 @@ function groupingInclude() {
               orderBy: { occurredAt: 'desc' as const },
               select: { eventType: true },
               take: 1,
-              where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_COMPLETED] } }
+              where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] } }
             },
             routeGeometryCaches: {
               orderBy: { generatedAt: 'desc' as const },
@@ -2891,6 +3560,153 @@ function groupingInclude() {
   } satisfies Prisma.RouteGroupingInclude;
 }
 
+function standaloneRouteCopyInclude() {
+  return {
+    routeStops: {
+      include: {
+        deliveryStop: {
+          include: {
+            order: {
+              include: {
+                deliveryFacts: { orderBy: { createdAt: 'desc' as const }, take: 1 },
+                orderItems: { orderBy: { lineIndex: 'asc' as const } }
+              }
+            }
+          }
+        }
+      },
+      orderBy: { sequence: 'asc' as const }
+    }
+  } satisfies Prisma.RoutePlanInclude;
+}
+
+function groupingRoutesListSelect() {
+  return {
+    childVersions: {
+      orderBy: [{ version: 'desc' as const }, { createdAt: 'desc' as const }],
+      select: {
+        driver: { select: { displayName: true } },
+        driverId: true,
+        id: true,
+        routePlan: {
+          select: {
+            constraints: true,
+            createdAt: true,
+            assignmentGeneration: true,
+            deliveryWorkCompletedAt: true,
+            deliveryWorkCompletedGeneration: true,
+            deliveryWorkCompletedVersionId: true,
+            driver: { select: { displayName: true } },
+            driverEvents: {
+              orderBy: { occurredAt: 'desc' as const },
+              select: { eventType: true },
+              take: 1,
+              where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] } }
+            },
+            driverId: true,
+            driverNavigationUntil: true,
+            id: true,
+            name: true,
+            planDate: true,
+            routeGeometryCaches: {
+              orderBy: { generatedAt: 'desc' as const },
+              select: { metrics: true, shapeSignature: true },
+              take: 1
+            },
+            routeStops: {
+              orderBy: { sequence: 'asc' as const },
+              select: { deliveryStopId: true, estimatedArrivalAt: true, sequence: true }
+            },
+            status: true,
+            updatedAt: true
+          }
+        },
+        routePlanId: true,
+        snapshot: true,
+        status: true,
+        supersededAt: true,
+        updatedAt: true,
+        version: true
+      },
+      where: { status: 'CURRENT' as const, supersededAt: null }
+    },
+    currentVersion: true,
+    dateRangeEnd: true,
+    dateRangeStart: true,
+    id: true,
+    inventory: { select: { id: true } },
+    name: true,
+    orders: {
+      orderBy: { sourceSequence: 'asc' as const },
+      select: {
+        assignmentStatus: true,
+        deliveryStop: { select: { latitude: true, longitude: true, status: true } },
+        deliveryStopId: true,
+        order: {
+          select: {
+            currencyCode: true,
+            currentRouteVersionId: true,
+            id: true,
+            orderItems: { select: { quantity: true } },
+            totalPriceAmount: true
+          }
+        },
+        orderId: true,
+      }
+    },
+    planDate: true,
+    shop: { select: { defaultDepotAddress: true, defaultDepotLatitude: true, defaultDepotLongitude: true } },
+    status: true,
+    updatedAt: true
+  } satisfies Prisma.RouteGroupingSelect;
+}
+
+function groupingListInclude() {
+  return {
+    childVersions: {
+      include: {
+        driver: true,
+        notificationAttempts: { select: { routePlanId: true, status: true } },
+        routePlan: {
+          include: {
+            driver: true,
+            driverEvents: {
+              orderBy: { occurredAt: 'desc' as const },
+              select: { eventType: true },
+              take: 1,
+              where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] } }
+            },
+            routeGeometryCaches: {
+              orderBy: { generatedAt: 'desc' as const },
+              select: routeGeometryCacheSummarySelect(),
+              take: 1
+            },
+            routeStops: {
+              orderBy: { sequence: 'asc' as const },
+              select: { deliveryStopId: true, estimatedArrivalAt: true, sequence: true }
+            }
+          }
+        }
+      },
+      orderBy: [{ version: 'desc' as const }, { createdAt: 'desc' as const }]
+    },
+    inventory: { select: { id: true } },
+    orders: {
+      include: {
+        deliveryStop: { include: { routePlanStops: { select: { routePlanId: true } } } },
+        order: {
+          include: {
+            customerRouteNotifications: { select: { status: true } },
+            orderItems: { orderBy: { lineIndex: 'asc' as const } }
+          }
+        }
+      },
+      orderBy: { sourceSequence: 'asc' as const }
+    },
+    shop: { select: { defaultDepotAddress: true, defaultDepotLatitude: true, defaultDepotLongitude: true } }
+  } satisfies Prisma.RouteGroupingInclude;
+}
+
 async function lockRouteGroupingCopySource(tx: Tx, groupingId: string, shopId: string): Promise<void> {
   await tx.$queryRaw<{ id: string }[]>`
     SELECT "id"
@@ -2900,35 +3716,9 @@ async function lockRouteGroupingCopySource(tx: Tx, groupingId: string, shopId: s
   `;
 }
 
-async function assertReferenceCopyOrdersUnlocked(tx: Tx, source: LoadedGrouping): Promise<void> {
-  const deliveryStopIds = source.orders.map((assignment) => assignment.deliveryStopId);
-  if (deliveryStopIds.length === 0) return;
-  const memberships = await tx.routePlanStop.findMany({
-    select: {
-      deliveryStopId: true,
-      routePlan: {
-        select: {
-          driverEvents: {
-            orderBy: { occurredAt: 'desc' },
-            select: { eventType: true },
-            take: 1
-          },
-          status: true
-        }
-      }
-    },
-    where: { deliveryStopId: { in: deliveryStopIds }, shopId: source.shopId }
-  });
-  const lockedStopIds = new Set(memberships
-    .filter(({ routePlan }) => {
-      const status = toRouteExecutionStatus(routePlan.status, routePlan.driverEvents);
-      return status === 'IN_PROGRESS' || status === 'COMPLETED';
-    })
-    .map(({ deliveryStopId }) => deliveryStopId));
-  const orderIds = source.orders
-    .filter((assignment) => lockedStopIds.has(assignment.deliveryStopId))
-    .map((assignment) => assignment.orderId);
-  if (orderIds.length > 0) throw new RouteGroupingCopyLockedError(orderIds);
+function virtualCopyStopStatus(status: DeliveryStopStatus): DeliveryStopStatus {
+  return status === 'DELIVERED' || status === 'FAILED' || status === 'SKIPPED' || status === 'CANCELLED'
+    ? status : 'PENDING';
 }
 
 async function createVirtualCopyMemberships(
@@ -2974,6 +3764,7 @@ async function createVirtualCopyMemberships(
             province: sourceStop.province,
             recipientName: sourceStop.recipientName,
             serviceMinutes: sourceStop.serviceMinutes,
+            status: virtualCopyStopStatus(sourceStop.status),
             timeWindowEnd: sourceStop.timeWindowEnd,
             timeWindowStart: sourceStop.timeWindowStart
           }
@@ -2992,6 +3783,128 @@ async function createVirtualCopyMemberships(
     });
   }
   return memberships;
+}
+
+async function createStandaloneVirtualOrderCopy(
+  tx: Tx,
+  sourceStop: LoadedStandaloneRouteCopySource['routeStops'][number]['deliveryStop'],
+  shopId: string
+): Promise<{ deliveryStopId: string }> {
+  const localId = randomUUID();
+  const sourceOrder = sourceStop.order;
+  const sourceFact = sourceOrder.deliveryFacts[0];
+  const created = await tx.order.create({
+    data: {
+      customerId: sourceOrder.customerId,
+      destinationId: sourceOrder.destinationId,
+      email: sourceOrder.email,
+      financialStatus: sourceOrder.financialStatus,
+      fulfillmentStatus: sourceOrder.fulfillmentStatus,
+      isStoreReviewData: sourceOrder.isStoreReviewData,
+      name: sourceOrder.name,
+      phone: sourceOrder.phone ?? sourceStop.phone,
+      processedAt: sourceOrder.processedAt,
+      rawPayload: {
+        kind: 'CLEVER_VIRTUAL_ROUTE_COPY',
+        schemaVersion: 1,
+        sourceDeliveryStopId: sourceStop.id,
+        sourceOrderId: sourceOrder.id,
+        sourceOrderNumber: sourceOrder.sourceOrderNumber,
+        sourcePlatform: sourceOrder.sourcePlatform,
+        sourceShopifyOrderGid: sourceOrder.shopifyOrderGid,
+        sourceSiteUrl: sourceOrder.sourceSiteUrl
+      },
+      serviceDate: sourceOrder.serviceDate,
+      sellerOrderKey: localId,
+      sellerOrderSourceKind: 'CLEVER_ROUTE_COPY',
+      sellerOrderVersion: 1,
+      ...(sourceOrder.shippingAddress === null ? {} : { shippingAddress: toJson(sourceOrder.shippingAddress) }),
+      shopId,
+      shopifyOrderGid: `gid://clever/VirtualRouteOrder/${localId}`,
+      sourceOrderId: `virtual-route-order:${localId}`,
+      sourceOrderNumber: sourceOrder.sourceOrderNumber,
+      sourcePlatform: sourceOrder.sourcePlatform,
+      sourceSiteUrl: sourceOrder.sourceSiteUrl,
+      sourceUpdatedAt: new Date(),
+      totalPriceAmount: sourceOrder.totalPriceAmount,
+      currencyCode: sourceOrder.currencyCode,
+      deliveryStops: {
+        create: {
+          address1: sourceStop.address1,
+          address2: sourceStop.address2,
+          city: sourceStop.city,
+          countryCode: sourceStop.countryCode,
+          deliveryDate: sourceStop.deliveryDate,
+          geocodeStatus: sourceStop.geocodeStatus,
+          instructions: sourceStop.instructions,
+          latitude: sourceStop.latitude,
+          longitude: sourceStop.longitude,
+          phone: sourceStop.phone ?? sourceOrder.phone,
+          postalCode: sourceStop.postalCode,
+          priority: sourceStop.priority,
+          province: sourceStop.province,
+          recipientName: sourceStop.recipientName,
+          serviceMinutes: sourceStop.serviceMinutes,
+          status: virtualCopyStopStatus(sourceStop.status),
+          timeWindowEnd: sourceStop.timeWindowEnd,
+          timeWindowStart: sourceStop.timeWindowStart
+        }
+      },
+      deliveryFacts: {
+        create: {
+          batchEligible: sourceFact?.batchEligible ?? true,
+          deliveryArea: sourceFact?.deliveryArea ?? null,
+          deliveryDate: sourceFact?.deliveryDate ?? sourceStop.deliveryDate,
+          deliveryDateWeekday: sourceFact?.deliveryDateWeekday ?? null,
+          deliveryDateWeekdayMismatch: sourceFact?.deliveryDateWeekdayMismatch ?? false,
+          deliveryDateWeekdayVerified: sourceFact?.deliveryDateWeekdayVerified ?? false,
+          deliveryDayParseStatus: sourceFact?.deliveryDayParseStatus ?? 'PARSED',
+          deliveryDayUnparsedReason: sourceFact?.deliveryDayUnparsedReason ?? null,
+          deliverySession: sourceFact?.deliverySession ?? null,
+          deliveryWeekday: sourceFact?.deliveryWeekday ?? null,
+          geocodeStatus: sourceStop.geocodeStatus,
+          matchedMappingPaths: sourceFact === undefined ? {} : toJson(sourceFact.matchedMappingPaths),
+          ...(sourceFact?.mappingDiagnostics === null || sourceFact?.mappingDiagnostics === undefined
+            ? {}
+            : { mappingDiagnostics: toJson(sourceFact.mappingDiagnostics) }),
+          planningGroupKey: sourceFact?.planningGroupKey ?? null,
+          rawDeliveryArea: sourceFact?.rawDeliveryArea ?? null,
+          rawDeliveryDate: sourceFact?.rawDeliveryDate ?? null,
+          rawDeliveryDay: sourceFact?.rawDeliveryDay ?? null,
+          rawDeliveryTimeWindow: sourceFact?.rawDeliveryTimeWindow ?? null,
+          rawPickupDay: sourceFact?.rawPickupDay ?? null,
+          readiness: sourceFact?.readiness ?? 'READY_TO_PLAN',
+          reviewReasons: sourceFact === undefined ? [] : toJson(sourceFact.reviewReasons),
+          routeScopeKey: sourceFact?.routeScopeKey ?? null,
+          serviceType: sourceFact?.serviceType ?? null,
+          shopId,
+          sourceOrderId: `virtual-route-order:${localId}`,
+          sourceOrderNumber: sourceOrder.sourceOrderNumber,
+          sourcePlatform: sourceOrder.sourcePlatform,
+          sourceSiteUrl: sourceOrder.sourceSiteUrl,
+          sourceUpdatedAt: new Date(),
+          timeWindowEnd: sourceFact?.timeWindowEnd ?? sourceStop.timeWindowEnd,
+          timeWindowStart: sourceFact?.timeWindowStart ?? sourceStop.timeWindowStart
+        }
+      },
+      orderItems: {
+        create: sourceOrder.orderItems.map((item) => ({
+          lineIndex: item.lineIndex,
+          name: item.name,
+          options: toJson(item.options),
+          productId: item.productId,
+          quantity: item.quantity,
+          shopId,
+          sku: item.sku,
+          variationId: item.variationId
+        }))
+      }
+    },
+    include: { deliveryStops: { select: { id: true }, take: 1 } }
+  });
+  const deliveryStopId = created.deliveryStops[0]?.id;
+  if (deliveryStopId === undefined) throw new Error('Standalone route copy did not create a delivery stop');
+  return { deliveryStopId };
 }
 
 function routeGeometryCacheSummarySelect() {
@@ -3133,10 +4046,21 @@ async function deleteBranchOrderLocks(
 }
 
 async function clearRouteGroupingChildVersionRoutePlanRefs(
-  tx: Pick<Tx, 'routeGroupingChildVersion'>,
+  tx: Pick<Tx, 'order' | 'routeGroupingChildVersion'>,
   input: { routePlanIds: string[]; shopId: string }
 ): Promise<void> {
   if (input.routePlanIds.length === 0) return;
+  const discardedVersions = await tx.routeGroupingChildVersion.findMany({
+    select: { id: true },
+    where: {
+      routePlanId: { in: input.routePlanIds },
+      shopId: input.shopId
+    }
+  });
+  await releaseRouteVersionOrderOwnership(tx, {
+    routeVersionIds: discardedVersions.map(({ id }) => id),
+    shopId: input.shopId
+  });
   await tx.routeGroupingChildVersion.updateMany({
     data: { routePlanId: null },
     where: {
@@ -3151,7 +4075,16 @@ type GroupingDateRange = { end: Date; endText: string; planDate: Date; start: Da
 type DeliveryFactForGrouping = {
   deliveryDate: Date | null;
   deliverySession: string | null;
-  order: { deliveryStops: Array<{ latitude: unknown; longitude: unknown; routePlanStops: Array<{ id: string }> }> };
+  order: {
+    cancelledAt: Date | null;
+    currentRouteVersionId: string | null;
+    deliveryStops: Array<{
+      latitude: unknown;
+      longitude: unknown;
+      routePlanStops: Array<{ id: string }>;
+      status: DeliveryStopStatus;
+    }>;
+  };
   orderId: string;
   routeScopeKey: string | null;
   serviceType: string | null;
@@ -3211,14 +4144,55 @@ function sharedFactValue(facts: DeliveryFactForGrouping[], key: 'deliverySession
   return facts.every((fact) => fact[key] === first) ? first : null;
 }
 
-function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
+function validateManualAdditionFacts(input: { facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
+  const blockers = validateCreateFacts({ facts: input.facts, orderIds: input.orderIds });
+  for (const orderId of input.orderIds) {
+    const fact = input.facts.find((candidate) => candidate.orderId === orderId);
+    const stop = fact?.order.deliveryStops[0];
+    if (stop === undefined) continue;
+    if (['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(stop.status)) {
+      blockers.push('completed orders cannot be added to a route grouping');
+    }
+  }
+  return [...new Set(blockers)];
+}
+
+async function lockManualAdditionOrders(tx: Tx, shopId: string, orderIds: string[], targetRoutePlanId?: string): Promise<void> {
+  const ids = normalizeIds(orderIds).sort().map((orderId) => Prisma.sql`${orderId}::uuid`);
+  if (ids.length === 0) return;
+  const stops = await tx.deliveryStop.findMany({
+    select: { id: true },
+    where: {
+      shopId,
+      OR: [
+        { orderId: { in: orderIds } },
+        ...(targetRoutePlanId === undefined ? [] : [{ routePlanStops: { some: { routePlanId: targetRoutePlanId } } }])
+      ]
+    }
+  });
+  // Dispatch also locks stops before updating order projections. Take the full
+  // target membership first so append can recheck ownership without inversion.
+  await lockRouteExecutionStops(tx, stops.map((stop) => stop.id));
+  await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+    FROM "orders"
+    WHERE "shopId" = ${shopId}::uuid
+      AND "id" IN (${Prisma.join(ids)})
+    ORDER BY "id"
+    FOR UPDATE
+  `;
+}
+
+function validateCreateFacts(input: { dateRange?: GroupingDateRange; facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
   const blockers: string[] = [];
   if (input.facts.length !== input.orderIds.length) blockers.push('selected orders must have delivery facts');
   for (const orderId of input.orderIds) {
     const fact = input.facts.find((candidate) => candidate.orderId === orderId);
     if (fact === undefined) continue;
+    if (fact.order.cancelledAt !== null) blockers.push('cancelled orders cannot be added to a route grouping');
     const deliveryDate = formatDateOnly(fact.deliveryDate);
-    if (deliveryDate !== null && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
+    if (input.dateRange !== undefined && deliveryDate !== null
+      && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
       blockers.push('selected orders must fall within grouping date range');
     }
     const stop = fact.order.deliveryStops[0];
@@ -3466,11 +4440,19 @@ function assertRollbackMembershipDisjoint(
   }
 }
 
-function resolveChildSnapshotAssignments(
-  group: LoadedGrouping,
-  child: LoadedChild,
+function resolveChildSnapshotAssignments<TAssignment extends {
+  deliveryStopId: string;
+  orderId: string;
+  order: { currentRouteVersionId: string | null };
+}>(
+  group: { orders: TAssignment[] },
+  child: {
+    id: string;
+    routePlan: { routeStops: Array<{ deliveryStopId: string; sequence: number }> } | null;
+    snapshot: Prisma.JsonValue;
+  },
   authority: 'ARCHIVED' | 'CURRENT' | 'CURRENT_READ'
-): LoadedAssignment[] {
+): TAssignment[] {
   const assignmentsByStopId = new Map(group.orders.map((assignment) => [assignment.deliveryStopId, assignment]));
   const snapshot = readChildSnapshot(child.snapshot);
   const modernSnapshot = snapshot.membershipFormat === 'MODERN';
@@ -3495,12 +4477,8 @@ function resolveChildSnapshotAssignments(
     .sort((left, right) => left.sequence - right.sequence)
     .map((stop) => stop.deliveryStopId);
   if (modernSnapshot && authority === 'CURRENT') {
-    const snapshotOrderIds = orderedSnapshotStops.map((stop) => stop.orderId);
-    const bindingAuthority = currentRouteBindingAuthorityState(child.id, snapshotOrderIds, group.orders);
     if (snapshotStopIds.length !== routePlanStopIds.length
-      || snapshotStopIds.some((stopId, index) => stopId !== routePlanStopIds[index])
-      || bindingAuthority === 'MISMATCH'
-      || (authority === 'CURRENT' && bindingAuthority !== 'EXACT')) {
+      || snapshotStopIds.some((stopId, index) => stopId !== routePlanStopIds[index])) {
       throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority']);
     }
   }
@@ -3513,7 +4491,7 @@ function resolveChildSnapshotAssignments(
   if (modernSnapshot && assignments.some((assignment, index) => assignment?.orderId !== orderedSnapshotStops[index]?.orderId)) {
     throw new RouteGroupingValidationError(['current route membership snapshot tuple does not match grouping authority']);
   }
-  return assignments as LoadedAssignment[];
+  return assignments as TAssignment[];
 }
 
 async function appendGroupingOrdersToChildRoute(
@@ -3546,16 +4524,20 @@ async function appendGroupingOrdersToChildRoute(
 
   const currentAssignments = currentChildAssignments(group, targetChild);
   const currentStopIds = new Set(currentAssignments.map((assignment) => assignment.deliveryStopId));
+  // Each group still partitions its orders across children; other groups may
+  // independently plan the same real order without taking execution ownership.
+  const siblingStopIds = new Set(group.childVersions
+    .filter((child) => isOperationalCurrentChild(child) && child.id !== targetChild.id)
+    .flatMap((child) => currentChildAssignments(group, child).map((assignment) => assignment.deliveryStopId)));
   const additionsToAppend = (additions as LoadedAssignment[]).filter((assignment) => {
-    const otherRouteMembership = assignment.deliveryStop.routePlanStops.some(
-      ({ routePlanId }) => routePlanId !== targetRoutePlanId
-    );
-    if (otherRouteMembership) {
+    if (siblingStopIds.has(assignment.deliveryStopId)) {
       throw new RouteGroupingValidationError(['selected orders are already assigned to another child route']);
     }
     return !currentStopIds.has(assignment.deliveryStopId);
   });
   if (additionsToAppend.length === 0) return;
+  const eligibilityBlockers = validateManualChildAdditions(additionsToAppend);
+  if (eligibilityBlockers.length > 0) throw new RouteGroupingValidationError(eligibilityBlockers);
 
   const assignments = [...currentAssignments, ...additionsToAppend];
   assertLockedRoutePlanSuccessorPolicy({
@@ -3564,6 +4546,16 @@ async function appendGroupingOrdersToChildRoute(
     routeDetailsChanged: false,
     status: lockedRoutePlan.status
   });
+  const reservesExecution = targetChild.publishedAt !== null
+    || lockedRoutePlan.status === 'IN_PROGRESS'
+    || hasDispatchReservation(lockedRoutePlan.constraints);
+  if (reservesExecution) {
+    await assertRouteDispatchOwnership(tx, {
+      deliveryStopIds: assignments.map((assignment) => assignment.deliveryStopId),
+      routePlanId: targetRoutePlanId,
+      shopId: group.shopId
+    });
+  }
   const snapshot = readChildSnapshot(targetChild.snapshot);
   await syncRoutePlanStopsPreservingRows(tx, group.shopId, targetRoutePlanId, assignments);
   await tx.routePlan.update({
@@ -3572,6 +4564,7 @@ async function appendGroupingOrdersToChildRoute(
   });
   await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
   await replaceCurrentRouteGroupingChildVersion(tx, {
+    planning: true,
     currentChildId: targetChild.id,
     driverId: lockedRoutePlan.driverId ?? targetChild.driverId,
     groupingId: group.id,
@@ -3593,6 +4586,23 @@ async function appendGroupingOrdersToChildRoute(
     ),
     version: targetChild.version
   });
+  if (reservesExecution) {
+    await claimRouteExecutionProjection(tx, { routePlanId: targetRoutePlanId, shopId: group.shopId });
+  }
+}
+
+function validateManualChildAdditions(assignments: LoadedAssignment[]): string[] {
+  const blockers: string[] = [];
+  for (const assignment of assignments) {
+    if (assignment.order.cancelledAt !== null) blockers.push('cancelled orders cannot be added to a route grouping');
+    if (['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(assignment.deliveryStop.status)) {
+      blockers.push('completed orders cannot be added to a route grouping');
+    }
+    if (decimalNumber(assignment.deliveryStop.latitude) === null || decimalNumber(assignment.deliveryStop.longitude) === null) {
+      blockers.push('selected orders must have coordinates');
+    }
+  }
+  return [...new Set(blockers)];
 }
 
 async function rewriteRoutePlanStops(tx: Tx, shopId: string, routePlanId: string, assignments: LoadedAssignment[]): Promise<void> {
@@ -3837,6 +4847,7 @@ async function createDraftChildRoutePlan(
     groupingVersionId: string;
     name: string;
     optimized: RouteGroupingDraftRouteInput['optimized'] | null;
+    preserveName?: boolean;
     routeIdx: number | undefined;
     scheduledStartAt?: string | null | undefined;
     scheduledStartTimeZone?: string | null | undefined;
@@ -3845,7 +4856,8 @@ async function createDraftChildRoutePlan(
   }
 ): Promise<{ id: string; name: string }> {
   const depot = readDepotFromShop(group);
-  const name = stripGeneratedChildRouteVersion(input.name.trim() || `#${input.routeIdx ?? input.sortOrder ?? 1}`);
+  const requestedName = input.name.trim() || `#${input.routeIdx ?? input.sortOrder ?? 1}`;
+  const name = input.preserveName === true ? requestedName : stripGeneratedChildRouteVersion(requestedName);
   const isStoreReviewData = await resolveRouteStoreReviewData(
     tx,
     group.shopId,
@@ -3859,7 +4871,7 @@ async function createDraftChildRoutePlan(
     data: {
       constraints: input.scheduledStartAt === undefined && input.scheduledStartTimeZone === undefined
         ? routeConstraints(group, depot)
-        : updateRouteConstraintsSchedule(routeConstraints(group, depot), input.scheduledStartAt, input.scheduledStartTimeZone),
+        : updateRouteConstraintsSchedule(routeConstraints(group, depot), input.scheduledStartAt, input.scheduledStartTimeZone, group.planDate),
       createdBy: ROUTE_GROUPING_DRAFT_SAVE_ACTOR,
       ...(depot === null ? {} : { depotLatitude: decimalString(depot.latitude), depotLongitude: decimalString(depot.longitude) }),
       driverId: input.driverId,
@@ -3892,6 +4904,7 @@ async function createDraftChildRoutePlan(
   await rebindCurrentOrdersToRouteVersion(tx, {
     groupingId: group.id,
     nextRouteVersionId: childVersion.id,
+    planning: true,
     orderIds: input.assignments.map((assignment) => assignment.orderId),
     shopId: group.shopId
   });
@@ -4035,7 +5048,17 @@ async function createDraftRouteGeometryCache(
   });
 }
 
-function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignment[], driverId: string | null, name: string, version: number, color?: string | null, sortOrder?: number, routeIdx?: number): ChildSnapshot {
+function createChildSnapshot(
+  group: LoadedGrouping,
+  assignments: LoadedAssignment[],
+  driverId: string | null,
+  name: string,
+  version: number,
+  color?: string | null,
+  sortOrder?: number,
+  routeIdx?: number,
+  reorderCompatibility?: ChildSnapshot['reorderCompatibility']
+): ChildSnapshot {
   return {
     ...(color === undefined ? {} : { color }),
     ...(routeIdx === undefined ? {} : { routeIdx }),
@@ -4049,6 +5072,7 @@ function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignmen
     name,
     planDate: formatDateOnly(group.planDate) ?? '',
     predecessorChildVersionId: null,
+    ...(reorderCompatibility === undefined ? {} : { reorderCompatibility }),
     routeScope: { deliverySession: group.deliverySession, routeScopeKey: group.routeScopeKey, serviceType: group.serviceType },
     stops: assignments.map((assignment, index) => ({ deliveryStopId: assignment.deliveryStopId, orderId: assignment.orderId, sequence: index + 1, sourceOrderId: assignment.order.shopifyOrderGid }))
   };
@@ -4068,6 +5092,7 @@ function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
   const stops = Array.isArray(object.stops) ? object.stops : hasStopsField ? [null] : [];
   const routeIdx = typeof object.routeIdx === 'number' && Number.isInteger(object.routeIdx) ? object.routeIdx : undefined;
   const sortOrder = typeof object.sortOrder === 'number' && Number.isInteger(object.sortOrder) ? object.sortOrder : undefined;
+  const reorderCompatibility = readReorderCompatibility(object.reorderCompatibility);
   return {
     color: typeof object.color === 'string' ? object.color : null,
     driverId: typeof object.driverId === 'string' ? object.driverId : null,
@@ -4081,6 +5106,7 @@ function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
     predecessorChildVersionId: typeof object.predecessorChildVersionId === 'string'
       ? object.predecessorChildVersionId
       : null,
+    ...(reorderCompatibility === undefined ? {} : { reorderCompatibility }),
     ...(routeIdx === undefined ? {} : { routeIdx }),
     ...(sortOrder === undefined ? {} : { sortOrder }),
     routeScope: { deliverySession: null, routeScopeKey: null, serviceType: null },
@@ -4094,6 +5120,29 @@ function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
       };
     })
   };
+}
+
+function readReorderCompatibility(value: unknown): ChildSnapshot['reorderCompatibility'] | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const object = value as Record<string, unknown>;
+  if (typeof object.assignmentGeneration !== 'string' || !/^\d+$/u.test(object.assignmentGeneration)) return undefined;
+  return { assignmentGeneration: object.assignmentGeneration };
+}
+
+function activeReorderCompatibility(input: {
+  assignmentsChanged: boolean;
+  currentOrderIds: string[];
+  lockedRoutePlan: LockedRoutePlanMembership;
+  nextOrderIds: string[];
+  routeDetailsChanged: boolean;
+}): ChildSnapshot['reorderCompatibility'] | undefined {
+  if (
+    input.lockedRoutePlan.status !== 'IN_PROGRESS'
+    || input.routeDetailsChanged
+    || !input.assignmentsChanged
+    || !sameStringSet(input.currentOrderIds, input.nextOrderIds)
+  ) return undefined;
+  return { assignmentGeneration: input.lockedRoutePlan.assignmentGeneration.toString() };
 }
 
 
@@ -4138,17 +5187,24 @@ function routeMetrics(assignments: LoadedAssignment[]): Prisma.InputJsonObject {
 function updateRouteConstraintsSchedule(
   value: unknown,
   scheduledStartAt: string | null | undefined,
-  scheduledStartTimeZone: string | null | undefined
+  scheduledStartTimeZone: string | null | undefined,
+  planDate: Date
 ): Prisma.InputJsonObject {
   const constraints = value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-  return toJson({
+  const updated = {
     ...constraints,
     departureTime: null,
     ...(scheduledStartAt === undefined ? {} : { scheduledStartAt }),
     ...(scheduledStartTimeZone === undefined ? {} : { scheduledStartTimeZone })
-  }) as Prisma.InputJsonObject;
+  };
+  assertSchedulePlanDate(
+    planDate,
+    typeof updated.scheduledStartAt === 'string' ? updated.scheduledStartAt : null,
+    typeof updated.scheduledStartTimeZone === 'string' ? updated.scheduledStartTimeZone : null
+  );
+  return toJson(updated) as Prisma.InputJsonObject;
 }
 
 function toGroupingDetailDto(group: LoadedGrouping): RouteGroupingDetailDto {
@@ -4158,6 +5214,95 @@ function toGroupingDetailDto(group: LoadedGrouping): RouteGroupingDetailDto {
     branches: group.branches.map(toBranchDto),
     polygons: group.polygons.map(toPolygonDto)
   };
+}
+
+function toGroupingRoutesListDto(group: LoadedRoutesListGrouping): RouteGroupingRoutesListDto {
+  const currentChildren = group.childVersions.filter((child) => isOperationalCurrentChild(child));
+  const dateRange = loadedGroupDateRange(group);
+  return {
+    children: currentChildren.map((child) => toRoutesListChildDto(child, group)),
+    currentVersion: group.currentVersion,
+    dateRangeEnd: dateRange.endText,
+    dateRangeStart: dateRange.startText,
+    displayStatus: deriveGroupingDisplayStatus(group),
+    id: group.id,
+    linkedInventoryId: group.inventory?.id ?? null,
+    name: group.name,
+    planDate: formatDateOnly(group.planDate) ?? '',
+    status: group.status,
+    totalOrders: group.orders.length,
+    unresolvedOrders: group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED' && order.assignmentStatus !== 'UNASSIGNED').length,
+    updatedAt: group.updatedAt.toISOString()
+  };
+}
+
+function toRoutesListChildDto(
+  child: LoadedRoutesListGrouping['childVersions'][number],
+  group: LoadedRoutesListGrouping
+): RouteGroupingRoutesListChildDto {
+  const snapshot = readChildSnapshot(child.snapshot);
+  const assignments = resolveChildSnapshotAssignments(group, child, 'CURRENT_READ');
+  const routeMetrics = routesListChildMetrics(child, group, assignments);
+  const routePlan = child.routePlan;
+  return {
+    color: snapshot.color ?? null,
+    displayStatus: deriveChildDisplayStatus(child),
+    driverId: child.driverId,
+    driverName: child.driver?.displayName ?? routePlan?.driver?.displayName ?? null,
+    routeMetrics,
+    routePlan: routePlan === null ? null : {
+      createdAt: routePlan.createdAt.toISOString(),
+      deliveredCount: assignments.filter(({ deliveryStop }) => deliveryStop.status === 'DELIVERED').length,
+      driverId: routePlan.driverId,
+      etaRange: normalizeRouteEtaRange(routePlan.routeStops.map(({ estimatedArrivalAt }) => estimatedArrivalAt)),
+      id: routePlan.id,
+      itemSummary: {
+        totalQuantity: assignments.reduce(
+          (total, assignment) => total + assignment.order.orderItems.reduce((subtotal, item) => subtotal + item.quantity, 0),
+          0
+        )
+      },
+      missingCoordinates: 0,
+      name: routePlan.name,
+      planDate: formatDateOnly(routePlan.planDate) ?? '',
+      routeMetrics,
+      scheduledStartAt: readScheduledStartAt(routePlan.constraints),
+      scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
+      status: toRouteDeliveryDisplayStatus(routePlan),
+      stopsCount: routePlan.routeStops.length,
+      totalAmount: normalizeRouteTotalAmount(assignments.map(({ order }) => order)),
+      updatedAt: routePlan.updatedAt.toISOString()
+    },
+    routePlanId: child.routePlanId,
+    routeIdx: snapshot.routeIdx ?? null,
+    sortOrder: snapshot.sortOrder ?? null,
+    stopsCount: assignments.length,
+    updatedAt: child.updatedAt.toISOString()
+  };
+}
+
+function routesListChildMetrics(
+  child: LoadedRoutesListGrouping['childVersions'][number],
+  group: LoadedRoutesListGrouping,
+  assignments: LoadedRoutesListGrouping['orders']
+): RoutePlanRouteMetrics | null {
+  const cache = child.routePlan?.routeGeometryCaches[0] ?? null;
+  const depot = readDepotFromShop(group);
+  if (cache === null || depot === null) return null;
+  const shapeSignature = computeRouteShapeSignatureFromParts({
+    depot,
+    routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
+    stops: assignments.map((assignment, index) => ({
+      coordinates: {
+        latitude: decimalNumber(assignment.deliveryStop.latitude),
+        longitude: decimalNumber(assignment.deliveryStop.longitude)
+      },
+      deliveryStopId: assignment.deliveryStopId,
+      orderId: assignment.orderId,
+      sequence: index + 1
+    }))
+  });
+  return cache.shapeSignature === shapeSignature ? readRouteMetrics(cache.metrics) : null;
 }
 
 function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
@@ -4243,7 +5388,7 @@ function withChildSnapshotPredecessor(
 }
 
 export async function archiveDeletedRouteGroupingChildMembership(
-  tx: Pick<Tx, 'routeGroupingChildVersion'>,
+  tx: Pick<Tx, 'order' | 'routeGroupingChildVersion'>,
   child: Pick<LoadedChild,
     'driverId' | 'groupingId' | 'groupingVersionId' | 'id' | 'notificationStatus' |
     'publishedAt' | 'shopId' | 'snapshot' | 'version'>
@@ -4257,6 +5402,10 @@ export async function archiveDeletedRouteGroupingChildMembership(
   await tx.routeGroupingChildVersion.update({
     data: { status: 'ARCHIVED', supersededAt: archivedAt },
     where: { id: child.id }
+  });
+  await releaseRouteVersionOrderOwnership(tx, {
+    routeVersionIds: [child.id],
+    shopId: child.shopId
   });
   await tx.routeGroupingChildVersion.create({
     data: {
@@ -4280,6 +5429,22 @@ export async function archiveDeletedRouteGroupingChildMembership(
       version: child.version
     }
   });
+}
+
+export async function releaseRouteVersionOrderOwnership(
+  tx: Pick<Tx, 'order'>,
+  input: { routeVersionIds: string[]; shopId: string }
+): Promise<number> {
+  const routeVersionIds = [...new Set(input.routeVersionIds)];
+  if (routeVersionIds.length === 0) return 0;
+  const released = await tx.order.updateMany({
+    data: { currentRouteVersionId: null },
+    where: {
+      currentRouteVersionId: { in: routeVersionIds },
+      shopId: input.shopId
+    }
+  });
+  return released.count;
 }
 
 function readOptimizedBranchSnapshot(value: unknown): RouteGroupingBranchDto['optimized'] {
@@ -4427,12 +5592,14 @@ function readScheduledStartTimeZone(value: unknown): string | null {
 function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan']>, routeMetrics: RoutePlanRouteMetrics | null, assignments: LoadedAssignment[]) {
   return {
     createdAt: routePlan.createdAt.toISOString(),
+    deliveredCount: assignments.filter(({ deliveryStop }) => deliveryStop.status === 'DELIVERED').length,
     deliveryAreas: [],
     deliveryDays: [],
     depot: { latitude: decimalNumber(routePlan.depotLatitude), longitude: decimalNumber(routePlan.depotLongitude) },
     departureTime: readDepartureTime(routePlan.constraints),
     driver: null,
     driverId: routePlan.driverId,
+    etaRange: normalizeRouteEtaRange(routePlan.routeStops.map(({ estimatedArrivalAt }) => estimatedArrivalAt)),
     id: routePlan.id,
     itemSummary: routeItemSummary(assignments),
     missingCoordinates: 0,
@@ -4442,25 +5609,49 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     routeMetrics,
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
-    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    status: toRouteDeliveryDisplayStatus(routePlan),
     stopsCount: routePlan.routeStops.length,
+    totalAmount: normalizeRouteTotalAmount(assignments.map(({ order }) => order)),
     updatedAt: routePlan.updatedAt.toISOString()
   };
 }
 
-function deriveGroupingDisplayStatus(group: LoadedGrouping): RouteGroupingDisplayStatus {
+export function deriveGroupingDisplayStatus(group: {
+  childVersions: Array<{
+    routePlan: DeliveryDisplayRoute | null;
+    status: string;
+    supersededAt: Date | null;
+  }>;
+  status: string;
+}): RouteGroupingDisplayStatus {
   if (group.status === 'CANCELLED') return 'CANCELLED';
   const statuses = group.childVersions
     .filter((child) => isOperationalCurrentChild(child))
-    .map((child) => toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents));
+    .map((child) => toRouteDeliveryDisplayStatus(child.routePlan ?? { status: 'READY' }));
   if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED')) return 'COMPLETED';
-  if (statuses.some((status) => status === 'IN_PROGRESS' || status === 'COMPLETED')) return 'IN_PROGRESS';
+  if (statuses.some((status) => status === 'IN_PROGRESS')) return 'IN_PROGRESS';
+  if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED' || status === 'INCOMPLETE')) {
+    return 'INCOMPLETE';
+  }
+  if (statuses.some((status) => status === 'COMPLETED' || status === 'INCOMPLETE')) return 'IN_PROGRESS';
   return 'READY';
 }
 
-function deriveChildDisplayStatus(child: LoadedChild): RouteGroupingChildDisplayStatus {
-  return toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents);
+function deriveChildDisplayStatus(child: {
+  routePlan: DeliveryDisplayRoute | null;
+}): RouteGroupingChildDisplayStatus {
+  return toRouteDeliveryDisplayStatus(child.routePlan ?? { status: 'READY' });
 }
+
+type DeliveryDisplayRoute = {
+  assignmentGeneration?: bigint;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
+  driverEvents?: Array<{ eventType: string }>;
+  driverNavigationUntil?: Date | null;
+  status: string;
+};
 
 function normalizeNotificationStatus(status: string): RouteGroupingNotificationStatus {
   if (status === 'SENT' || status === 'FAILED' || status === 'PENDING') return status;
@@ -4507,6 +5698,34 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
 
 function normalizeShopDomain(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function standaloneRoutePublicationVersion(routePlan: {
+  assignmentGeneration: bigint;
+  constraints: unknown;
+  depotLatitude: unknown;
+  depotLongitude: unknown;
+  driverId: string | null;
+  name: string;
+  routeStops: unknown[];
+}): string {
+  const payload = JSON.parse(JSON.stringify({
+    assignmentGeneration: routePlan.assignmentGeneration.toString(),
+    constraints: routePlan.constraints,
+    depotLatitude: routePlan.depotLatitude,
+    depotLongitude: routePlan.depotLongitude,
+    driverId: routePlan.driverId,
+    name: routePlan.name,
+    routeStops: routePlan.routeStops
+  })) as unknown;
+  return createHash('sha256').update(stableNotificationJson(payload)).digest('hex');
+}
+
+function stableNotificationJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableNotificationJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableNotificationJson(record[key])}`).join(',')}}`;
 }
 
 
@@ -4572,7 +5791,9 @@ function hasValidDepotCoordinates(depot: CreateRouteGroupingInput['depot']): dep
   return depot !== undefined && isValidLatitude(decimalNumber(depot.latitude)) && isValidLongitude(decimalNumber(depot.longitude));
 }
 
-function readDepotFromShop(group: LoadedGrouping): DepotCoordinates | null {
+function readDepotFromShop(group: {
+  shop: { defaultDepotAddress: string | null; defaultDepotLatitude: unknown; defaultDepotLongitude: unknown };
+}): DepotCoordinates | null {
   const latitude = decimalNumber(group.shop.defaultDepotLatitude);
   const longitude = decimalNumber(group.shop.defaultDepotLongitude);
   if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) return null;

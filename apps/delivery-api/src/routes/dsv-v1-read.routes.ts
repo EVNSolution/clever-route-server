@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import {
-  canAccessDsvStoreReviewData,
   DsvForbiddenError,
   requireDsvScopes,
 } from '../modules/dsv/dsv-principal.js';
@@ -47,6 +46,7 @@ import {
   type DsvV1VehicleGpsTrailHistoryResult,
   type DsvV1VehicleTemperatureHistoryInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
+import { filterDistantRoadMatchedAnchors } from '../modules/uvis/uvis-vehicle-trail-materializer.js';
 import {
   DsvTimeConstraintCommandError,
   type DsvClearTimeConstraintInput,
@@ -73,6 +73,10 @@ import type { DsvRouteOptimizationSchedulerPort } from '../modules/dsv/dsv-route
 import type { RouteGeometryProvider } from '../modules/route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanService, RoutePlanSummary } from '../modules/route-plans/route-plan.types.js';
 import {
+  DriverProofMediaAccessUnavailableError,
+  DriverProofMediaScopeError,
+} from '../modules/driver/driver-proof-media.types.js';
+import {
   clearAdminWebSessionCookie,
   verifyAdminWebCsrfToken,
   verifyAdminWebSessionFromRequest,
@@ -93,6 +97,24 @@ export type DsvV1SessionResolver = {
   resolve(subject: string): Promise<DsvPrincipal>;
 };
 
+export type DsvV1AdminProofMediaReadService = {
+  createAdminProofMediaReadAccess(input: {
+    mediaId: string;
+    shopId: string;
+  }): Promise<{
+    contentType: string;
+    deliveryStopIds: string[];
+    expiresAt: string;
+    kind: 'photo';
+    mediaId: string;
+    sha256: string;
+    sizeBytes: number;
+    source: 'camera' | 'library';
+    uploadedAt: string;
+    url: string;
+  }>;
+};
+
 export type DsvV1ReadDependencies = {
   cookieName: string;
   mapProfile?: DsvMapProfile;
@@ -107,6 +129,7 @@ export type DsvV1ReadDependencies = {
   driverNotificationRuntime?: DsvDriverNotificationRuntime;
   orderMessageService?: DsvOrderMessageService;
   operationalNotificationService?: DsvOperationalNotificationService;
+  proofMediaService?: DsvV1AdminProofMediaReadService;
   storeReviewAccess: Pick<DsvStoreReviewAccess, 'assertAccessible'>;
   timeConstraintCommandService?: DsvTimeConstraintCommandService;
 };
@@ -284,6 +307,52 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     parseQuery: parseRecordsQuery,
     requiredScopes: ['dsv:records:read'],
   });
+  app.get(`${apiRoot}/proof-media/:mediaId/access`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:records:read']);
+      if (hasUnsupportedQuery(request, [])) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Unsupported query parameter');
+      }
+      if (hasDeclaredRequestBody(request)) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Unsupported request body');
+      }
+      const mediaId = readUuidParam(request, 'mediaId');
+      if (mediaId === null) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid proof media id');
+      }
+      if (dependencies.proofMediaService === undefined) {
+        return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'Proof media read access is not configured');
+      }
+
+      try {
+        await assertStoreReviewAccessible(dependencies, principal, { proofMediaIds: [mediaId] });
+        const access = await dependencies.proofMediaService.createAdminProofMediaReadAccess({
+          mediaId,
+          shopId: principal.shopId,
+        });
+        return sendV1Data(reply, request, {
+          contentType: access.contentType,
+          deliveryStopIds: access.deliveryStopIds,
+          expiresAt: access.expiresAt,
+          kind: access.kind,
+          mediaId: access.mediaId,
+          sha256: access.sha256,
+          sizeBytes: access.sizeBytes,
+          source: access.source,
+          uploadedAt: access.uploadedAt,
+          url: access.url,
+        });
+      } catch (error) {
+        if (error instanceof DriverProofMediaScopeError) {
+          return sendV1Error(reply, request, 404, 'NOT_FOUND', 'Proof media not found');
+        }
+        if (error instanceof DriverProofMediaAccessUnavailableError) {
+          return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'Proof media read access is unavailable');
+        }
+        throw error;
+      }
+    }));
   registerReadRoute(app, dependencies, 'drivers', {
     allowedQuery: ['cursor', 'limit'],
     handler: async (principal, query) => {
@@ -310,9 +379,18 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     requiredScopes: ['dsv:control:read'],
   });
   registerReadRoute(app, dependencies, 'vehicles/:vehicleId/gps-trail-history', {
-    allowedQuery: ['serviceDate'],
-    handler: async (principal, query) =>
-      requireQueryService(dependencies).listVehicleGpsTrailHistory(requireAdminPrincipal(principal), query),
+    allowedQuery: ['includeDailyRoute', 'serviceDate'],
+    handler: async (principal, query) => {
+      const history = await requireQueryService(dependencies).listVehicleGpsTrailHistory(
+        requireAdminPrincipal(principal), query,
+      );
+      return query.includeDailyRoute === true ? history : {
+        serviceDate: history.serviceDate,
+        sessions: history.sessions,
+        timezone: history.timezone,
+        vehicleId: history.vehicleId,
+      };
+    },
     parseQuery: parseVehicleGpsTrailHistoryQuery,
     requiredScopes: ['dsv:control:read'],
   });
@@ -660,7 +738,9 @@ function clipTrailSession(
   start: DsvV1LngLat,
   end: DsvV1LngLat,
 ): DsvV1CustomerTrailDto['segments'] {
-  const roadMatchedLines = segments.flatMap((segment) => segment.roadMatchedGeometry?.coordinates ?? []);
+  const roadMatchedLines = segments.flatMap((segment) =>
+    filterDistantRoadMatchedAnchors(segment.roadMatchedGeometry ?? null, segment.samples)?.coordinates ?? []
+  );
   return clipRoadMatchedTrailLines(roadMatchedLines, start, end);
 }
 
@@ -1167,8 +1247,11 @@ function parseVehicleTemperatureHistoryQuery(request: FastifyRequest): DsvV1Vehi
 function parseVehicleGpsTrailHistoryQuery(request: FastifyRequest): DsvV1VehicleGpsTrailHistoryInput | null {
   const vehicleId = readUuidParam(request, 'vehicleId');
   const serviceDate = readServiceDate(request);
-  if (vehicleId === null || serviceDate === null) return null;
+  const includeDailyRoute = readSingleQueryString(request, 'includeDailyRoute');
+  if (vehicleId === null || serviceDate === null || includeDailyRoute === null) return null;
+  if (includeDailyRoute !== undefined && includeDailyRoute !== 'true' && includeDailyRoute !== 'false') return null;
   return {
+    ...(includeDailyRoute === undefined ? {} : { includeDailyRoute: includeDailyRoute === 'true' }),
     ...(serviceDate === undefined ? {} : { serviceDate }),
     vehicleId,
   };
@@ -1500,6 +1583,13 @@ function isEmptyObjectBody(value: unknown): boolean {
   return value === undefined || (typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0);
 }
 
+function hasDeclaredRequestBody(request: FastifyRequest): boolean {
+  if (!isEmptyObjectBody(request.body)) return true;
+  if (request.headers['transfer-encoding'] !== undefined) return true;
+  const contentLength = request.headers['content-length'];
+  return typeof contentLength === 'string' && contentLength !== '0';
+}
+
 function requireQueryService(dependencies: DsvV1ReadDependencies): DsvV1ReadQueryService {
   if (dependencies.queryService === undefined) {
     throw new DsvV1DependencyError('DSV v1 read query service is not configured');
@@ -1529,9 +1619,6 @@ async function filterAccessibleRoutePlans(
   principal: DsvAdminPrincipal,
   routePlans: readonly RoutePlanSummary[],
 ): Promise<RoutePlanSummary[]> {
-  if (canAccessDsvStoreReviewData(principal)) {
-    return [...routePlans];
-  }
   const accessibility = await Promise.all(routePlans.map(async (routePlan) => {
     try {
       await dependencies.storeReviewAccess.assertAccessible(principal, { routePlanIds: [routePlan.id] });

@@ -39,6 +39,19 @@ describe('PrismaOrderQueryRepository page query', () => {
     expect(JSON.stringify(query)).not.toContain('__invalid_missing_today__');
   });
 
+  test('keeps cancelled orders in the ordinary Orders query', async () => {
+    const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>(() => Promise.resolve([]));
+    const repository = new PrismaOrderQueryRepository(
+      prismaHarness({ findMany, missingSequence: null }),
+      'test-secret'
+    );
+
+    await repository.listPage({ shopDomain: 'example.myshopify.com' });
+
+    const query = firstCallArg(findMany) as { where?: unknown };
+    expect(JSON.stringify(query.where)).not.toContain('cancelledAt');
+  });
+
   test('rejects planning queries without an explicit reference date', async () => {
     const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>();
     const repository = new PrismaOrderQueryRepository(
@@ -339,7 +352,7 @@ describe('PrismaOrderQueryRepository page query', () => {
     }));
     const snapshotOrderCreateMany = vi.fn(() => Promise.resolve({ count: 1 }));
     const tx = {
-      order: { findMany: vi.fn(() => Promise.resolve([{ id: 'order-1' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([{ cancelledAt: null, id: 'order-1' }])) },
       orderSelectionSnapshot: { create: snapshotCreate },
       orderSelectionSnapshotOrder: { createMany: snapshotOrderCreateMany }
     };
@@ -376,16 +389,21 @@ describe('PrismaOrderQueryRepository page query', () => {
     });
   });
 
-  test('persists exact snapshot membership and rejects exclusions outside the snapshot filter', async () => {
+  test('keeps cancelled filter members as excluded snapshot rows and rejects exclusions outside the filter', async () => {
     const snapshotCreate = vi.fn(() => Promise.resolve({
       expiresAt: new Date('2026-08-04T00:15:00.000Z'),
       id: 'snapshot-1',
       selectedCount: 1,
       snapshotWatermark: new Date('2026-08-04T00:00:00.000Z')
     }));
-    const snapshotOrderCreateMany = vi.fn(() => Promise.resolve({ count: 2 }));
+    const snapshotOrderCreateMany = vi.fn(() => Promise.resolve({ count: 3 }));
+    const findMany = vi.fn(() => Promise.resolve([
+      { cancelledAt: null, id: 'order-1' },
+      { cancelledAt: null, id: 'order-2' },
+      { cancelledAt: new Date('2026-08-03T23:59:00.000Z'), id: 'cancelled-order' }
+    ]));
     const tx = {
-      order: { findMany: vi.fn(() => Promise.resolve([{ id: 'order-1' }, { id: 'order-2' }])) },
+      order: { findMany },
       orderSelectionSnapshot: { create: snapshotCreate },
       orderSelectionSnapshotOrder: { createMany: snapshotOrderCreateMany }
     };
@@ -406,7 +424,7 @@ describe('PrismaOrderQueryRepository page query', () => {
     await repository.createSelectionSnapshot({
       actor: 'actor-1',
       appId: 'clever',
-      excludeOrderIds: ['order-2'],
+      excludeOrderIds: ['order-2', 'cancelled-order'],
       shopDomain: 'example.myshopify.com'
     });
 
@@ -416,10 +434,83 @@ describe('PrismaOrderQueryRepository page query', () => {
       data: Array<{ excludedAt: Date | null; orderId: string; snapshotId: string }>;
     };
     expect(membershipCreateInput.data.selectedCount).toBe(1);
-    expect(membershipRowsInput.data).toHaveLength(2);
+    expect(membershipRowsInput.data).toHaveLength(3);
     expect(membershipRowsInput.data[0]).toEqual({ excludedAt: null, orderId: 'order-1', snapshotId: 'snapshot-1' });
     expect(membershipRowsInput.data[1]?.excludedAt).toBeInstanceOf(Date);
     expect(membershipRowsInput.data[1]).toMatchObject({ orderId: 'order-2', snapshotId: 'snapshot-1' });
+    expect(membershipRowsInput.data[2]?.excludedAt).toBeInstanceOf(Date);
+    expect(membershipRowsInput.data[2]).toMatchObject({ orderId: 'cancelled-order', snapshotId: 'snapshot-1' });
+    const memberQuery = firstCallArg(findMany) as { select?: unknown; take?: number; where: unknown };
+    expect(memberQuery.select).toEqual({ cancelledAt: true, id: true });
+    expect(memberQuery.take).toBeUndefined();
+    expect(JSON.stringify(memberQuery.where)).not.toContain('cancelledAt');
+  });
+
+  test('keeps orders cancelled after snapshot creation excluded when exclusions change', async () => {
+    const snapshotOrderUpdateMany = vi.fn(() => Promise.resolve({ count: 1 }));
+    const snapshotUpdate = vi.fn(() => Promise.resolve({ id: 'snapshot-1' }));
+    const tx = {
+      order: {
+        findMany: vi.fn(() => Promise.resolve([{ id: 'page-1-order' }, { id: 'page-2-order' }]))
+      },
+      orderSelectionSnapshot: {
+        findFirst: vi.fn(() => Promise.resolve({
+          consumedAt: null,
+          expiresAt: new Date('2026-08-04T00:15:00.000Z'),
+          id: 'snapshot-1',
+          orders: [
+            { excludedAt: null, orderId: 'page-1-order' },
+            { excludedAt: null, orderId: 'page-2-order' },
+            { excludedAt: null, orderId: 'cancelled-on-other-page' }
+          ],
+          selectedCount: 3,
+          shopId: 'shop-1'
+        })),
+        update: snapshotUpdate
+      },
+      orderSelectionSnapshotOrder: { updateMany: snapshotOrderUpdateMany },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ id: 'shop-1' })) }
+    };
+    const transaction = vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx));
+    const repository = new PrismaOrderQueryRepository({ $transaction: transaction } as unknown as PrismaClient, 'test-secret', () => new Date('2026-08-04T00:02:00.000Z'));
+
+    await expect(repository.replaceSelectionExclusions({
+      actor: 'actor-1',
+      appId: 'clever',
+      excludeOrderIds: [],
+      selectionToken: 'opaque',
+      shopDomain: 'example.myshopify.com'
+    })).resolves.toEqual({
+      expiresAt: '2026-08-04T00:15:00.000Z',
+      selectedCount: 2
+    });
+
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+    });
+    expect(tx.order.findMany).toHaveBeenCalledWith({
+      select: { id: true },
+      where: {
+        cancelledAt: null,
+        id: { in: ['page-1-order', 'page-2-order', 'cancelled-on-other-page'] },
+        shopId: 'shop-1'
+      }
+    });
+    expect(snapshotOrderUpdateMany).toHaveBeenNthCalledWith(1, {
+      data: { excludedAt: null },
+      where: { snapshotId: 'snapshot-1' }
+    });
+    expect(snapshotOrderUpdateMany).toHaveBeenNthCalledWith(2, {
+      data: { excludedAt: new Date('2026-08-04T00:02:00.000Z') },
+      where: {
+        orderId: { in: ['cancelled-on-other-page'] },
+        snapshotId: 'snapshot-1'
+      }
+    });
+    expect(snapshotUpdate).toHaveBeenCalledWith({
+      data: { selectedCount: 2 },
+      where: { id: 'snapshot-1' }
+    });
   });
 
   test('claims and applies a snapshot bulk update inside one serializable transaction', async () => {

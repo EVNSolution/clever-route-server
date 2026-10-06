@@ -16,11 +16,11 @@ import { PrismaRoutePlanRepository } from './route-plan.repository.js';
 import { RoutePlanAdminService } from './route-plan.service.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
 import { PrismaRouteTrackingService } from '../route-tracking/route-tracking.service.js';
-import { OsrmRouteTrackingRoadMatchProvider } from '../route-tracking/route-tracking.road-match.js';
 import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
 import { PrismaDriverSyncHealthService } from '../driver/driver-sync-health.service.js';
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
 import { PrismaRouteOperationalStateService } from '../route-tracking/route-operational-state.service.js';
+import type { RouteGroupingService } from '../route-grouping/route-grouping.types.js';
 
 export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>;
 
@@ -28,6 +28,7 @@ export function loadAdminRoutePlanDependencies(input: {
   env: AdminRoutePlanRuntimeEnv;
   prisma: PrismaClient;
   operationalAlertRepository: PrismaOperationalAlertRepository;
+  routeGroupingService?: Pick<RouteGroupingService, 'recordChildRoutePublished'>;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
 }): AdminRoutePlanDependencies | undefined {
   const appCredentials = loadShopifyAppCredentials(input.env);
@@ -49,9 +50,8 @@ export function loadAdminRoutePlanDependencies(input: {
       routeOptimizationJobService,
       input.routeTrackingStreamHub
     ),
-    routeTrackingService: new PrismaRouteTrackingService(input.prisma, {
-      roadMatchProvider: createRouteTrackingRoadMatchProvider(input.env)
-    }),
+    ...(input.routeGroupingService === undefined ? {} : { routeGroupingService: input.routeGroupingService }),
+    routeTrackingService: new PrismaRouteTrackingService(input.prisma),
     operationalStateService: new PrismaRouteOperationalStateService(input.prisma, syncHealthService, input.operationalAlertRepository),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
@@ -76,15 +76,6 @@ export function createAdminRouteGeometryProvider(env: AdminRoutePlanRuntimeEnv) 
   return osrmBaseUrl === undefined
     ? undefined
     : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl, ...optionalTimeout(env.OSRM_TIMEOUT_MS) });
-}
-
-function createRouteTrackingRoadMatchProvider(env: AdminRoutePlanRuntimeEnv): OsrmRouteTrackingRoadMatchProvider | undefined {
-  const baseUrls = readConfiguredCoverageBaseUrls(env, 'OSRM');
-  if (Object.keys(baseUrls).length === 0) return undefined;
-  return new OsrmRouteTrackingRoadMatchProvider({
-    baseUrls,
-    ...optionalTimeout(env.OSRM_TIMEOUT_MS)
-  });
 }
 
 function readOptional(value: string | undefined): string | undefined {

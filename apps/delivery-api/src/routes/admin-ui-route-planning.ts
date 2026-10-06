@@ -40,11 +40,6 @@ import {
   type SaveRoutePlanPayload,
 } from "../modules/route-plans/route-plan.types.js";
 import { RouteExecutionConflictError } from "../modules/route-plans/route-execution-ownership.js";
-import type {
-  RouteOptimizationResult,
-  RouteOptimizationService,
-  RouteOptimizationStopSequence,
-} from "../modules/route-plans/route-optimization.types.js";
 import { readRouteEngineRegistrySummary } from "../modules/route-plans/route-engine-coverage.js";
 const ADMIN_UI_APP_ROUTE_PLANS_PATH = "/admin/ui/app/routes";
 
@@ -1048,6 +1043,8 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   deliveryAreas: string[];
   deliveryDate: string | null;
   departureTime: string | null;
+  deliveredCount: number;
+  driver: Pick<NonNullable<RoutePlanSummary["driver"]>, "displayName" | "id"> | null;
   driverId: string | null;
   depot: {
     latitude: number | null;
@@ -1055,15 +1052,20 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   };
   id: string;
   itemSummary: RoutePlanSummary["itemSummary"];
+  etaRange: NonNullable<RoutePlanSummary["etaRange"]> | null;
   missingCoordinates: number;
   name: string;
   planDate: string;
   routeEndMode: RoutePlanSummary["routeEndMode"];
+  routeMetrics: NonNullable<RoutePlanSummary["routeMetrics"]> | null;
   routeGroupingChild: NonNullable<
     RoutePlanSummary["routeGroupingChild"]
   > | null;
+  scheduledStartAt: string | null;
+  scheduledStartTimeZone: string | null;
   status: string;
   stopsCount: number;
+  totalAmount: NonNullable<RoutePlanSummary["totalAmount"]> | null;
   updatedAt: string;
 } {
   return {
@@ -1071,17 +1073,26 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     deliveryAreas: routePlan.deliveryAreas,
     deliveryDate: routePlan.deliveryDate ?? null,
     departureTime: routePlan.departureTime ?? null,
+    deliveredCount: routePlan.deliveredCount ?? 0,
+    driver: routePlan.driver === null || routePlan.driver === undefined
+      ? null
+      : { displayName: routePlan.driver.displayName, id: routePlan.driver.id },
     driverId: routePlan.driverId ?? null,
     depot: routePlan.depot,
     id: routePlan.id,
     itemSummary: routePlan.itemSummary ?? emptyRouteItemSummary(),
+    etaRange: routePlan.etaRange ?? null,
     missingCoordinates: routePlan.missingCoordinates,
     name: routePlan.name,
     planDate: routePlan.planDate,
     routeEndMode: routePlan.routeEndMode,
+    routeMetrics: routePlan.routeMetrics ?? null,
     routeGroupingChild: routePlan.routeGroupingChild ?? null,
+    scheduledStartAt: routePlan.scheduledStartAt ?? null,
+    scheduledStartTimeZone: routePlan.scheduledStartTimeZone ?? null,
     status: routePlan.status,
     stopsCount: routePlan.stopsCount,
+    totalAmount: routePlan.totalAmount ?? null,
     updatedAt: routePlan.updatedAt,
   };
 }
@@ -1601,156 +1612,6 @@ export function readStopOrderLines(
       shopifyOrderGid,
     };
   });
-}
-
-export type OptimizedStopOrder = {
-  missingCoordinateStops: number;
-  source: "clever_v1" | RouteOptimizationResult["source"];
-  stops: RouteOptimizationStopSequence[];
-};
-
-export async function buildOptimizedStopOrder(input: {
-  detail: RoutePlanDetail;
-  routeOptimizationService?: RouteOptimizationService | undefined;
-  shopDomain: string;
-}): Promise<OptimizedStopOrder> {
-  if (input.routeOptimizationService !== undefined) {
-    try {
-      const optimized = await input.routeOptimizationService.optimizeStopOrder({
-        detail: input.detail,
-        shopDomain: input.shopDomain,
-      });
-      if (optimized !== null) {
-        return optimized;
-      }
-    } catch {
-      // Keep the operator workflow available when the internal solver is degraded.
-    }
-  }
-
-  return buildCleverV1OptimizedStopOrder(input.detail);
-}
-
-export function buildCleverV1OptimizedStopOrder(
-  detail: RoutePlanDetail,
-): OptimizedStopOrder {
-  const sortableStops = detail.stops
-    .map((stop) => ({ coordinates: readStopCoordinates(stop), stop }))
-    .filter(
-      (
-        entry,
-      ): entry is {
-        coordinates: { latitude: number; longitude: number };
-        stop: RoutePlanDetail["stops"][number];
-      } => entry.coordinates !== null,
-    )
-    .sort(
-      (left, right) =>
-        left.stop.sequence - right.stop.sequence ||
-        left.stop.shopifyOrderGid.localeCompare(right.stop.shopifyOrderGid),
-    );
-  const missingStops = detail.stops
-    .filter((stop) => readStopCoordinates(stop) === null)
-    .sort(
-      (left, right) =>
-        left.sequence - right.sequence ||
-        left.shopifyOrderGid.localeCompare(right.shopifyOrderGid),
-    );
-
-  const depot = readDepotCoordinates(detail.routePlan);
-  let origin = depot ?? sortableStops[0]?.coordinates ?? null;
-  const ordered: RoutePlanDetail["stops"][number][] = [];
-  const remaining = [...sortableStops];
-
-  while (remaining.length > 0) {
-    if (origin === null) {
-      ordered.push(...remaining.map((entry) => entry.stop));
-      remaining.length = 0;
-      break;
-    }
-    let nearestIndex = 0;
-    let nearestDistance = Number.POSITIVE_INFINITY;
-    for (let index = 0; index < remaining.length; index += 1) {
-      const candidate = remaining[index];
-      if (candidate === undefined) continue;
-      const distance = haversineMeters(origin, candidate.coordinates);
-      if (
-        distance < nearestDistance ||
-        (distance === nearestDistance &&
-          candidate.stop.shopifyOrderGid.localeCompare(
-            remaining[nearestIndex]?.stop.shopifyOrderGid ?? "",
-          ) < 0)
-      ) {
-        nearestIndex = index;
-        nearestDistance = distance;
-      }
-    }
-    const [next] = remaining.splice(nearestIndex, 1);
-    if (next === undefined) break;
-    ordered.push(next.stop);
-    origin = next.coordinates;
-  }
-
-  const stops = [...ordered, ...missingStops].map((stop, index) => ({
-    deliveryStopId: stop.deliveryStopId,
-    sequence: index + 1,
-    shopifyOrderGid: stop.shopifyOrderGid,
-  }));
-
-  return {
-    missingCoordinateStops: missingStops.length,
-    source: "clever_v1",
-    stops,
-  };
-}
-
-export function buildRouteOptimizeNotice(
-  optimized: OptimizedStopOrder,
-): string {
-  const sourceLabel = optimized.source === "vroom" ? "VROOM" : "CLEVER v1";
-  return optimized.missingCoordinateStops === 0
-    ? `${sourceLabel} optimized sequence saved.`
-    : `${sourceLabel} optimized sequence saved; ${optimized.missingCoordinateStops} stop(s) without coordinates stayed at the end.`;
-}
-
-export function readDepotCoordinates(
-  routePlan: RoutePlanSummary,
-): { latitude: number; longitude: number } | null {
-  const latitude = routePlan.depot.latitude;
-  const longitude = routePlan.depot.longitude;
-  if (latitude === null || longitude === null) return null;
-  return { latitude, longitude };
-}
-
-export function readStopCoordinates(
-  stop: RoutePlanDetail["stops"][number],
-): { latitude: number; longitude: number } | null {
-  const latitude = stop.coordinates.latitude;
-  const longitude = stop.coordinates.longitude;
-  if (latitude === null || longitude === null) return null;
-  return { latitude, longitude };
-}
-
-function haversineMeters(
-  left: { latitude: number; longitude: number },
-  right: { latitude: number; longitude: number },
-): number {
-  const earthRadiusMeters = 6_371_000;
-  const leftLatitude = toRadians(left.latitude);
-  const rightLatitude = toRadians(right.latitude);
-  const deltaLatitude = toRadians(right.latitude - left.latitude);
-  const deltaLongitude = toRadians(right.longitude - left.longitude);
-  const a =
-    Math.sin(deltaLatitude / 2) * Math.sin(deltaLatitude / 2) +
-    Math.cos(leftLatitude) *
-      Math.cos(rightLatitude) *
-      Math.sin(deltaLongitude / 2) *
-      Math.sin(deltaLongitude / 2);
-  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function toRadians(value: number): number {
-  return (value * Math.PI) / 180;
 }
 
 export function normalizeOptionalDate(

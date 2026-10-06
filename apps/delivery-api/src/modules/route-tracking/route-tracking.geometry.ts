@@ -1,16 +1,27 @@
 import { Prisma } from '@prisma/client';
 
 import { ROUTE_TRACKING_V1_POLICY } from './route-tracking.policy.js';
+import { enqueueRouteTrackingRoadMatch } from './route-tracking-road-match-job.repository.js';
+import {
+  loadRouteTrackingEventWindow,
+  occurredAtWithinRouteTrackingEventWindow,
+  type RouteTrackingEventWindow
+} from './route-tracking.event-window.js';
 
 export const ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS = 90;
 const ROUTE_TRACKING_GEOMETRY_SCHEMA_VERSION = 'route_tracking_geometry.v1';
 const EARTH_RADIUS_METERS = 6_371_000;
+// Keep simplified GPS legs below the road matcher's 1,250 m hard distance ceiling.
+const MAX_SIMPLIFIED_GPS_LEG_METERS = 750;
 
 export type RouteTrackingGeometrySampleV1 = {
+  accuracyMeters?: number | null;
   driverId: string | null;
   eventId: string;
+  gapBefore?: boolean;
   occurredAt: string;
   receivedAt: string;
+  sourceIndex?: number;
 };
 
 export type RouteTrackingGeometryDocumentV1 = {
@@ -19,9 +30,14 @@ export type RouteTrackingGeometryDocumentV1 = {
   sourcePointCount: number;
 };
 
-export type RouteTrackingGeometryPositionInput = RouteTrackingGeometrySampleV1 & {
+export type RouteTrackingGeometryPositionInput = {
+  accuracyMeters?: number | null;
+  driverId: string | null;
+  eventId: string;
   latitude: number;
   longitude: number;
+  occurredAt: string;
+  receivedAt: string;
   routePlanId: string;
 };
 
@@ -51,8 +67,10 @@ export type RouteTrackingGeometryRecord = {
 
 type RouteTrackingGeometryPrismaClient = Pick<
   Prisma.TransactionClient,
-  '$queryRaw' | 'driverEvent' | 'routeTrackingGeometry'
->;
+  '$queryRaw' | 'driverEvent' | 'routePlan' | 'routeTrackingGeometry'
+> & {
+  routeTrackingRoadMatchJob?: Prisma.TransactionClient['routeTrackingRoadMatchJob'];
+};
 
 export async function persistRouteTrackingGeometryPosition(
   prisma: RouteTrackingGeometryPrismaClient,
@@ -62,9 +80,13 @@ export async function persistRouteTrackingGeometryPosition(
     Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${position.routePlanId}, 0))`
   );
 
+  const eventWindow = await loadRouteTrackingEventWindow(prisma, position.routePlanId);
   const current = await prisma.routeTrackingGeometry.findUnique({
     where: { routePlanId: position.routePlanId }
   });
+  if (eventWindow !== null && !occurredAtWithinRouteTrackingEventWindow(eventWindow, position.occurredAt)) {
+    return readRouteTrackingGeometryDocument(current);
+  }
   const retentionCutoff = new Date(
     Date.parse(position.receivedAt) - ROUTE_TRACKING_GEOMETRY_RETENTION_DAYS * 24 * 60 * 60 * 1000
   );
@@ -73,9 +95,13 @@ export async function persistRouteTrackingGeometryPosition(
   }
   const currentLastOccurredAt = current?.lastOccurredAt?.getTime() ?? Number.NEGATIVE_INFINITY;
   const nextOccurredAt = Date.parse(position.occurredAt);
-  const mustRebuild = current !== null && Number.isFinite(nextOccurredAt) && nextOccurredAt < currentLastOccurredAt;
+  const mustRebuild = current !== null && (
+    !hasCurrentQualityMetadata(current.sampleMetadata)
+    || eventWindow !== null && hasSamplesOutsideWindow(current.sampleMetadata, eventWindow)
+    || Number.isFinite(nextOccurredAt) && nextOccurredAt < currentLastOccurredAt
+  );
   const document = mustRebuild
-    ? buildRouteTrackingGeometryDocument(await loadRouteTrackingPositions(prisma, position.routePlanId, retentionCutoff))
+    ? buildRouteTrackingGeometryDocument(await loadRouteTrackingPositions(prisma, position.routePlanId, retentionCutoff, eventWindow))
     : appendRouteTrackingGeometryPosition(
         pruneRouteTrackingGeometryDocument(readRouteTrackingGeometryDocument(current), retentionCutoff),
         position
@@ -87,6 +113,19 @@ export async function persistRouteTrackingGeometryPosition(
     update: write,
     where: { routePlanId: position.routePlanId }
   });
+  const lastSample = document.samples.at(-1);
+  const geometryChanged = current === null
+    || current === undefined
+    || mustRebuild
+    || current.sourcePointCount !== document.sourcePointCount
+    || current.lastEventId !== lastSample?.eventId;
+  if (geometryChanged && lastSample !== undefined && prisma.routeTrackingRoadMatchJob !== undefined) {
+    await enqueueRouteTrackingRoadMatch(prisma as RouteTrackingGeometryPrismaClient & { routeTrackingRoadMatchJob: Prisma.TransactionClient['routeTrackingRoadMatchJob'] }, {
+      lastInputOccurredAt: new Date(lastSample.occurredAt),
+      routePlanId: position.routePlanId,
+      sourcePointCount: document.sourcePointCount,
+    });
+  }
   return document;
 }
 
@@ -94,10 +133,9 @@ export function buildRouteTrackingGeometryDocument(
   positions: RouteTrackingGeometryPositionInput[]
 ): RouteTrackingGeometryDocumentV1 {
   const ordered = uniqueValidPositions(positions).sort(comparePositions);
-  return ordered.reduce<RouteTrackingGeometryDocumentV1>(
-    (document, position) => appendRouteTrackingGeometryPosition(document, position),
-    { coordinates: [], samples: [], sourcePointCount: 0 }
-  );
+  const document: RouteTrackingGeometryDocumentV1 = { coordinates: [], samples: [], sourcePointCount: 0 };
+  for (const position of ordered) appendRouteTrackingGeometryPositionMutable(document, position);
+  return simplifyRouteTrackingGeometryDocument(document);
 }
 
 export function appendRouteTrackingGeometryPosition(
@@ -106,16 +144,39 @@ export function appendRouteTrackingGeometryPosition(
 ): RouteTrackingGeometryDocumentV1 {
   if (!isValidPosition(position)) return document;
   if (document.samples.some((sample) => sample.eventId === position.eventId)) return document;
+  const next: RouteTrackingGeometryDocumentV1 = {
+    coordinates: [...document.coordinates],
+    samples: [...document.samples],
+    sourcePointCount: document.sourcePointCount
+  };
+  appendRouteTrackingGeometryPositionMutable(next, position);
+  return next;
+}
 
-  const coordinates = [...document.coordinates];
-  const samples = [...document.samples];
+function appendRouteTrackingGeometryPositionMutable(
+  document: RouteTrackingGeometryDocumentV1,
+  position: RouteTrackingGeometryPositionInput
+): void {
+  const coordinates = document.coordinates;
+  const samples = document.samples;
   const coordinate: [number, number] = [position.longitude, position.latitude];
-  const sample = toSample(position);
+  const sample = toSample(position, document.sourcePointCount, false);
   const previousSample = samples.at(-1);
   const hasTrackingGap = previousSample !== undefined
     && Date.parse(sample.occurredAt) - Date.parse(previousSample.occurredAt) > ROUTE_TRACKING_V1_POLICY.delayedThresholdMs;
+  sample.gapBefore = hasTrackingGap;
+  const anchorElapsedMs = samples.length < 2
+    ? Number.POSITIVE_INFINITY
+    : Date.parse(sample.occurredAt) - Date.parse(samples.at(-2)!.occurredAt);
+  const headingChangeDegrees = coordinates.length < 2
+    ? 180
+    : getHeadingChangeDegrees(coordinates.at(-2)!, coordinates.at(-1)!, coordinate);
   const canReplaceTail = !hasTrackingGap
+    && previousSample?.gapBefore !== true
     && coordinates.length >= 2
+    && anchorElapsedMs <= 60_000
+    && distanceBetweenCoordinatesMeters(coordinates.at(-2)!, coordinate) <= MAX_SIMPLIFIED_GPS_LEG_METERS
+    && headingChangeDegrees <= 20
     && distancePointToSegmentMeters(
       coordinates.at(-1)!,
       coordinates.at(-2)!,
@@ -129,12 +190,64 @@ export function appendRouteTrackingGeometryPosition(
     coordinates.push(coordinate);
     samples.push(sample);
   }
+  document.sourcePointCount += 1;
+}
 
+function simplifyRouteTrackingGeometryDocument(
+  document: RouteTrackingGeometryDocumentV1
+): RouteTrackingGeometryDocumentV1 {
+  if (document.coordinates.length <= 2) return document;
+  const retained = new Set<number>();
+  let segmentStart = 0;
+  for (let index = 1; index < document.samples.length; index += 1) {
+    const sample = document.samples[index]!;
+    const segmentElapsedMs = Date.parse(sample.occurredAt)
+      - Date.parse(document.samples[segmentStart]!.occurredAt);
+    if (sample.gapBefore === true) {
+      retainSimplifiedSegment(document.coordinates, segmentStart, index - 1, retained);
+      segmentStart = index;
+    } else if (segmentElapsedMs >= 60_000) {
+      retainSimplifiedSegment(document.coordinates, segmentStart, index, retained);
+      segmentStart = index;
+    }
+  }
+  retainSimplifiedSegment(document.coordinates, segmentStart, document.coordinates.length - 1, retained);
+  const indexes = [...retained].sort((left, right) => left - right);
   return {
-    coordinates,
-    samples,
-    sourcePointCount: document.sourcePointCount + 1
+    coordinates: indexes.map((index) => document.coordinates[index]!),
+    samples: indexes.map((index) => document.samples[index]!),
+    sourcePointCount: document.sourcePointCount
   };
+}
+
+function retainSimplifiedSegment(
+  coordinates: Array<[number, number]>,
+  start: number,
+  end: number,
+  retained: Set<number>
+): void {
+  if (end < start) return;
+  retained.add(start);
+  retained.add(end);
+  if (end - start <= 1) return;
+  if (distanceBetweenCoordinatesMeters(coordinates[start]!, coordinates[end]!) > MAX_SIMPLIFIED_GPS_LEG_METERS) {
+    const middle = Math.floor((start + end) / 2);
+    retainSimplifiedSegment(coordinates, start, middle, retained);
+    retainSimplifiedSegment(coordinates, middle, end, retained);
+    return;
+  }
+  let furthestIndex = -1;
+  let furthestDistance = 0;
+  for (let index = start + 1; index < end; index += 1) {
+    const distance = distancePointToSegmentMeters(coordinates[index]!, coordinates[start]!, coordinates[end]!);
+    if (distance > furthestDistance) {
+      furthestDistance = distance;
+      furthestIndex = index;
+    }
+  }
+  if (furthestIndex === -1 || furthestDistance <= ROUTE_TRACKING_V1_POLICY.geometrySimplificationToleranceMeters) return;
+  retainSimplifiedSegment(coordinates, start, furthestIndex, retained);
+  retainSimplifiedSegment(coordinates, furthestIndex, end, retained);
 }
 
 export function pruneRouteTrackingGeometryDocument(
@@ -144,13 +257,21 @@ export function pruneRouteTrackingGeometryDocument(
   const retainedIndexes = document.samples.flatMap((sample, index) =>
     Date.parse(sample.occurredAt) >= cutoff.getTime() ? [index] : []
   );
+  if (retainedIndexes.length === document.samples.length) return document;
+  const firstRetainedSourceIndex = retainedIndexes.length === 0
+    ? document.sourcePointCount
+    : document.samples[retainedIndexes[0]!]!.sourceIndex ?? retainedIndexes[0]!;
   return {
     coordinates: retainedIndexes.flatMap((index) => {
       const coordinate = document.coordinates[index];
       return coordinate === undefined ? [] : [coordinate];
     }),
-    samples: retainedIndexes.map((index) => document.samples[index]!),
-    sourcePointCount: retainedIndexes.length
+    samples: retainedIndexes.map((index, retainedIndex) => ({
+      ...document.samples[index]!,
+      ...(retainedIndex === 0 ? { gapBefore: false } : {}),
+      sourceIndex: Math.max(0, (document.samples[index]!.sourceIndex ?? index) - firstRetainedSourceIndex)
+    })),
+    sourcePointCount: Math.max(0, document.sourcePointCount - firstRetainedSourceIndex)
   };
 }
 
@@ -202,14 +323,17 @@ export function toRouteTrackingPositionEvents(record: RouteTrackingGeometryRecor
     const driverId = sample.driverId ?? record.lastDriverId;
     if (coordinate === undefined || driverId === null) return [];
     return [{
+      ...(sample.accuracyMeters === undefined ? {} : { accuracyMeters: sample.accuracyMeters }),
       driverId,
       eventId: sample.eventId,
+      ...(sample.gapBefore === undefined ? {} : { gapBefore: sample.gapBefore }),
       latitude: coordinate[1],
       longitude: coordinate[0],
       occurredAt: sample.occurredAt,
       receivedAt: sample.receivedAt,
       routePlanId: record.routePlanId,
-      schemaVersion: 'route_tracking.v1' as const
+      schemaVersion: 'route_tracking.v1' as const,
+      ...(sample.sourceIndex === undefined ? {} : { sourceIndex: sample.sourceIndex })
     }];
   });
 }
@@ -247,8 +371,12 @@ export function createRouteTrackingGeometryWrite(routePlanId: string, document: 
 async function loadRouteTrackingPositions(
   prisma: RouteTrackingGeometryPrismaClient,
   routePlanId: string,
-  retentionCutoff: Date
+  retentionCutoff: Date,
+  eventWindow: RouteTrackingEventWindow | null
 ): Promise<RouteTrackingGeometryPositionInput[]> {
+  const occurredAtStart = eventWindow === null
+    ? retentionCutoff
+    : new Date(Math.max(retentionCutoff.getTime(), eventWindow.startInclusive.getTime()));
   const rows = await prisma.driverEvent.findMany({
     orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     select: {
@@ -258,13 +386,16 @@ async function loadRouteTrackingPositions(
       latitude: true,
       longitude: true,
       occurredAt: true,
+      payload: true,
       routePlanId: true
     },
     where: {
       eventType: 'LOCATION_UPDATED',
       latitude: { not: null },
       longitude: { not: null },
-      occurredAt: { gte: retentionCutoff },
+      occurredAt: eventWindow === null
+        ? { gte: occurredAtStart }
+        : { gte: occurredAtStart, lt: eventWindow.endExclusive },
       routePlanId
     }
   });
@@ -276,6 +407,7 @@ async function loadRouteTrackingPositions(
     return [{
       driverId: row.driverId,
       eventId: row.id,
+      accuracyMeters: readAccuracyMeters(row.payload),
       latitude,
       longitude,
       occurredAt: row.occurredAt.toISOString(),
@@ -310,12 +442,19 @@ function isValidPosition(position: RouteTrackingGeometryPositionInput): boolean 
     && Number.isFinite(Date.parse(position.receivedAt));
 }
 
-function toSample(position: RouteTrackingGeometryPositionInput): RouteTrackingGeometrySampleV1 {
+function toSample(
+  position: RouteTrackingGeometryPositionInput,
+  sourceIndex: number,
+  gapBefore: boolean
+): RouteTrackingGeometrySampleV1 {
   return {
+    accuracyMeters: normalizeAccuracyMeters(position.accuracyMeters),
     driverId: position.driverId,
     eventId: position.eventId,
+    gapBefore,
     occurredAt: new Date(position.occurredAt).toISOString(),
-    receivedAt: new Date(position.receivedAt).toISOString()
+    receivedAt: new Date(position.receivedAt).toISOString(),
+    sourceIndex
   };
 }
 
@@ -340,13 +479,69 @@ function readSamples(value: unknown): RouteTrackingGeometrySampleV1[] {
     const occurredAt = dateStringOrNull(record.occurredAt);
     const receivedAt = dateStringOrNull(record.receivedAt);
     if (eventId === null || occurredAt === null || receivedAt === null) return [];
+    const accuracyMeters = normalizeAccuracyMeters(record.accuracyMeters);
+    const sourceIndex = nonNegativeIntegerOrNull(record.sourceIndex);
     return [{
+      ...(Object.hasOwn(record, 'accuracyMeters') ? { accuracyMeters } : {}),
       driverId: textOrNull(record.driverId),
       eventId,
+      ...(typeof record.gapBefore === 'boolean' ? { gapBefore: record.gapBefore } : {}),
       occurredAt,
-      receivedAt
+      receivedAt,
+      ...(sourceIndex === null ? {} : { sourceIndex })
     }];
   });
+}
+
+function readAccuracyMeters(payload: unknown): number | null {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const nested = record.location !== null && typeof record.location === 'object' && !Array.isArray(record.location)
+    ? (record.location as Record<string, unknown>).accuracyMeters
+    : undefined;
+  return normalizeAccuracyMeters(record.accuracyMeters ?? record.accuracy ?? nested);
+}
+
+function normalizeAccuracyMeters(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number * 100) / 100 : null;
+}
+
+function hasCurrentQualityMetadata(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return value.every((sample) => sample !== null && typeof sample === 'object' && !Array.isArray(sample)
+    && typeof (sample as Record<string, unknown>).gapBefore === 'boolean'
+    && Number.isInteger((sample as Record<string, unknown>).sourceIndex));
+}
+
+function hasSamplesOutsideWindow(value: unknown, window: RouteTrackingEventWindow): boolean {
+  return readSamples(value).some((sample) =>
+    !occurredAtWithinRouteTrackingEventWindow(window, sample.occurredAt)
+  );
+}
+
+function nonNegativeIntegerOrNull(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
+function getHeadingChangeDegrees(
+  start: [number, number],
+  middle: [number, number],
+  end: [number, number]
+): number {
+  const first = bearingDegrees(start, middle);
+  const second = bearingDegrees(middle, end);
+  const difference = Math.abs(first - second) % 360;
+  return difference > 180 ? 360 - difference : difference;
+}
+
+function bearingDegrees(from: [number, number], to: [number, number]): number {
+  const latitude = toRadians((from[1] + to[1]) / 2);
+  const x = (to[0] - from[0]) * Math.cos(latitude);
+  const y = to[1] - from[1];
+  return Math.atan2(x, y) * 180 / Math.PI;
 }
 
 function distancePointToSegmentMeters(
@@ -373,6 +568,14 @@ function distancePointToSegmentMeters(
   const closestX = projectedStart[0] + ratio * deltaX;
   const closestY = projectedStart[1] + ratio * deltaY;
   return Math.hypot(projectedPoint[0] - closestX, projectedPoint[1] - closestY);
+}
+
+function distanceBetweenCoordinatesMeters(left: [number, number], right: [number, number]): number {
+  const latitudeDelta = toRadians(right[1] - left[1]);
+  const longitudeDelta = toRadians(right[0] - left[0]);
+  const halfChord = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(toRadians(left[1])) * Math.cos(toRadians(right[1])) * Math.sin(longitudeDelta / 2) ** 2;
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(halfChord)));
 }
 
 function finiteCoordinate(value: unknown): number | null {

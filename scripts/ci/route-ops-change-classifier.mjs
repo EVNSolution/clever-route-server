@@ -3,10 +3,10 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 
 const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-operations)\.yml$/;
-const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|route-ops-docker-cleanup|ssm-route-ops-docker-cleanup|ssm-route-completion-invariant-mode|verify-route-completion-alarm|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
+const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|route-ops-docker-cleanup|ssm-route-ops-docker-cleanup|ssm-route-completion-invariant-mode|verify-route-completion-alarm|osrm-ontario|monitor-route-ops-production|route-tracking-preservation-worker)\.(mjs|sh)$/;
 const DELIVERY_API_MIGRATE_DEPLOY_SCRIPT_RE = /^apps\/delivery-api\/scripts\/dsv-g007-migrate-deploy\.sh$/;
 const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|route-ops-backup|route-ops-docker-cleanup|route-completion-invariant-rollout|route-ops-prisma-db-push-guard|route-ops-prisma-migrate-deploy|monitor-route-ops-production)\.test\.sh$/;
-const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|route-ops-docker-cleanup|ssm-route-ops-docker-cleanup|ssm-route-completion-invariant-mode|verify-route-completion-alarm|osrm-ontario|monitor-route-ops-production)\.sh$/;
+const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|route-ops-docker-cleanup|ssm-route-ops-docker-cleanup|ssm-route-completion-invariant-mode|verify-route-completion-alarm|osrm-ontario|monitor-route-ops-production|route-tracking-preservation-worker)\.sh$/;
 const PROOF_READY_CONTRACT_RE = /^apps\/delivery-api\/(?:src\/modules\/(?:driver\/driver-proof-media\.repository|dsv\/dsv-v1-read-query\.service)\.ts|tests\/(?:driver-proof-media-read-inventory|dsv-v1-read-query\.service)\.test\.ts)$/;
 const RETENTION_RUNTIME_CONTRACT_RE = /^(?:scripts\/(?:run|install)-driver-event-attempt-retention\.sh|infra\/systemd\/clever-driver-event-attempt-retention\.(?:service|timer)|tests\/deploy\/route-ops-retention-runtime\.test\.sh|apps\/delivery-api\/(?:Dockerfile|package(?:-lock)?\.json|tsconfig\.build\.json|src\/scripts\/cleanup-(?:driver-event-attempts|shopify-webhook-events|driver-proof-media)\.ts|tests\/(?:driver-event-attempt-retention(?:-script)?|route-operational-evidence-retention|shopify-webhook-retention|driver-proof-media\.cleanup|package-scripts)\.test\.ts|tests\/deploy\/driver-event-attempt-retention-schedule\.test\.sh))$/;
 const DEPENDENCY_MANIFEST_RE = /^(?:package(?:-lock)?\.json|apps\/delivery-api\/package(?:-lock)?\.json)$/;
@@ -145,6 +145,8 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^apps\/delivery-api\/src\/modules\/route-grouping\/route-grouping\.service\.ts$/,
     /^apps\/delivery-api\/src\/modules\/(commerce|driver|route-plans|route-ops|geocoding|notifications)\//,
     /^apps\/delivery-api\/src\/modules\/shopify\/(auth\.dependencies|session-token-verifier|order-sync\.(dependencies|repository))\.ts$/,
+    /^apps\/delivery-api\/src\/modules\/shopify\/(order-query\.repository|ordered-date-range)\.ts$/,
+    /^apps\/delivery-api\/tests\/route-grouping-save\.integration\.test\.ts$/,
     /^apps\/delivery-api\/src\/modules\/wordpress-plugin\/(wordpress-plugin-auth\.service|wordpress-plugin\.dependencies)\.ts$/,
     /^apps\/delivery-api\/src\/modules\/woocommerce\/woocommerce\.dependencies\.ts$/,
     /^apps\/delivery-api\/src\/scripts\/(.*proof-media.*|refresh-route-geometry-cache)\.ts$/,

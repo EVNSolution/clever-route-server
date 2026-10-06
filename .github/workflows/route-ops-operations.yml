@@ -366,6 +366,8 @@ jobs:
           context: .
           file: apps/delivery-api/Dockerfile
           target: runtime
+          build-args: |
+            COMMIT_SHA=${{ steps.source.outputs.sha }}
           push: true
           platforms: linux/amd64
           provenance: false

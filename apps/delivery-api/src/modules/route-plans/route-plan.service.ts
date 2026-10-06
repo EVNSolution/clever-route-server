@@ -8,6 +8,7 @@ import type { RouteGeometryCacheSource, RouteGeometryCacheWrite } from './route-
 import { isRouteReadyStatus } from './route-plan-lifecycle.js';
 import type {
   AdminRouteStopOverrideInput,
+  AdminRouteStopOverrideRepositoryResult,
   AdminRouteStopOverrideResult,
   AdminRouteStopTransitionInput,
   AdminRouteStopTransitionResult,
@@ -55,7 +56,7 @@ export type RouteTrackingProgressPublisher = {
 
 export type RoutePlanRepository = {
   transitionAdminRouteStop?(input: AdminRouteStopTransitionInput): Promise<AdminRouteStopTransitionResult | null>;
-  updateAdminRouteStopOverride?(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null>;
+  updateAdminRouteStopOverride?(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideRepositoryResult | null>;
   assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null>;
   createRoutePlanDraft(input: {
     createdBy: string;
@@ -90,6 +91,12 @@ export type RoutePlanRepository = {
   commitOrderDataRouteGeometryCache?(input: RouteGeometryCacheWrite & {
     appId?: string | undefined;
     expectedRoutePlanUpdatedAt: string;
+    shopDomain: string;
+  }): Promise<boolean>;
+  commitAdminRouteStopGeometryCache?(input: RouteGeometryCacheWrite & {
+    appId?: string | undefined;
+    expectedRoutePlanUpdatedAt: string;
+    expectedStopUpdatedAts: Array<{ deliveryStopId: string; updatedAt: string }>;
     shopDomain: string;
   }): Promise<boolean>;
   deleteRoutePlan(input: {
@@ -175,11 +182,18 @@ export class RoutePlanAdminService implements RoutePlanService {
     return result;
   }
 
-  updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null> {
+  async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null> {
     if (this.repository.updateAdminRouteStopOverride === undefined) {
       throw new Error('Admin route stop overrides are not supported by this repository');
     }
-    return this.repository.updateAdminRouteStopOverride(input);
+    const result = await this.repository.updateAdminRouteStopOverride(input);
+    if (result === null) return null;
+    const { refreshGuard, ...response } = result;
+    if (result.geometry.status === 'preserved' || refreshGuard === null) return response;
+    return {
+      ...response,
+      routePlan: await this.refreshAdminStopOverrideGeometry(input, result.routePlan, refreshGuard)
+    };
   }
 
   getRoutePlanDetail(input: {
@@ -378,6 +392,63 @@ export class RoutePlanAdminService implements RoutePlanService {
       stopPoints: routeResult.routeStopPoints
     });
     return withRouteGeometryResult(detail, routeResult, { generatedAt, source });
+  }
+
+  private async refreshAdminStopOverrideGeometry(
+    input: AdminRouteStopOverrideInput,
+    detail: RoutePlanDetail,
+    guard: AdminRouteStopOverrideRepositoryResult['refreshGuard']
+  ): Promise<RoutePlanDetail> {
+    if (guard === null || this.routeGeometryProvider === undefined) {
+      return withRouteGeometryResult(detail, emptyRouteResult(), { source: 'SHAPE_MUTATION' });
+    }
+    if (
+      !hasValidCoordinates(detail.routePlan.depot.latitude, detail.routePlan.depot.longitude) ||
+      detail.stops.some((stop) => (
+        stop.locationDiagnostic?.routeable === false ||
+        !hasValidCoordinates(stop.coordinates.latitude, stop.coordinates.longitude)
+      ))
+    ) {
+      return withRouteGeometryResult(detail, emptyRouteResult(), { source: 'SHAPE_MUTATION' });
+    }
+
+    let routeResult: RoutePlanRouteResult;
+    try {
+      routeResult = await this.routeGeometryProvider.buildRoute(detail);
+    } catch {
+      return withRouteGeometryResult(detail, emptyRouteResult(), { source: 'SHAPE_MUTATION' });
+    }
+    if (!isCompleteOrderDataRouteResult(detail, routeResult)) {
+      return withRouteGeometryResult(detail, emptyRouteResult(), { source: 'SHAPE_MUTATION' });
+    }
+    if (this.repository.commitAdminRouteStopGeometryCache === undefined) {
+      return withRouteGeometryResult(detail, emptyRouteResult(), { source: 'SHAPE_MUTATION' });
+    }
+
+    const generatedAt = new Date();
+    const committed = await this.repository.commitAdminRouteStopGeometryCache({
+      appId: input.appId,
+      expectedRoutePlanUpdatedAt: guard.expectedRoutePlanUpdatedAt,
+      expectedStopUpdatedAts: guard.expectedStopUpdatedAts,
+      generatedAt,
+      geometry: routeResult.routeGeometry,
+      metrics: routeResult.routeMetrics,
+      provider: 'osrm',
+      providerVersion: null,
+      routePlanId: detail.routePlan.id,
+      shapeSignature: guard.shapeSignature,
+      shopDomain: input.shopDomain,
+      source: 'SHAPE_MUTATION',
+      stopPoints: routeResult.routeStopPoints
+    });
+    if (!committed) {
+      return await this.repository.findRoutePlanDetail({
+        appId: input.appId,
+        routePlanId: input.routePlanId,
+        shopDomain: input.shopDomain
+      }) ?? detail;
+    }
+    return withRouteGeometryResult(detail, routeResult, { generatedAt, source: 'SHAPE_MUTATION' });
   }
 
   private async refreshOrderDataGeometry(

@@ -58,6 +58,7 @@ describe('PrismaDriverRouteOrderService', () => {
     ['missing stop', {}, { ...baseInput, orderedStopIds: ['stop-1'] }, 'INVALID_STOP_SET'],
     ['extra stop', {}, { ...baseInput, orderedStopIds: ['stop-1', 'stop-2', 'stop-3'] }, 'INVALID_STOP_SET'],
     ['other driver', { driverId: 'driver-2' }, baseInput, 'ROUTE_SCOPE_REJECTED'],
+    ['delivery-complete navigation grace', { deliveryWorkCompleted: true }, baseInput, 'ROUTE_COMPLETED'],
     ['completed route', { status: 'COMPLETED' }, baseInput, 'ROUTE_COMPLETED']
   ])('rejects %s without replacing route authority', async (_description, options, input, code) => {
     const { prisma } = harness(options);
@@ -78,7 +79,7 @@ describe('PrismaDriverRouteOrderService', () => {
   });
 });
 
-type HarnessOptions = { child?: null; driverId?: string; status?: string };
+type HarnessOptions = { child?: null; deliveryWorkCompleted?: boolean; driverId?: string; status?: string };
 
 function harness(options: HarnessOptions = {}) {
   const receipt: Record<string, unknown> = {};
@@ -119,8 +120,17 @@ function harness(options: HarnessOptions = {}) {
     },
     routePlan: {
       findFirst: vi.fn(() => Promise.resolve({
+        assignmentGeneration: 2n,
+        deliveryWorkCompletedAt: options.deliveryWorkCompleted === true
+          ? new Date('2026-10-01T16:00:00.000Z')
+          : null,
+        deliveryWorkCompletedGeneration: options.deliveryWorkCompleted === true ? 2n : null,
+        deliveryWorkCompletedVersionId: options.deliveryWorkCompleted === true ? 'version-old' : null,
         driverEvents: [],
         driverId: options.driverId ?? 'driver-1',
+        driverNavigationUntil: options.deliveryWorkCompleted === true
+          ? new Date('2026-10-01T18:00:00.000Z')
+          : null,
         routeStops,
         status: options.status ?? 'IN_PROGRESS'
       }))

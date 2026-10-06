@@ -28,16 +28,16 @@ const completeManifest = `# Driver proof media production evidence manifest
 | Signed GET read smoke with synthetic media | pass | signed-read-ref | platform-owner | sanitized result only |
 | Retention window approved | approved | retention-policy-ref | compliance-owner | matches cleanup schedule |
 
-## Scanner and monitoring evidence
+## Upload safety policy evidence
 
 | Gate | Status | Evidence reference | Owner | Notes |
 | --- | --- | --- | --- | --- |
-| HTTP scanner deployment selected | approved | scanner-deploy-ref | platform-owner | endpoint kept private |
-| Scanner endpoint auth/secret custody approved | approved | scanner-auth-ref | security-owner | token kept private |
-| Clean scan smoke passes with synthetic media | pass | clean-scan-ref | qa-owner | sanitized result only |
-| Rejected scan smoke blocks storage metadata | pass | rejected-scan-ref | qa-owner | no rule names in public evidence |
-| Scan monitor or alert route deployed | pass | scan-monitor-ref | ops-owner | sanitized alert evidence |
-| Incident response owner approved | approved | incident-owner-ref | ops-owner | on-call owner recorded privately |
+| Scanner backend selection: none | approved | scanner-policy-ref | release-owner | scanner-free decision |
+| Scanner-free operation approved | approved | scanner-acceptance-ref | security-owner | no scan results claimed |
+| Authenticated driver and assigned-route scope enforced | pass | route-scope-ref | qa-owner | negative cases pass |
+| Image MIME allowlist and matching byte signature enforced | pass | image-validation-ref | qa-owner | supported types only |
+| Ten MiB file and single-file limits enforced | pass | upload-limit-ref | qa-owner | multipart limits pass |
+| JPEG EXIF metadata stripping verified | pass | exif-strip-ref | qa-owner | sanitized hash and size |
 
 ## Cleanup scheduler evidence
 
@@ -61,7 +61,7 @@ const completeManifest = `# Driver proof media production evidence manifest
 | Gate | Status | Notes |
 | --- | --- | --- |
 | Storage and signed access evidence complete | pass | verified |
-| Scanner and monitoring evidence complete | pass | verified |
+| Upload safety policy evidence complete | pass | verified |
 | Cleanup scheduler evidence complete | pass | verified |
 | Private evidence storage approved | pass | verified |
 | Sensitive evidence kept outside git | pass | verified |
@@ -85,7 +85,7 @@ describe('driver proof media production evidence verifier', () => {
   test('rejects pending gates, blocked decisions, and sensitive production evidence values', () => {
     const incompleteManifest = completeManifest
       .replace('| Bucket ownership approved | approved | bucket-ownership-ref | platform-owner | no bucket name in repo |', '| Bucket ownership approved | pending | pending | pending | pending |')
-      .replace('| Clean scan smoke passes with synthetic media | pass | clean-scan-ref | qa-owner | sanitized result only |', '| Clean scan smoke passes with synthetic media | pending | pending | pending | pending |')
+      .replace('| Image MIME allowlist and matching byte signature enforced | pass | image-validation-ref | qa-owner | supported types only |', '| Image MIME allowlist and matching byte signature enforced | pending | pending | pending | pending |')
       .replace('| Cleanup command run recorded | pass | cleanup-run-ref | ops-owner | sanitized log reference |', '| Cleanup command run recorded | pending | pending | pending | pending |')
       .replace('Production proof-media decision: approved', 'Production proof-media decision: blocked')
       .concat('\nDRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY=super-secret\nAKIA1234567890ABCDEF\nBearer scanner-token\nprod-driver-proof-private-bucket\n');
@@ -95,9 +95,66 @@ describe('driver proof media production evidence verifier', () => {
     expect(result.ok).toBe(false);
     expect(result.failures.join('\n')).toMatch(/pending placeholder/i);
     expect(result.failures.join('\n')).toMatch(/storage\/signed access row/i);
-    expect(result.failures.join('\n')).toMatch(/scanner\/monitor row/i);
+    expect(result.failures.join('\n')).toMatch(/upload safety policy row/i);
     expect(result.failures.join('\n')).toMatch(/cleanup scheduler row/i);
     expect(result.failures.join('\n')).toMatch(/production proof-media decision/i);
     expect(result.failures.join('\n')).toMatch(/sensitive or private artifact pattern/i);
+  });
+
+  test.each([
+    'Authenticated driver and assigned-route scope enforced',
+    'Image MIME allowlist and matching byte signature enforced',
+    'Ten MiB file and single-file limits enforced',
+    'JPEG EXIF metadata stripping verified'
+  ])('rejects a manifest missing required upload safety gate %s', (gate) => {
+    const missingSafetyGate = completeManifest.replace(new RegExp(`^\\| ${gate} .*\\n`, 'm'), '');
+
+    const result = verifyDriverProofMediaEvidenceManifest(missingSafetyGate);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toContain(`upload safety policy required gate "${gate}" is missing.`);
+  });
+
+  test('rejects a scanner-free manifest without its policy approval row', () => {
+    const result = verifyDriverProofMediaEvidenceManifest(
+      completeManifest.replace(/^\| Scanner-free operation approved .*\n/m, '')
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.failures.join('\n')).toContain('Scanner-free operation approved');
+  });
+
+  test('requires scanner deployment, fixtures, and monitor evidence when http is selected', () => {
+    const incompleteHttpManifest = completeManifest
+      .replace('Scanner backend selection: none', 'Scanner backend selection: http')
+      .replace(/^\| Scanner-free operation approved .*\n/m, '');
+
+    const result = verifyDriverProofMediaEvidenceManifest(incompleteHttpManifest);
+
+    expect(result.ok).toBe(false);
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.stringContaining('HTTP scanner deployment approved'),
+      expect.stringContaining('HTTP scanner clean and rejected fixtures pass'),
+      expect.stringContaining('HTTP scan monitor handling verified')
+    ]));
+  });
+
+  test('accepts the documented complete HTTP scanner alternative', () => {
+    const httpManifest = completeManifest
+      .replace('Scanner backend selection: none', 'Scanner backend selection: http')
+      .replace(
+        /^\| Scanner-free operation approved .*$/m,
+        [
+          '| HTTP scanner deployment approved | approved | scanner-deploy-ref | security-owner | private endpoint |',
+          '| HTTP scanner clean and rejected fixtures pass | pass | scanner-fixtures-ref | qa-owner | sanitized fixtures |',
+          '| HTTP scan monitor handling verified | pass | scan-monitor-ref | ops-owner | sanitized outcomes |'
+        ].join('\n')
+      );
+
+    expect(verifyDriverProofMediaEvidenceManifest(httpManifest)).toEqual({
+      failures: [],
+      ok: true,
+      warnings: []
+    });
   });
 });

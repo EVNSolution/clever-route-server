@@ -3,8 +3,12 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import { DsvAssignmentCommandService } from '../src/modules/dsv/dsv-assignment-command.service.js';
-import { loadDsvControlDependencies } from '../src/modules/dsv/dsv-control.dependencies.js';
+import {
+  loadDsvControlDependencies,
+  loadDsvRouteOptimizationScheduler,
+} from '../src/modules/dsv/dsv-control.dependencies.js';
 import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
+import { DsvRouteOptimizationScheduler } from '../src/modules/dsv/dsv-route-optimization.scheduler.js';
 import type { RouteGroupingService } from '../src/modules/route-grouping/route-grouping.types.js';
 
 const sessionSecret = '0123456789abcdef0123456789abcdef';
@@ -13,6 +17,21 @@ const adminAccountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const activeSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 describe('loadDsvControlDependencies', () => {
+  test.each([undefined, 'false', 'true'])('gates reset issuance on public auth activation: %s', (enabled) => {
+    const dependencies = loadDsvControlDependencies({
+      env: {
+        CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
+        CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret,
+        CLEVER_DSV_ENABLED: 'true',
+        CLEVER_DSV_WEB_PUBLIC_URL: 'https://dsv.example.com',
+        ...(enabled === undefined ? {} : { CLEVER_DSV_DRIVER_AUTH_ENABLED: enabled }),
+      },
+      nodeEnv: 'production',
+      prisma: {} as PrismaClient,
+    });
+    expect(dependencies?.driverPasswordResetService !== undefined).toBe(enabled === 'true');
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -104,6 +123,44 @@ describe('loadDsvControlDependencies', () => {
     });
 
     expect(dependencies?.addressCanonicalizer).toBeDefined();
+  });
+
+  test('forwards the configured route optimization scheduler to dispatch imports', () => {
+    const dependencies = loadDsvControlDependencies({
+      env: {
+        CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
+        CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret,
+        OSRM_KOREA_BASE_URL: 'http://osrm-korea:5000',
+      },
+      nodeEnv: 'test',
+      prisma: {} as PrismaClient,
+      routeGroupingService: {} as RouteGroupingService,
+    });
+    const dispatchImportService = dependencies?.dispatchImportService as unknown as {
+      options: { routeOptimizationScheduler?: unknown };
+    };
+
+    expect(dispatchImportService.options.routeOptimizationScheduler)
+      .toBeInstanceOf(DsvRouteOptimizationScheduler);
+  });
+
+  test('gives DSV geometry fallback enough time without changing the optimizer timeout', () => {
+    const scheduler = loadDsvRouteOptimizationScheduler({
+      env: {
+        OSRM_KOREA_BASE_URL: 'http://osrm-korea:5000',
+        OSRM_TIMEOUT_MS: '10000',
+      },
+      nodeEnv: 'test',
+      prisma: {} as PrismaClient,
+    }) as unknown as {
+      services: {
+        routeOptimizationService: { timeoutMs: number };
+        routePlanService: { routeGeometryProvider: { timeoutMs: number } };
+      };
+    };
+
+    expect(scheduler.services.routeOptimizationService.timeoutMs).toBe(10_000);
+    expect(scheduler.services.routePlanService.routeGeometryProvider.timeoutMs).toBe(45_000);
   });
 
   test('wires assignment command service so unassign route is not service unavailable', async () => {

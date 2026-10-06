@@ -43,18 +43,28 @@ describe('PrismaDriverProofMediaRepository', () => {
         status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });
-    expect(prisma.routePlanStop.findUnique).toHaveBeenCalledWith({
+    expect(prisma.routePlanStop.findMany).toHaveBeenCalledWith({
+      orderBy: { sequence: 'asc' },
+      select: {
+        deliveryStop: {
+          select: {
+            order: { select: { destinationId: true } }
+          }
+        },
+        deliveryStopId: true
+      },
       where: {
-        routePlanId_deliveryStopId: {
-          deliveryStopId: 'stop-id',
-          routePlanId: 'route-plan-id'
-        }
+        routePlanId: 'route-plan-id',
+        shopId: 'shop-id'
       }
     });
     expect(prisma.driverProofMedia.create).toHaveBeenCalledWith({
       data: {
         contentType: 'image/jpeg',
         deliveryStopId: 'stop-id',
+        deliveryStopLinks: {
+          create: [{ deliveryStopId: 'stop-id' }]
+        },
         driverId: 'driver-id',
         id: '11111111-1111-4111-8111-111111111111',
         kind: 'PHOTO',
@@ -74,6 +84,7 @@ describe('PrismaDriverProofMediaRepository', () => {
     ).resolves.toEqual(uploadBytes);
     expect(result).toEqual({
       contentType: 'image/jpeg',
+      deliveryStopIds: ['stop-id'],
       kind: 'photo',
       mediaId: '11111111-1111-4111-8111-111111111111',
       sha256: 'dad2f603ccde777ba84635fb7bea4cea8f2d1147e59fd02f74cbd720a9bd15c7',
@@ -82,6 +93,68 @@ describe('PrismaDriverProofMediaRepository', () => {
       storageKey: 'driver-proof/dev1.tomatonofood.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg',
       uploadedAt: '2026-05-12T10:00:00.000Z'
     });
+  });
+
+  test('links one proof object to every route stop at the anchor destination', async () => {
+    const storage = {
+      remove: vi.fn(() => Promise.resolve('removed' as const)),
+      write: vi.fn(() => Promise.resolve())
+    };
+    const { prisma } = createPrismaHarness({
+      routePlanStops: [
+        { deliveryStop: { order: { destinationId: 'destination-1' } }, deliveryStopId: 'stop-2' },
+        { deliveryStop: { order: { destinationId: 'destination-2' } }, deliveryStopId: 'stop-3' },
+        { deliveryStop: { order: { destinationId: 'destination-1' } }, deliveryStopId: 'stop-1' }
+      ]
+    });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      createMediaId: () => '11111111-1111-4111-8111-111111111111',
+      now: () => now,
+      storage
+    });
+
+    const result = await repository.storeProofMedia({ ...proofMediaInput(), deliveryStopId: 'stop-2' });
+
+    const reservation = prisma.driverProofMedia.create.mock.calls[0]?.[0] as {
+      data: {
+        deliveryStopId: string;
+        deliveryStopLinks: { create: { deliveryStopId: string }[] };
+      };
+    };
+    expect(reservation.data.deliveryStopId).toBe('stop-2');
+    expect(reservation.data.deliveryStopLinks).toEqual({
+      create: [
+        { deliveryStopId: 'stop-1' },
+        { deliveryStopId: 'stop-2' }
+      ]
+    });
+    expect(result.deliveryStopIds).toEqual(['stop-1', 'stop-2']);
+    expect(storage.write).toHaveBeenCalledOnce();
+  });
+
+  test('links only the anchor when its order has no destination identity', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanStops: [
+        { deliveryStop: { order: { destinationId: null } }, deliveryStopId: 'stop-1' },
+        { deliveryStop: { order: { destinationId: null } }, deliveryStopId: 'stop-2' }
+      ]
+    });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      createMediaId: () => '11111111-1111-4111-8111-111111111111',
+      now: () => now,
+      storage: {
+        remove: () => Promise.resolve('removed'),
+        write: () => Promise.resolve()
+      }
+    });
+
+    const result = await repository.storeProofMedia({ ...proofMediaInput(), deliveryStopId: 'stop-2' });
+
+    expect(result.deliveryStopIds).toEqual(['stop-2']);
+    const reservation = prisma.driverProofMedia.create.mock.calls[0]?.[0] as {
+      data: { deliveryStopLinks: { create: { deliveryStopId: string }[] } };
+    };
+    expect(reservation.data.deliveryStopLinks.create).toEqual([{ deliveryStopId: 'stop-2' }]);
   });
 
   test('strips JPEG EXIF metadata before writing proof media bytes and metadata', async () => {
@@ -113,6 +186,9 @@ describe('PrismaDriverProofMediaRepository', () => {
       data: {
         contentType: 'image/jpeg',
         deliveryStopId: 'stop-id',
+        deliveryStopLinks: {
+          create: [{ deliveryStopId: 'stop-id' }]
+        },
         driverId: 'driver-id',
         id: '11111111-1111-4111-8111-111111111111',
         kind: 'PHOTO',
@@ -755,6 +831,122 @@ describe('PrismaDriverProofMediaRepository', () => {
     });
   });
 
+  test('creates Store-scoped DSV administrator access without exposing the storage key', async () => {
+    const storageKey = 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/proof-media-id.jpg';
+    const createReadAccess = vi.fn(() => Promise.resolve({
+      url: 'https://proof-media.example.test/signed/proof-media-id'
+    }));
+    const { prisma } = createPrismaHarness({
+      proofMedia: {
+        contentType: 'image/jpeg',
+        deliveryStopLinks: [{ deliveryStopId: 'stop-1' }, { deliveryStopId: 'stop-2' }],
+        id: 'proof-media-id',
+        kind: 'PHOTO',
+        sha256: 'synthetic-sha256',
+        sizeBytes: 42,
+        source: 'CAMERA',
+        storageKey,
+        uploadedAt: now
+      }
+    });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      now: () => now,
+      readAccessTtlSeconds: 300,
+      storage: {
+        createReadAccess,
+        remove: () => Promise.resolve('removed'),
+        write: () => Promise.resolve()
+      }
+    });
+
+    const result = await repository.createAdminProofMediaReadAccess({
+      mediaId: 'proof-media-id',
+      shopId: 'shop-id'
+    });
+
+    expect(prisma.driverProofMedia.findFirst).toHaveBeenCalledWith({
+      select: {
+        contentType: true,
+        deliveryStopLinks: {
+          orderBy: { deliveryStopId: 'asc' },
+          select: { deliveryStopId: true }
+        },
+        id: true,
+        kind: true,
+        sha256: true,
+        sizeBytes: true,
+        source: true,
+        storageKey: true,
+        uploadedAt: true
+      },
+      where: {
+        deletedAt: null,
+        id: 'proof-media-id',
+        shopId: 'shop-id',
+        uploadStatus: 'READY'
+      }
+    });
+    expect(createReadAccess).toHaveBeenCalledWith({
+      contentType: 'image/jpeg',
+      expiresAt: new Date('2026-05-12T10:05:00.000Z'),
+      storageKey
+    });
+    expect(result).toEqual({
+      contentType: 'image/jpeg',
+      deliveryStopIds: ['stop-1', 'stop-2'],
+      expiresAt: '2026-05-12T10:05:00.000Z',
+      kind: 'photo',
+      mediaId: 'proof-media-id',
+      sha256: 'synthetic-sha256',
+      sizeBytes: 42,
+      source: 'camera',
+      uploadedAt: '2026-05-12T10:00:00.000Z',
+      url: 'https://proof-media.example.test/signed/proof-media-id'
+    });
+    expect(result).not.toHaveProperty('storageKey');
+  });
+
+  test('maps temporary credential or signing failures to unavailable without logging storage details', async () => {
+    const storageFailure = new Error('IMDS credential request failed');
+    const error = vi.fn();
+    const { prisma } = createPrismaHarness({
+      proofMedia: {
+        contentType: 'image/jpeg',
+        deliveryStopLinks: [{ deliveryStopId: 'stop-1' }],
+        id: 'proof-media-id',
+        kind: 'PHOTO',
+        sha256: 'synthetic-sha256',
+        sizeBytes: 42,
+        source: 'CAMERA',
+        storageKey: 'driver-proof/private/internal-key.jpg',
+        uploadedAt: now
+      }
+    });
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      cleanupLogger: { error },
+      now: () => now,
+      storage: {
+        createReadAccess: () => Promise.reject(storageFailure),
+        remove: () => Promise.resolve('removed'),
+        write: () => Promise.resolve()
+      }
+    });
+
+    await expect(repository.createAdminProofMediaReadAccess({
+      mediaId: 'proof-media-id',
+      shopId: 'shop-id'
+    })).rejects.toMatchObject({
+      cause: storageFailure,
+      name: 'DriverProofMediaAccessUnavailableError'
+    });
+    expect(error).toHaveBeenCalledWith({
+      errorCode: 'ERROR',
+      event: 'driver_proof_media_read_access_failed',
+      mediaId: 'proof-media-id'
+    }, 'Failed to create proof media read access');
+    expect(JSON.stringify(error.mock.calls)).not.toContain('internal-key');
+  });
+
   test('rejects scanner-blocked proof media before writing bytes or metadata', async () => {
     const writes: { fileBytes: Buffer; storageKey: string }[] = [];
     const scannerCalls: { contentType: string; fileBytes: Buffer; sha256: string; storageKey: string }[] = [];
@@ -854,6 +1046,9 @@ describe('PrismaDriverProofMediaRepository', () => {
       data: {
         contentType: 'image/jpeg',
         deliveryStopId: 'stop-id',
+        deliveryStopLinks: {
+          create: [{ deliveryStopId: 'stop-id' }]
+        },
         driverId: 'driver-id',
         id: '11111111-1111-4111-8111-111111111111',
         kind: 'PHOTO',
@@ -898,11 +1093,11 @@ describe('PrismaDriverProofMediaRepository', () => {
         source: 'camera'
       })
     ).rejects.toThrow('Route plan not assigned to driver');
-    expect(prisma.routePlanStop.findUnique).not.toHaveBeenCalled();
+    expect(prisma.routePlanStop.findMany).not.toHaveBeenCalled();
     expect(prisma.driverProofMedia.create).not.toHaveBeenCalled();
   });
 
-  test('deletes expired proof media bytes and marks metadata deleted', async () => {
+  test('deletes expired proof media bytes and metadata so retained route records can later be removed', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'clever-proof-media-'));
     const storageKey = 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/media-id.jpg';
     const storedPath = join(storageRoot, ...storageKey.split('/'));
@@ -932,9 +1127,8 @@ describe('PrismaDriverProofMediaRepository', () => {
         uploadStatus: 'READY'
       }
     });
-    expect(prisma.driverProofMedia.update).toHaveBeenCalledWith({
-      data: { deletedAt },
-      where: { id: 'media-id' }
+    expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledWith({
+      where: { deletedAt: null, id: 'media-id', uploadStatus: 'READY' }
     });
     await expect(readFile(storedPath)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(result).toEqual({
@@ -944,7 +1138,7 @@ describe('PrismaDriverProofMediaRepository', () => {
     });
   });
 
-  test('marks missing expired proof media as deleted idempotently', async () => {
+  test('deletes missing expired proof media metadata idempotently', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'clever-proof-media-'));
     const deletedAt = new Date('2026-06-12T00:00:00.000Z');
     const { prisma } = createPrismaHarness({
@@ -963,9 +1157,8 @@ describe('PrismaDriverProofMediaRepository', () => {
       uploadedBefore: new Date('2026-06-01T00:00:00.000Z')
     });
 
-    expect(prisma.driverProofMedia.update).toHaveBeenCalledWith({
-      data: { deletedAt },
-      where: { id: 'missing-media-id' }
+    expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledWith({
+      where: { deletedAt: null, id: 'missing-media-id', uploadStatus: 'READY' }
     });
     expect(result).toEqual({
       deleted: 1,
@@ -1002,9 +1195,8 @@ describe('PrismaDriverProofMediaRepository', () => {
     });
 
     expect(removedKeys).toEqual([storageKey]);
-    expect(prisma.driverProofMedia.update).toHaveBeenCalledWith({
-      data: { deletedAt },
-      where: { id: 'missing-media-id' }
+    expect(prisma.driverProofMedia.deleteMany).toHaveBeenCalledWith({
+      where: { deletedAt: null, id: 'missing-media-id', uploadStatus: 'READY' }
     });
     expect(result).toEqual({
       deleted: 1,
@@ -1029,7 +1221,7 @@ describe('PrismaDriverProofMediaRepository', () => {
     await expect(
       repository.deleteExpiredProofMedia({ uploadedBefore: new Date('2026-06-01T00:00:00.000Z') })
     ).rejects.toThrow('Proof media storage key escapes storage root');
-    expect(prisma.driverProofMedia.update).not.toHaveBeenCalled();
+    expect(prisma.driverProofMedia.deleteMany).not.toHaveBeenCalled();
   });
 });
 
@@ -1044,13 +1236,20 @@ function createPrismaHarness(input: {
   }[];
   proofMedia?: {
     contentType: string;
+    deliveryStopLinks?: { deliveryStopId: string }[];
     id: string;
     kind: 'PHOTO';
+    sha256?: string;
+    sizeBytes?: number;
+    source?: 'CAMERA' | 'LIBRARY';
     storageKey: string;
     uploadedAt: Date;
   } | null;
   routePlan?: { id: string } | null;
-  routePlanStop?: { id: string } | null;
+  routePlanStops?: {
+    deliveryStop: { order: { destinationId: string | null } };
+    deliveryStopId: string;
+  }[];
 } = {}) {
   return {
     prisma: {
@@ -1076,9 +1275,10 @@ function createPrismaHarness(input: {
         findFirst: vi.fn(() => Promise.resolve(input.routePlan === undefined ? { id: 'route-plan-id' } : input.routePlan))
       },
       routePlanStop: {
-        findUnique: vi.fn(() =>
-          Promise.resolve(input.routePlanStop === undefined ? { id: 'route-plan-stop-id' } : input.routePlanStop)
-        )
+        findMany: vi.fn(() => Promise.resolve(input.routePlanStops ?? [{
+          deliveryStop: { order: { destinationId: null } },
+          deliveryStopId: 'stop-id'
+        }]))
       },
       shop: {
         findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' }))

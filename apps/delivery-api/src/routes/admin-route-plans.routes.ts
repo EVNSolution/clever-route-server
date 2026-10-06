@@ -8,15 +8,19 @@ import {
 
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import {
+  RoutePlanDeleteBlockedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanGeometryRefreshFailedError,
+  RoutePlanBatchInvalidError,
   RoutePlanConflictError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
+  RoutePlanPublishInvalidError,
   RoutePlanRefreshNotAllowedError,
   RoutePlanStopOverrideInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../modules/route-plans/route-plan.types.js';
+import type { RouteGroupingService } from '../modules/route-grouping/route-grouping.types.js';
 import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
 import { RouteOptimizationJobActiveError } from '../modules/route-plans/route-optimization-job.types.js';
 import type {
@@ -24,6 +28,7 @@ import type {
   AdminRouteStopTransitionResult,
   AdminRouteStopTransitionPayload,
   CreateRoutePlanPayload,
+  CreateRoutePlanFromOrderIdsPayload,
   RoutePlanOrderAttributeInput,
   RoutePlanOrderInput,
   RoutePlanRouteScopeInput,
@@ -50,6 +55,7 @@ import type { PrismaRouteOperationalStateService, RouteOperationalStateV1 } from
 
 export type AdminRoutePlanDependencies = {
   operationalStateService?: Pick<PrismaRouteOperationalStateService, 'get' | 'getMany'>;
+  routeGroupingService?: Pick<RouteGroupingService, 'recordChildRoutePublished'>;
   routePlanService: RoutePlanService;
   routeTrackingService?: RouteTrackingService;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
@@ -69,9 +75,9 @@ export function registerAdminRoutePlanRoutes(
       return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
     }
 
-    let payload: CreateRoutePlanPayload;
+    let creationRequest: CreateAdminRoutePlanRequest;
     try {
-      payload = readCreateRoutePlanPayload(request.body);
+      creationRequest = readCreateAdminRoutePlanRequest(request.body);
     } catch (error) {
       if (error instanceof RouteScopeMismatchError) {
         return reply
@@ -83,13 +89,28 @@ export function registerAdminRoutePlanRoutes(
 
     let routePlan;
     try {
-      routePlan = await dependencies.routePlanService.createRoutePlan({
-        appId: authenticated.appId,
-        createdBy: authenticated.subject,
-        payload,
-        shopDomain: authenticated.shopDomain
-      });
+      if (creationRequest.kind === 'orderIds') {
+        if (dependencies.routePlanService.createRoutePlanFromOrderIds === undefined) {
+          return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route creation from selected order ids is unavailable'));
+        }
+        routePlan = await dependencies.routePlanService.createRoutePlanFromOrderIds({
+          appId: authenticated.appId,
+          createdBy: authenticated.subject,
+          payload: creationRequest.payload,
+          shopDomain: authenticated.shopDomain
+        });
+      } else {
+        routePlan = await dependencies.routePlanService.createRoutePlan({
+          appId: authenticated.appId,
+          createdBy: authenticated.subject,
+          payload: creationRequest.payload,
+          shopDomain: authenticated.shopDomain
+        });
+      }
     } catch (error) {
+      if (error instanceof RoutePlanBatchInvalidError) {
+        return reply.code(400).send(errorResponse(error.code, error.message));
+      }
       if (error instanceof RoutePlanOrderAlreadyPlannedError) {
         return reply
           .code(409)
@@ -162,6 +183,60 @@ export function registerAdminRoutePlanRoutes(
         data: detail,
         error: null
       });
+    }
+  );
+
+  app.post<{ Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/publish',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.routePlanService.publishRoutePlan === undefined) {
+        return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route publishing is unavailable'));
+      }
+
+      try {
+        const detail = await dependencies.routePlanService.publishRoutePlan({
+          appId: authenticated.appId,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain
+        });
+        if (detail === null) {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+        }
+        const notification = dependencies.routeGroupingService === undefined
+          ? { errorCode: 'NOTIFICATION_SERVICE_UNAVAILABLE', publishedAt: null, status: 'SKIPPED' as const }
+          : await dependencies.routeGroupingService.recordChildRoutePublished({
+              routePlanId: request.params.routePlanId,
+              shopDomain: authenticated.shopDomain
+            });
+        return reply.code(200).send({
+          data: {
+            dispatch: {
+              ...(notification.errorCode === undefined ? {} : { notificationErrorCode: notification.errorCode }),
+              ...(notification.providerMessageId === undefined ? {} : { providerMessageId: notification.providerMessageId }),
+              notificationStatus: notification.status,
+              publishedAt: notification.publishedAt,
+              routePlanId: detail.routePlan.id
+            },
+            routePlan: detail.routePlan
+          },
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof RouteExecutionConflictError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
+        if (error instanceof RoutePlanPublishInvalidError) {
+          return reply.code(400).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
     }
   );
 
@@ -744,16 +819,23 @@ export function registerAdminRoutePlanRoutes(
         return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
       }
 
-      const result = await dependencies.routePlanService.deleteRoutePlan({
-        appId: authenticated.appId,
-        routePlanId: request.params.routePlanId,
-        shopDomain: authenticated.shopDomain
-      });
+      try {
+        const result = await dependencies.routePlanService.deleteRoutePlan({
+          appId: authenticated.appId,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain
+        });
 
-      return reply.code(200).send({
-        data: result,
-        error: null
-      });
+        return reply.code(200).send({
+          data: result,
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof RoutePlanDeleteBlockedError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
     }
   );
 }
@@ -868,6 +950,35 @@ function extractBearerToken(authorization: string | undefined): string | null {
   }
 
   return match[1].trim();
+}
+
+type CreateAdminRoutePlanRequest =
+  | { kind: 'orderIds'; payload: CreateRoutePlanFromOrderIdsPayload }
+  | { kind: 'orders'; payload: CreateRoutePlanPayload };
+
+function readCreateAdminRoutePlanRequest(value: unknown): CreateAdminRoutePlanRequest {
+  const object = requireObject(value);
+  const hasOrders = Object.hasOwn(object, 'orders');
+  const hasOrderIds = Object.hasOwn(object, 'orderIds');
+  if (hasOrders === hasOrderIds) {
+    throw new Error('exactly one of orders or orderIds is required');
+  }
+  return hasOrderIds
+    ? { kind: 'orderIds', payload: readCreateRoutePlanFromOrderIdsPayload(object) }
+    : { kind: 'orders', payload: readCreateRoutePlanPayload(object) };
+}
+
+function readCreateRoutePlanFromOrderIdsPayload(value: unknown): CreateRoutePlanFromOrderIdsPayload {
+  const object = requireObject(value);
+  if (!Array.isArray(object.orderIds) || object.orderIds.length === 0) {
+    throw new Error('orderIds must be a non-empty array');
+  }
+  return {
+    depot: readDepot(object.depot),
+    name: requireNonEmptyString(object.name),
+    orderIds: object.orderIds.map(requireNonEmptyString),
+    planDate: requirePlanDate(object.planDate)
+  };
 }
 
 function readCreateRoutePlanPayload(value: unknown): CreateRoutePlanPayload {

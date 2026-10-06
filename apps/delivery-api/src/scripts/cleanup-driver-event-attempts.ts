@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { cleanupResolvedDriverEventAttempts, parseRetentionDeadline } from '../modules/driver/driver-event-attempt-retention.js';
 import { cleanupReviewedRouteCompletionEvidence } from '../modules/driver/driver-route-completion-review-retention.js';
 import { cleanupRouteOperationalEvidence } from '../modules/operations/route-operational-evidence-retention.js';
+import { PrismaDriverRuntimeDiagnosticsRepository } from '../modules/driver/driver-runtime-diagnostics.repository.js';
 import { redactTelemetryMessage, safeErrorCode } from '../modules/security/safe-telemetry-redaction.js';
 
 const prisma = new PrismaClient();
@@ -17,8 +18,13 @@ try {
     ...(deadlineAt === undefined ? {} : { deadlineAt })
   });
   process.stdout.write(`${JSON.stringify({ ...operational, event: 'route_operational_evidence_retention_cleanup' })}\n`);
+  const diagnostics = await new PrismaDriverRuntimeDiagnosticsRepository(prisma).cleanupExpired({
+    ...(deadlineAt === undefined ? {} : { deadlineMs: Math.max(1, deadlineAt - Date.now()) })
+  });
+  process.stdout.write(`${JSON.stringify({ ...diagnostics, event: 'driver_runtime_diagnostics_retention_cleanup' })}\n`);
   if (
-    result.continuationRequired
+    diagnostics.continuationRequired
+    || result.continuationRequired
     || completionReviews.continuationRequired
     || operational.alertCyclesContinuationRequired
     || operational.emailReconciliationAuditsContinuationRequired

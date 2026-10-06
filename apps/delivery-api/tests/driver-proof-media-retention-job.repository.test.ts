@@ -18,7 +18,7 @@ describe('PrismaDriverProofMediaCleanupMonitor', () => {
       deletedAt,
       limit: 50,
       missingFiles: 1,
-      retentionDays: 180,
+      retentionDays: 365,
       scanned: 3,
       uploadedBefore
     });
@@ -31,7 +31,7 @@ describe('PrismaDriverProofMediaCleanupMonitor', () => {
         finishedAt: deletedAt,
         jobName: 'driver-proof-media-retention-cleanup',
         missingFilesCount: 1,
-        retentionDays: 180,
+        retentionDays: 365,
         scannedCount: 3,
         startedAt: deletedAt,
         status: 'SUCCEEDED',
@@ -61,7 +61,7 @@ describe('PrismaDriverProofMediaCleanupMonitor', () => {
       deletedAt,
       limit: null,
       missingFiles: 0,
-      retentionDays: 180,
+      retentionDays: 365,
       scanned: 0,
       uploadedBefore: new Date('2025-11-14T00:00:00.000Z')
     });

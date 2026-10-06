@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { RouteExecutionConflictError } from '../src/modules/route-plans/route-execution-ownership.js';
 import { CustomOrderReferenceCopyNotAllowedError, RouteGroupingBranchLockConflictError, RouteGroupingCopyLockedError, RouteGroupingDeleteBlockedError } from '../src/modules/route-grouping/route-grouping.types.js';
 import type { AdminRouteGroupDependencies } from '../src/routes/admin-route-groups.routes.js';
 
@@ -24,7 +25,162 @@ const routeGroup = {
   warningState: []
 };
 
+const standaloneRoutePlanCopy = {
+  createdAt: '2026-07-20T13:21:00.000Z',
+  departureTime: '09:20',
+  depot: { latitude: 43.7, longitude: -79.4 },
+  driverId: null,
+  id: 'route-plan-copy',
+  name: 'Route A Copy',
+  planDate: '2026-07-20',
+  scheduledStartAt: '2026-07-20T13:20:00.000Z',
+  scheduledStartTimeZone: 'America/Toronto',
+  status: 'READY' as const,
+  stopsCount: 3,
+  updatedAt: '2026-07-20T13:21:00.000Z',
+  vehicleId: null
+};
+
 describe('Admin route group routes', () => {
+  test('Copy forwards an optional logical UUID and rejects malformed keys before invoking the service', async () => {
+    const { copyGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    try {
+      const payload = { expectedUpdatedAt: routeGroup.updatedAt, mode: 'REFERENCE', requestId };
+      const valid = await app.inject({ method: 'POST', url: '/admin/route-groups/source/copies', headers: { authorization: 'Bearer fixture' }, payload });
+      expect(valid.statusCode).toBe(201);
+      expect(copyGrouping).toHaveBeenCalledWith(expect.objectContaining({ requestId, mode: 'REFERENCE' }));
+      copyGrouping.mockClear();
+      for (const bad of ['', 'not-a-uuid', null, 123]) {
+        const invalid = await app.inject({ method: 'POST', url: '/admin/route-groups/source/copies', headers: { authorization: 'Bearer fixture' }, payload: { ...payload, requestId: bad } });
+        expect(invalid.statusCode).toBe(400);
+      }
+      expect(copyGrouping).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  test('forwards the optional atomic initial-route request and rejects malformed keys', async () => {
+    const { createGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    const payload = { name: 'Friday v2', orderIds: ['order-1'], planDate: '2026-09-11', initialRoute: { requestId } };
+    try {
+      const response = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload, url: '/admin/route-groups' });
+      expect(response.statusCode).toBe(201);
+      expect(createGrouping).toHaveBeenCalledWith(expect.objectContaining(payload));
+      createGrouping.mockClear();
+      for (const initialRoute of [true, {}, { requestId: 'not-a-uuid' }]) {
+        const invalid = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { ...payload, initialRoute }, url: '/admin/route-groups' });
+        expect(invalid.statusCode).toBe(400);
+      }
+      expect(createGrouping).not.toHaveBeenCalled();
+      const legacy = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { name: 'legacy', orderIds: ['order-1'] }, url: '/admin/route-groups' });
+      expect(legacy.statusCode).toBe(201);
+      expect(createGrouping.mock.calls[0]?.[0].initialRoute).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+  test('copies a standalone route through the route-plan resource', async () => {
+    const { copyStandaloneRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+        method: 'POST',
+        payload: { expectedRoutePlanUpdatedAt: '2026-07-20T09:20:00-04:00' },
+        url: '/admin/route-plans/route-plan-1/copies'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { routePlan: standaloneRoutePlanCopy }, error: null });
+      expect(copyStandaloneRoutePlan).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever-route-dev',
+        expectedRoutePlanUpdatedAt: '2026-07-20T13:20:00.000Z',
+        routePlanId: 'route-plan-1',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects a standalone route copy without an exact source revision', async () => {
+    const { copyStandaloneRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: {},
+        url: '/admin/route-plans/route-plan-1/copies'
+      });
+      expect(response.statusCode).toBe(400);
+      expect(copyStandaloneRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('atomically saves a standalone route split through the route-plan resource', async () => {
+    const { createGroupingFromRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+        method: 'POST',
+        payload: {
+          expectedRoutePlanUpdatedAt: '2026-07-20T09:20:00-04:00',
+          mode: 'MANUAL_ORDER',
+          routes: [
+            { label: 'Copy route A', orderIds: ['order-1'], routePlanId: 'route-plan-1' },
+            { label: 'Copy route B', orderIds: ['order-2'], routePlanId: null, tempId: 'temp-2' },
+            { label: 'Copy route C', orderIds: ['order-3'], routePlanId: null, tempId: 'temp-3' }
+          ]
+        },
+        url: '/admin/route-plans/route-plan-1/route-group'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { routeGroup }, error: null });
+      expect(createGroupingFromRoutePlan).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever-route-dev',
+        expectedRoutePlanUpdatedAt: '2026-07-20T13:20:00.000Z',
+        mode: 'MANUAL_ORDER',
+        routePlanId: 'route-plan-1',
+        routes: [
+          { branchId: null, label: 'Copy route A', orderIds: ['order-1'], routePlanId: 'route-plan-1' },
+          { branchId: null, label: 'Copy route B', orderIds: ['order-2'], routePlanId: null, tempId: 'temp-2' },
+          { branchId: null, label: 'Copy route C', orderIds: ['order-3'], routePlanId: null, tempId: 'temp-3' }
+        ],
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects a standalone split without an exact source revision', async () => {
+    const { createGroupingFromRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { routes: [{ orderIds: ['order-1'], routePlanId: 'route-plan-1' }, { orderIds: [], routePlanId: null }] },
+        url: '/admin/route-plans/route-plan-1/route-group'
+      });
+      expect(response.statusCode).toBe(400);
+      expect(createGroupingFromRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('copies a route group only after an explicit provider-neutral mode selection', async () => {
     const { copyGrouping, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -417,6 +573,28 @@ describe('Admin route group routes', () => {
     }
   });
 
+  test('opts into the compact Routes-list representation without changing the default list contract', async () => {
+    const { dependencies, listGroupings } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/route-groups?view=routes-list'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(listGroupings).toHaveBeenCalledWith({
+        appId: 'clever',
+        shopDomain: 'example.myshopify.com',
+        view: 'routes-list'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('returns next shop-global route index for a route group', async () => {
     const { dependencies, nextRouteIdx } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -610,6 +788,25 @@ describe('Admin route group routes', () => {
     }
   });
 
+  test('returns an execution conflict in the existing draft Save error envelope', async () => {
+    const { dependencies, saveDraft } = createDependencyHarness();
+    const message = '이미 배차되었거나 배송 중인 주문: #fixture (경로: Fixture route).';
+    saveDraft.mockRejectedValueOnce(new RouteExecutionConflictError('fixture-route', 'fixture-stop', message));
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'PATCH',
+        payload: { mode: 'MANUAL_ORDER', routes: [{ orderIds: ['order-1'], routePlanId: 'route-plan-1' }] },
+        url: '/admin/route-groups/route-group-id/draft'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ data: null, error: { code: 'ROUTE_EXECUTION_CONFLICT', message } });
+      expect(saveDraft).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('saves child-only route draft allocation with routeIdx assertions', async () => {
     const { dependencies, generateChildRoutes, saveDraft } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -792,9 +989,11 @@ describe('Admin route group routes', () => {
 
 function createDependencyHarness(): {
   copyGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyGrouping']>>;
+  copyStandaloneRoutePlan: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyStandaloneRoutePlan']>>;
   createBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createBranch']>>;
   createCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>>;
   createGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>>;
+  createGroupingFromRoutePlan: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGroupingFromRoutePlan']>>;
   deleteBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>>;
   deleteCustomStop: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteCustomStop']>>;
   deleteGrouping: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteGrouping']>>;
@@ -830,8 +1029,10 @@ function createDependencyHarness(): {
     }
   }));
   const copyGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyGrouping']>(() => Promise.resolve(routeGroup));
+  const copyStandaloneRoutePlan = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['copyStandaloneRoutePlan']>(() => Promise.resolve(standaloneRoutePlanCopy));
   const createCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createCustomStop']>(() => Promise.resolve(routeGroup));
   const createGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGrouping']>(() => Promise.resolve(routeGroup));
+  const createGroupingFromRoutePlan = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['createGroupingFromRoutePlan']>(() => Promise.resolve(routeGroup));
   const deleteBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>(() => Promise.resolve(routeGroup));
   const deleteCustomStop = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteCustomStop']>(() => Promise.resolve(routeGroup));
   const listGroupings = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['listGroupings']>(() => Promise.resolve([routeGroup]));
@@ -849,13 +1050,15 @@ function createDependencyHarness(): {
   const saveDraft = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['saveDraft']>(() => Promise.resolve(routeGroup));
   const deleteGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteGrouping']>(() => Promise.resolve({ deleted: true, deletedChildRoutePlanCount: 0, groupingId: 'route-group-id' }));
   const rollback = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['rollback']>(() => Promise.resolve(routeGroup));
-  const recordChildRoutePublished = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['recordChildRoutePublished']>(() => Promise.resolve());
+  const recordChildRoutePublished = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['recordChildRoutePublished']>(() => Promise.resolve({ publishedAt: '2026-09-10T09:00:00.000Z', status: 'SENT' }));
 
   return {
     createBranch,
     copyGrouping,
+    copyStandaloneRoutePlan,
     createCustomStop,
     createGrouping,
+    createGroupingFromRoutePlan,
     deleteBranch,
     deleteCustomStop,
     deleteGrouping,
@@ -863,9 +1066,11 @@ function createDependencyHarness(): {
       geocodingService: { geocode },
       routeGroupingService: {
         copyGrouping,
+        copyStandaloneRoutePlan,
         createBranch,
         createCustomStop,
         createGrouping,
+        createGroupingFromRoutePlan,
         deleteBranch,
         deleteCustomStop,
         deleteGrouping,

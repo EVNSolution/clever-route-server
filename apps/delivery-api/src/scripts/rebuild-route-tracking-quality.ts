@@ -1,0 +1,1884 @@
+import { createHash } from 'node:crypto';
+import { lstat, open, readFile } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
+
+import { Prisma, PrismaClient } from '@prisma/client';
+
+import { readConfiguredCoverageBaseUrls, type RouteEngineRuntimeEnv } from '../modules/route-plans/route-engine-coverage.js';
+import {
+  buildRouteTrackingGeometryDocument,
+  createRouteTrackingGeometryWrite,
+  type RouteTrackingGeometryDocumentV1,
+  type RouteTrackingGeometryPositionInput,
+} from '../modules/route-tracking/route-tracking.geometry.js';
+import {
+  buildRouteTrackingRoadMatchedPath,
+  buildRouteTrackingRoadMatchCacheWrite,
+  OsrmRouteTrackingRoadMatchProvider,
+  type RouteTrackingRoadMatchClassifyingProvider,
+} from '../modules/route-tracking/route-tracking.road-match.js';
+import type { RouteTrackingSourceRangeV1 } from '../modules/route-tracking/route-tracking.types.js';
+import { enqueueRouteTrackingRoadMatch } from '../modules/route-tracking/route-tracking-road-match-job.repository.js';
+import {
+  loadRouteTrackingEventWindow,
+  occurredAtWithinRouteTrackingEventWindow,
+  type RouteTrackingEventWindow,
+} from '../modules/route-tracking/route-tracking.event-window.js';
+
+type RebuildArgs = {
+  allowUnmeasuredAccuracyInference: boolean;
+  appId: string;
+  apply: boolean;
+  backupFile?: string;
+  backupSha256?: string;
+  expectedCurrentDerivedHash?: string;
+  expectedCurrentWatermark?: string;
+  planHash?: string;
+  preserveExistingRoadCache: boolean;
+  restore: boolean;
+  routePlanId: string;
+  shopDomain: string;
+};
+
+type RouteIdentity = {
+  appId: string;
+  assignmentGeneration: string;
+  driverId: string | null;
+  planDate: string;
+  routePlanId: string;
+  routeStatus: string;
+  shopDomain: string;
+  shopId: string;
+  stopStatuses: Array<{ deliveryStopId: string; sequence: number; status: string }>;
+};
+
+type RebuildInspection = {
+  currentDerived: unknown;
+  eventWindow: RouteTrackingEventWindow;
+  identity: RouteIdentity;
+  source: RouteTrackingGeometryPositionInput[];
+};
+
+type RebuildEventWindow = {
+  anchorSource: 'PLAN_DATE' | 'ROUTE_STARTED';
+  endExclusive: string;
+  serviceDate: string;
+  startInclusive: string;
+  timezone: string;
+};
+
+type RebuildPlan = {
+  document: RouteTrackingGeometryDocumentV1;
+  eventWindow: RebuildEventWindow;
+  identity: RouteIdentity;
+  planHash: string;
+  roadMatchWrite: ReturnType<typeof buildRouteTrackingRoadMatchCacheWrite>;
+  routeStateHash: string;
+  sourcePrefixDigest: string;
+  sourcePrefixLastKey: string;
+  summary: TrackingSummary;
+};
+
+type TrackingSummary = {
+  firstOccurredAt: string | null;
+  gapCount: number;
+  geometryPointCount: number;
+  inferredLineCount: number;
+  lastOccurredAt: string | null;
+  matchedPointCount: number;
+  sourcePointCount: number;
+  uncertainLineCount: number;
+};
+
+type BackupEnvelope = {
+  backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1';
+  allowUnmeasuredAccuracyInference?: boolean;
+  preserveExistingRoadCache?: boolean;
+  currentDerivedStateHash?: string;
+  capturedAt: string;
+  currentDerived: unknown;
+  eventWindow: RebuildEventWindow;
+  identity: RouteIdentity;
+  planHash: string;
+  routeStateHash: string;
+  sourcePrefixDigest: string;
+  sourcePrefixLastKey: string;
+  sourcePrefixPointCount: number;
+};
+
+type ApplyResult = {
+  after: TrackingSummary;
+  before: TrackingSummary;
+  derivedStateHash: string;
+  mutated: boolean;
+  prewriteBackupFile: string;
+};
+
+export interface RouteTrackingQualityRebuildStore {
+  inspect(args: Pick<RebuildArgs, 'appId' | 'routePlanId' | 'shopDomain'>): Promise<RebuildInspection>;
+  applyDerived(input: {
+    allowUnmeasuredAccuracyInference: boolean;
+    backupFile: string;
+    expectedEventWindow: RebuildEventWindow;
+    expectedIdentity: RouteIdentity;
+    expectedRouteStateHash: string;
+    expectedSourcePrefixDigest: string;
+    expectedSourcePrefixPointCount: number;
+    planHash: string;
+    preserveExistingRoadCache: boolean;
+    expectedCurrentDerivedStateHash?: string;
+    roadMatchWrite: RebuildPlan['roadMatchWrite'];
+  }): Promise<ApplyResult>;
+  restoreDerived(input: {
+    backupFile: string;
+    backupDerived: unknown;
+    expectedCurrentDerivedHash: string;
+    expectedCurrentWatermark: string;
+    expectedEventWindow: RebuildEventWindow;
+    expectedIdentity: RouteIdentity;
+    expectedRouteStateHash: string;
+  }): Promise<{ mutationCount: number; preRestoreBackupFile: string }>;
+}
+
+export function parseRebuildRouteTrackingQualityArgs(argv: string[]): RebuildArgs {
+  const values = new Map<string, string>();
+  const valueFlags = new Set([
+    '--app-id',
+    '--backup-file',
+    '--backup-sha256',
+    '--expected-current-derived-hash',
+    '--expected-current-watermark',
+    '--plan-hash',
+    '--route-plan-id',
+    '--shop-domain',
+  ]);
+  let apply = false;
+  let restore = false;
+  let allowUnmeasuredAccuracyInference = false;
+  let preserveExistingRoadCache = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === undefined) continue;
+    if (arg === '--apply') {
+      if (apply) throw new Error('Duplicate --apply flag.');
+      apply = true;
+      continue;
+    }
+    if (arg === '--restore') {
+      if (restore) throw new Error('Duplicate --restore flag.');
+      restore = true;
+      continue;
+    }
+    if (arg === '--allow-unmeasured-accuracy-inference') {
+      if (allowUnmeasuredAccuracyInference) throw new Error('Duplicate --allow-unmeasured-accuracy-inference flag.');
+      allowUnmeasuredAccuracyInference = true;
+      continue;
+    }
+    if (arg === '--preserve-existing-road-cache') {
+      if (preserveExistingRoadCache) throw new Error('Duplicate --preserve-existing-road-cache flag.');
+      preserveExistingRoadCache = true;
+      continue;
+    }
+    if (arg === '--help' || arg === '-h') throw new UsageRequestedError();
+    if (!arg.startsWith('--')) throw new Error(`Unexpected argument: ${arg}`);
+    if (!valueFlags.has(arg)) throw new Error(`Unknown flag: ${arg}`);
+    if (values.has(arg)) throw new Error(`Duplicate singleton flag: ${arg}`);
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`Missing value for ${arg}`);
+    values.set(arg, value.trim());
+    index += 1;
+  }
+
+  const backupFile = optional(values, '--backup-file');
+  const backupSha256 = optional(values, '--backup-sha256');
+  const expectedCurrentDerivedHash = optional(values, '--expected-current-derived-hash');
+  const expectedCurrentWatermark = optional(values, '--expected-current-watermark');
+  const planHash = optional(values, '--plan-hash');
+  const result: RebuildArgs = {
+    allowUnmeasuredAccuracyInference,
+    appId: required(values, '--app-id'),
+    apply,
+    preserveExistingRoadCache,
+    restore,
+    routePlanId: required(values, '--route-plan-id'),
+    shopDomain: required(values, '--shop-domain'),
+    ...(backupFile === undefined ? {} : { backupFile }),
+    ...(backupSha256 === undefined ? {} : { backupSha256 }),
+    ...(expectedCurrentDerivedHash === undefined ? {} : { expectedCurrentDerivedHash }),
+    ...(expectedCurrentWatermark === undefined ? {} : { expectedCurrentWatermark }),
+    ...(planHash === undefined ? {} : { planHash }),
+  };
+  if (result.backupFile !== undefined && !isAbsolute(result.backupFile)) {
+    throw new Error('--backup-file must be an absolute path inside the runtime container.');
+  }
+  if (apply && restore) throw new Error('--apply and --restore are mutually exclusive.');
+  if (allowUnmeasuredAccuracyInference && restore) {
+    throw new Error('--allow-unmeasured-accuracy-inference is not used with --restore.');
+  }
+  if (preserveExistingRoadCache && restore) {
+    throw new Error('--preserve-existing-road-cache is not used with --restore.');
+  }
+  if (preserveExistingRoadCache && backupFile === undefined) {
+    throw new Error('--preserve-existing-road-cache requires a private --backup-file.');
+  }
+  if (preserveExistingRoadCache && allowUnmeasuredAccuracyInference) {
+    throw new Error('--preserve-existing-road-cache cannot be combined with --allow-unmeasured-accuracy-inference.');
+  }
+  if (allowUnmeasuredAccuracyInference && backupFile === undefined) {
+    throw new Error('--allow-unmeasured-accuracy-inference requires a private --backup-file.');
+  }
+  if (apply) {
+    if (result.backupFile === undefined || result.backupSha256 === undefined || result.planHash === undefined) {
+      throw new Error('--apply requires --backup-file, --backup-sha256, and --plan-hash from a reviewed dry-run.');
+    }
+    if (!isSha256(result.backupSha256) || !isSha256(result.planHash)) {
+      throw new Error('--backup-sha256 and --plan-hash must be lowercase SHA-256 values.');
+    }
+  } else if (restore) {
+    if (result.backupFile === undefined || result.backupSha256 === undefined
+      || result.expectedCurrentDerivedHash === undefined || result.expectedCurrentWatermark === undefined) {
+      throw new Error('--restore requires --backup-file, --backup-sha256, --expected-current-derived-hash, and --expected-current-watermark.');
+    }
+    if (!isSha256(result.backupSha256) || !isSha256(result.expectedCurrentDerivedHash)) {
+      throw new Error('--backup-sha256 and --expected-current-derived-hash must be lowercase SHA-256 values.');
+    }
+    if (result.planHash !== undefined) throw new Error('--plan-hash is not used with --restore.');
+  } else if (result.backupSha256 !== undefined || result.planHash !== undefined
+    || result.expectedCurrentDerivedHash !== undefined || result.expectedCurrentWatermark !== undefined) {
+    throw new Error('--backup-sha256, --plan-hash, and --expected-current-watermark are apply/restore-only flags.');
+  }
+  return result;
+}
+
+export async function buildRouteTrackingQualityPlan(
+  inspection: RebuildInspection,
+  roadMatchProvider: RouteTrackingRoadMatchClassifyingProvider,
+  allowUnmeasuredAccuracyInference = false,
+  preserveExistingRoadCache = false,
+): Promise<RebuildPlan> {
+  if (inspection.source.length === 0) throw new Error('No LOCATION_UPDATED source events were found for this route.');
+  const document = buildRouteTrackingGeometryDocument(inspection.source);
+  if (document.coordinates.length < 2) throw new Error('At least two valid tracking coordinates are required.');
+  const outcome = await roadMatchProvider.matchWithStatus(document, inspection.source);
+  if (outcome.retryable) throw new Error('OSRM route-tracking match was incomplete or retryable; rebuild aborted.');
+  const path = outcome.path;
+  if (path === null) throw new Error('OSRM did not produce a usable route-tracking match.');
+  const proposedRoadMatchWrite = buildRouteTrackingRoadMatchCacheWrite(path);
+  const roadMatchWrite = preserveExistingRoadCache
+    ? buildPreservedRouteTrackingRoadMatchWrite(
+        inspection.currentDerived,
+        proposedRoadMatchWrite,
+        document,
+        inspection.source,
+      )
+    : proposedRoadMatchWrite;
+  const routeStateHash = hashCanonical(inspection.identity);
+  const sourcePrefixDigest = digestRouteTrackingSource(inspection.source);
+  const sourcePrefixLastKey = sourceKey(inspection.source.at(-1)!);
+  const eventWindow = serializeEventWindow(inspection.eventWindow);
+  const planPayload = {
+    ...(allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
+    ...(preserveExistingRoadCache ? {
+      currentDerivedStateHash: routeTrackingDerivedStateHash(inspection.currentDerived),
+      preserveExistingRoadCache: true,
+    } : {}),
+    eventWindow,
+    identity: inspection.identity,
+    proposedGeometry: createRouteTrackingGeometryWrite(inspection.identity.routePlanId, document),
+    proposedRoadMatch: roadMatchWrite,
+    routeStateHash,
+    sourcePrefixDigest,
+    sourcePrefixLastKey,
+    sourcePrefixPointCount: inspection.source.length,
+  };
+  return {
+    document,
+    eventWindow,
+    identity: inspection.identity,
+    planHash: hashCanonical(planPayload),
+    roadMatchWrite,
+    routeStateHash,
+    sourcePrefixDigest,
+    sourcePrefixLastKey,
+    summary: summarize(document, roadMatchWrite),
+  };
+}
+
+export async function executeRouteTrackingQualityRebuild(input: {
+  args: RebuildArgs;
+  roadMatchProvider?: RouteTrackingRoadMatchClassifyingProvider;
+  store: RouteTrackingQualityRebuildStore;
+}): Promise<Record<string, unknown>> {
+  const inspection = await input.store.inspect(input.args);
+  assertIdentity(inspection.identity, input.args);
+  const before = summarizeDerived(inspection.currentDerived);
+
+  if (input.args.restore) {
+    const reviewedBackup = await readReviewedBackup(input.args.backupFile!, input.args.backupSha256!);
+    assertIdentity(reviewedBackup.identity, input.args);
+    assertEventWindow(inspection.eventWindow, reviewedBackup.eventWindow);
+    assertDerivedWithinEventWindow(reviewedBackup.currentDerived, inspection.eventWindow);
+    const restored = await input.store.restoreDerived({
+      backupDerived: reviewedBackup.currentDerived,
+      backupFile: input.args.backupFile!,
+      expectedCurrentDerivedHash: input.args.expectedCurrentDerivedHash!,
+      expectedCurrentWatermark: input.args.expectedCurrentWatermark!,
+      expectedEventWindow: reviewedBackup.eventWindow,
+      expectedIdentity: reviewedBackup.identity,
+      expectedRouteStateHash: reviewedBackup.routeStateHash,
+    });
+    return {
+      ok: true,
+      ...scopeOutput(input.args),
+      mode: 'restore',
+      mutationCount: restored.mutationCount,
+      preRestoreBackupFile: restored.preRestoreBackupFile,
+    };
+  }
+
+  if (input.roadMatchProvider === undefined) throw new Error('OSRM road-match provider is required.');
+
+  if (!input.args.apply) {
+    const plan = await buildRouteTrackingQualityPlan(inspection, input.roadMatchProvider,
+      input.args.allowUnmeasuredAccuracyInference, input.args.preserveExistingRoadCache);
+    if (input.args.allowUnmeasuredAccuracyInference) {
+      assertUnmeasuredAccuracyInferenceGain(inspection.currentDerived, plan.roadMatchWrite);
+    }
+    let backup: { path: string; sha256: string } | null = null;
+    if (input.args.backupFile !== undefined) {
+      backup = await writeBackupExclusive(input.args.backupFile, {
+        backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
+        ...(input.args.allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
+        ...(input.args.preserveExistingRoadCache ? {
+          currentDerivedStateHash: routeTrackingDerivedStateHash(inspection.currentDerived),
+          preserveExistingRoadCache: true,
+        } : {}),
+        capturedAt: new Date().toISOString(),
+        currentDerived: inspection.currentDerived,
+        eventWindow: plan.eventWindow,
+        identity: inspection.identity,
+        planHash: plan.planHash,
+        routeStateHash: plan.routeStateHash,
+        sourcePrefixDigest: plan.sourcePrefixDigest,
+        sourcePrefixLastKey: plan.sourcePrefixLastKey,
+        sourcePrefixPointCount: inspection.source.length,
+      });
+    }
+    return output(input.args, before, plan.summary, plan, { backup, mode: 'dry-run', mutationCount: 0 });
+  }
+
+  const backupFile = input.args.backupFile!;
+  const reviewedBackup = await readReviewedBackup(backupFile, input.args.backupSha256!);
+  if ((reviewedBackup.allowUnmeasuredAccuracyInference === true) !== input.args.allowUnmeasuredAccuracyInference) {
+    throw new Error('Reviewed unmeasured-accuracy inference policy does not match this apply.');
+  }
+  if ((reviewedBackup.preserveExistingRoadCache === true) !== input.args.preserveExistingRoadCache) {
+    throw new Error('Reviewed existing-road preservation policy does not match this apply.');
+  }
+  const reviewedDerivedStateHash = reviewedBackup.currentDerivedStateHash;
+  if (input.args.preserveExistingRoadCache) {
+    if (reviewedDerivedStateHash === undefined) {
+      throw new Error('Reviewed preservation backup is missing the current derived state hash.');
+    }
+    assertCurrentDerivedPreservationState(inspection.currentDerived, reviewedDerivedStateHash);
+  }
+  assertIdentity(reviewedBackup.identity, input.args);
+  assertEventWindow(inspection.eventWindow, reviewedBackup.eventWindow);
+  if (hashCanonical(inspection.identity) !== reviewedBackup.routeStateHash) {
+    throw new Error('Route identity, route status, assignment, or stop status changed after review.');
+  }
+  assertAppendOnlySourcePrefix(
+    inspection.source,
+    reviewedBackup.sourcePrefixPointCount,
+    reviewedBackup.sourcePrefixDigest,
+  );
+  assertNoSourceTailAfterReview(inspection.source, reviewedBackup.sourcePrefixPointCount);
+  const approvedPrefix = inspection.source.slice(0, reviewedBackup.sourcePrefixPointCount);
+  const plan = await buildRouteTrackingQualityPlan({
+    ...inspection,
+    identity: reviewedBackup.identity,
+    source: approvedPrefix,
+  }, input.roadMatchProvider, input.args.allowUnmeasuredAccuracyInference, input.args.preserveExistingRoadCache);
+  if (reviewedBackup.planHash !== input.args.planHash || reviewedBackup.planHash !== plan.planHash) {
+    throw new Error('Reviewed plan hash does not match the current approved source prefix and proposed output.');
+  }
+  if (reviewedBackup.sourcePrefixDigest !== plan.sourcePrefixDigest
+    || reviewedBackup.sourcePrefixPointCount !== approvedPrefix.length
+    || reviewedBackup.sourcePrefixLastKey !== plan.sourcePrefixLastKey) {
+    throw new Error('Reviewed source prefix no longer matches the planned source prefix.');
+  }
+  if (input.args.allowUnmeasuredAccuracyInference) {
+    assertUnmeasuredAccuracyInferenceGain(inspection.currentDerived, plan.roadMatchWrite);
+  }
+  const applied = await input.store.applyDerived({
+    allowUnmeasuredAccuracyInference: input.args.allowUnmeasuredAccuracyInference,
+    backupFile,
+    expectedEventWindow: reviewedBackup.eventWindow,
+    expectedIdentity: reviewedBackup.identity,
+    expectedRouteStateHash: reviewedBackup.routeStateHash,
+    expectedSourcePrefixDigest: reviewedBackup.sourcePrefixDigest,
+    expectedSourcePrefixPointCount: reviewedBackup.sourcePrefixPointCount,
+    planHash: reviewedBackup.planHash,
+    preserveExistingRoadCache: input.args.preserveExistingRoadCache,
+    ...(reviewedBackup.currentDerivedStateHash === undefined ? {} : {
+      expectedCurrentDerivedStateHash: reviewedBackup.currentDerivedStateHash,
+    }),
+    roadMatchWrite: plan.roadMatchWrite,
+  });
+  return output(input.args, applied.before, applied.after, plan, {
+    mode: 'apply',
+    mutationCount: applied.mutated ? 1 : 0,
+    appliedDerivedStateHash: applied.derivedStateHash,
+    prewriteBackupFile: applied.prewriteBackupFile,
+  });
+}
+
+export function assertAppendOnlySourcePrefix(
+  current: RouteTrackingGeometryPositionInput[],
+  expectedCount: number,
+  expectedDigest: string,
+): void {
+  if (current.length < expectedCount) throw new Error('Source event prefix shrank after review.');
+  const prefix = current.slice(0, expectedCount);
+  if (digestRouteTrackingSource(prefix) !== expectedDigest) throw new Error('Source event prefix changed or received an out-of-order insertion after review.');
+  const lastPrefixKey = prefix.length === 0 ? null : sourceKey(prefix.at(-1)!);
+  if (lastPrefixKey !== null && current.slice(expectedCount).some((position) => sourceKey(position) <= lastPrefixKey)) {
+    throw new Error('A source event was inserted into the reviewed prefix; apply aborted.');
+  }
+}
+
+function assertNoSourceTailAfterReview(
+  current: RouteTrackingGeometryPositionInput[],
+  expectedCount: number,
+): void {
+  if (current.length !== expectedCount) {
+    throw new Error('Eligible GPS source changed after review; run a new dry-run before apply.');
+  }
+}
+
+export async function lockRoutePlanThenTrackingAdvisory(
+  tx: Pick<Prisma.TransactionClient, '$queryRaw'>,
+  routePlanId: string,
+): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "route_plans" WHERE "id" = ${routePlanId}::uuid FOR UPDATE`);
+  await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${routePlanId}, 0))`);
+}
+
+export class PrismaRouteTrackingQualityRebuildStore implements RouteTrackingQualityRebuildStore {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async inspect(args: Pick<RebuildArgs, 'appId' | 'routePlanId' | 'shopDomain'>): Promise<RebuildInspection> {
+    const identity = await loadIdentity(this.prisma, args);
+    if (identity === null) throw new Error('Route plan was not found for the exact app and shop identity.');
+    const eventWindow = await loadRouteTrackingEventWindow(this.prisma, identity.routePlanId);
+    if (eventWindow === null) throw new Error('Route tracking event window could not be resolved.');
+    const [source, currentDerived] = await Promise.all([
+      loadSource(this.prisma, identity.routePlanId, eventWindow),
+      this.prisma.routeTrackingGeometry.findUnique({ where: { routePlanId: identity.routePlanId } }),
+    ]);
+    return { currentDerived: jsonSafe(currentDerived), eventWindow, identity, source };
+  }
+
+  async applyDerived(input: {
+    allowUnmeasuredAccuracyInference: boolean;
+    backupFile: string;
+    expectedEventWindow: RebuildEventWindow;
+    expectedIdentity: RouteIdentity;
+    expectedRouteStateHash: string;
+    expectedSourcePrefixDigest: string;
+    expectedSourcePrefixPointCount: number;
+    planHash: string;
+    preserveExistingRoadCache: boolean;
+    expectedCurrentDerivedStateHash?: string;
+    roadMatchWrite: RebuildPlan['roadMatchWrite'];
+  }): Promise<ApplyResult> {
+    return this.prisma.$transaction(async (tx) => {
+      await lockRoutePlanThenTrackingAdvisory(tx, input.expectedIdentity.routePlanId);
+      const identity = await loadIdentity(tx, input.expectedIdentity);
+      if (identity === null || hashCanonical(identity) !== input.expectedRouteStateHash) {
+        throw new Error('Route identity, route status, assignment, or stop status changed after review.');
+      }
+      const eventWindow = await loadRouteTrackingEventWindow(tx, identity.routePlanId);
+      if (eventWindow === null) throw new Error('Route tracking event window could not be resolved.');
+      assertEventWindow(eventWindow, input.expectedEventWindow);
+      const source = await loadSource(tx, identity.routePlanId, eventWindow);
+      assertAppendOnlySourcePrefix(source, input.expectedSourcePrefixPointCount, input.expectedSourcePrefixDigest);
+      assertNoSourceTailAfterReview(source, input.expectedSourcePrefixPointCount);
+      const document = buildRouteTrackingGeometryDocument(source);
+      const geometryWrite = createRouteTrackingGeometryWrite(identity.routePlanId, document);
+      const desired = { ...geometryWrite, ...input.roadMatchWrite };
+      const current = await tx.routeTrackingGeometry.findUnique({ where: { routePlanId: identity.routePlanId } });
+      const expectedCurrentDerivedStateHash = input.expectedCurrentDerivedStateHash;
+      if (input.preserveExistingRoadCache) {
+        if (expectedCurrentDerivedStateHash === undefined) {
+          throw new Error('Preservation apply is missing the reviewed current derived state hash.');
+        }
+        assertCurrentDerivedPreservationState(current, expectedCurrentDerivedStateHash);
+      }
+      if (input.allowUnmeasuredAccuracyInference) {
+        assertUnmeasuredAccuracyInferenceGain(current, input.roadMatchWrite);
+      }
+      const prewriteBackupFile = await writePrewriteBackup(input.backupFile, {
+        backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
+        capturedAt: new Date().toISOString(),
+        currentDerived: jsonSafe(current),
+        eventWindow: serializeEventWindow(eventWindow),
+        identity,
+        planHash: input.planHash,
+        routeStateHash: input.expectedRouteStateHash,
+        sourcePrefixDigest: input.expectedSourcePrefixDigest,
+        sourcePrefixLastKey: sourceKey(source[input.expectedSourcePrefixPointCount - 1]!),
+        sourcePrefixPointCount: input.expectedSourcePrefixPointCount,
+      });
+      const mutated = !routeTrackingDerivedMatches(current, desired);
+      if (mutated) {
+        await tx.routeTrackingGeometry.upsert({
+          create: desired,
+          update: desired,
+          where: { routePlanId: identity.routePlanId },
+        });
+      }
+      await settleHistoricalRebuildJob(tx, identity.routePlanId, document, new Date());
+      return {
+        after: summarize(document, input.roadMatchWrite),
+        before: summarizeDerived(current),
+        derivedStateHash: routeTrackingDerivedStateHash(desired),
+        mutated,
+        prewriteBackupFile,
+      };
+    }, { timeout: 60_000 });
+  }
+
+  async restoreDerived(input: {
+    backupFile: string;
+    backupDerived: unknown;
+    expectedCurrentDerivedHash: string;
+    expectedCurrentWatermark: string;
+    expectedEventWindow: RebuildEventWindow;
+    expectedIdentity: RouteIdentity;
+    expectedRouteStateHash: string;
+  }): Promise<{ mutationCount: number; preRestoreBackupFile: string }> {
+    return this.prisma.$transaction(async (tx) => {
+      await lockRoutePlanThenTrackingAdvisory(tx, input.expectedIdentity.routePlanId);
+      const identity = await loadIdentity(tx, input.expectedIdentity);
+      if (identity === null || hashCanonical(identity) !== input.expectedRouteStateHash) {
+        throw new Error('Route identity, route status, assignment, or stop status changed after backup.');
+      }
+      const eventWindow = await loadRouteTrackingEventWindow(tx, identity.routePlanId);
+      if (eventWindow === null) throw new Error('Route tracking event window could not be resolved.');
+      assertEventWindow(eventWindow, input.expectedEventWindow);
+      assertDerivedWithinEventWindow(input.backupDerived, eventWindow);
+      const current = await tx.routeTrackingGeometry.findUnique({ where: { routePlanId: identity.routePlanId } });
+      assertCurrentDerivedRestoreState(current, input.expectedCurrentWatermark, input.expectedCurrentDerivedHash);
+      const preRestoreBackupFile = await writePrewriteBackup(input.backupFile, {
+        backupSchemaVersion: 'route_tracking_quality_rebuild_backup.v1',
+        capturedAt: new Date().toISOString(),
+        currentDerived: jsonSafe(current),
+        eventWindow: serializeEventWindow(eventWindow),
+        identity,
+        planHash: 'restore-prewrite',
+        routeStateHash: input.expectedRouteStateHash,
+        sourcePrefixDigest: 'restore-not-applicable',
+        sourcePrefixLastKey: 'restore-not-applicable',
+        sourcePrefixPointCount: 0,
+      });
+      if (input.backupDerived === null) {
+        const deleted = await tx.routeTrackingGeometry.deleteMany({ where: { routePlanId: identity.routePlanId } });
+        await tx.routeTrackingRoadMatchJob.deleteMany({ where: { routePlanId: identity.routePlanId } });
+        return { mutationCount: deleted.count, preRestoreBackupFile };
+      }
+      const restoreWrite = readDerivedRestoreWrite(input.backupDerived, identity.routePlanId);
+      await tx.routeTrackingGeometry.upsert({
+        create: restoreWrite,
+        update: restoreWrite,
+        where: { routePlanId: identity.routePlanId },
+      });
+      await reconcileRestoredRoadMatchJob(tx, identity.routePlanId, restoreWrite, new Date());
+      return { mutationCount: 1, preRestoreBackupFile };
+    }, { timeout: 60_000 });
+  }
+}
+
+function readDerivedRestoreWrite(value: unknown, routePlanId: string) {
+  if (!isRecord(value) || value.routePlanId !== routePlanId) throw new Error('Backup derived row does not match the route plan.');
+  return {
+    expiresAt: requiredDate(value.expiresAt, 'expiresAt'),
+    firstOccurredAt: requiredDate(value.firstOccurredAt, 'firstOccurredAt'),
+    geometry: prismaJson(value.geometry),
+    geometryPointCount: requiredInteger(value.geometryPointCount, 'geometryPointCount'),
+    lastDriverId: nullableText(value.lastDriverId, 'lastDriverId'),
+    lastEventId: requiredTextValue(value.lastEventId, 'lastEventId'),
+    lastLatitude: requiredNumber(value.lastLatitude, 'lastLatitude'),
+    lastLongitude: requiredNumber(value.lastLongitude, 'lastLongitude'),
+    lastOccurredAt: requiredDate(value.lastOccurredAt, 'lastOccurredAt'),
+    lastReceivedAt: requiredDate(value.lastReceivedAt, 'lastReceivedAt'),
+    roadMatchedCoverage: nullableText(value.roadMatchedCoverage, 'roadMatchedCoverage'),
+    roadMatchedGeometry: prismaJson(value.roadMatchedGeometry),
+    roadMatchedLastInputOccurredAt: nullableDate(value.roadMatchedLastInputOccurredAt, 'roadMatchedLastInputOccurredAt'),
+    roadMatchedLastPosition: prismaJson(value.roadMatchedLastPosition),
+    roadMatchedPointCount: nullableInteger(value.roadMatchedPointCount, 'roadMatchedPointCount'),
+    roadMatchedSchemaVersion: nullableText(value.roadMatchedSchemaVersion, 'roadMatchedSchemaVersion'),
+    roadMatchedSourcePointCount: nullableInteger(value.roadMatchedSourcePointCount, 'roadMatchedSourcePointCount'),
+    roadMatchedUncertainGeometry: prismaJson(value.roadMatchedUncertainGeometry),
+    roadMatchedWatermark: nullableText(value.roadMatchedWatermark, 'roadMatchedWatermark'),
+    routePlanId,
+    sampleMetadata: prismaJson(value.sampleMetadata),
+    sourcePointCount: requiredInteger(value.sourcePointCount, 'sourcePointCount'),
+  };
+}
+
+async function loadIdentity(
+  prisma: Pick<PrismaClient, 'routePlan'> | Prisma.TransactionClient,
+  args: Pick<RebuildArgs, 'appId' | 'routePlanId' | 'shopDomain'>,
+): Promise<RouteIdentity | null> {
+  const route = await prisma.routePlan.findFirst({
+    select: {
+      assignmentGeneration: true,
+      driverId: true,
+      id: true,
+      planDate: true,
+      routeStops: {
+        orderBy: { sequence: 'asc' },
+        select: { deliveryStop: { select: { status: true } }, deliveryStopId: true, sequence: true },
+      },
+      shop: { select: { appId: true, id: true, shopDomain: true } },
+      status: true,
+    },
+    where: { id: args.routePlanId, shop: { appId: args.appId, shopDomain: args.shopDomain } },
+  });
+  if (route === null) return null;
+  return {
+    appId: route.shop.appId,
+    assignmentGeneration: route.assignmentGeneration.toString(),
+    driverId: route.driverId,
+    planDate: route.planDate.toISOString().slice(0, 10),
+    routePlanId: route.id,
+    routeStatus: route.status,
+    shopDomain: route.shop.shopDomain,
+    shopId: route.shop.id,
+    stopStatuses: route.routeStops.map((stop) => ({
+      deliveryStopId: stop.deliveryStopId,
+      sequence: stop.sequence,
+      status: stop.deliveryStop.status,
+    })),
+  };
+}
+
+async function loadSource(
+  prisma: Pick<PrismaClient, 'driverEvent'> | Prisma.TransactionClient,
+  routePlanId: string,
+  eventWindow: RouteTrackingEventWindow,
+): Promise<RouteTrackingGeometryPositionInput[]> {
+  const rows = await prisma.driverEvent.findMany({
+    orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    select: { createdAt: true, driverId: true, id: true, latitude: true, longitude: true, occurredAt: true, payload: true, routePlanId: true },
+    where: {
+      eventType: 'LOCATION_UPDATED',
+      latitude: { not: null },
+      longitude: { not: null },
+      occurredAt: { gte: eventWindow.startInclusive, lt: eventWindow.endExclusive },
+      routePlanId,
+    },
+  });
+  return rows.flatMap((row) => {
+    const latitude = Number(row.latitude);
+    const longitude = Number(row.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || row.routePlanId === null) return [];
+    return [{
+      accuracyMeters: readAccuracyMeters(row.payload),
+      driverId: row.driverId,
+      eventId: row.id,
+      latitude,
+      longitude,
+      occurredAt: row.occurredAt.toISOString(),
+      receivedAt: row.createdAt.toISOString(),
+      routePlanId: row.routePlanId,
+    }];
+  });
+}
+
+function readAccuracyMeters(payload: unknown): number | null {
+  if (!isRecord(payload)) return null;
+  const location = isRecord(payload.location) ? payload.location : null;
+  const value = payload.accuracyMeters ?? payload.accuracy ?? location?.accuracyMeters;
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) / 100 : null;
+}
+
+function assertIdentity(identity: RouteIdentity, args: Pick<RebuildArgs, 'appId' | 'routePlanId' | 'shopDomain'>): void {
+  if (identity.appId !== args.appId || identity.shopDomain !== args.shopDomain || identity.routePlanId !== args.routePlanId) {
+    throw new Error('Route identity does not match --app-id, --shop-domain, and --route-plan-id.');
+  }
+}
+
+function serializeEventWindow(window: RouteTrackingEventWindow): RebuildEventWindow {
+  return {
+    anchorSource: window.anchorSource,
+    endExclusive: window.endExclusive.toISOString(),
+    serviceDate: window.serviceDate,
+    startInclusive: window.startInclusive.toISOString(),
+    timezone: window.timezone,
+  };
+}
+
+function assertEventWindow(current: RouteTrackingEventWindow, expected: RebuildEventWindow): void {
+  if (hashCanonical(serializeEventWindow(current)) !== hashCanonical(expected)) {
+    throw new Error('Route tracking event window or timezone changed after review.');
+  }
+}
+
+function assertDerivedWithinEventWindow(value: unknown, eventWindow: RouteTrackingEventWindow): void {
+  if (value === null) return;
+  if (!isRecord(value)) throw new Error('Backup derived tracking row is invalid.');
+  const occurredAtValues: unknown[] = [
+    value.firstOccurredAt,
+    value.lastOccurredAt,
+    value.roadMatchedLastInputOccurredAt,
+  ];
+  if (Array.isArray(value.sampleMetadata)) {
+    occurredAtValues.push(...value.sampleMetadata.map((sample) => isRecord(sample) ? sample.occurredAt : null));
+  }
+  if (isRecord(value.roadMatchedLastPosition)) occurredAtValues.push(value.roadMatchedLastPosition.occurredAt);
+  const outsideWindow = occurredAtValues.some((occurredAt) => occurredAt !== null
+    && occurredAt !== undefined
+    && (typeof occurredAt !== 'string' && !(occurredAt instanceof Date)
+      || !occurredAtWithinRouteTrackingEventWindow(eventWindow, occurredAt)));
+  if (outsideWindow) {
+    throw new Error('Backup derived tracking row contains GPS evidence outside the current route event window.');
+  }
+}
+
+export function buildHistoricalRebuildJobSettlement(
+  routePlanId: string,
+  document: RouteTrackingGeometryDocumentV1,
+  now: Date,
+): Prisma.RouteTrackingRoadMatchJobUpdateManyArgs {
+  return {
+    data: {
+      completedAt: now,
+      errorCode: null,
+      errorMessage: null,
+      leaseExpiresAt: null,
+      leaseToken: null,
+      nextAttemptAt: null,
+      processingStartedAt: null,
+      status: 'SUCCEEDED',
+      targetLastInputOccurredAt: new Date(document.samples.at(-1)!.occurredAt),
+      targetSourcePointCount: document.sourcePointCount,
+    },
+    where: { routePlanId },
+  };
+}
+
+export async function settleHistoricalRebuildJob(
+  tx: Pick<Prisma.TransactionClient, 'routeTrackingRoadMatchJob'>,
+  routePlanId: string,
+  document: RouteTrackingGeometryDocumentV1,
+  now: Date,
+): Promise<void> {
+  const result = await tx.routeTrackingRoadMatchJob.updateMany(
+    buildHistoricalRebuildJobSettlement(routePlanId, document, now),
+  );
+  if (result.count !== 1) {
+    throw new Error('Historical rebuild road-match job is missing; derived write rolled back.');
+  }
+}
+
+export function buildRestoredRoadMatchJobSettlement(
+  routePlanId: string,
+  restored: { lastOccurredAt: Date; sourcePointCount: number },
+  now: Date,
+): Prisma.RouteTrackingRoadMatchJobUpsertArgs {
+  const data = {
+    completedAt: now,
+    errorCode: null,
+    errorMessage: null,
+    leaseExpiresAt: null,
+    leaseToken: null,
+    nextAttemptAt: null,
+    processingStartedAt: null,
+    status: 'SUCCEEDED' as const,
+    targetLastInputOccurredAt: restored.lastOccurredAt,
+    targetSourcePointCount: restored.sourcePointCount,
+  };
+  return {
+    create: { ...data, routePlanId },
+    update: data,
+    where: { routePlanId },
+  };
+}
+
+export function restoredRoadMatchCacheIsUsable(
+  restored: Parameters<typeof buildRouteTrackingRoadMatchedPath>[0],
+): boolean {
+  return buildRouteTrackingRoadMatchedPath(restored) !== null;
+}
+
+export async function reconcileRestoredRoadMatchJob(
+  tx: Pick<Prisma.TransactionClient, 'routeTrackingRoadMatchJob'>,
+  routePlanId: string,
+  restored: NonNullable<Parameters<typeof buildRouteTrackingRoadMatchedPath>[0]> & {
+    lastOccurredAt: Date;
+    sourcePointCount: number;
+  },
+  now: Date,
+): Promise<void> {
+  if (restoredRoadMatchCacheIsUsable(restored)) {
+    await tx.routeTrackingRoadMatchJob.upsert(buildRestoredRoadMatchJobSettlement(routePlanId, restored, now));
+    return;
+  }
+  await tx.routeTrackingRoadMatchJob.deleteMany({ where: { routePlanId } });
+  await enqueueRouteTrackingRoadMatch(tx, {
+    lastInputOccurredAt: restored.lastOccurredAt,
+    now,
+    routePlanId,
+    sourcePointCount: restored.sourcePointCount,
+  });
+}
+
+export function digestRouteTrackingSource(source: RouteTrackingGeometryPositionInput[]): string {
+  return hashCanonical(source.map((position) => ({
+    accuracyMeters: position.accuracyMeters ?? null,
+    driverId: position.driverId,
+    eventId: position.eventId,
+    latitude: position.latitude,
+    longitude: position.longitude,
+    occurredAt: position.occurredAt,
+    receivedAt: position.receivedAt,
+    routePlanId: position.routePlanId,
+  })));
+}
+
+function sourceKey(position: RouteTrackingGeometryPositionInput): string {
+  return `${position.occurredAt}\u0000${position.receivedAt}\u0000${position.eventId}`;
+}
+
+type PreservedRoadLine = {
+  countedByMatcher: boolean;
+  coordinates: Array<[number, number]>;
+  range: RouteTrackingSourceRangeV1;
+};
+
+type StrictRoadCache = {
+  coverage: 'korea' | 'ontario';
+  inferred: PreservedRoadLine[];
+  lastMatchedPosition: Prisma.JsonObject | typeof Prisma.JsonNull;
+  matched: PreservedRoadLine[];
+  matchedPointCount: number;
+  unmatched: RouteTrackingSourceRangeV1[];
+  uncertain: PreservedRoadLine[];
+};
+
+type SourceIdentityIndex = Map<string, number[]>;
+type SourceRangeReadMode = 'remap-existing-legacy' | 'remap-existing-raw' | 'strict-proposed';
+
+export function buildPreservedRouteTrackingRoadMatchWrite(
+  currentDerived: unknown,
+  proposedWrite: RebuildPlan['roadMatchWrite'],
+  document: RouteTrackingGeometryDocumentV1,
+  source: RouteTrackingGeometryPositionInput[],
+): RebuildPlan['roadMatchWrite'] {
+  if (source.length !== document.sourcePointCount || source.length < 2) {
+    throw new Error('Preservation rebuild raw-source cardinality does not match the geometry document.');
+  }
+  const sourceIdentityIndex = buildSourceIdentityIndex(source);
+  const current = readStrictRoadCache(
+    currentDerived,
+    source,
+    sourceIdentityIndex,
+    'existing',
+  );
+  const proposed = readStrictRoadCache(
+    proposedWrite,
+    source,
+    sourceIdentityIndex,
+    'proposed',
+  );
+  if (current.coverage !== proposed.coverage) {
+    throw new Error('Preservation rebuild coverage does not match the existing road cache.');
+  }
+
+  const trusted = [...current.matched, ...current.inferred];
+  const proposedTrusted = [...proposed.matched, ...proposed.inferred];
+  assertDisjointTrustedEdges(trusted, 'existing');
+  assertDisjointTrustedEdges(proposedTrusted, 'proposed');
+  const additions: PreservedRoadLine[] = [];
+  for (const candidate of proposedTrusted) {
+    if (candidate.range.interpolationLevel !== 0 && candidate.range.interpolationLevel !== 1) continue;
+    if ([...trusted, ...additions].some((line) => rangesShareSourceEdge(line.range, candidate.range))) continue;
+    additions.push(candidate);
+  }
+  if (additions.length === 0) {
+    throw new Error('Preservation rebuild found no new non-overlapping Level 0/1 road line.');
+  }
+
+  const matched = sortPreservedRoadLines([
+    ...current.matched,
+    ...additions.filter((line) => line.range.interpolationLevel === 0),
+  ]);
+  const inferred = sortPreservedInferredRoadLines([
+    ...current.inferred,
+    ...additions.filter((line) => line.range.interpolationLevel === 1),
+  ]);
+  const mergedTrusted = [...matched, ...inferred];
+  assertDisjointTrustedEdges(mergedTrusted, 'merged');
+  const uncertain = proposed.uncertain.filter((line) => (
+    !mergedTrusted.some((trustedLine) => rangesShareSourceEdge(trustedLine.range, line.range))
+  ));
+  const unmatchedRanges = buildUncoveredSourceRanges(
+    source,
+    mergedTrusted,
+    [...proposed.unmatched, ...current.unmatched],
+  );
+  const matchedGeometry = roadGeometry(matched);
+  const inferredGeometry = roadGeometry(inferred);
+  const uncertainGeometry = roadGeometry(uncertain);
+  const embeddedMatched = embedPreservedMetadata(matchedGeometry, inferredGeometry, unmatchedRanges);
+  const embeddedUncertain = embedPreservedMetadata(uncertainGeometry, inferredGeometry, unmatchedRanges);
+  const allStoredLines = [...matched, ...inferred, ...uncertain];
+  const matchedPointCount = current.matchedPointCount
+    - pointCount(current.uncertain)
+    + pointCount(uncertain)
+    + pointCount(additions.filter((line) => line.countedByMatcher));
+  const lastInputOccurredAt = source.at(-1)!.occurredAt;
+  const watermarkHash = createHash('sha256')
+    .update(JSON.stringify(allStoredLines.map((line) => line.coordinates)))
+    .digest('hex')
+    .slice(0, 16);
+
+  return {
+    roadMatchedCoverage: current.coverage,
+    roadMatchedGeometry: embeddedMatched ?? Prisma.JsonNull,
+    roadMatchedLastInputOccurredAt: new Date(lastInputOccurredAt),
+    roadMatchedLastPosition: proposed.lastMatchedPosition,
+    roadMatchedPointCount: matchedPointCount,
+    roadMatchedSchemaVersion: 'route_tracking_road_match.v5',
+    roadMatchedSourcePointCount: source.length,
+    roadMatchedUncertainGeometry: embeddedUncertain ?? Prisma.JsonNull,
+    roadMatchedWatermark: [
+      'route_tracking_road_match.v1',
+      current.coverage,
+      source.length,
+      matchedPointCount,
+      lastInputOccurredAt,
+      watermarkHash,
+    ].join(':'),
+  };
+}
+
+function readStrictRoadCache(
+  value: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  sourceIdentityIndex: SourceIdentityIndex,
+  label: 'existing' | 'proposed',
+): StrictRoadCache {
+  const record = isRecord(value) ? value : null;
+  if (record === null || record.roadMatchedSchemaVersion !== 'route_tracking_road_match.v5') {
+    throw new Error(`Preservation rebuild requires a valid v5 ${label} road cache.`);
+  }
+  const coverage = record.roadMatchedCoverage;
+  if (coverage !== 'korea' && coverage !== 'ontario') {
+    throw new Error(`Preservation rebuild ${label} coverage is invalid.`);
+  }
+  if (integerOrZero(record.roadMatchedSourcePointCount) !== source.length
+    || (label === 'existing' && integerOrZero(record.sourcePointCount) !== source.length)) {
+    throw new Error(`Preservation rebuild ${label} source cardinality does not match raw GPS.`);
+  }
+  const lastInput = isoOrNull(record.roadMatchedLastInputOccurredAt);
+  if (lastInput !== source.at(-1)!.occurredAt) {
+    throw new Error(`Preservation rebuild ${label} source watermark does not match raw GPS.`);
+  }
+  const matchedObject = nullableGeometryRecord(record.roadMatchedGeometry, `${label} matched`);
+  const uncertainObject = nullableGeometryRecord(record.roadMatchedUncertainGeometry, `${label} uncertain`);
+  const embeddedFromMatched = matchedObject?.inferredGeometry;
+  const embeddedFromUncertain = uncertainObject?.inferredGeometry;
+  if (embeddedFromMatched !== undefined && embeddedFromUncertain !== undefined
+    && hashCanonical(embeddedFromMatched) !== hashCanonical(embeddedFromUncertain)) {
+    throw new Error(`Preservation rebuild ${label} inferred geometry copies disagree.`);
+  }
+  const inferredObject = nullableGeometryRecord(embeddedFromMatched ?? embeddedFromUncertain ?? null, `${label} inferred`);
+  const inferredRanges = inferredObject?.sourceRanges ?? [];
+  const embeddedUnmatchedFromMatched = matchedObject?.unmatchedRanges;
+  const embeddedUnmatchedFromUncertain = uncertainObject?.unmatchedRanges;
+  const legacySampleMetadata = label === 'existing' && Array.isArray(record.sampleMetadata)
+    ? record.sampleMetadata
+    : [];
+  if (embeddedUnmatchedFromMatched !== undefined && embeddedUnmatchedFromUncertain !== undefined
+    && hashCanonical(embeddedUnmatchedFromMatched) !== hashCanonical(embeddedUnmatchedFromUncertain)) {
+    throw new Error(`Preservation rebuild ${label} unmatched range copies disagree.`);
+  }
+  for (const container of [matchedObject, uncertainObject]) {
+    if (container === null) continue;
+    const embeddedRanges = container.inferredRanges ?? [];
+    if (!Array.isArray(embeddedRanges) || hashCanonical(embeddedRanges) !== hashCanonical(inferredRanges)) {
+      throw new Error(`Preservation rebuild ${label} inferred range copies disagree.`);
+    }
+  }
+  const rangeReadMode = label === 'existing'
+    ? determineExistingSourceRangeReadMode(
+      matchedObject,
+      inferredObject,
+      uncertainObject,
+      embeddedUnmatchedFromMatched ?? embeddedUnmatchedFromUncertain ?? [],
+      source,
+      legacySampleMetadata,
+    )
+    : 'strict-proposed';
+  const matched = readStrictRoadLines(
+    matchedObject, source, sourceIdentityIndex, legacySampleMetadata,
+    `${label} matched`, new Set([0]), true, true, rangeReadMode,
+  );
+  const inferred = readStrictRoadLines(
+    inferredObject, source, sourceIdentityIndex, legacySampleMetadata,
+    `${label} inferred`, new Set([1]), false, false, rangeReadMode,
+  );
+  const uncertain = readStrictRoadLines(
+    uncertainObject, source, sourceIdentityIndex, legacySampleMetadata,
+    `${label} uncertain`, new Set([2]), true, true, rangeReadMode,
+  );
+  const matchedPointCount = integerOrZero(record.roadMatchedPointCount);
+  markCountedInferredPrefix(inferred, matchedPointCount - pointCount(matched) - pointCount(uncertain), label);
+  assertMonotonicInferredGroups(inferred, `${label} inferred`);
+  return {
+    coverage,
+    inferred,
+    lastMatchedPosition: readStrictLastMatchedPosition(record.roadMatchedLastPosition, source, label),
+    matched,
+    matchedPointCount,
+    unmatched: readStrictDiagnosticRanges(
+      embeddedUnmatchedFromMatched ?? embeddedUnmatchedFromUncertain ?? [],
+      source,
+      sourceIdentityIndex,
+      legacySampleMetadata,
+      `${label} unmatched`,
+      rangeReadMode,
+    ),
+    uncertain,
+  };
+}
+
+function readStrictLastMatchedPosition(
+  value: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  label: 'existing' | 'proposed',
+): Prisma.JsonObject | typeof Prisma.JsonNull {
+  if (value === null || value === undefined || value instanceof Prisma.NullTypes.JsonNull) return Prisma.JsonNull;
+  if (!isRecord(value)) throw new Error(`Preservation rebuild ${label} last matched position is malformed.`);
+  const latitude = Number(value.latitude);
+  const longitude = Number(value.longitude);
+  const occurredAt = isoOrNull(value.occurredAt);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90
+    || !Number.isFinite(longitude) || longitude < -180 || longitude > 180
+    || occurredAt === null || !source.some((position) => position.occurredAt === occurredAt)) {
+    throw new Error(`Preservation rebuild ${label} last matched position does not match raw GPS time.`);
+  }
+  return { latitude, longitude, occurredAt };
+}
+
+function nullableGeometryRecord(value: unknown, label: string): Record<string, unknown> | null {
+  if (value === null || value === undefined || value instanceof Prisma.NullTypes.JsonNull) return null;
+  if (!isRecord(value) || value.type !== 'MultiLineString' || !Array.isArray(value.coordinates)) {
+    throw new Error(`Preservation rebuild ${label} geometry is malformed.`);
+  }
+  return value;
+}
+
+function readStrictRoadLines(
+  geometry: Record<string, unknown> | null,
+  source: RouteTrackingGeometryPositionInput[],
+  sourceIdentityIndex: SourceIdentityIndex,
+  legacySampleMetadata: unknown[],
+  label: string,
+  allowedLevels: Set<number>,
+  countedByMatcher: boolean,
+  requireMonotonicRanges: boolean,
+  rangeReadMode: SourceRangeReadMode,
+): PreservedRoadLine[] {
+  if (geometry === null) return [];
+  const coordinates = geometry.coordinates as unknown[];
+  const ranges = geometry.sourceRanges;
+  if (!Array.isArray(ranges) || ranges.length !== coordinates.length) {
+    if (coordinates.length === 0 && (ranges === undefined || Array.isArray(ranges) && ranges.length === 0)) return [];
+    throw new Error(`Preservation rebuild ${label} line/range cardinality is invalid.`);
+  }
+  const lines = coordinates.map((line, index) => {
+    if (!Array.isArray(line) || line.length < 2) {
+      throw new Error(`Preservation rebuild ${label} line ${index} is malformed.`);
+    }
+    const parsedCoordinates = line.map((coordinate) => {
+      if (!Array.isArray(coordinate) || coordinate.length < 2) {
+        throw new Error(`Preservation rebuild ${label} line ${index} has an invalid coordinate.`);
+      }
+      const longitude = Number(coordinate[0]);
+      const latitude = Number(coordinate[1]);
+      if (!Number.isFinite(longitude) || !Number.isFinite(latitude)
+        || longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) {
+        throw new Error(`Preservation rebuild ${label} line ${index} has an invalid coordinate.`);
+      }
+      return [longitude, latitude] as [number, number];
+    });
+    const range = readStrictSourceRange(
+      ranges[index], source, sourceIdentityIndex, legacySampleMetadata,
+      `${label} line ${index}`, rangeReadMode,
+    );
+    if (!allowedLevels.has(range.interpolationLevel ?? -1)) {
+      throw new Error(`Preservation rebuild ${label} line ${index} has an invalid interpolation level.`);
+    }
+    return { countedByMatcher, coordinates: parsedCoordinates, range };
+  });
+  if (requireMonotonicRanges) assertMonotonicSourceRanges(lines.map((line) => line.range), label);
+  return lines;
+}
+
+function markCountedInferredPrefix(
+  inferred: PreservedRoadLine[],
+  expectedPointCount: number,
+  label: string,
+): void {
+  if (!Number.isInteger(expectedPointCount) || expectedPointCount < 0) {
+    throw new Error(`Preservation rebuild ${label} matched point count is inconsistent with stored road lines.`);
+  }
+  let remaining = expectedPointCount;
+  for (const line of inferred) {
+    if (remaining === 0) break;
+    if (remaining < line.coordinates.length) {
+      throw new Error(`Preservation rebuild ${label} matched point count splits an inferred road line.`);
+    }
+    line.countedByMatcher = true;
+    remaining -= line.coordinates.length;
+  }
+  if (remaining !== 0) {
+    throw new Error(`Preservation rebuild ${label} matched point count exceeds stored road lines.`);
+  }
+}
+
+function pointCount(lines: PreservedRoadLine[]): number {
+  return lines.reduce((sum, line) => sum + line.coordinates.length, 0);
+}
+
+function assertMonotonicInferredGroups(inferred: PreservedRoadLine[], label: string): void {
+  const firstSupplementIndex = inferred.findIndex((line) => !line.countedByMatcher);
+  const prefixLength = firstSupplementIndex === -1 ? inferred.length : firstSupplementIndex;
+  assertMonotonicSourceRanges(
+    inferred.slice(0, prefixLength).map((line) => line.range),
+    `${label} matcher-counted`,
+  );
+  assertMonotonicSourceRanges(
+    inferred.slice(prefixLength).map((line) => line.range),
+    `${label} supplemental`,
+  );
+}
+
+function readStrictSourceRange(
+  value: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  sourceIdentityIndex: SourceIdentityIndex,
+  legacySampleMetadata: unknown[],
+  label: string,
+  rangeReadMode: SourceRangeReadMode,
+  allowPointRange = false,
+): RouteTrackingSourceRangeV1 {
+  if (!isRecord(value)) throw new Error(`Preservation rebuild ${label} source range is malformed.`);
+  const storedStartSourceIndex = Number(value.startSourceIndex);
+  const storedEndSourceIndex = Number(value.endSourceIndex);
+  if (!Number.isInteger(storedStartSourceIndex) || !Number.isInteger(storedEndSourceIndex)
+    || storedStartSourceIndex < 0 || storedEndSourceIndex < storedStartSourceIndex) {
+    throw new Error(`Preservation rebuild ${label} source range indexes are invalid.`);
+  }
+  const startOccurredAt = isoOrNull(value.startOccurredAt);
+  const endOccurredAt = isoOrNull(value.endOccurredAt);
+  if (typeof value.startEventId !== 'string' || typeof value.endEventId !== 'string'
+    || startOccurredAt === null || endOccurredAt === null) {
+    throw new Error(`Preservation rebuild ${label} source identity is malformed.`);
+  }
+  if (rangeReadMode !== 'strict-proposed') {
+    assertExistingEndpointProvenance(
+      rangeReadMode,
+      storedStartSourceIndex,
+      value.startEventId,
+      startOccurredAt,
+      source,
+      legacySampleMetadata,
+      `${label} start`,
+    );
+    assertExistingEndpointProvenance(
+      rangeReadMode,
+      storedEndSourceIndex,
+      value.endEventId,
+      endOccurredAt,
+      source,
+      legacySampleMetadata,
+      `${label} end`,
+    );
+  }
+  const startSourceIndex = rangeReadMode !== 'strict-proposed'
+    ? resolveUniqueSourceIdentityIndex(sourceIdentityIndex, value.startEventId, startOccurredAt, `${label} start`)
+    : storedStartSourceIndex;
+  const endSourceIndex = rangeReadMode !== 'strict-proposed'
+    ? resolveUniqueSourceIdentityIndex(sourceIdentityIndex, value.endEventId, endOccurredAt, `${label} end`)
+    : storedEndSourceIndex;
+  if ((allowPointRange ? endSourceIndex < startSourceIndex : endSourceIndex <= startSourceIndex)
+    || endSourceIndex >= source.length) {
+    throw new Error(`Preservation rebuild ${label} source range indexes are invalid after identity normalization.`);
+  }
+  const start = source[startSourceIndex];
+  const end = source[endSourceIndex];
+  if (start === undefined || end === undefined
+    || value.startEventId !== start.eventId || value.endEventId !== end.eventId
+    || startOccurredAt !== start.occurredAt || endOccurredAt !== end.occurredAt) {
+    throw new Error(`Preservation rebuild ${label} source identity does not match raw GPS.`);
+  }
+  const interpolationLevel = value.interpolationLevel;
+  if (interpolationLevel !== 0 && interpolationLevel !== 1 && interpolationLevel !== 2) {
+    throw new Error(`Preservation rebuild ${label} interpolation level is invalid.`);
+  }
+  const reason = value.reason;
+  if (reason !== undefined && reason !== null
+    && reason !== 'GPS_GAP' && reason !== 'IMPLAUSIBLE_JUMP' && reason !== 'LOW_ACCURACY'
+    && reason !== 'NO_MATCH' && reason !== 'OUT_OF_COVERAGE') {
+    throw new Error(`Preservation rebuild ${label} reason is invalid.`);
+  }
+  return {
+    endEventId: end.eventId,
+    endOccurredAt: end.occurredAt,
+    endSourceIndex,
+    interpolationLevel,
+    ...(reason === 'GPS_GAP' || reason === 'IMPLAUSIBLE_JUMP' || reason === 'LOW_ACCURACY'
+      || reason === 'NO_MATCH' || reason === 'OUT_OF_COVERAGE' ? { reason } : {}),
+    startEventId: start.eventId,
+    startOccurredAt: start.occurredAt,
+    startSourceIndex,
+  };
+}
+
+function readStrictDiagnosticRanges(
+  value: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  sourceIdentityIndex: SourceIdentityIndex,
+  legacySampleMetadata: unknown[],
+  label: string,
+  rangeReadMode: SourceRangeReadMode,
+): RouteTrackingSourceRangeV1[] {
+  if (!Array.isArray(value)) throw new Error(`Preservation rebuild ${label} ranges are malformed.`);
+  const ranges = value.map((range, index) => {
+    const parsed = readStrictSourceRange(
+      range, source, sourceIdentityIndex, legacySampleMetadata,
+      `${label} range ${index}`, rangeReadMode, true,
+    );
+    if (parsed.interpolationLevel !== 2 || parsed.reason === undefined) {
+      throw new Error(`Preservation rebuild ${label} range ${index} has invalid diagnostics.`);
+    }
+    return parsed;
+  });
+  assertMonotonicSourceRanges(ranges, label);
+  return ranges;
+}
+
+function buildSourceIdentityIndex(source: RouteTrackingGeometryPositionInput[]): SourceIdentityIndex {
+  const index: SourceIdentityIndex = new Map();
+  source.forEach((position, sourceIndex) => {
+    const key = sourceIdentityKey(position.eventId, position.occurredAt);
+    const matches = index.get(key);
+    if (matches === undefined) index.set(key, [sourceIndex]);
+    else matches.push(sourceIndex);
+  });
+  return index;
+}
+
+function sourceIdentityKey(eventId: string, occurredAt: string): string {
+  return `${eventId}\u0000${occurredAt}`;
+}
+
+function resolveUniqueSourceIdentityIndex(
+  sourceIdentityIndex: SourceIdentityIndex,
+  eventId: string,
+  occurredAt: string,
+  label: string,
+): number {
+  const matches = sourceIdentityIndex.get(sourceIdentityKey(eventId, occurredAt));
+  if (matches === undefined || matches.length === 0) {
+    throw new Error(`Preservation rebuild ${label} source identity is missing from raw GPS.`);
+  }
+  if (matches.length !== 1) {
+    throw new Error(`Preservation rebuild ${label} source identity is ambiguous in raw GPS.`);
+  }
+  return matches[0]!;
+}
+
+function assertExistingEndpointProvenance(
+  rangeReadMode: Exclude<SourceRangeReadMode, 'strict-proposed'>,
+  storedSourceIndex: number,
+  eventId: string,
+  occurredAt: string,
+  source: RouteTrackingGeometryPositionInput[],
+  legacySampleMetadata: unknown[],
+  label: string,
+): void {
+  const rawAtStoredIndex = source[storedSourceIndex];
+  const rawIdentityMatches = rawAtStoredIndex !== undefined
+    && rawAtStoredIndex.eventId === eventId
+    && rawAtStoredIndex.occurredAt === occurredAt;
+  const legacyAtStoredIndex = legacySampleMetadata[storedSourceIndex];
+  const legacyIdentityMatches = isRecord(legacyAtStoredIndex)
+    && legacyAtStoredIndex.eventId === eventId
+    && isoOrNull(legacyAtStoredIndex.occurredAt) === occurredAt;
+  const expectedIdentityMatches = rangeReadMode === 'remap-existing-raw'
+    ? rawIdentityMatches
+    : legacyIdentityMatches;
+  if (!expectedIdentityMatches) {
+    throw new Error(
+      `Preservation rebuild ${label} source identity does not match the selected existing-cache indexing mode.`,
+    );
+  }
+}
+
+function determineExistingSourceRangeReadMode(
+  matchedObject: Record<string, unknown> | null,
+  inferredObject: Record<string, unknown> | null,
+  uncertainObject: Record<string, unknown> | null,
+  unmatchedRanges: unknown,
+  source: RouteTrackingGeometryPositionInput[],
+  legacySampleMetadata: unknown[],
+): Exclude<SourceRangeReadMode, 'strict-proposed'> {
+  const rangeContainers = [
+    matchedObject?.sourceRanges,
+    inferredObject?.sourceRanges,
+    uncertainObject?.sourceRanges,
+    unmatchedRanges,
+  ];
+  let endpointCount = 0;
+  let allRaw = true;
+  let allLegacy = true;
+  for (const container of rangeContainers) {
+    if (!Array.isArray(container)) continue;
+    for (const value of container) {
+      if (!isRecord(value)) {
+        throw new Error('Preservation rebuild existing source range is malformed.');
+      }
+      const startOccurredAt = isoOrNull(value.startOccurredAt);
+      const endOccurredAt = isoOrNull(value.endOccurredAt);
+      const startSourceIndex = Number(value.startSourceIndex);
+      const endSourceIndex = Number(value.endSourceIndex);
+      if (typeof value.startEventId !== 'string' || typeof value.endEventId !== 'string'
+        || startOccurredAt === null || endOccurredAt === null
+        || !Number.isInteger(startSourceIndex) || !Number.isInteger(endSourceIndex)
+        || startSourceIndex < 0 || endSourceIndex < startSourceIndex) {
+        throw new Error('Preservation rebuild existing source range identity or indexes are malformed.');
+      }
+      endpointCount += 2;
+      allRaw = allRaw
+        && endpointIdentityMatches(source[startSourceIndex], value.startEventId, startOccurredAt)
+        && endpointIdentityMatches(source[endSourceIndex], value.endEventId, endOccurredAt);
+      allLegacy = allLegacy
+        && endpointIdentityMatches(legacySampleMetadata[startSourceIndex], value.startEventId, startOccurredAt)
+        && endpointIdentityMatches(legacySampleMetadata[endSourceIndex], value.endEventId, endOccurredAt);
+    }
+  }
+  if (endpointCount === 0 || allRaw) return 'remap-existing-raw';
+  if (allLegacy) return 'remap-existing-legacy';
+  throw new Error(
+    'Preservation rebuild existing source identity indexes mix raw and legacy compact provenance.',
+  );
+}
+
+function endpointIdentityMatches(value: unknown, eventId: string, occurredAt: string): boolean {
+  return isRecord(value)
+    && value.eventId === eventId
+    && isoOrNull(value.occurredAt) === occurredAt;
+}
+
+function assertMonotonicSourceRanges(ranges: RouteTrackingSourceRangeV1[], label: string): void {
+  for (let index = 1; index < ranges.length; index += 1) {
+    const previous = ranges[index - 1]!;
+    const current = ranges[index]!;
+    if (current.startSourceIndex < previous.startSourceIndex
+      || current.endSourceIndex < previous.endSourceIndex) {
+      throw new Error(`Preservation rebuild ${label} source range endpoints are nonmonotonic.`);
+    }
+  }
+}
+
+function sortPreservedRoadLines(lines: PreservedRoadLine[]): PreservedRoadLine[] {
+  return [...lines].sort((left, right) => (
+    left.range.startSourceIndex - right.range.startSourceIndex
+    || left.range.endSourceIndex - right.range.endSourceIndex
+  ));
+}
+
+function sortPreservedInferredRoadLines(lines: PreservedRoadLine[]): PreservedRoadLine[] {
+  return [...lines].sort((left, right) => (
+    Number(right.countedByMatcher) - Number(left.countedByMatcher)
+    || left.range.startSourceIndex - right.range.startSourceIndex
+    || left.range.endSourceIndex - right.range.endSourceIndex
+  ));
+}
+
+function rangesShareSourceEdge(left: RouteTrackingSourceRangeV1, right: RouteTrackingSourceRangeV1): boolean {
+  return Math.max(left.startSourceIndex, right.startSourceIndex) < Math.min(left.endSourceIndex, right.endSourceIndex);
+}
+
+function assertDisjointTrustedEdges(lines: PreservedRoadLine[], label: string): void {
+  for (let left = 0; left < lines.length; left += 1) {
+    for (let right = left + 1; right < lines.length; right += 1) {
+      if (rangesShareSourceEdge(lines[left]!.range, lines[right]!.range)) {
+        throw new Error(`Preservation rebuild ${label} trusted source edges overlap.`);
+      }
+    }
+  }
+}
+
+function roadGeometry(lines: PreservedRoadLine[]): Prisma.JsonObject | null {
+  if (lines.length === 0) return null;
+  return {
+    coordinates: lines.map((line) => line.coordinates),
+    sourceRanges: lines.map((line) => line.range),
+    type: 'MultiLineString',
+  };
+}
+
+function embedPreservedMetadata(
+  geometry: Prisma.JsonObject | null,
+  inferredGeometry: Prisma.JsonObject | null,
+  unmatchedRanges: RouteTrackingSourceRangeV1[],
+): Prisma.JsonObject | null {
+  if (geometry === null && inferredGeometry === null && unmatchedRanges.length === 0) return null;
+  return {
+    ...(geometry ?? { coordinates: [], type: 'MultiLineString' }),
+    ...(inferredGeometry === null ? {} : {
+      inferredGeometry,
+      inferredRanges: inferredGeometry.sourceRanges,
+    }),
+    ...(unmatchedRanges.length === 0 ? {} : { unmatchedRanges }),
+  };
+}
+
+function buildUncoveredSourceRanges(
+  source: RouteTrackingGeometryPositionInput[],
+  trusted: PreservedRoadLine[],
+  diagnostics: RouteTrackingSourceRangeV1[],
+): RouteTrackingSourceRangeV1[] {
+  const coveredEdges = new Set<number>();
+  for (const line of trusted) {
+    for (let edge = line.range.startSourceIndex; edge < line.range.endSourceIndex; edge += 1) coveredEdges.add(edge);
+  }
+  const ranges: RouteTrackingSourceRangeV1[] = [];
+  let start: number | null = null;
+  let reason: NonNullable<RouteTrackingSourceRangeV1['reason']> | null = null;
+  for (let edge = 0; edge < source.length - 1; edge += 1) {
+    const edgeReason = diagnosticReasonForEdge(edge, diagnostics);
+    if (!coveredEdges.has(edge) && (start === null || reason !== edgeReason)) {
+      if (start !== null && reason !== null) ranges.push(sourceRange(source, start, edge, reason));
+      start = edge;
+      reason = edgeReason;
+    }
+    const atEnd = edge === source.length - 2;
+    if (start !== null && (coveredEdges.has(edge) || atEnd)) {
+      const end = coveredEdges.has(edge) ? edge : edge + 1;
+      ranges.push(sourceRange(source, start, end, reason ?? 'NO_MATCH'));
+      start = null;
+      reason = null;
+    }
+  }
+  return ranges;
+}
+
+function diagnosticReasonForEdge(
+  edge: number,
+  diagnostics: RouteTrackingSourceRangeV1[],
+): NonNullable<RouteTrackingSourceRangeV1['reason']> {
+  return diagnostics.find((range) => (
+    range.startSourceIndex <= edge + 1 && range.endSourceIndex >= edge
+  ))?.reason ?? 'NO_MATCH';
+}
+
+function sourceRange(
+  source: RouteTrackingGeometryPositionInput[],
+  startSourceIndex: number,
+  endSourceIndex: number,
+  reason: NonNullable<RouteTrackingSourceRangeV1['reason']>,
+): RouteTrackingSourceRangeV1 {
+  const start = source[startSourceIndex]!;
+  const end = source[endSourceIndex]!;
+  return {
+    endEventId: end.eventId,
+    endOccurredAt: end.occurredAt,
+    endSourceIndex,
+    interpolationLevel: 2,
+    reason,
+    startEventId: start.eventId,
+    startOccurredAt: start.occurredAt,
+    startSourceIndex,
+  };
+}
+
+function summarize(
+  document: RouteTrackingGeometryDocumentV1,
+  roadMatchWrite: RebuildPlan['roadMatchWrite'],
+): TrackingSummary {
+  const uncertain = jsonSafe(roadMatchWrite.roadMatchedUncertainGeometry) as { coordinates?: unknown[] } | null;
+  const matched = jsonSafe(roadMatchWrite.roadMatchedGeometry);
+  return {
+    firstOccurredAt: document.samples[0]?.occurredAt ?? null,
+    gapCount: document.samples.filter((sample) => sample.gapBefore).length,
+    geometryPointCount: document.coordinates.length,
+    inferredLineCount: readInferredLineCount(matched),
+    lastOccurredAt: document.samples.at(-1)?.occurredAt ?? null,
+    matchedPointCount: roadMatchWrite.roadMatchedPointCount,
+    sourcePointCount: document.sourcePointCount,
+    uncertainLineCount: Array.isArray(uncertain?.coordinates) ? uncertain.coordinates.length : 0,
+  };
+}
+
+function summarizeDerived(value: unknown): TrackingSummary {
+  if (!isRecord(value)) return emptySummary();
+  const samples = Array.isArray(value.sampleMetadata) ? value.sampleMetadata : [];
+  const uncertain = isRecord(value.roadMatchedUncertainGeometry) && Array.isArray(value.roadMatchedUncertainGeometry.coordinates)
+    ? value.roadMatchedUncertainGeometry.coordinates.length
+    : 0;
+  return {
+    firstOccurredAt: isoOrNull(value.firstOccurredAt),
+    gapCount: samples.filter((sample) => isRecord(sample) && sample.gapBefore === true).length,
+    geometryPointCount: integerOrZero(value.geometryPointCount),
+    inferredLineCount: readInferredLineCount(value.roadMatchedGeometry),
+    lastOccurredAt: isoOrNull(value.lastOccurredAt),
+    matchedPointCount: integerOrZero(value.roadMatchedPointCount),
+    sourcePointCount: integerOrZero(value.sourcePointCount),
+    uncertainLineCount: uncertain,
+  };
+}
+
+function emptySummary(): TrackingSummary {
+  return { firstOccurredAt: null, gapCount: 0, geometryPointCount: 0, inferredLineCount: 0, lastOccurredAt: null, matchedPointCount: 0, sourcePointCount: 0, uncertainLineCount: 0 };
+}
+
+// The opt-in pilot may fill an empty road cache, but may never replace already recovered road lines.
+export function assertUnmeasuredAccuracyInferenceGain(
+  currentDerived: unknown,
+  proposed: Pick<RebuildPlan['roadMatchWrite'], 'roadMatchedGeometry'>,
+): void {
+  if (currentDerived !== null && currentDerived !== undefined) {
+    if (!isRecord(currentDerived)) throw new Error('Unmeasured-accuracy pilot requires an empty road cache.');
+    const matched = currentDerived.roadMatchedGeometry;
+    const uncertain = currentDerived.roadMatchedUncertainGeometry;
+    if (existingRoadLineCount(matched) > 0
+      || existingInferredLineCount(matched) > 0
+      || existingInferredLineCount(uncertain) > 0) {
+      throw new Error('Unmeasured-accuracy pilot requires an empty road cache.');
+    }
+  }
+  if (readInferredLineCount(jsonSafe(proposed.roadMatchedGeometry)) === 0) {
+    throw new Error('Unmeasured-accuracy pilot requires at least one new inferred road line.');
+  }
+}
+
+function existingRoadLineCount(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (!isRecord(value) || value.type !== 'MultiLineString' || !Array.isArray(value.coordinates)) {
+    throw new Error('Unmeasured-accuracy pilot requires an empty road cache.');
+  }
+  return value.coordinates.length;
+}
+
+function existingInferredLineCount(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+  if (!isRecord(value)) throw new Error('Unmeasured-accuracy pilot requires an empty road cache.');
+  return existingRoadLineCount(value.inferredGeometry);
+}
+
+function readInferredLineCount(value: unknown): number {
+  if (!isRecord(value) || !isRecord(value.inferredGeometry)) return 0;
+  return Array.isArray(value.inferredGeometry.coordinates) ? value.inferredGeometry.coordinates.length : 0;
+}
+
+export function routeTrackingDerivedMatches(current: unknown, desired: Record<string, unknown>): boolean {
+  if (!isRecord(current)) return false;
+  const keys = Object.keys(desired);
+  const currentComparable = Object.fromEntries(keys.map((key) => [key, normalizeDerivedField(key, current[key])]));
+  const desiredComparable = Object.fromEntries(keys.map((key) => [key, normalizeDerivedField(key, desired[key])]));
+  return hashCanonical(currentComparable) === hashCanonical(desiredComparable);
+}
+
+const DERIVED_STATE_FIELDS = [
+  'expiresAt',
+  'firstOccurredAt',
+  'geometry',
+  'geometryPointCount',
+  'lastDriverId',
+  'lastEventId',
+  'lastLatitude',
+  'lastLongitude',
+  'lastOccurredAt',
+  'lastReceivedAt',
+  'roadMatchedCoverage',
+  'roadMatchedGeometry',
+  'roadMatchedLastInputOccurredAt',
+  'roadMatchedLastPosition',
+  'roadMatchedPointCount',
+  'roadMatchedSchemaVersion',
+  'roadMatchedSourcePointCount',
+  'roadMatchedUncertainGeometry',
+  'roadMatchedWatermark',
+  'routePlanId',
+  'sampleMetadata',
+  'sourcePointCount',
+] as const;
+
+export function routeTrackingDerivedStateHash(value: unknown): string {
+  if (!isRecord(value)) return hashCanonical(null);
+  return hashCanonical(Object.fromEntries(
+    DERIVED_STATE_FIELDS.map((key) => [key, normalizeDerivedField(key, value[key])]),
+  ));
+}
+
+export function assertCurrentDerivedRestoreState(
+  current: unknown,
+  expectedWatermark: string,
+  expectedDerivedStateHash: string,
+): void {
+  if (!isRecord(current) || current.roadMatchedWatermark !== expectedWatermark) {
+    throw new Error('Current derived watermark does not match the explicitly approved rollback target.');
+  }
+  if (routeTrackingDerivedStateHash(current) !== expectedDerivedStateHash) {
+    throw new Error('Current derived tracking state changed after apply; rollback aborted.');
+  }
+}
+
+export function assertCurrentDerivedPreservationState(current: unknown, expectedDerivedStateHash: string): void {
+  if (routeTrackingDerivedStateHash(current) !== expectedDerivedStateHash) {
+    throw new Error('Current derived tracking state changed after review; preservation apply aborted.');
+  }
+}
+
+function normalizeDerivedField(key: string, value: unknown): unknown {
+  if (key === 'lastLatitude' || key === 'lastLongitude') {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+  return jsonSafe(value);
+}
+
+async function writeBackupExclusive(path: string, envelope: BackupEnvelope): Promise<{ path: string; sha256: string }> {
+  const content = `${JSON.stringify(jsonSafe(envelope), null, 2)}\n`;
+  const handle = await open(path, 'wx', 0o600);
+  try {
+    await handle.writeFile(content, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  return { path, sha256: sha256(content) };
+}
+
+async function readReviewedBackup(path: string, expectedSha256: string): Promise<BackupEnvelope> {
+  const stats = await lstat(path);
+  if (!stats.isFile() || (stats.mode & 0o777) !== 0o600) throw new Error('Reviewed backup must be a regular file with mode 0600.');
+  const content = await readFile(path, 'utf8');
+  if (sha256(content) !== expectedSha256) throw new Error('Reviewed backup SHA-256 mismatch.');
+  const value = JSON.parse(content) as unknown;
+  if (!isBackupEnvelope(value)) throw new Error('Reviewed backup envelope is invalid.');
+  return value;
+}
+
+async function writePrewriteBackup(basePath: string, envelope: BackupEnvelope): Promise<string> {
+  const suffix = new Date().toISOString().replaceAll(':', '').replaceAll('.', '');
+  const path = `${basePath}.prewrite-${suffix}.json`;
+  await writeBackupExclusive(path, envelope);
+  return path;
+}
+
+function isBackupEnvelope(value: unknown): value is BackupEnvelope {
+  return isRecord(value)
+    && value.backupSchemaVersion === 'route_tracking_quality_rebuild_backup.v1'
+    && (value.allowUnmeasuredAccuracyInference === undefined || typeof value.allowUnmeasuredAccuracyInference === 'boolean')
+    && (value.preserveExistingRoadCache === undefined || typeof value.preserveExistingRoadCache === 'boolean')
+    && (value.currentDerivedStateHash === undefined
+      || typeof value.currentDerivedStateHash === 'string' && isSha256(value.currentDerivedStateHash))
+    && typeof value.planHash === 'string'
+    && typeof value.routeStateHash === 'string'
+    && typeof value.sourcePrefixDigest === 'string'
+    && typeof value.sourcePrefixLastKey === 'string'
+    && Number.isInteger(value.sourcePrefixPointCount)
+    && isRebuildEventWindow(value.eventWindow)
+    && isRecord(value.identity);
+}
+
+function isRebuildEventWindow(value: unknown): value is RebuildEventWindow {
+  return isRecord(value)
+    && (value.anchorSource === 'PLAN_DATE' || value.anchorSource === 'ROUTE_STARTED')
+    && typeof value.endExclusive === 'string'
+    && Number.isFinite(Date.parse(value.endExclusive))
+    && typeof value.startInclusive === 'string'
+    && Number.isFinite(Date.parse(value.startInclusive))
+    && typeof value.serviceDate === 'string'
+    && typeof value.timezone === 'string'
+    && value.timezone !== '';
+}
+
+function output(
+  args: RebuildArgs,
+  before: TrackingSummary,
+  after: TrackingSummary,
+  plan: RebuildPlan,
+  extra: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ok: true,
+    ...scopeOutput(args),
+    ...(args.allowUnmeasuredAccuracyInference ? { allowUnmeasuredAccuracyInference: true } : {}),
+    ...(args.preserveExistingRoadCache ? { preserveExistingRoadCache: true } : {}),
+    planHash: plan.planHash,
+    plannedRoadMatchedWatermark: plan.roadMatchWrite.roadMatchedWatermark,
+    eventWindow: plan.eventWindow,
+    sourcePrefixDigest: plan.sourcePrefixDigest,
+    before,
+    after,
+    ...extra,
+  };
+}
+
+function scopeOutput(args: Pick<RebuildArgs, 'appId' | 'routePlanId' | 'shopDomain'>) {
+  return { appId: args.appId, routePlanId: args.routePlanId, shopDomain: args.shopDomain };
+}
+
+function prismaJson(value: unknown): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  return value === null || value === undefined ? Prisma.JsonNull : value;
+}
+
+function requiredDate(value: unknown, field: string): Date {
+  const date = value instanceof Date ? value : typeof value === 'string' ? new Date(value) : null;
+  if (date === null || !Number.isFinite(date.getTime())) throw new Error(`Backup derived ${field} is invalid.`);
+  return date;
+}
+
+function nullableDate(value: unknown, field: string): Date | null {
+  return value === null || value === undefined ? null : requiredDate(value, field);
+}
+
+function requiredInteger(value: unknown, field: string): number {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0) throw new Error(`Backup derived ${field} is invalid.`);
+  return number;
+}
+
+function nullableInteger(value: unknown, field: string): number | null {
+  return value === null || value === undefined ? null : requiredInteger(value, field);
+}
+
+function requiredNumber(value: unknown, field: string): number {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`Backup derived ${field} is invalid.`);
+  return number;
+}
+
+function requiredTextValue(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value === '') throw new Error(`Backup derived ${field} is invalid.`);
+  return value;
+}
+
+function nullableText(value: unknown, field: string): string | null {
+  return value === null || value === undefined ? null : requiredTextValue(value, field);
+}
+
+function hashCanonical(value: unknown): string {
+  return sha256(canonicalJson(jsonSafe(value)));
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (isRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value ?? null);
+}
+
+function jsonSafe(value: unknown): unknown {
+  if (value === undefined) return null;
+  return JSON.parse(JSON.stringify(value, (_key, item: unknown) => {
+    if (typeof item === 'bigint') return item.toString();
+    if (item instanceof Prisma.NullTypes.JsonNull || item instanceof Prisma.NullTypes.DbNull) return null;
+    return item;
+  })) as unknown;
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function isSha256(value: string): boolean {
+  return /^[0-9a-f]{64}$/u.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function integerOrZero(value: unknown): number {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : 0;
+}
+
+function isoOrNull(value: unknown): string | null {
+  const date = value instanceof Date ? value : typeof value === 'string' ? new Date(value) : null;
+  return date !== null && Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function required(values: Map<string, string>, key: string): string {
+  const value = values.get(key);
+  if (value === undefined || value === '') throw new Error(`Missing required argument: ${key}`);
+  return value;
+}
+
+function optional(values: Map<string, string>, key: string): string | undefined {
+  const value = values.get(key);
+  return value === undefined || value === '' ? undefined : value;
+}
+
+function createRoadMatchProvider(
+  env: RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>,
+  allowUnmeasuredAccuracyInference: boolean,
+): OsrmRouteTrackingRoadMatchProvider {
+  const baseUrls = readConfiguredCoverageBaseUrls(env, 'OSRM');
+  if (Object.keys(baseUrls).length === 0) throw new Error('An OSRM coverage URL is required for route-tracking rebuild.');
+  const timeoutMs = Number.parseInt(env.OSRM_TIMEOUT_MS ?? '', 10);
+  return new OsrmRouteTrackingRoadMatchProvider({
+    baseUrls,
+    allowUnmeasuredAccuracyInference,
+    ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
+  });
+}
+
+class UsageRequestedError extends Error {}
+
+async function main(): Promise<void> {
+  const args = parseRebuildRouteTrackingQualityArgs(process.argv.slice(2));
+  const prisma = new PrismaClient();
+  try {
+    const result = await executeRouteTrackingQualityRebuild({
+      args,
+      ...(args.restore ? {} : { roadMatchProvider: createRoadMatchProvider(process.env, args.allowUnmeasuredAccuracyInference) }),
+      store: new PrismaRouteTrackingQualityRebuildStore(prisma),
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+function printUsage(): void {
+  process.stderr.write('Usage: node dist/scripts/rebuild-route-tracking-quality.js --app-id <app> --shop-domain <domain> --route-plan-id <uuid> [--backup-file <absolute-private-path>] [--allow-unmeasured-accuracy-inference] [--preserve-existing-road-cache] [--apply --plan-hash <sha256> --backup-sha256 <sha256> | --restore --backup-sha256 <sha256> --expected-current-derived-hash <sha256> --expected-current-watermark <watermark>]\n');
+}
+
+function isMainModule(): boolean {
+  return process.argv[1] !== undefined && import.meta.url === new URL(process.argv[1], 'file:').href;
+}
+
+if (isMainModule()) {
+  main().catch((error: unknown) => {
+    if (error instanceof UsageRequestedError) {
+      printUsage();
+      process.exitCode = 0;
+      return;
+    }
+    process.stderr.write(`${JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown rebuild failure' })}\n`);
+    process.exitCode = 1;
+  });
+}

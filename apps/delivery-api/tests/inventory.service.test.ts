@@ -217,7 +217,7 @@ describe('inventory service route-group follower behavior', () => {
               name: '#1001',
               orderItems: [{ id: 'item-1', name: 'Kimchi', options: [], productId: 1, quantity: 2, sku: null, variationId: 0 }],
               phone: null,
-              processedAt: new Date('2026-07-01T12:00:00Z'),
+              processedAt: new Date('2026-01-17T03:30:00Z'),
               rawPayload: {
                 displayFinancialStatus: 'PAID',
                 paymentGatewayNames: ['Email Money Transfer']
@@ -231,14 +231,14 @@ describe('inventory service route-group follower behavior', () => {
             childVersions: [{
               driver: { displayName: 'Driver One', id: 'driver-1', phone: '555-driver' },
               routePlan: {
-                constraints: { departureTime: '09:00' },
+                constraints: { departureTime: '09:00', scheduledStartAt: '2026-07-17T03:00:00Z', scheduledStartTimeZone: 'America/Toronto' },
                 driver: null,
                 id: 'route-1',
                 name: 'Route A',
                 routeStops: [{
                   deliveryStop: { orderId: 'order-1', serviceMinutes: 7 },
                   durationFromPreviousSeconds: 600,
-                  estimatedArrivalAt: new Date('2026-07-02T09:15:00Z'),
+                  estimatedArrivalAt: new Date('2026-07-17T03:30:00Z'),
                   sequence: 1
                 }]
               },
@@ -257,12 +257,18 @@ describe('inventory service route-group follower behavior', () => {
     expect(detail?.linkedRoutes[0]).toEqual(expect.objectContaining({
       driverName: 'Driver One',
       name: 'Route A',
-      startTime: '09:00'
+      startTime: '09:00',
+      scheduledStartAt: '2026-07-17T03:00:00Z',
+      scheduledStartTimeZone: 'America/Toronto'
     }));
+    expect(detail?.linkedRoutes[0]?.stops[0]?.estimatedArrivalAt).toBe('2026-07-17T03:30:00.000Z');
     expect(detail?.orders[0]).toEqual(expect.objectContaining({
       address: '200 Church St, Markham, Ontario, L3P 2M7, CA',
       driveTimeMinutes: 10,
-      eta: '09:15',
+      eta: '03:30',
+      estimatedArrivalAt: '2026-07-17T03:30:00.000Z',
+      processedAt: '2026-01-17',
+      processedAtInstant: '2026-01-17T03:30:00.000Z',
       financialStatus: 'PAID',
       paymentGatewayNames: ['Email Money Transfer'],
       paymentMethodTitle: 'e-Transfer',
@@ -347,6 +353,68 @@ describe('inventory service route-group follower behavior', () => {
       paymentMethodTitle: 'e-Transfer',
       paymentStatus: 'PAID'
     }));
+  });
+
+  test('projects inventory membership from the selected route plan stops', async () => {
+    const inventoryOrder = (orderId: string) => ({
+      order: {
+        currencyCode: 'CAD', deliveryFacts: [], deliveryStops: [], financialStatus: 'PAID', name: `#${orderId}`,
+        orderItems: [{ id: `item-${orderId}`, name: 'Kimchi', options: [], productId: 1, quantity: 1, sku: null, variationId: 0 }],
+        phone: null, processedAt: null, rawPayload: {}, shippingAddress: null, totalPriceAmount: '10.00'
+      },
+      orderId
+    });
+    const routeStop = (orderId: string, sequence: number) => ({
+      deliveryStop: { orderId, serviceMinutes: 5 }, durationFromPreviousSeconds: 60,
+      estimatedArrivalAt: new Date(`2026-09-11T13:0${sequence}:00Z`), sequence
+    });
+    const loaded = {
+      createdAt: new Date('2026-09-11T00:00:00Z'),
+      events: [
+        { action: 'ADD', createdAt: new Date('2026-09-11T01:00:00Z'), name: 'Kimchi', options: [], order: { deliveryStops: [], name: '#barrie-moved', rawPayload: {} }, orderId: 'barrie-moved', productId: 1, quantity: 1, quantityDelta: 1, sku: null, variationId: 0 },
+        { action: 'ADD', createdAt: new Date('2026-09-11T01:00:00Z'), name: 'Kimchi', options: [], order: { deliveryStops: [], name: '#oshawa', rawPayload: {} }, orderId: 'oshawa', productId: 1, quantity: 1, quantityDelta: 1, sku: null, variationId: 0 }
+      ],
+      id: 'inventory-1', name: 'Friday inventory', note: null,
+      orders: [inventoryOrder('oshawa'), inventoryOrder('barrie-moved'), inventoryOrder('barrie-custom')],
+      routeGrouping: {
+        childVersions: [
+          { driver: null, routePlan: { constraints: {}, driver: null, id: 'route-oshawa', name: 'Oshawa', routeStops: [routeStop('oshawa', 1)] }, snapshot: { sortOrder: 2 }, status: 'CURRENT' },
+          { driver: null, routePlan: { constraints: {}, driver: null, id: 'route-barrie', name: 'Barrie', routeStops: [routeStop('barrie-moved', 1), routeStop('barrie-custom', 2)] }, snapshot: { sortOrder: 1 }, status: 'CURRENT' }
+        ]
+      },
+      routeGroupingId: 'group-friday', updatedAt: new Date('2026-09-11T00:00:00Z')
+    };
+    const service = new PrismaInventoryService({
+      inventory: { findFirst: vi.fn(() => loaded) },
+      shop: { findUnique: vi.fn(() => ({ id: 'shop-1' })) }
+    } as never);
+
+    const wholeGroup = await service.getInventoryOrderView({ inventoryId: 'inventory-1', shopDomain: 'example.myshopify.com' });
+    const barrie = await service.getInventoryOrderView({ inventoryId: 'inventory-1', routePlanId: 'route-barrie', shopDomain: 'example.myshopify.com' });
+
+    expect(wholeGroup?.orders.map((order) => order.id)).toEqual(['barrie-moved', 'barrie-custom', 'oshawa']);
+    expect(wholeGroup?.linkedRoutes.map((route) => route.id)).toEqual(['route-barrie', 'route-oshawa']);
+    expect(barrie?.orders.map((order) => order.id)).toEqual(['barrie-moved', 'barrie-custom']);
+    expect(barrie?.linkedRoutes.map((route) => route.id)).toEqual(['route-barrie']);
+    expect(barrie?.lastChange.map((change) => change.orderId)).toEqual(['barrie-moved']);
+    expect(barrie?.itemSummary.totalQuantity).toBe(2);
+  });
+
+  test('rejects a route plan outside the inventory route group', async () => {
+    const service = new PrismaInventoryService({
+      inventory: { findFirst: vi.fn(() => ({
+        createdAt: new Date('2026-09-11T00:00:00Z'), events: [], id: 'inventory-1', name: 'Friday inventory', note: null, orders: [],
+        routeGrouping: { childVersions: [] }, routeGroupingId: 'group-friday', updatedAt: new Date('2026-09-11T00:00:00Z')
+      })) },
+      shop: { findUnique: vi.fn(() => ({ id: 'shop-1' })) }
+    } as never);
+
+    await expect(service.getInventoryOrderView({
+      inventoryId: 'inventory-1', routePlanId: 'route-other-group', shopDomain: 'example.myshopify.com'
+    })).rejects.toMatchObject({
+      blockers: ['route plan does not belong to the inventory route group'],
+      code: 'INVENTORY_INVALID'
+    });
   });
 
   test('creates a missing linked inventory from full current route-group membership', async () => {

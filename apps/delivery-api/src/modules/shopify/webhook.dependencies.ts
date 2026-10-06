@@ -27,12 +27,6 @@ type LoadShopifyWebhookDependenciesInput = {
   prisma: PrismaClient;
 };
 
-export function loadShopifyWebhookDependencies(
-  input: LoadShopifyWebhookDependenciesInput
-): ShopifyWebhookDependencies | undefined {
-  return loadShopifyWebhookRuntime(input)?.dependencies;
-}
-
 export function loadShopifyWebhookRuntime(
   input: LoadShopifyWebhookDependenciesInput & { logger?: Pick<FastifyBaseLogger, 'error' | 'info'> }
 ): { dependencies: ShopifyWebhookDependencies; worker?: ShopifyOrderWebhookWorker } | undefined {

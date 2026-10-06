@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere, visibleDsvOrderWhere } from '../dsv/dsv-test-visibility.js';
 import type { PrismaClient } from '@prisma/client';
 
 import {
@@ -197,7 +198,8 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
       where: {
         id: { in: [...input.routePlanIds] },
         isStoreReviewData: input.isStoreReviewData,
-        shopId: input.shopId
+        shopId: input.shopId,
+        ...visibleDsvRouteWhere(input.shopId)
       }
     });
     return routePlans.map((routePlan) => routePlan.id);
@@ -254,7 +256,8 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
         importRecord: { isStoreReviewData: input.isStoreReviewData },
         sellerOrder: {
           currentRouteVersion: { groupingId: input.groupingId, status: 'CURRENT', supersededAt: null },
-          isStoreReviewData: input.isStoreReviewData
+          isStoreReviewData: input.isStoreReviewData,
+          ...visibleDsvOrderWhere(input.shopId)
         },
         shopId: input.shopId,
         status: 'APPLIED'

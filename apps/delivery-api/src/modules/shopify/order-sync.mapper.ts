@@ -35,6 +35,12 @@ export type ShopifyOrderNode = {
       currencyCode: string;
     };
   } | null;
+  totalShippingPriceSet?: {
+    shopMoney: {
+      amount: string;
+      currencyCode: string;
+    };
+  } | null;
   customAttributes?: ShopifyOrderAttribute[] | null;
   displayFinancialStatus: string | null;
   displayFulfillmentStatus: string | null;
@@ -140,9 +146,12 @@ export type GeocodeDiagnostics = {
 };
 
 export type CanonicalOrderRow = {
+  filterVersion?: '2';
+  queryDeliveryProgress?: string;
   cancelledAt: string | null;
   currencyCode: string | null;
   customerNote?: string | null;
+  deliveryInstructions?: string | null;
   deliveryArea: string | null;
   deliveryBatchEndDate: string | null;
   deliveryBatchStartDate: string | null;
@@ -170,6 +179,7 @@ export type CanonicalOrderRow = {
   metadataResolved?: boolean;
   normalizedPaymentReason?: string | null;
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
+  note?: string | null;
   orderId: string;
   paidAt?: string | null;
   paymentMethodFamily?: string | null;
@@ -316,6 +326,7 @@ export type SyncedOrderDeliveryFactInput = {
 };
 
 export type SyncedOrderWithDeliveryStopInput = {
+  deliveryTimeZone?: string;
   deliveryFact?: SyncedOrderDeliveryFactInput | null;
   deliveryStop: SyncedDeliveryStopInput | null;
   orderItems?: OrderItemDto[] | undefined;
@@ -328,6 +339,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
   node: ShopifyOrderNode,
   options: { deliveryCycle?: DeliveryCycleConfig } = {},
 ): SyncedOrderWithDeliveryStopInput {
+  const { email: canonicalEmail, ...sourceSnapshot } = node;
   const attributes = normalizeAttributes(node.customAttributes ?? []);
   const rawDeliveryArea = readAttribute(attributes, "Delivery Area");
   const deliveryDateRaw = readDeliveryDateAttribute(attributes);
@@ -382,6 +394,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       : "READY_TO_PLAN";
 
   return {
+    ...(options.deliveryCycle === undefined ? {} : { deliveryTimeZone: options.deliveryCycle.timeZone }),
     deliveryFact: {
       batchEligible: readiness === "READY_TO_PLAN",
       commerceConnectionId: null,
@@ -409,6 +422,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       geocodeStatus: hasCoordinates ? "RESOLVED" : "PENDING",
       mappingDiagnostics: {
         deliveryDateSource: scope.deliveryDateSource,
+        ...(options.deliveryCycle === undefined ? {} : { deliveryTimeZone: options.deliveryCycle.timeZone }),
       },
       matchedMappingPaths: {
         deliveryArea:
@@ -461,7 +475,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       deliveryDayRaw: canonicalDayRaw,
       deliverySession: scope.deliverySession,
       deliveryWeekday: scope.deliveryWeekday,
-      email: node.email,
+      email: canonicalEmail,
       financialStatus: node.displayFinancialStatus,
       fulfillmentStatus: node.displayFulfillmentStatus,
       name: node.name,
@@ -472,7 +486,8 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       planningGroupKey: scope.planningGroupKey,
       processedAt: parseOptionalDate(node.processedAt),
       rawPayload: {
-        ...node,
+        ...sourceSnapshot,
+        ...(options.deliveryCycle === undefined ? {} : { deliveryTimeZone: options.deliveryCycle.timeZone }),
         attributes,
         deliveryArea,
         deliveryBatchEndDate: scope.deliveryBatchEndDate,

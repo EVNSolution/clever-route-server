@@ -1,0 +1,202 @@
+\set ON_ERROR_STOP on
+
+-- Read-only incident inventory. This file never changes rows.
+-- Run with: psql "$DATABASE_URL" -X -f apps/delivery-api/scripts/kfood-grouping-ownership-recovery-dry-run.sql.example
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET LOCAL lock_timeout = '2s';
+SET LOCAL statement_timeout = '15s';
+
+\echo 'K-food route grouping ownership recovery: target identity'
+WITH target AS (
+  SELECT
+    'clever-route-kfood'::text AS app_id,
+    '7hrud1-xq.myshopify.com'::text AS shop_domain,
+    '6cf7650f-31b9-46c2-bded-0827cf0306e9'::uuid AS old_grouping_id,
+    '02edfb64-31fe-4f12-9dca-c184fad32cc5'::uuid AS new_grouping_id,
+    '8056cf0d-d490-4c96-9c0f-d57da3878863'::uuid AS stale_child_version_id
+)
+SELECT
+  s."id" AS shop_id,
+  s."appId" AS app_id,
+  s."shopDomain" AS shop_domain,
+  old_group."status" AS old_group_status,
+  new_group."status" AS new_group_status,
+  child."status" AS stale_child_status,
+  child."routePlanId" AS stale_child_route_plan_id,
+  child."groupingId" AS stale_child_grouping_id
+FROM target t
+LEFT JOIN "shops" s
+  ON s."appId" = t.app_id
+ AND s."shopDomain" = t.shop_domain
+LEFT JOIN "route_groupings" old_group
+  ON old_group."id" = t.old_grouping_id
+ AND old_group."shopId" = s."id"
+LEFT JOIN "route_groupings" new_group
+  ON new_group."id" = t.new_grouping_id
+ AND new_group."shopId" = s."id"
+LEFT JOIN "route_grouping_child_versions" child
+  ON child."id" = t.stale_child_version_id
+ AND child."shopId" = s."id";
+
+\echo 'K-food route grouping ownership recovery: impact counts and stop gates'
+WITH target AS (
+  SELECT
+    'clever-route-kfood'::text AS app_id,
+    '7hrud1-xq.myshopify.com'::text AS shop_domain,
+    '6cf7650f-31b9-46c2-bded-0827cf0306e9'::uuid AS old_grouping_id,
+    '02edfb64-31fe-4f12-9dca-c184fad32cc5'::uuid AS new_grouping_id,
+    '8056cf0d-d490-4c96-9c0f-d57da3878863'::uuid AS stale_child_version_id,
+    42::bigint AS expected_stale_pointer_count,
+    42::bigint AS expected_old_group_member_count,
+    41::bigint AS expected_new_group_member_count
+),
+shop AS (
+  SELECT s."id"
+  FROM "shops" s
+  CROSS JOIN target t
+  WHERE s."appId" = t.app_id
+    AND s."shopDomain" = t.shop_domain
+),
+candidate AS (
+  SELECT o."id", o."currentRouteVersionId", o."ownedRouteGroupingId", o."updatedAt"
+  FROM "orders" o
+  CROSS JOIN target t
+  JOIN shop s ON s."id" = o."shopId"
+  WHERE o."currentRouteVersionId" = t.stale_child_version_id
+),
+counts AS (
+  SELECT
+    (SELECT count(*) FROM shop) AS shop_count,
+    (SELECT count(*)
+       FROM "route_groupings" rg
+       JOIN shop s ON s."id" = rg."shopId"
+       CROSS JOIN target t
+      WHERE rg."id" = t.old_grouping_id) AS old_group_count,
+    (SELECT count(*)
+       FROM "route_groupings" rg
+       JOIN shop s ON s."id" = rg."shopId"
+       CROSS JOIN target t
+      WHERE rg."id" = t.new_grouping_id
+        AND rg."status" <> 'CANCELLED') AS active_new_group_count,
+    (SELECT count(*)
+       FROM "route_grouping_child_versions" child
+       JOIN shop s ON s."id" = child."shopId"
+       CROSS JOIN target t
+      WHERE child."id" = t.stale_child_version_id
+        AND child."groupingId" = t.old_grouping_id
+        AND child."status" = 'ARCHIVED'
+        AND child."routePlanId" IS NULL) AS stale_child_invariant_count,
+    (SELECT count(*) FROM candidate) AS stale_pointer_count,
+    (SELECT count(*)
+       FROM "route_grouping_orders" rgo
+       JOIN shop s ON s."id" = rgo."shopId"
+       CROSS JOIN target t
+      WHERE rgo."groupingId" = t.old_grouping_id) AS old_group_member_count,
+    (SELECT count(*)
+       FROM "route_grouping_orders" rgo
+       JOIN shop s ON s."id" = rgo."shopId"
+       CROSS JOIN target t
+      WHERE rgo."groupingId" = t.new_grouping_id) AS new_group_member_count,
+    (SELECT count(*)
+       FROM candidate c
+       CROSS JOIN target t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM "route_grouping_orders" rgo
+        WHERE rgo."groupingId" = t.old_grouping_id
+          AND rgo."orderId" = c."id"
+      )) AS stale_pointer_without_old_membership_count,
+    (SELECT count(*)
+       FROM candidate c
+       CROSS JOIN target t
+      WHERE EXISTS (
+        SELECT 1 FROM "route_grouping_orders" rgo
+        WHERE rgo."groupingId" = t.new_grouping_id
+          AND rgo."orderId" = c."id"
+      )) AS new_group_stale_pointer_count,
+    (SELECT count(*)
+       FROM "route_grouping_orders" rgo
+       JOIN shop s ON s."id" = rgo."shopId"
+       CROSS JOIN target t
+       JOIN "orders" o ON o."id" = rgo."orderId" AND o."shopId" = rgo."shopId"
+      WHERE rgo."groupingId" = t.old_grouping_id
+        AND o."currentRouteVersionId" IS DISTINCT FROM t.stale_child_version_id) AS changed_old_member_ownership_count,
+    (SELECT count(DISTINCT c."id")
+       FROM candidate c
+       CROSS JOIN target t
+       JOIN "route_grouping_orders" rgo ON rgo."orderId" = c."id"
+       JOIN "route_groupings" rg
+         ON rg."id" = rgo."groupingId"
+        AND rg."shopId" = rgo."shopId"
+      WHERE rgo."groupingId" NOT IN (t.old_grouping_id, t.new_grouping_id)
+        AND rg."status" <> 'CANCELLED') AS other_active_group_member_count,
+    (SELECT count(*)
+       FROM candidate c
+       CROSS JOIN target t
+      WHERE c."ownedRouteGroupingId" IS NOT NULL
+        AND c."ownedRouteGroupingId" NOT IN (t.old_grouping_id, t.new_grouping_id)) AS other_owned_group_count
+)
+SELECT
+  c.*,
+  (
+    c.shop_count = 1
+    AND c.old_group_count = 1
+    AND c.active_new_group_count = 1
+    AND c.stale_child_invariant_count = 1
+    AND c.stale_pointer_count = t.expected_stale_pointer_count
+    AND c.old_group_member_count = t.expected_old_group_member_count
+    AND c.new_group_member_count = t.expected_new_group_member_count
+    AND c.stale_pointer_without_old_membership_count = 0
+    AND c.new_group_stale_pointer_count = t.expected_new_group_member_count
+    AND c.changed_old_member_ownership_count = 0
+    AND c.other_active_group_member_count = 0
+    AND c.other_owned_group_count = 0
+  ) AS ready_for_scoped_recovery
+FROM counts c
+CROSS JOIN target t;
+
+\echo 'K-food route grouping ownership recovery: candidate classification'
+WITH target AS (
+  SELECT
+    'clever-route-kfood'::text AS app_id,
+    '7hrud1-xq.myshopify.com'::text AS shop_domain,
+    '6cf7650f-31b9-46c2-bded-0827cf0306e9'::uuid AS old_grouping_id,
+    '02edfb64-31fe-4f12-9dca-c184fad32cc5'::uuid AS new_grouping_id,
+    '8056cf0d-d490-4c96-9c0f-d57da3878863'::uuid AS stale_child_version_id
+),
+shop AS (
+  SELECT s."id"
+  FROM "shops" s
+  CROSS JOIN target t
+  WHERE s."appId" = t.app_id
+    AND s."shopDomain" = t.shop_domain
+)
+SELECT
+  o."id" AS order_id,
+  o."name" AS order_name,
+  o."updatedAt" AS order_updated_at,
+  EXISTS (
+    SELECT 1 FROM "route_grouping_orders" rgo
+    WHERE rgo."groupingId" = t.old_grouping_id AND rgo."orderId" = o."id"
+  ) AS in_old_group,
+  EXISTS (
+    SELECT 1 FROM "route_grouping_orders" rgo
+    WHERE rgo."groupingId" = t.new_grouping_id AND rgo."orderId" = o."id"
+  ) AS in_new_group,
+  COALESCE((
+    SELECT array_agg(DISTINCT rgo."groupingId"::text ORDER BY rgo."groupingId"::text)
+    FROM "route_grouping_orders" rgo
+    JOIN "route_groupings" rg
+      ON rg."id" = rgo."groupingId"
+     AND rg."shopId" = rgo."shopId"
+    WHERE rgo."orderId" = o."id"
+      AND rgo."groupingId" NOT IN (t.old_grouping_id, t.new_grouping_id)
+      AND rg."status" <> 'CANCELLED'
+  ), ARRAY[]::text[]) AS other_active_group_ids,
+  o."ownedRouteGroupingId" AS owned_route_grouping_id
+FROM "orders" o
+JOIN shop s ON s."id" = o."shopId"
+CROSS JOIN target t
+WHERE o."currentRouteVersionId" = t.stale_child_version_id
+ORDER BY o."name", o."id";
+
+ROLLBACK;

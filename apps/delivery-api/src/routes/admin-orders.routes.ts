@@ -1,3 +1,4 @@
+import { readOrdersV2Filters } from '../modules/shopify/order-filters-v2.js';
 import { performance } from 'node:perf_hooks';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -20,6 +21,7 @@ import {
 } from '../modules/shopify/order-sync.repository.js';
 import type { ShopifyOrderNode } from '../modules/shopify/order-sync.mapper.js';
 import type { DeliveryCycleConfig } from '../modules/shopify/order-delivery-scope.js';
+import { ShopifyDeliverySettingsError } from '../modules/shopify/order-delivery-settings.js';
 import type { SyncOrdersSnapshotInput, SyncOrdersSnapshotResult } from '../modules/shopify/order-sync.service.js';
 import {
   InvalidOrdersCursorError,
@@ -205,6 +207,9 @@ export function registerAdminOrdersRoutes(
     } catch (error) {
       if (error instanceof OrderSyncRouteLockedError) {
         return reply.code(409).send(errorResponse(error.code, error.message));
+      }
+      if (error instanceof ShopifyDeliverySettingsError) {
+        return reply.code(503).send(errorResponse(error.code, error.message));
       }
       throw error;
     }
@@ -861,11 +866,19 @@ function readSelectionSnapshotCreatePayload(value: unknown): {
   }
   const excludeOrderIds = readStringArrayValue(object.excludeOrderIds);
   const rawFilters = object.filters === undefined ? {} : requireObject(object.filters);
-  const query = Object.fromEntries(Object.entries(rawFilters).map(([key, item]) => {
-    if (typeof item === 'boolean') return [key, String(item)];
-    if (typeof item !== 'string') throw new Error('invalid selection filter');
-    return [key, item];
-  }));
+  const query: Record<string, string | string[]> = {};
+  for (const [key, item] of Object.entries(rawFilters)) {
+    if (Array.isArray(item)) {
+      const values: string[] = [];
+      for (const value of item as unknown[]) {
+        if (typeof value !== 'string') throw new Error('invalid selection filter');
+        values.push(value);
+      }
+      query[key] = values;
+    } else if (typeof item === 'boolean') query[key] = String(item);
+    else if (typeof item === 'string') query[key] = item;
+    else throw new Error('invalid selection filter');
+  }
   return {
     ...(excludeOrderIds.length === 0 ? {} : { excludeOrderIds }),
     filters: readFilters(query)
@@ -1263,15 +1276,21 @@ function readDateOrIssue(
 }
 
 function readFilters(query: Record<string, string | string[] | undefined>): ListCanonicalOrdersFilters {
+  if (query.filterVersion !== undefined) return readOrdersV2Filters(query);
   const knownKeys = new Set([
     'deliveryArea', 'deliveryBatchEndDate', 'deliveryBatchStartDate', 'deliveryDate', 'deliveryDateFrom',
     'deliverySession', 'deliveryState', 'deliveryWeekday', 'geocodeStatus', 'operateDeliveryStatus',
-    'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'planned', 'planningGroupKey', 'q',
+    'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'orderedDateTimeZone', 'planned', 'planningGroupKey', 'q',
     'readiness', 'routeOpsScope', 'routeOpsTab', 'routeOpsToday', 'routeScopeKey', 'scope', 'search',
-    'serviceType', 'tab'
+    'serviceCategory', 'serviceType', 'tab'
   ]);
   if (Object.keys(query).some((key) => !knownKeys.has(key))) throw new Error('unknown order filter');
   const filters: ListCanonicalOrdersFilters = {};
+  const orderedDateTimeZone = readSingleQuery(query.orderedDateTimeZone);
+  if (orderedDateTimeZone !== null) {
+    if (!isValidTimeZone(orderedDateTimeZone)) throw new Error('orderedDateTimeZone must be an IANA timezone');
+    filters.orderedDateTimeZone = orderedDateTimeZone;
+  }
   const readiness = readSingleQuery(query.readiness);
   if (readiness !== null) {
     if (readiness !== 'READY_TO_PLAN' && readiness !== 'NEEDS_REVIEW' && readiness !== 'SKIPPED') {
@@ -1298,6 +1317,13 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
       throw new Error('invalid deliveryWeekday');
     }
     filters.deliveryWeekday = deliveryWeekday;
+  }
+  const serviceCategory = readSingleQuery(query.serviceCategory);
+  if (serviceCategory !== null) {
+    if (serviceCategory !== 'DELIVERY' && serviceCategory !== 'PICKUP') {
+      throw new Error('invalid serviceCategory');
+    }
+    filters.serviceCategory = serviceCategory;
   }
   const serviceType = readSingleQuery(query.serviceType);
   if (serviceType !== null) {

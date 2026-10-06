@@ -534,7 +534,7 @@ export function RouteListTable({
                 </div>
               </td>
               <td>
-                <Badge>{group.displayStatus}</Badge>
+                <Badge>{formatRoutePlanStatus(group.displayStatus, locale)}</Badge>
               </td>
               <td>{group.totalOrders}</td>
               <td>{group.planDate}</td>
@@ -597,7 +597,7 @@ export function RouteListTable({
                     </div>
                   </td>
                   <td>
-                    <Badge>{child.displayStatus}</Badge>
+                    <Badge>{formatRoutePlanStatus(child.displayStatus, locale)}</Badge>
                   </td>
                   <td>{child.stopsCount}</td>
                   <td>{group.planDate}</td>

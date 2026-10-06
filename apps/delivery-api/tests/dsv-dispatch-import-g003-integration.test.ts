@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 import { PrismaClient } from '@prisma/client';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
 import {
   DsvDispatchImportApplyError,
@@ -132,19 +132,26 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     expect([customer, destination, order, routePlan].every((record) => record.isStoreReviewData)).toBe(true);
   });
 
-  test('shows a review driver to developer admins but not operators in the real query service', async () => {
+  test('excludes a review driver from every operational role in the real query service', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'review-driver-query-visibility');
-    await prisma.driver.update({ data: { isStoreReviewData: true }, where: { id: fixture.driverId } });
     const service = new PrismaDsvV1ReadQueryService(prisma);
-
-    const operator = await service.listDrivers(createDsvAdminPrincipal({
+    const operatorPrincipal = createDsvAdminPrincipal({
       scopes: dsvOperatorScopes,
       shopId: fixture.shopId,
-    }));
-    const developer = await service.listDrivers(createDsvAdminPrincipal({ shopId: fixture.shopId }));
+    });
+    const developerPrincipal = createDsvAdminPrincipal({ shopId: fixture.shopId });
+
+    const operatorBefore = await service.listDrivers(operatorPrincipal);
+    const developerBefore = await service.listDrivers(developerPrincipal);
+    expect(operatorBefore.items.map((driver) => driver.driverId)).toContain(fixture.driverId);
+    expect(developerBefore.items.map((driver) => driver.driverId)).toContain(fixture.driverId);
+
+    await prisma.driver.update({ data: { isStoreReviewData: true }, where: { id: fixture.driverId } });
+    const operator = await service.listDrivers(operatorPrincipal);
+    const developer = await service.listDrivers(developerPrincipal);
 
     expect(operator.items.map((driver) => driver.driverId)).not.toContain(fixture.driverId);
-    expect(developer.items.map((driver) => driver.driverId)).toContain(fixture.driverId);
+    expect(developer.items.map((driver) => driver.driverId)).not.toContain(fixture.driverId);
   });
 
   test('applies a consolidated order with zero shipped boxes', async () => {
@@ -358,7 +365,28 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
 
   test('assigns an imported order to the registered driver named in the file', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'driver-name-assignment');
-    const service = new PrismaDsvDispatchImportService(prisma);
+    let completedTransactions = 0;
+    const transaction = prisma.$transaction.bind(prisma);
+    const transactionAwarePrisma = new Proxy(prisma, {
+      get(target, property) {
+        if (property !== '$transaction') return Reflect.get(target, property, target) as unknown;
+        return async (...args: unknown[]) => {
+          const result: unknown = await Reflect.apply(transaction, target, args);
+          completedTransactions += 1;
+          return result;
+        };
+      },
+    });
+    let completedTransactionsAtSchedule: number | undefined;
+    const schedule = vi.fn(() => {
+      completedTransactionsAtSchedule = completedTransactions;
+      throw new Error('scheduler unavailable');
+    });
+    const warn = vi.fn();
+    const service = new PrismaDsvDispatchImportService(transactionAwarePrisma, {
+      logger: { warn },
+      routeOptimizationScheduler: { schedule },
+    });
     const firstRow = fixture.input.rows[0];
     if (firstRow === undefined) throw new Error('Missing fixture row');
     const input = {
@@ -367,6 +395,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     };
 
     const staged = await service.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const completedTransactionsBeforeApply = completedTransactions;
     const result = await service.apply(applyInput(
       fixture.shopDomain,
       staged.id,
@@ -391,6 +420,36 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       routePlanStops: 1,
       routePlans: 1,
     });
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(schedule).toHaveBeenCalledWith({
+      routePlanIds: [order.currentRouteVersion?.routePlan?.id],
+      shopDomain: fixture.shopDomain,
+    });
+    expect(completedTransactionsAtSchedule).toBe(completedTransactionsBeforeApply + 2);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: 'cmd-driver-name-assignment',
+      event: 'dsv_dispatch_import_route_optimization_schedule_failed',
+    }), 'DSV dispatch import route optimization scheduling failed');
+
+    await expect(service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-driver-name-assignment',
+    ))).resolves.toEqual(result);
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledOnce();
+
+    await expect(service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-driver-name-assignment-new-command',
+    ))).rejects.toMatchObject({
+      code: 'DISPATCH_IMPORT_ALREADY_APPLIED',
+    } satisfies Partial<DsvDispatchImportApplyError>);
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledOnce();
   });
 
   test('applies geocoded rows after coordinates are normalized to database precision', async () => {
@@ -428,7 +487,10 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
 
   test('applies a same-date update candidate and invalidates READY route projections in place', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'update-candidate');
-    const service = new PrismaDsvDispatchImportService(prisma);
+    const schedule = vi.fn();
+    const service = new PrismaDsvDispatchImportService(prisma, {
+      routeOptimizationScheduler: { schedule },
+    });
     const firstStage = await service.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
     const firstApply = await service.apply(applyInput(
       fixture.shopDomain,
@@ -438,6 +500,13 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     ));
     const firstCanonical = firstApply.rows[0];
     if (firstCanonical === undefined) throw new Error('Missing first canonical row');
+    const unassignedReadyRoute = await createReadyPredepartureRoutePlan(prisma, {
+      deliveryStopId: firstCanonical.deliveryStopId,
+      driverId: null,
+      orderId: firstCanonical.sellerOrderId,
+      shopId: fixture.shopId,
+      vehicleId: fixture.vehicleId,
+    });
     const readyRoute = await createReadyPredepartureRoutePlan(prisma, {
       deliveryStopId: firstCanonical.deliveryStopId,
       driverId: fixture.driverId,
@@ -486,6 +555,14 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
         },
       },
     });
+    const unassignedRoutePlanStop = await prisma.routePlanStop.findUniqueOrThrow({
+      where: {
+        routePlanId_deliveryStopId: {
+          deliveryStopId: firstCanonical.deliveryStopId,
+          routePlanId: unassignedReadyRoute.routePlanId,
+        },
+      },
+    });
 
     expect(previewUpdate.rows[0]).toMatchObject({ diffKind: 'UPDATE_CANDIDATE', status: 'READY' });
     expect(stagedUpdate).toMatchObject({ status: 'READY' });
@@ -519,17 +596,29 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       etaFailureMessage: null,
       etaInputRouteVersionId: null,
       etaSource: null,
-      etaStatus: 'NOT_REQUIRED',
+      etaStatus: 'PENDING',
     });
     await expect(prisma.routePlanGeometryCache.count({ where: { routePlanId: readyRoute.routePlanId } })).resolves.toBe(0);
+    expect(unassignedRoutePlanStop).toMatchObject({
+      durationFromPreviousSeconds: null,
+      etaStatus: 'NOT_REQUIRED',
+    });
+    await expect(prisma.routePlanGeometryCache.count({
+      where: { routePlanId: unassignedReadyRoute.routePlanId },
+    })).resolves.toBe(0);
     await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toMatchObject({
       customers: 2,
       deliveryStops: 1,
       destinations: 2,
       orders: 1,
       routeGroupingOrders: 1,
-      routePlanStops: 1,
-      routePlans: 1,
+      routePlanStops: 2,
+      routePlans: 2,
+    });
+    expect(schedule).toHaveBeenCalledOnce();
+    expect(schedule).toHaveBeenCalledWith({
+      routePlanIds: [readyRoute.routePlanId],
+      shopDomain: fixture.shopDomain,
     });
   });
 
@@ -1281,7 +1370,10 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
 
   test('accepts one active ownership represented by overlapping storage rows', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'single-active-owner');
-    const service = new PrismaDsvDispatchImportService(prisma);
+    const schedule = vi.fn();
+    const service = new PrismaDsvDispatchImportService(prisma, {
+      routeOptimizationScheduler: { schedule },
+    });
     const firstStage = await service.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
     const firstApply = await service.apply(applyInput(
       fixture.shopDomain,
@@ -1315,6 +1407,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       outcome: 'NO_OP',
       sellerOrderId: canonical.sellerOrderId,
     });
+    expect(schedule).not.toHaveBeenCalled();
   });
 
   test('rejects two genuinely distinct active ownership identities', async () => {
@@ -1359,12 +1452,17 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
 
   test('rolls back canonical writes on forced transaction failure and records compensation evidence', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'rollback');
-    const service = new PrismaDsvDispatchImportService(prisma, { failAfterCanonicalRows: 1 });
+    const schedule = vi.fn();
+    const service = new PrismaDsvDispatchImportService(prisma, {
+      failAfterCanonicalRows: 1,
+      routeOptimizationScheduler: { schedule },
+    });
     const staged = await service.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
     const input = applyInput(fixture.shopDomain, staged.id, staged.sourceHash ?? '', 'cmd-rollback');
 
     const firstFailure = await captureApplyFailure(service.apply(input));
     expect(firstFailure.code).toBe('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+    expect(schedule).not.toHaveBeenCalled();
 
     await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toMatchObject({
       customers: 0,
@@ -1682,7 +1780,7 @@ async function createOverlappingActiveOwnership(prisma: PrismaClient, input: {
 
 async function createReadyPredepartureRoutePlan(prisma: PrismaClient, input: {
   deliveryStopId: string;
-  driverId: string;
+  driverId: string | null;
   orderId: string;
   shopId: string;
   vehicleId: string;

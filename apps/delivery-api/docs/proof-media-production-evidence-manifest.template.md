@@ -28,7 +28,7 @@ npm run driver:proof-media:evidence:verify -- /path/to/private/proof-media-produ
 ```
 
 The verifier should pass only after all `pending` placeholders are removed,
-storage/signed-access, scanner/monitoring, cleanup scheduler, and private
+storage/signed-access, upload safety policy, cleanup scheduler, and private
 evidence storage rows are approved or passing, and the production proof-media
 decision is `approved`. The verifier does not prove the private evidence is
 authentic; owner-controlled review remains required.
@@ -51,22 +51,38 @@ authentic; owner-controlled review remains required.
 | --- | --- | --- | --- | --- |
 | Object storage backend selected as s3 | pending | pending | pending | sanitized config presence only |
 | Bucket ownership approved | pending | pending | pending | do not paste bucket names |
-| IAM least-privilege policy approved | pending | pending | pending | do not paste policy JSON |
-| Credential custody and rotation owner approved | pending | pending | pending | do not paste access keys |
+| IAM least-privilege object policy approved | pending | pending | pending | instance profile role; do not paste policy JSON |
+| IMDSv2 required and container hop limit 2 | pending | pending | pending | sanitized metadata-options evidence only |
+| Static AWS keys absent from application runtime | pending | pending | pending | temporary role credentials only |
+| S3 Block Public Access and Object Ownership approved | pending | pending | pending | do not paste bucket names |
+| Bucket versioning and Object Lock disabled | pending | pending | pending | required for 365-day physical object deletion |
+| S3 Lifecycle expiration is 365 days | pending | pending | pending | `driver-proof/` prefix summary only |
 | Signed PUT/DELETE smoke with synthetic media | pending | pending | pending | sanitized result only |
 | Signed GET read smoke with synthetic media | pending | pending | pending | sanitized result only |
-| Retention window approved | pending | pending | pending | match cleanup schedule |
+| Multi-stop POD linkage smoke with synthetic media | pending | pending | pending | one object; all destination stop ids |
+| Signed GET expiry after five minutes | pending | pending | pending | never store the signed URL in evidence |
+| Retention window approved | pending | pending | pending | 365-day S3 and DB cleanup match |
 
-## Scanner and monitoring evidence
+## Upload safety policy evidence
 
 | Gate | Status | Evidence reference | Owner | Notes |
 | --- | --- | --- | --- | --- |
-| HTTP scanner deployment selected | pending | pending | pending | keep endpoint private |
-| Scanner endpoint auth/secret custody approved | pending | pending | pending | keep token private |
-| Clean scan smoke passes with synthetic media | pending | pending | pending | sanitized result only |
-| Rejected scan smoke blocks storage metadata | pending | pending | pending | no rule names in public evidence |
-| Scan monitor or alert route deployed | pending | pending | pending | sanitized alert evidence |
-| Incident response owner approved | pending | pending | pending | on-call owner recorded privately |
+| Scanner backend selection: none | pending | pending | pending | replace none with http when the optional adapter is selected |
+| Scanner-free operation approved | pending | pending | pending | do not claim clean/rejected scanning when backend is none |
+| Authenticated driver and assigned-route scope enforced | pending | pending | pending | unauthorized and cross-route requests fail |
+| Image MIME allowlist and matching byte signature enforced | pending | pending | pending | JPEG, PNG, WebP, HEIC, or HEIF only |
+| Ten MiB file and single-file limits enforced | pending | pending | pending | multipart limits remain active |
+| JPEG EXIF metadata stripping verified | pending | pending | pending | hash and size describe sanitized bytes |
+
+When `http` is selected, replace the two scanner-free rows with passing rows
+using these exact gate labels:
+
+- `Scanner backend selection: http`
+- `HTTP scanner deployment approved`
+- `HTTP scanner clean and rejected fixtures pass`
+- `HTTP scan monitor handling verified`
+
+Do not add those rows or claim scan results when `none` is selected.
 
 ## Cleanup scheduler evidence
 
@@ -75,6 +91,8 @@ authentic; owner-controlled review remains required.
 | Scheduler deployment selected | pending | pending | pending | host scheduler evidence |
 | Cleanup command run recorded | pending | pending | pending | sanitized log reference |
 | RetentionJobRun row persisted | pending | pending | pending | no media ids or storage keys |
+| 365-day cutoff boundary passes | pending | pending | pending | immediately before and after cutoff |
+| Failed object deletion converges on retry | pending | pending | pending | synthetic object and sanitized counts |
 | Cleanup logs contain no proof bytes, coordinates, customer data, phone numbers, or storage keys | pending | pending | pending | reviewed privately |
 
 ## Private evidence storage and approvals
@@ -90,7 +108,7 @@ authentic; owner-controlled review remains required.
 | Gate | Status | Notes |
 | --- | --- | --- |
 | Storage and signed access evidence complete | pending | pending |
-| Scanner and monitoring evidence complete | pending | pending |
+| Upload safety policy evidence complete | pending | pending |
 | Cleanup scheduler evidence complete | pending | pending |
 | Private evidence storage approved | pending | pending |
 | Sensitive evidence kept outside git | pending | pending |

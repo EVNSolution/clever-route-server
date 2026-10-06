@@ -24,31 +24,6 @@ export const dsvV1ErrorCodes = [
 ] as const;
 export type DsvV1ErrorCode = typeof dsvV1ErrorCodes[number];
 
-export const dsvV1CustomerDeliveryRequiredFields = [
-  'sellerOrderId',
-  'sellerOrderKey',
-  'destinationId',
-  'destinationDisplayName',
-  'shippedBoxes',
-  'deliveryStatus',
-  'etaStatus',
-  'eventSummary',
-  'proofStatus',
-] as const;
-
-export const dsvV1SellerOrderSummaryRequiredFields = [
-  'sellerOrderId',
-  'sellerOrderKey',
-  'deliveryStopId',
-  'customerId',
-  'destinationId',
-  'assignmentStatus',
-  'etaStatus',
-  'eventSummary',
-] as const;
-
-export const dsvV1SessionRequiredFields = ['csrfToken', 'principalType', 'shopId', 'scopes'] as const;
-
 export type DsvV1PrincipalType = 'DSV_ADMIN' | 'CUSTOMER_USER' | 'DRIVER' | 'IMPORT_WORKER' | 'DEVICE';
 
 export type DsvV1SuccessEnvelope<TData> = {

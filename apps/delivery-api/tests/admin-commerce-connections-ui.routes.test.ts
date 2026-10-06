@@ -138,7 +138,7 @@ describe("Route Ops route list source regressions", () => {
       new URL("../src/routes/admin-commerce-connections-ui.routes.ts", import.meta.url),
       "utf8",
     );
-    const match = /const \[routePlans, routeGroups\] = await Promise\.all\(\[([\s\S]*?)\]\);/u.exec(source);
+    const match = /const \[routePlans, rawRouteGroups\] = await Promise\.all\(\[([\s\S]*?)\]\);/u.exec(source);
 
     expect(match?.[1]).toContain("services.routePlanService.listRoutePlans(routeListInput)");
     expect(match?.[1]).toContain("services.routeGroupingService.listGroupings(routeListInput)");
@@ -331,6 +331,33 @@ describe("Admin WooCommerce connection UI routes", () => {
     expect(JSON.stringify(dependencies?.routesAppAndroidRelease)).not.toContain(
       "drive.example.test",
     );
+  });
+
+  test("loads an explicit Google Play release without inventing APK metadata", () => {
+    const base = createBaseAdminCommerceDependencies();
+
+    const dependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
+        ROUTES_APP_ANDROID_LATEST_VERSION_CODE: "36",
+        ROUTES_APP_ANDROID_LATEST_VERSION_NAME: "1.3.0",
+        ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "26",
+        ROUTES_APP_DISTRIBUTION_CHANNEL: "google_play",
+        ROUTES_APP_DOWNLOAD_URL:
+          "https://play.google.com/store/apps/details?id=com.evnsolution.clever.routes",
+      },
+      nodeEnv: "production",
+    });
+
+    expect(dependencies?.routesAppAndroidRelease).toEqual({
+      distributionChannel: "google_play",
+      latestVersionCode: 36,
+      latestVersionName: "1.3.0",
+      minimumSupportedVersionCode: 26,
+    });
   });
 
   test("accepts the legacy driver app release environment during the identity cutover", () => {
@@ -1096,6 +1123,86 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(manifest.body).not.toContain("downloads.example.test");
       expect(manifest.body).not.toContain("drive.example.test");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("prefers an explicit Google Play release over the historical direct registry", async () => {
+    const playUrl = "https://play.google.com/store/apps/details?id=com.evnsolution.clever.routes";
+    const getAndroidRelease = vi.fn().mockResolvedValue({
+      distributionChannel: "direct",
+      downloadUrl: "https://downloads.example.test/clever-routes-33.apk",
+      latestVersionCode: 33,
+      latestVersionName: "1.2.15",
+      minimumSupportedVersionCode: 26,
+      packageId: "com.evnsolution.clever.routes",
+      platform: "android",
+      publishedAt: new Date("2026-08-06T01:00:00.000Z"),
+      sha256: "b".repeat(64),
+    });
+    const routesAppReleaseRepository: RoutesAppReleaseRepository = {
+      getAndroidRelease,
+      publishAndroidRelease: vi.fn(),
+    };
+    const { app } = await createUiHarness({
+      routesAppAndroidRelease: {
+        distributionChannel: "google_play",
+        latestVersionCode: 36,
+        latestVersionName: "1.3.0",
+        minimumSupportedVersionCode: 26,
+      },
+      routesAppDownloadUrl: playUrl,
+      routesAppReleaseRepository,
+    });
+
+    try {
+      const download = await app.inject({ method: "GET", url: "/routes-app/download" });
+      expect(download.statusCode).toBe(302);
+      expect(download.headers.location).toBe(playUrl);
+
+      const manifest = await app.inject({
+        method: "GET",
+        url: "/routes-app/release/android",
+      });
+      expect(manifest.statusCode).toBe(200);
+      expect(readApiData(manifest)).toEqual({
+        distribution: {
+          channel: "google_play",
+          url: playUrl,
+        },
+        distributionChannel: "direct",
+        installation: {
+          guideUrl: "https://clever-route-api.cleversystem.ai/driver-app",
+          mode: "package_migration",
+          replacesPackageIds: ["com.evns.cleverdriverapp"],
+          targetPackageId: "com.evnsolution.clever.routes",
+        },
+        installUrl: playUrl,
+        latestVersionCode: 36,
+        latestVersionName: "1.3.0",
+        minimumSupportedVersionCode: 26,
+        platform: "android",
+      });
+      expect(getAndroidRelease).not.toHaveBeenCalled();
+
+      const currentClientContract = readApiData<{
+        distributionChannel: string;
+        installUrl: string;
+        latestVersionCode: number;
+        latestVersionName: string;
+      }>(manifest);
+      expect(currentClientContract).toMatchObject({
+        distributionChannel: "direct",
+        installUrl: playUrl,
+        latestVersionCode: 36,
+        latestVersionName: "1.3.0",
+      });
+
+      const legacyGuide = await app.inject({ method: "GET", url: "/driver-app" });
+      expect(legacyGuide.statusCode).toBe(200);
+      expect(legacyGuide.body).toContain("CLEVER Driver is now CLEVER Routes");
+      expect(legacyGuide.body).toContain("com.evns.cleverdriverapp");
     } finally {
       await app.close();
     }
@@ -3207,11 +3314,28 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
 
       expect(routes.statusCode).toBe(200);
-      expect(
-        readApiData<{ routePlans: Array<{ name: string }> }>(
-          routes,
-        ).routePlans.map((routePlan) => routePlan.name),
-      ).toEqual(["Route draft"]);
+      const listedRoutes = readApiData<{
+        routePlans: Array<{
+          deliveredCount: number;
+          driver: unknown;
+          etaRange: unknown;
+          name: string;
+          routeMetrics: unknown;
+          scheduledStartAt: string | null;
+          scheduledStartTimeZone: string | null;
+          totalAmount: unknown;
+        }>;
+      }>(routes).routePlans;
+      expect(listedRoutes.map((routePlan) => routePlan.name)).toEqual(["Route draft"]);
+      expect(listedRoutes[0]).toMatchObject({
+        deliveredCount: 1,
+        driver: { displayName: "Alex Driver", id: "driver-id" },
+        etaRange: { endAt: "2026-05-26T16:00:00.000Z", startAt: "2026-05-26T15:00:00.000Z" },
+        routeMetrics: { distanceMeters: 12500, durationSeconds: 2700 },
+        scheduledStartAt: "2026-05-26T13:30:00.000Z",
+        scheduledStartTimeZone: "America/Toronto",
+        totalAmount: { amount: "45.00", currencyCode: "CAD" },
+      });
       expect(orders.statusCode).toBe(200);
       expect(
         readApiData<{
@@ -7847,19 +7971,25 @@ function canonicalOrder(
 function routePlanSummary() {
   return {
     createdAt: "2026-05-26T12:00:00.000Z",
+    deliveredCount: 1,
     deliveryAreas: ["Toronto"],
     deliveryDate: "2026-05-26",
     deliveryDays: ["Tuesday"],
     depot: { latitude: 43.6532, longitude: -79.3832 },
-    driver: null,
-    driverId: null,
+    driver: driverRow(),
+    driverId: "driver-id",
+    etaRange: { endAt: "2026-05-26T16:00:00.000Z", startAt: "2026-05-26T15:00:00.000Z" },
     id: "route-plan-id",
     missingCoordinates: 0,
     name: "Route draft",
     planDate: "2026-05-26",
     routeEndMode: "END_AT_LAST_STOP" as const,
+    routeMetrics: { distanceMeters: 12500, durationSeconds: 2700 },
+    scheduledStartAt: "2026-05-26T13:30:00.000Z",
+    scheduledStartTimeZone: "America/Toronto",
     status: "DRAFT",
     stopsCount: 2,
+    totalAmount: { amount: "45.00", currencyCode: "CAD" },
     updatedAt: "2026-05-26T12:00:00.000Z",
   };
 }

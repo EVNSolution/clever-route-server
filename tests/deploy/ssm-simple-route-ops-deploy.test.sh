@@ -13,7 +13,11 @@ trap cleanup EXIT
 python3 - "$params_path" "$shopify_params_path" "$proof_ready_contract_sha" <<'PY'
 import json
 import pathlib
+import re
+import shlex
+import subprocess
 import sys
+import tempfile
 
 path = pathlib.Path(sys.argv[1])
 shopify_path = pathlib.Path(sys.argv[2])
@@ -21,6 +25,7 @@ proof_ready_contract_sha = sys.argv[3]
 payload = json.loads(path.read_text())
 command = payload['commands'][0]
 shopify_command = json.loads(shopify_path.read_text())['commands'][0]
+host_script = shlex.split(command)[2]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
 workflow = pathlib.Path('.github/workflows/route-ops-operations.yml').read_text()
 ci_workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
@@ -36,7 +41,48 @@ forward_mutation_snippets = [
     'up --no-build --force-recreate route-ops-web-static',
     'up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api',
 ]
+
+def run_rendered_presence_check(variable, env_text):
+    pattern = re.compile(
+        rf'{variable}="\$\(awk -F= \'([^\']+)\' apps/delivery-api/\.env \| tail -n 1\)"'
+    )
+    match = pattern.search(host_script)
+    if match is None:
+        raise SystemExit(f'missing rendered awk presence check for {variable}')
+    with tempfile.TemporaryDirectory() as directory:
+        env_path = pathlib.Path(directory) / 'runtime.env'
+        env_path.write_text(env_text)
+        result = subprocess.run(
+            ['awk', '-F=', match.group(1), str(env_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    return result.stdout.strip()
+
+presence_cases = {
+    'proof_scanner_url_configured': 'DRIVER_PROOF_MEDIA_SCANNER_URL',
+    'proof_scan_monitor_url_configured': 'DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL',
+}
+presence_results = {}
+for rendered_variable, env_key in presence_cases.items():
+    actual = {
+        'url_with_equals': run_rendered_presence_check(rendered_variable, f'{env_key}=https://scanner.example.test/scan?token=a=b\n'),
+        'empty': run_rendered_presence_check(rendered_variable, f'{env_key}=\n'),
+        'missing': run_rendered_presence_check(rendered_variable, 'UNRELATED=value\n'),
+    }
+    expected = {'url_with_equals': 'true', 'empty': 'false', 'missing': ''}
+    if actual != expected:
+        raise SystemExit(f'rendered awk presence check failed for {rendered_variable}: {actual}')
+    presence_results[rendered_variable] = actual
+
 checks = {
+    'proof_iam_missing_rollback_manifest_blocks_candidate_fallback': '[ -f .deploy/current-image.env ] ||' in command and command.index('verified rollback manifest is missing') < command.index('base64 -d > "$COMPOSE_FILE"') and command.index('verified rollback manifest is missing') < command.index('cp .deploy/simple-candidate-image.env .deploy/simple-rollback-image.env'),
+    'proof_iam_rollback_contract_before_mutation': all(value in command for value in [
+        'DRIVER_PROOF_MEDIA_IAM_ROLE_CAPABILITY_VERSION=1',
+        'org.clever-route.proof-media-iam-role-capability',
+        'candidate delivery API does not support proof media IAM-role credentials',
+    ]) and command.index('deploy the IAM-role-compatible bridge before switching storage') < command.index('base64 -d > "$COMPOSE_FILE"') and 'LABEL org.clever-route.proof-media-iam-role-capability="1"' in pathlib.Path('apps/delivery-api/Dockerfile').read_text(),
     'uses_run_shell_command': command.startswith('bash -lc '),
     'channel_rendered': 'CHANNEL_TAG=prod-test' in command,
     'digest_runtime_rendered': 'DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111' in command,
@@ -63,7 +109,19 @@ checks = {
     'vroom_env': 'VROOM_BASE_URL' in command and 'http://vroom:3000' in command,
     'multi_coverage_env': 'OSRM_ONTARIO_BASE_URL' in command and 'http://osrm-ontario:5000' in command and 'OSRM_KOREA_BASE_URL' in command and 'http://osrm-korea:5000' in command and 'VROOM_KOREA_BASE_URL' in command and 'http://vroom-korea:3000' in command and 'OSRM_DEFAULT_COVERAGE' in command and 'korea' in command,
     'vroom_configs_synced_to_host': 'VROOM_CONFIG_B64=' in command and 'VROOM_KOREA_CONFIG_B64=' in command and 'base64 -d > "$VROOM_KOREA_CONFIG"' in command,
-    'proof_media_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/driver-proof-media' in command and 'chmod 750 /srv/clever-route-server/data/driver-proof-media' in command,
+    'proof_media_s3_runtime': all(value in command for value in [
+        'DRIVER_PROOF_MEDIA_STORAGE_BACKEND',
+        'DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER',
+        'ec2-iam-role',
+        'DRIVER_PROOF_MEDIA_RETENTION_DAYS',
+        '365',
+        'proof media S3 rollout blocked: DRIVER_PROOF_MEDIA_S3_BUCKET is missing',
+        'scanner backend must be none or http',
+        'HTTP scanner URL is not configured',
+        'scan monitor backend must be none or http',
+        'HTTP scan monitor URL is not configured',
+        'scan monitor must be none when scanner is none',
+    ]) and '/srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media' not in compose,
     'customer_email_assets_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/customer-email-assets' in command and 'chmod 750 /srv/clever-route-server/data/customer-email-assets' in command,
     'firebase_credential_bootstrap': 'FIREBASE_CREDENTIALS_PARAM=' in command and 'aws ssm get-parameter --name "$FIREBASE_CREDENTIALS_PARAM" --with-decryption' in command and 'chown 100:101 "$FIREBASE_CREDENTIALS_FILE"' in command and 'chmod 400 "$FIREBASE_CREDENTIALS_FILE"' in command,
     'firebase_runtime_env': "'FIREBASE_PROJECT_ID': 'clever-routes-prod'" in wrapper and "'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-fcm.json'" in wrapper,
@@ -86,9 +144,76 @@ checks = {
     'does_not_recreate_caddy': '--force-recreate --remove-orphans clever-route-api caddy' not in command and '--force-recreate clever-route-api caddy' not in command,
     'does_not_push_prod_prev': 'backup_channel_images' not in wrapper and 'previous_image_ref' not in wrapper and 'docker tag' not in wrapper,
     'rollback_uses_previous_env': 'cp .deploy/current-image.env .deploy/simple-rollback-image.env' in command and 'rolling clever-route-api back to previous image env' in command,
-    'retention_install_failure_restores_previous_runtime': 'if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=' in command and '.deploy/install-driver-event-attempt-retention.sh; then' in command and 'cp .deploy/simple-rollback-image.env .deploy/current-image.env' in command and 'rollback_retention_runtime || true' in command and command.index('rollback_retention_runtime || true', command.index('if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=')) < command.index('rollback_delivery_api || true', command.index('if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=')),
+    'legacy_rollback_stops_candidate_before_marker_cleanup_and_old_start': all(value in host_script for value in [
+        'clear_kfood_navigation_markers_for_legacy_rollback()',
+        'ps -a -q clever-route-api',
+        '--env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" stop --timeout 30 clever-route-api',
+        "--format '{{.State.Running}}'",
+        'candidate clever-route-api is still running',
+        'install -d -m 0700 -o root -g root "$rollback_evidence_dir"',
+        'private marker backup directory could not be prepared',
+        '--user 0:0',
+        '-e "KFOOD_ROLLBACK_EVIDENCE_HOST_DIR=$rollback_evidence_dir"',
+        '-v "$rollback_evidence_dir:/rollback-evidence"',
+        'kfood-navigation-markers-before-legacy-rollback-',
+        "fs.openSync(backupPath, 'wx', 0o600)",
+        'fs.fsyncSync(handle)',
+        'FOR UPDATE OF rp',
+        "'kfood_return_navigation_completion_ack_v1'",
+        "'ROUTE_COMPLETED'",
+        'deferred completion acknowledgement(s) require a compatible image or forward fix',
+        'connectionTimeoutMillis: 10000',
+        'query_timeout: 30000',
+        "SET LOCAL lock_timeout = '10s'",
+        "SET LOCAL statement_timeout = '30s'",
+        'legacy rollback marker guard: no K-food navigation markers found',
+        'legacy rollback marker guard: marker columns are absent; no cleanup required',
+        'legacy rollback marker guard: partial marker schema',
+        'legacy rollback marker guard: cleared ${clearedCount} route(s); backup=${backupPath} backupSha256=${backupSha256}',
+    ]) and command.index('stop --timeout 30 clever-route-api') < command.index('clear_kfood_navigation_markers_for_legacy_rollback; then') < command.index('--env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api'),
+    'legacy_rollback_marker_cleanup_is_exact_and_non_destructive': all(value in host_script for value in [
+        "const appId = 'clever-route-kfood'",
+        "const shopDomain = '7hrud1-xq.myshopify.com'",
+        'expected one exact K-food shop',
+        'FROM "shops"',
+        'FROM "route_plans" rp',
+        'UPDATE "route_plans"',
+        "AND \"table_name\" = 'route_plans'",
+        'rp."assignmentGeneration"',
+        'rp."updatedAt"',
+        'rp."deliveryWorkCompletedAt"',
+        'rp."driverNavigationUntil"',
+        'rp."deliveryWorkCompletedGeneration"',
+        'rp."deliveryWorkCompletedVersionId"',
+        'stopStatusDigest',
+        "to_char(rp.\"updatedAt\", 'YYYY-MM-DD\"T\"HH24:MI:SS.USOF')",
+        "backupSha256: createHash('sha256').update(body).digest('hex')",
+        'SET "deliveryWorkCompletedAt" = NULL',
+        '"updatedAt" = $5',
+        'IS NOT DISTINCT FROM $9::uuid',
+        'if (cleared.rowCount !== 1)',
+        'if (audit.rows[0].remaining !== 0)',
+        'stop status digest changed',
+    ]) and 'SET "status"' not in host_script and 'INSERT INTO "DriverEvent"' not in host_script,
+    'legacy_rollback_guard_failure_blocks_old_runtime': 'if ! clear_kfood_navigation_markers_for_legacy_rollback; then' in command and 'simple deploy rollback blocked: K-food navigation markers were not safely cleared' in command and command.index('simple deploy rollback blocked: K-food navigation markers were not safely cleared') < command.index('--env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api'),
+    'legacy_rollback_old_runtime_steps_fail_closed': all(value in command for value in [
+        'if ! docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api route-ops-web-static vroom vroom-korea; then',
+        'previous images could not be pulled',
+        'if ! docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static; then',
+        'previous static artifact could not be staged',
+        'if ! docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api; then',
+        'previous clever-route-api could not be started',
+        'contain_failed_rollback_api()',
+        'rollback containment failed: rollback API container could not be resolved; manual containment required',
+        'rollback containment failed: rollback API stop command failed; manual containment required',
+        'rollback containment failed: rollback API state could not be inspected; manual containment required',
+        'rollback containment failed: rollback API remains running; manual containment required',
+        'rollback containment verified: rollback API is stopped',
+    ]) and command.count('contain_failed_rollback_api || true') == 2 and command.index('previous clever-route-api could not be started') < command.index('contain_failed_rollback_api || true') < command.index('simple deploy rollback failed health check; manual intervention required'),
+    'legacy_rollback_failure_is_reported_and_preserves_failing_exit': 'simple deploy automatic rollback did not reach a verified healthy state; inspect rollback and containment diagnostics' in command and 'retention failure rollback did not reach a verified healthy state; inspect rollback and containment diagnostics' in command and 'if ! rollback_delivery_api; then' in command and 'old clever-route-api was not started' not in command,
+    'retention_install_failure_restores_previous_runtime': 'if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=' in command and '.deploy/install-driver-event-attempt-retention.sh; then' in command and 'cp .deploy/simple-rollback-image.env .deploy/current-image.env' in command and 'rollback_retention_runtime || true' in command and command.index('rollback_retention_runtime || true', command.index('if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=')) < command.index('if ! rollback_delivery_api; then', command.index('if ! CLEVER_ROUTE_RETENTION_RUNNER_SOURCE=')),
     'retention_rollback_restores_or_removes_candidate_units': 'retention-rollback/service.present' in command and 'rm -f /etc/systemd/system/clever-driver-event-attempt-retention.service' in command and 'systemctl disable --now clever-driver-event-attempt-retention.timer' in command,
-    'proof_reservation_rollout_requires_compatible_rollback': 'DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE=$([ -n "$PROOF_READY_FILTER_CONTRACT_SHA" ] && echo true || echo false)' in command and 'DRIVER_PROOF_MEDIA_READY_FILTER_CONTRACT_SHA=$PROOF_READY_FILTER_CONTRACT_SHA' in command and 'proof media reservation rollout blocked: rollback image does not advertise READY-only reads' in command,
+    'proof_reservation_rollout_requires_compatible_rollback': 'DRIVER_PROOF_MEDIA_READY_FILTER_COMPATIBLE=$([ -n "$PROOF_READY_FILTER_CONTRACT_SHA" ] && echo true || echo false)' in command and 'DRIVER_PROOF_MEDIA_READY_FILTER_CONTRACT_SHA=$PROOF_READY_FILTER_CONTRACT_SHA' in command and 'if [ "$rollback_ready_filter_compatible" != "true" ]; then' in command and 'proof_reservations_enabled=' not in command and 'proof media reservation rollout blocked: rollback image does not advertise READY-only reads' in command,
     'completion_invariant_candidate_and_rollback_capability': 'ROUTE_COMPLETION_INVARIANT_CAPABILITY_VERSION=1' in command and 'rollback image does not advertise invariant capability v1' in command and 'candidate delivery API does not advertise route completion invariant capability v1' in command and 'org.clever-route.route-completion-invariant-capability' in command,
     'runtime_metadata_comes_from_selected_api_image': 'runtime_revision=' in command and 'org.opencontainers.image.revision' in command and 'API_RUNTIME_REVISION=$runtime_revision' in command and 'API_RUNTIME_REVISION=$COMMIT_SHA' in command,
     'web_only_deploy_preserves_runtime_revision_identity': "values.get('API_RUNTIME_REVISION', values.get('COMMIT_SHA', ''))" in workflow and "values.get('COMMIT_SHA', '')" in workflow,
@@ -133,5 +258,9 @@ checks = {
 missing = [name for name, ok in checks.items() if not ok]
 if missing:
     raise SystemExit(f'missing expected simple deploy guard(s): {missing}')
-print('{"ok":true,"wrapper":"scripts/ssm-simple-route-ops-deploy.sh"}')
+print(json.dumps({
+    'awkPresenceCases': presence_results,
+    'ok': True,
+    'wrapper': 'scripts/ssm-simple-route-ops-deploy.sh',
+}, sort_keys=True))
 PY

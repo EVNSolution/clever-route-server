@@ -48,6 +48,7 @@ describe('verifyShopifySessionToken', () => {
 
     expect(verified).toEqual({
       appId: 'clever',
+      issuedAt: new Date(now.getTime() - 5_000),
       shopDomain: 'example.myshopify.com',
       subject: '42'
     });
@@ -68,6 +69,7 @@ describe('verifyShopifySessionToken', () => {
 
     expect(verified).toEqual({
       appId: 'clever-route-dev',
+      issuedAt: new Date(now.getTime() - 5_000),
       shopDomain: 'example.myshopify.com',
       subject: '42'
     });

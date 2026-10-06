@@ -111,9 +111,14 @@ import {
   DriverDeliverySpaceError,
   type DriverDeliverySpaceServiceContract
 } from '../modules/driver/driver-delivery-space.service.js';
+import {
+  registerDriverCompletionAssistanceRoutes,
+  type CompletionAssistanceServiceApi
+} from './driver-completion-assistance.routes.js';
 
 export type DriverApiDependencies = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
+  completionAssistanceService?: CompletionAssistanceServiceApi;
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
   driverConsentService?: DriverConsentServiceContract;
   driverDeliverySpaceService?: DriverDeliverySpaceServiceContract;
@@ -321,6 +326,15 @@ export function registerDriverEventRoutes(
   app: FastifyInstance,
   dependencies: DriverApiDependencies
 ): void {
+  if (dependencies.completionAssistanceService !== undefined) {
+    registerDriverCompletionAssistanceRoutes(app, {
+      completionAssistanceService: dependencies.completionAssistanceService,
+      ...(dependencies.driverTokenAccessRepository === undefined ? {} : { driverTokenAccessRepository: dependencies.driverTokenAccessRepository }),
+      jwtSecret: dependencies.jwtSecret,
+      ...(dependencies.now === undefined ? {} : { now: dependencies.now })
+    });
+  }
+
   const syncHealthService = dependencies.driverSyncHealthService;
   if (syncHealthService !== undefined) {
     app.put<{ Body: unknown }>('/driver/sync-health', async (request, reply) => {
@@ -1399,9 +1413,11 @@ export function registerDriverEventRoutes(
         .send(driverAuthenticationErrorResponse(authentication.status));
     }
     const driverContext = authentication.context;
+    const transportRequestId = validatedTransportRequestId(request);
 
     let admission: { attemptId: string; attemptNumber: number } | null = null;
-    if (isDriverEventContractV2Intent(request.body)) {
+    const gpsDiagnosticIntent = isDriverLocationDiagnosticIntent(request.body);
+    if (isDriverEventContractV2Intent(request.body) || gpsDiagnosticIntent) {
       try {
         admission = await dependencies.driverEventService.admitDriverEventAttempt(
           admissionInputFromAuthenticatedRequest(request, driverContext)
@@ -1417,9 +1433,18 @@ export function registerDriverEventRoutes(
             failureStage: 'ADMISSION',
             outcome: 'failed'
           });
-          return reply.code(503).send(errorResponse(error.code, 'Driver event admission is temporarily unavailable'));
+          if (gpsDiagnosticIntent) {
+            request.log.warn({
+              errorCode: error.code,
+              event: 'driver_location_attempt_admission_failed',
+              requestId: request.id
+            }, 'failed to admit driver location diagnostic attempt');
+          } else {
+            return reply.code(503).send(errorResponse(error.code, 'Driver event admission is temporarily unavailable'));
+          }
+        } else {
+          throw error;
         }
-        throw error;
       }
     }
 
@@ -1428,12 +1453,12 @@ export function registerDriverEventRoutes(
       eventInput = readDriverEventBody(request.body);
     } catch {
       if (admission !== null) {
-        await dependencies.driverEventService.finalizeDriverEventAttempt(admission.attemptId, {
+        await finalizeDriverEventAttemptSafely(request, dependencies, admission.attemptId, {
           errorCode: 'BAD_REQUEST',
           failureStage: 'WIRE_VALIDATION',
           retryable: false,
           status: 'REJECTED'
-        });
+        }, gpsDiagnosticIntent);
         logDriverEventContractMetric(request, driverContext, {
           attemptNumber: admission.attemptNumber,
           failureStage: 'WIRE_VALIDATION',
@@ -1444,12 +1469,12 @@ export function registerDriverEventRoutes(
     }
     if (eventInput.routePlanId !== null && eventInput.routePlanId !== driverContext.routePlanId) {
       if (admission !== null) {
-        await dependencies.driverEventService.finalizeDriverEventAttempt(admission.attemptId, {
+        await finalizeDriverEventAttemptSafely(request, dependencies, admission.attemptId, {
           errorCode: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH',
           failureStage: 'AUTHORIZATION_SCOPE',
           retryable: false,
           status: 'REJECTED'
-        });
+        }, gpsDiagnosticIntent);
         logDriverEventContractMetric(request, driverContext, {
           attemptNumber: admission.attemptNumber,
           failureStage: 'AUTHORIZATION_SCOPE',
@@ -1469,9 +1494,9 @@ export function registerDriverEventRoutes(
         driverId: driverContext.driverId,
         payload: request.body,
         routePlanId: driverContext.routePlanId,
-        ...(eventInput.driverContractVersion === 2
-          ? { requestId: request.id }
-          : {}),
+        ...(transportRequestId === null
+          ? {}
+          : { requestId: transportRequestId }),
         shopDomain: driverContext.shopDomain,
         shopId: driverContext.shopId
       });
@@ -1546,7 +1571,7 @@ export function registerDriverEventRoutes(
       throw error;
     }
 
-    if (eventInput.driverContractVersion === 2 && eventInput.eventType !== 'LOCATION_UPDATED') {
+    if ((eventInput.driverContractVersion === 2 && eventInput.eventType !== 'LOCATION_UPDATED') || gpsDiagnosticIntent) {
       logDriverEventContractMetric(request, driverContext, {
         ...(admission === null ? {} : { attemptNumber: admission.attemptNumber }),
         failureStage: 'COMMITTED',
@@ -1616,7 +1641,7 @@ export function registerDriverEventRoutes(
       }
     }
 
-    if (!result.duplicate && eventInput.eventType === 'LOCATION_UPDATED') {
+    if (!result.duplicate && eventInput.eventType === 'LOCATION_UPDATED' && result.trackingPositionAccepted !== false) {
       const positionEvent = createRouteTrackingPositionEvent({
         driverId: driverContext.driverId,
         eventId: result.eventId,
@@ -1629,7 +1654,7 @@ export function registerDriverEventRoutes(
       if (positionEvent !== null) {
         dependencies.routeTrackingStreamHub?.publishPosition(positionEvent);
       }
-    } else if (!result.duplicate) {
+    } else if (!result.duplicate && eventInput.eventType !== 'LOCATION_UPDATED') {
       const progressEvent = createRouteTrackingProgressEvent({
         deliveryStopId: eventInput.deliveryStopId,
         driverId: driverContext.driverId,
@@ -2110,6 +2135,10 @@ function isDriverEventContractV2Intent(body: DriverEventRequestBody | undefined)
   return body !== undefined && body.driverContractVersion === 2 && body.eventType !== 'LOCATION_UPDATED';
 }
 
+function isDriverLocationDiagnosticIntent(body: DriverEventRequestBody | undefined): boolean {
+  return body?.eventType === 'LOCATION_UPDATED';
+}
+
 function admissionInputFromAuthenticatedRequest(
   request: FastifyRequest<{ Body: DriverEventRequestBody }>,
   context: DriverRouteAccessScope
@@ -2119,16 +2148,41 @@ function admissionInputFromAuthenticatedRequest(
     appVersion: safeBoundedText(body.appVersion, 64),
     assignmentGeneration: safeAssignmentGeneration(body.assignmentGeneration),
     clientEventId: safeOpaqueIdentifier(body.clientEventId),
-    driverContractVersion: 2,
+    driverContractVersion: safePositiveInteger(body.driverContractVersion) ?? 1,
     driverId: context.driverId,
     eventType: safeBoundedText(body.eventType, 64),
     expectedRouteVersionId: safeUuid(body.expectedRouteVersionId),
     occurredAt: safeDate(body.occurredAt),
-    requestId: request.id,
+    requestId: validatedTransportRequestId(request),
     routePlanId: context.routePlanId,
     shopId: context.shopId,
     versionCode: safePositiveInteger(body.versionCode)
   };
+}
+
+function validatedTransportRequestId(request: FastifyRequest): string | null {
+  const value = request.headers['x-request-id'];
+  return typeof value === 'string' ? safeUuid(value)?.toLowerCase() ?? null : null;
+}
+
+async function finalizeDriverEventAttemptSafely(
+  request: FastifyRequest,
+  dependencies: DriverApiDependencies,
+  attemptId: string,
+  result: DriverEventAttemptFinalization,
+  bestEffort: boolean
+): Promise<void> {
+  try {
+    await dependencies.driverEventService.finalizeDriverEventAttempt(attemptId, result);
+  } catch (error) {
+    if (!bestEffort) throw error;
+    request.log.warn({
+      ...safeErrorTelemetry(error),
+      errorCode: 'DRIVER_LOCATION_ATTEMPT_FINALIZATION_FAILED',
+      event: 'driver_location_attempt_finalization_failed',
+      requestId: request.id
+    }, 'failed to finalize driver location diagnostic attempt');
+  }
 }
 
 function safeBoundedText(value: unknown, maxLength: number): string | null {
@@ -2229,6 +2283,9 @@ async function readDriverProofMediaUpload(
   }
 
   const contentType = readProofMediaContentType(file.mimetype);
+  if (!hasMatchingProofMediaSignature(contentType, fileBytes)) {
+    throw new Error('Proof media file signature does not match its content type');
+  }
 
   return {
     contentType,
@@ -2261,11 +2318,30 @@ function readMultipartFieldValue(field: MultipartValue): string {
 
 function readProofMediaContentType(value: unknown): string {
   const contentType = readRequiredString(value).toLowerCase();
-  if (!contentType.startsWith('image/')) {
-    throw new Error('Proof media file must be an image');
+  if (!['image/heic', 'image/heif', 'image/jpeg', 'image/png', 'image/webp'].includes(contentType)) {
+    throw new Error('Proof media file type is unsupported');
   }
 
   return contentType;
+}
+
+function hasMatchingProofMediaSignature(contentType: string, fileBytes: Buffer): boolean {
+  if (contentType === 'image/jpeg') {
+    return fileBytes.length >= 3 && fileBytes[0] === 0xff && fileBytes[1] === 0xd8 && fileBytes[2] === 0xff;
+  }
+  if (contentType === 'image/png') {
+    return fileBytes.length >= 8 && fileBytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  if (contentType === 'image/webp') {
+    return fileBytes.length >= 12
+      && fileBytes.subarray(0, 4).equals(Buffer.from('RIFF'))
+      && fileBytes.subarray(8, 12).equals(Buffer.from('WEBP'));
+  }
+
+  const brand = fileBytes.length >= 12 ? fileBytes.subarray(8, 12).toString('ascii') : '';
+  return fileBytes.length >= 12
+    && fileBytes.subarray(4, 8).equals(Buffer.from('ftyp'))
+    && ['heic', 'heix', 'mif1'].includes(brand);
 }
 
 function readProofMediaSource(value: string): DriverProofMediaSource {
@@ -2416,7 +2492,7 @@ function readOptionalDriverRouteHistoryStatus(value: unknown): DriverRouteHistor
   }
 
   const status = readRequiredString(value);
-  if (status === 'pending' || status === 'active' || status === 'completed') {
+  if (status === 'pending' || status === 'active' || status === 'completed' || status === 'incomplete') {
     return status;
   }
 

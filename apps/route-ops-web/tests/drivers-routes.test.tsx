@@ -5,14 +5,11 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   acknowledgeNotification,
   ApiError,
-  createRouteOptimizationJob,
   deleteDriver,
   generateRouteGroupingChildRoutes,
-  getLatestRouteOptimizationJob,
   getNotifications,
   getOperationalHealth,
   getRouteOperationalState,
-  getRouteOptimizationJob,
   openNotificationChangeStream,
   markNotificationRead,
   publishRoute,
@@ -52,7 +49,6 @@ import type {
   BootstrapPayload,
   DriverDto,
   RouteGroupingSummaryDto,
-  RouteOptimizationJobDto,
   RoutePlanDetailDto,
   RoutePlanSummaryDto,
   StoreSettingsDto,
@@ -188,6 +184,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
     expect(formatRoutePlanStatus('DRAFT', 'ko-KR')).toBe('초안');
     expect(formatRoutePlanStatus('PUBLISHED', 'ko-KR')).toBe('게시됨');
+    expect(formatRoutePlanStatus('INCOMPLETE', 'ko-KR')).toBe('미완 종결');
   });
 
 
@@ -1051,53 +1048,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('route-optimize-button');
   });
 
-  test('route optimization job API helpers use the protected Route Ops endpoints', async () => {
-    const fetchMock = vi.fn((url: string) =>
-      Promise.resolve(
-        new Response(
-          JSON.stringify({ data: { job: routeOptimizationJobFixture({ id: url.includes('latest') ? 'latest-job-id' : 'job-id' }) }, error: null }),
-          {
-            headers: { 'Content-Type': 'application/json' },
-            status: 200,
-          },
-        ),
-      ),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
-
-    await createRouteOptimizationJob('route/id', 'csrf-token');
-    await getLatestRouteOptimizationJob('route/id');
-    await getRouteOptimizationJob('route/id', 'job/id');
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      '/admin/ui/app/api/routes/route%2Fid/optimize-jobs?shopDomain=tenant-a.example.test',
-      expect.objectContaining({
-        body: '{}',
-        credentials: 'same-origin',
-        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
-        method: 'POST',
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      '/admin/ui/app/api/routes/route%2Fid/optimize-jobs/latest?shopDomain=tenant-a.example.test',
-      expect.objectContaining({
-        credentials: 'same-origin',
-        headers: { Accept: 'application/json' },
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      '/admin/ui/app/api/routes/route%2Fid/optimize-jobs/job%2Fid?shopDomain=tenant-a.example.test',
-      expect.objectContaining({
-        credentials: 'same-origin',
-        headers: { Accept: 'application/json' },
-      }),
-    );
-  });
-
   test('route grouping child generation posts to the protected Route Ops API with CSRF', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(
@@ -1583,30 +1533,6 @@ function bootstrap(overrides: Partial<BootstrapPayload> = {}): BootstrapPayload 
     mode: 'internal-admin',
     routerConfig: { provider: null, status: 'not_configured' },
     shopDomain: 'dev1.tomatonofood.com',
-    ...overrides,
-  };
-}
-
-function routeOptimizationJobFixture(overrides: Partial<RouteOptimizationJobDto> = {}): RouteOptimizationJobDto {
-  return {
-    appliedAt: null,
-    createdAt: '2026-06-10T07:00:00.000Z',
-    createdBy: 'web-operator',
-    currentStep: 'QUEUED',
-    elapsedMs: null,
-    engineResultSequence: null,
-    errorCode: null,
-    errorMessage: null,
-    finishedAt: null,
-    id: 'job-id',
-    invalidatedReason: null,
-    routePlanId: 'route-plan-id',
-    shopId: 'shop-id',
-    startedAt: null,
-    status: 'QUEUED',
-    timeoutBudgetMs: 180000,
-    traceId: 'route-opt:route-plan-id:test',
-    updatedAt: '2026-06-10T07:00:00.000Z',
     ...overrides,
   };
 }

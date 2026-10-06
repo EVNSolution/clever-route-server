@@ -2,10 +2,11 @@ export type DriverRoutePushAction = 'assigned' | 'cancelled' | 'changed' | 'rele
 
 export type DriverRoutePushMessage = {
   action: DriverRoutePushAction;
-  childVersion: number;
+  childVersion?: number | undefined;
   devicePushToken: string;
   metadata?: Record<string, string> | undefined;
-  routeGroupingId: string;
+  publicationVersion?: string | undefined;
+  routeGroupingId?: string | undefined;
   routePlanId: string;
 };
 
@@ -21,19 +22,6 @@ export type DriverPushProvider = {
   readonly providerName: string;
   sendRouteNotification(message: DriverRoutePushMessage): Promise<DriverRoutePushResult>;
 };
-
-export class FakeDriverPushProvider implements DriverPushProvider {
-  readonly providerName = 'fake';
-  readonly sentMessages: DriverRoutePushMessage[] = [];
-
-  sendRouteNotification(message: DriverRoutePushMessage): Promise<DriverRoutePushResult> {
-    this.sentMessages.push(message);
-    return Promise.resolve({
-      providerMessageId: `fake:${message.routeGroupingId}:${message.childVersion}:${message.routePlanId}`,
-      status: 'SENT'
-    });
-  }
-}
 
 export class DisabledDriverPushProvider implements DriverPushProvider {
   readonly providerName = 'disabled';
@@ -64,9 +52,10 @@ export class FirebaseAdminDriverPushProvider implements DriverPushProvider {
         android: { notification: { channelId: 'route-updates' }, priority: 'high' },
         data: {
           action: message.action,
-          childVersion: String(message.childVersion),
+          ...(message.childVersion === undefined ? {} : { childVersion: String(message.childVersion) }),
           ...(message.metadata ?? {}),
-          routeGroupingId: message.routeGroupingId,
+          ...(message.publicationVersion === undefined ? {} : { publicationVersion: message.publicationVersion }),
+          ...(message.routeGroupingId === undefined ? {} : { routeGroupingId: message.routeGroupingId }),
           routePlanId: message.routePlanId,
           type: isBundleHandoff ? 'driver_bundle_handoff' : 'driver_route_changed'
         },

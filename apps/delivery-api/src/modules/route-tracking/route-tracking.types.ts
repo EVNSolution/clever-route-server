@@ -1,14 +1,17 @@
 import type { RouteTrackingPolicy } from './route-tracking.policy.js';
 
 export type RouteTrackingPositionEventV1 = {
+  accuracyMeters?: number | null;
   driverId: string;
   eventId: string;
+  gapBefore?: boolean;
   latitude: number;
   longitude: number;
   occurredAt: string;
   receivedAt: string;
   routePlanId: string;
   schemaVersion: 'route_tracking.v1';
+  sourceIndex?: number;
 };
 
 export type RouteTrackingProgressEventType =
@@ -57,6 +60,32 @@ export type RouteTrackingStopArrivalV1 = {
 
 export type RouteTrackingStatus = 'DELAYED' | 'LIVE' | 'NO_POSITION' | 'STALE';
 
+export type RouteExecutionLifecycleEvidenceV1 = {
+  eventId: string;
+  latitude: number | null;
+  longitude: number | null;
+  occurredAt: string;
+  receivedAt: string;
+};
+
+export type RouteExecutionEvidenceV1 = {
+  completion: RouteExecutionLifecycleEvidenceV1 | null;
+  firstPosition: RouteTrackingPositionEventV1 | null;
+  lastPosition: RouteTrackingPositionEventV1 | null;
+  returnToDepot: {
+    distanceToDepotMeters: number | null;
+    evidenceEventId: string | null;
+    observedAt: string | null;
+    source: 'LOCATION_UPDATED' | 'ROUTE_COMPLETED' | 'NONE';
+    status: 'CONFIRMED' | 'NOT_REQUIRED' | 'UNAVAILABLE' | 'UNCONFIRMED';
+    thresholdMeters: number;
+  };
+  routeEndMode: 'END_AT_LAST_STOP' | 'RETURN_TO_DEPOT' | null;
+  schemaVersion: 'route_execution_evidence.v1';
+  start: RouteExecutionLifecycleEvidenceV1 | null;
+  timeSemantics: 'EVENT_TIMESTAMPS_ONLY';
+};
+
 export type RouteTrackingRecordedPathV1 = {
   firstOccurredAt: string;
   geometry: {
@@ -67,10 +96,13 @@ export type RouteTrackingRecordedPathV1 = {
   lastOccurredAt: string;
   lastReceivedAt: string;
   samples: Array<{
+    accuracyMeters?: number | null;
     driverId: string | null;
     eventId: string;
+    gapBefore?: boolean;
     occurredAt: string;
     receivedAt: string;
+    sourceIndex?: number;
   }>;
   schemaVersion: 'route_tracking_geometry.v1';
   sourcePointCount: number;
@@ -83,7 +115,22 @@ export type RouteTrackingRoadMatchedGeometryV1 = {
     coordinateIndex: number;
   }>;
   coordinates: Array<Array<[number, number]>>;
+  sourceRanges?: RouteTrackingSourceRangeV1[];
   type: 'MultiLineString';
+  inferredGeometry?: RouteTrackingRoadMatchedGeometryV1 | null;
+  inferredRanges?: RouteTrackingSourceRangeV1[];
+  unmatchedRanges?: RouteTrackingSourceRangeV1[];
+};
+
+export type RouteTrackingSourceRangeV1 = {
+  endEventId: string;
+  endOccurredAt: string;
+  endSourceIndex: number;
+  interpolationLevel?: 0 | 1 | 2;
+  reason?: 'GPS_GAP' | 'IMPLAUSIBLE_JUMP' | 'LOW_ACCURACY' | 'NO_MATCH' | 'OUT_OF_COVERAGE';
+  startEventId: string;
+  startOccurredAt: string;
+  startSourceIndex: number;
 };
 
 export type RouteTrackingRoadMatchedPathV1 = {
@@ -96,13 +143,20 @@ export type RouteTrackingRoadMatchedPathV1 = {
     occurredAt: string;
   } | null;
   matchedGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
+  matchedRanges?: RouteTrackingSourceRangeV1[];
   matchedPointCount: number;
+  inferredGeometry?: RouteTrackingRoadMatchedGeometryV1 | null;
+  inferredRanges?: RouteTrackingSourceRangeV1[];
+  qualityVersion?: 'gps_quality.v2' | 'gps_quality.v3' | 'gps_quality.v4';
   schemaVersion: 'route_tracking_road_match.v1';
   uncertainGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
+  uncertainRanges?: RouteTrackingSourceRangeV1[];
+  unmatchedRanges?: RouteTrackingSourceRangeV1[];
   watermark: string;
 };
 
 export type RouteTrackingSnapshotV1 = {
+  executionEvidence: RouteExecutionEvidenceV1;
   latestPosition: RouteTrackingPositionEventV1 | null;
   policy: RouteTrackingPolicy;
   progress: RouteTrackingProgressSnapshotV1;

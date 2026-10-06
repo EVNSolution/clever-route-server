@@ -241,6 +241,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         routeGeometry: null,
         routeMapPreview: null,
       routeMetrics: null,
+      routeEndMode: 'END_AT_LAST_STOP',
       routeStopPoints: [],
       routeVersionId: 'route-version-id',
         scheduledStartAt: '2026-05-12T10:00:00.000Z',
@@ -342,6 +343,27 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       expect(result.route.stops[0]?.navigationTarget).toBe(expected);
       expect(result.route.stops[0]?.coordinates).toEqual({ latitude: 43.6487, longitude: -79.3817 });
     }
+  });
+
+  test.each([
+    [{ ...routePlanRecord.constraints, routeEndMode: 'RETURN_TO_DEPOT' }, 'RETURN_TO_DEPOT'],
+    [{ ...routePlanRecord.constraints, routeEndMode: 'END_AT_LAST_STOP' }, 'END_AT_LAST_STOP'],
+    [{ ...routePlanRecord.constraints, routeEndMode: 'unsupported' }, 'END_AT_LAST_STOP']
+  ])('exposes the persisted route end policy and preserves the legacy default', async (constraints, expected) => {
+    const { prisma } = createPrismaHarness({ routePlan: { ...routePlanRecord, constraints } });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: { routeEndMode: expected }
+    });
   });
 
   test('uses corrected current coordinates when they differ from Shopify coordinates rejected at sync time', async () => {

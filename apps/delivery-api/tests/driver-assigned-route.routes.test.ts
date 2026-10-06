@@ -28,6 +28,7 @@ const assignedRoute = {
     routeGeometry: null,
     routeMapPreview: null,
     routeMetrics: null,
+    routeEndMode: 'RETURN_TO_DEPOT' as const,
     routeVersionId: 'route-version-id',
     routeStopPoints: [],
     scheduledStartAt: '2026-05-12T10:00:00.000Z',

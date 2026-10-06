@@ -102,6 +102,16 @@ check('prisma migration change keeps web artifact for broad API tests', ['apps/d
   api_test_profile: 'route_ops',
 });
 
+for (const file of [
+  'apps/delivery-api/src/modules/shopify/order-query.repository.ts',
+  'apps/delivery-api/src/modules/shopify/ordered-date-range.ts',
+  'apps/delivery-api/tests/route-grouping-save.integration.test.ts',
+]) check('order-date contract always runs disposable PostgreSQL regressions', [file], {
+  api_changed: true,
+  critical_changed: true,
+  api_test_profile: 'route_ops',
+});
+
 check('operations workflow change', ['scripts/ssm-simple-route-ops-deploy.sh', '.github/workflows/route-ops-operations.yml'], {
   deploy_changed: true,
   workflow_changed: true,
@@ -154,6 +164,7 @@ check('deploy script only stays deploy-critical without API artifact', ['scripts
 });
 
 for (const operationContractPath of [
+  'scripts/route-tracking-preservation-worker.sh',
   'scripts/ssm-route-ops-docker-cleanup.sh',
   'scripts/ssm-route-completion-invariant-mode.sh',
   'scripts/verify-route-completion-alarm.sh',

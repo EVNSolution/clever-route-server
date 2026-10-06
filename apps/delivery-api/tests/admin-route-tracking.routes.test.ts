@@ -289,6 +289,23 @@ function trackingSnapshot(positionOverrides: Partial<{
     ...positionOverrides
   };
   return {
+    executionEvidence: {
+      completion: null,
+      firstPosition: position,
+      lastPosition: position,
+      returnToDepot: {
+        distanceToDepotMeters: null,
+        evidenceEventId: null,
+        observedAt: null,
+        source: 'NONE' as const,
+        status: 'UNAVAILABLE' as const,
+        thresholdMeters: 150
+      },
+      routeEndMode: null,
+      schemaVersion: 'route_execution_evidence.v1' as const,
+      start: null,
+      timeSemantics: 'EVENT_TIMESTAMPS_ONLY' as const
+    },
     latestPosition: position,
     policy: ROUTE_TRACKING_V1_POLICY,
     progress: {

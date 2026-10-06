@@ -1,3 +1,5 @@
+import { dsvReviewedTestExclusions as exclusions } from '../src/modules/dsv/dsv-reviewed-test-exclusions.js';
+import { visibleDsvOrderWhere, visibleDsvRouteWhere } from '../src/modules/dsv/dsv-test-visibility.js';
 import { randomUUID } from 'node:crypto';
 
 import { PrismaClient } from '@prisma/client';
@@ -321,7 +323,7 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(destinationB.page.hasMore).toBe(false);
   });
 
-  test('collapses active duplicate destination identities before pagination and keeps store-review mode isolated', async () => {
+  test('collapses active duplicate destination identities before pagination and excludes review data for all operational roles', async () => {
     const shop = await createShop(prisma, `destination-register-${randomUUID()}`);
     createdShopIds.push(shop.id);
     const [oldest, distinct] = await Promise.all([
@@ -406,8 +408,8 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(developer.items.map((destination) => destination.displayName)).toEqual([
       'Alpha Dock',
       'Beta Dock',
-      'Delta Review',
     ]);
+    expect(developer.page.hasMore).toBe(false);
   });
 
   test('emits endpoint-specific management cursor sort identities for every management list', async () => {
@@ -437,6 +439,45 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
         'label:asc,id:asc',
       ))).rejects.toMatchObject({ code: 'BAD_REQUEST', httpStatus: 400 } satisfies Partial<DsvV1ReadQueryError>);
     }
+  });
+
+  test('reviewed DSV IDs disappear before paging, counts and history without changing source rows', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'reviewed-visibility', { reviewedVisibility: true });
+    const hiddenRoute = await prisma.routePlan.create({ data: {
+      id: exclusions.routePlanIds[0], name: 'Reviewed test', shopId: fixture.shopId,
+      planDate: dateOnly('2026-07-23'), status: 'IN_PROGRESS', constraints: {}, metrics: {}, optimizerVersion: 'fixture',
+    } });
+    await prisma.vehicle.createMany({ data: exclusions.vehicleIds.map(id => ({ id, shopId: fixture.shopId, label: `Reviewed ${id}`, status: 'ACTIVE' })) });
+    const formalVehicles = await Promise.all(Array.from({ length: 5 }, (_, i) => prisma.vehicle.create({ data: {
+      shopId: fixture.shopId, label: `GPS formal ${i}`, status: 'ACTIVE',
+      dsvProfile: { create: { note: '', typeLabel: 'Formal' } },
+    } })));
+    for (const vehicleId of exclusions.vehicleIds) await prisma.dsvVehicleProfile.create({ data: { shopId: fixture.shopId, vehicleId, note: '', typeLabel: 'Reviewed' } });
+    const before = await canonicalCounts(prisma, fixture.shopId);
+    const sourceBefore = await prisma.order.findUniqueOrThrow({ where: { id: fixture.orderAId } });
+    const service = new PrismaDsvV1ReadQueryService(prisma, () => new Date('2026-07-22T15:30:00.000Z'));
+    for (const principal of [customerlessAdmin(fixture.shopId), { ...customerlessAdmin(fixture.shopId), scopes: ['dsv:dispatches:read' as const] }]) {
+      const page = await service.listDispatches(principal, { serviceDate: '2026-07-23', limit: 1 });
+      expect(page.items.map(row => row.sellerOrderId)).toEqual([fixture.orderBId]);
+      expect(page.page.hasMore).toBe(false);
+      expect((await service.listDispatches(principal, { serviceDate: '2026-07-23', orderNumber: fixture.orderAKey })).items).toEqual([]);
+      expect(JSON.stringify(await service.listRecords(principal, { serviceDate: '2026-07-23' }))).not.toContain(fixture.orderAKey);
+      expect(JSON.stringify(await service.listControl(principal, { serviceDate: '2026-07-23' }))).not.toContain(fixture.orderAId);
+      const customers = await service.listCustomers(principal);
+      expect(customers.items.find(row => row.customerId === fixture.customerAId)?.orderCount).toBe(2);
+      const vehicles = await service.listVehicles(principal);
+      expect(vehicles.items.map(row => row.vehicleId).sort()).toEqual(formalVehicles.map(row => row.id).sort());
+      for (const vehicleId of exclusions.vehicleIds) {
+        await expect(service.listVehicleTemperatureHistory(principal, { vehicleId })).rejects.toMatchObject({ httpStatus: 404 });
+        await expect(service.listVehicleGpsTrailHistory(principal, { vehicleId, serviceDate: '2026-07-23' })).rejects.toMatchObject({ httpStatus: 404 });
+      }
+    }
+    expect((await service.listCustomerDeliveries(customerPrincipal(fixture.shopId, fixture.customerAId), { serviceDate: '2026-07-23' })).items).toEqual([]);
+    expect(await prisma.order.findFirst({ where: { id: fixture.orderAId, ...visibleDsvOrderWhere(fixture.shopId) } })).toBeNull();
+    expect(await prisma.routePlan.findFirst({ where: { id: hiddenRoute.id, ...visibleDsvRouteWhere(fixture.shopId) } })).toBeNull();
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: fixture.orderAId } })).toEqual(sourceBefore);
+    expect(await canonicalCounts(prisma, fixture.shopId)).toEqual(before);
+    expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: hiddenRoute.id } })).toMatchObject({ status: 'IN_PROGRESS' });
   });
 
   test('hard-fails invalid and conflicting active commerce connection timezones and falls back only when none exists', async () => {
@@ -471,10 +512,12 @@ async function createFixture(
   prisma: PrismaClient,
   createdShopIds: string[],
   name: string,
-  options: { extraSameDayCustomerAOrder?: boolean; mismatchedShopEvidence?: boolean } = {},
+  options: { reviewedVisibility?: boolean; extraSameDayCustomerAOrder?: boolean; mismatchedShopEvidence?: boolean } = {},
 ) {
   const unique = `${name}-${randomUUID()}`;
-  const shop = await createShop(prisma, unique);
+  const shop = options.reviewedVisibility
+    ? await prisma.shop.create({ data: { id: exclusions.shopId, appId: exclusions.appId, shopDomain: exclusions.shopDomain, shopifyShopGid: `gid://shopify/Shop/${unique}` } })
+    : await createShop(prisma, unique);
   createdShopIds.push(shop.id);
   await createCommerceConnection(prisma, shop.id, shop.shopDomain, 'Asia/Seoul', 'primary');
 
@@ -544,7 +587,7 @@ async function createFixture(
   const orderAKey = `SO-A-${unique}`;
   const orderBKey = `SO-B-${unique}`;
   const [orderA, orderB, orderANone, orderAExpired] = await Promise.all([
-    createOrder(prisma, shop.id, customerA.id, sharedDestination.id, orderAKey, routeVersionA.id),
+    createOrder(prisma, shop.id, customerA.id, sharedDestination.id, orderAKey, routeVersionA.id, '2026-07-23', options.reviewedVisibility ? exclusions.sellerOrderIds[0] : undefined),
     createOrder(prisma, shop.id, customerB.id, sharedDestination.id, orderBKey, routeVersionA.id),
     createOrder(prisma, shop.id, customerA.id, sharedDestination.id, `SO-A-NONE-${unique}`, routeVersionA.id, '2026-07-24'),
     createOrder(prisma, shop.id, customerA.id, sharedDestination.id, `SO-A-EXPIRED-${unique}`, routeVersionA.id, '2026-07-25'),
@@ -638,7 +681,8 @@ async function createFixture(
         shopId: extraShop.id,
       },
     });
-    await createProof(prisma, extraShop.id, extraRoutePlan.id, stopA.id, null, 'storage-key-mismatched-shop', null);
+    await expect(createProof(prisma, extraShop.id, extraRoutePlan.id, stopA.id, null, 'storage-key-mismatched-shop', null))
+      .rejects.toMatchObject({ code: 'P2003' });
     mismatchedShopEventId = mismatchedEvent.id;
   }
   let extraCustomerAOrderId = '';
@@ -925,10 +969,9 @@ async function createSyntheticRecordIsolationFixture(
       shopId: shopB.id,
     },
   });
-  await Promise.all([
-    createProof(prisma, shopA.id, routePlanA.id, stop.id, null, `synthetic-expired-${unique}`, expiredAt),
-    createProof(prisma, shopB.id, routePlanB.id, stop.id, null, `synthetic-cross-shop-active-${unique}`, null),
-  ]);
+  await createProof(prisma, shopA.id, routePlanA.id, stop.id, null, `synthetic-expired-${unique}`, expiredAt);
+  await expect(createProof(prisma, shopB.id, routePlanB.id, stop.id, null, `synthetic-cross-shop-active-${unique}`, null))
+    .rejects.toMatchObject({ code: 'P2003' });
 
   return {
     crossShopId: shopB.id,
@@ -1130,11 +1173,13 @@ async function createOrder(
   sellerOrderKey: string | null,
   currentRouteVersionId: string | null,
   serviceDate = '2026-07-23',
+  id?: string,
 ) {
   const sourceKey = sellerOrderKey ?? `NULL-SELLER-${randomUUID()}`;
   const datedSourceKey = `${serviceDate}:${sourceKey}`;
   return prisma.order.create({
     data: {
+      ...(id === undefined ? {} : { id }),
       currentRouteVersionId,
       customerId,
       destinationId,
@@ -1245,6 +1290,7 @@ async function createProof(
       contentType: 'image/jpeg',
       deletedAt,
       deliveryStopId,
+      deliveryStopLinks: { create: { deliveryStopId } },
       driverId,
       kind: 'PHOTO',
       originalFilename: `${storageKey}.jpg`,

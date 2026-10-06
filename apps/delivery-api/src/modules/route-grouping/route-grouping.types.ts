@@ -1,6 +1,9 @@
 import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint, RoutePlanSummary } from '../route-plans/route-plan.types.js';
+import type { DriverRoutePushResult } from './driver-push.provider.js';
 
-export type RouteGroupingDisplayStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+export type RoutePublicationResult = DriverRoutePushResult & { publishedAt: string | null };
+
+export type RouteGroupingDisplayStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'INCOMPLETE' | 'CANCELLED';
 export type RouteGroupingChildDisplayStatus = RouteGroupingDisplayStatus;
 export type RouteGroupingNotificationStatus = 'NOT_REQUIRED' | 'PENDING' | 'SENT' | 'FAILED';
 
@@ -114,6 +117,53 @@ export type RouteGroupingSummaryDto = {
   warningState: RouteGroupingWarningDto[];
 };
 
+export type RouteGroupingRoutesListChildDto = {
+  color: string | null;
+  displayStatus: RouteGroupingChildDisplayStatus;
+  driverId: string | null;
+  driverName: string | null;
+  routeMetrics: RoutePlanRouteMetrics | null;
+  routePlan: {
+    createdAt: string;
+    deliveredCount: number;
+    driverId: string | null;
+    etaRange: { endAt: string; startAt: string } | null;
+    id: string;
+    itemSummary: { totalQuantity: number };
+    missingCoordinates: number;
+    name: string;
+    planDate: string;
+    routeMetrics: RoutePlanRouteMetrics | null;
+    scheduledStartAt: string | null;
+    scheduledStartTimeZone: string | null;
+    status: string;
+    stopsCount: number;
+    totalAmount: { amount: string; currencyCode: string } | null;
+    updatedAt: string;
+  } | null;
+  routePlanId: string | null;
+  routeIdx: number | null;
+  sortOrder: number | null;
+  stopsCount: number;
+  updatedAt: string;
+};
+
+export type RouteGroupingRoutesListDto = {
+  children: RouteGroupingRoutesListChildDto[];
+  currentVersion: number;
+  dateRangeEnd: string;
+  dateRangeStart: string;
+  displayStatus: RouteGroupingDisplayStatus;
+  id: string;
+  linkedInventoryId: string | null;
+  name: string;
+  planDate: string;
+  status: string;
+  totalOrders: number;
+  unresolvedOrders: number;
+  updatedAt: string;
+};
+
 export type RouteGroupingDetailDto = RouteGroupingSummaryDto & {
   assignments: RouteGroupingAssignmentDto[];
   branches: RouteGroupingBranchDto[];
@@ -126,6 +176,7 @@ export type CreateRouteGroupingInput = {
   dateRangeEnd?: string;
   dateRangeStart?: string;
   depot?: RoutePlanDepotInput | undefined;
+  initialRoute?: { requestId: string };
   name: string;
   orderIds: string[];
   planDate?: string;
@@ -140,6 +191,7 @@ export type CopyRouteGroupingInput = {
   expectedUpdatedAt: string;
   groupingId: string;
   mode: RouteGroupingCopyMode;
+  requestId?: string;
   shopDomain: string;
 };
 
@@ -317,9 +369,45 @@ export type SaveRouteGroupingDraftInput = {
   expectedUpdatedAt?: string;
   groupingId: string;
   mode?: 'MANUAL_ORDER';
+  /** Explicitly removes group/inventory membership; omitted Unassigned orders are retained. */
   removedOrderIds?: string[];
+  /** Partition current child orders; existing orders outside current children may be omitted. */
   routes: RouteGroupingDraftRouteInput[];
   shopDomain: string;
+};
+
+export type CreateRouteGroupingFromRoutePlanInput = {
+  actor: string;
+  appId?: string | undefined;
+  expectedRoutePlanUpdatedAt: string;
+  mode?: 'MANUAL_ORDER';
+  routePlanId: string;
+  routes: RouteGroupingDraftRouteInput[];
+  shopDomain: string;
+};
+
+export type CopyStandaloneRoutePlanInput = {
+  actor: string;
+  appId?: string | undefined;
+  expectedRoutePlanUpdatedAt: string;
+  routePlanId: string;
+  shopDomain: string;
+};
+
+export type StandaloneRoutePlanCopyDto = {
+  createdAt: string;
+  departureTime: string | null;
+  depot: { latitude: number | null; longitude: number | null };
+  driverId: null;
+  id: string;
+  name: string;
+  planDate: string;
+  scheduledStartAt: string | null;
+  scheduledStartTimeZone: string | null;
+  status: 'READY';
+  stopsCount: number;
+  updatedAt: string;
+  vehicleId: null;
 };
 
 export type NextRouteGroupingRouteIdxInput = {
@@ -332,14 +420,16 @@ export type DeleteRouteGroupingResult = { deleted: boolean; deletedChildRoutePla
 
 export type RouteGroupingService = {
   copyGrouping(input: CopyRouteGroupingInput): Promise<RouteGroupingDetailDto | null>;
+  copyStandaloneRoutePlan(input: CopyStandaloneRoutePlanInput): Promise<StandaloneRoutePlanCopyDto | null>;
   createBranch(input: CreateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   createCustomStop(input: CreateCustomRouteGroupingStopInput): Promise<RouteGroupingDetailDto | null>;
   createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto>;
+  createGroupingFromRoutePlan(input: CreateRouteGroupingFromRoutePlanInput): Promise<RouteGroupingDetailDto | null>;
   deleteBranch(input: { appId?: string | undefined; branchId: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   deleteCustomStop(input: { appId?: string | undefined; deliveryStopId: string; expectedUpdatedAt?: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;
   getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
-  listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]>;
+  listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string; view?: 'routes-list' }): Promise<RouteGroupingRoutesListDto[] | RouteGroupingSummaryDto[]>;
   nextRouteIdx(input: NextRouteGroupingRouteIdxInput): Promise<number | null>;
   updateBranch(input: UpdateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null>;
@@ -352,7 +442,7 @@ export type RouteGroupingService = {
   generateChildRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null>;
   reOptimizeRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null>;
   rollback(input: RollbackRouteGroupingInput): Promise<RouteGroupingDetailDto | null>;
-  recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void>;
+  recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<RoutePublicationResult>;
 };
 
 export class RouteGroupingConflictError extends Error {

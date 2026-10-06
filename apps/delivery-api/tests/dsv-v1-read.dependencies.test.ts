@@ -24,6 +24,7 @@ describe('loadDsvV1ReadDependencies', () => {
     });
 
     expect(dependencies?.cookieName).toBe('clever_dsv_admin');
+    expect(dependencies?.proofMediaService).toBeDefined();
   });
 
   test('keeps DSV v1 read disabled in production until explicitly enabled', () => {

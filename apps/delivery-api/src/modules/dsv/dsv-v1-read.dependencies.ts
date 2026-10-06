@@ -34,6 +34,12 @@ import { loadDsvMapProfileFromEnv, type DsvMapProfileEnv } from './dsv-map-profi
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
+import { PrismaDriverProofMediaRepository } from '../driver/driver-proof-media.repository.js';
+import {
+  loadDriverProofMediaReadAccessPolicy,
+  loadDriverProofMediaRepositoryStorageOptions,
+  type DriverApiRuntimeEnv,
+} from '../driver/driver.dependencies.js';
 import type {
   DsvV1ReadDependencies,
   DsvV1SessionResolver,
@@ -47,7 +53,7 @@ import { isStrongAdminWebSecret } from '../../routes/admin-ui-session.js';
 const customerSubjectPrefix = 'dsv-customer-account:';
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-export type DsvV1ReadRuntimeEnv = DsvDriverNotificationRuntimeEnv & DsvMapProfileEnv & Pick<
+export type DsvV1ReadRuntimeEnv = DriverApiRuntimeEnv & DsvDriverNotificationRuntimeEnv & DsvMapProfileEnv & Pick<
   DsvControlRuntimeEnv,
   | 'CLEVER_DSV_ROUTE_OPTIMIZATION_DEBOUNCE_MS'
   | 'CLEVER_DSV_ROUTE_OPTIMIZATION_ENABLED'
@@ -88,6 +94,7 @@ export function loadDsvV1ReadDependencies(input: {
   const routeOptimizationScheduler = loadDsvRouteOptimizationScheduler(input);
   const routeGeometryProvider = loadCustomerRouteGeometryProvider(input);
   const driverNotificationRuntime = createDsvDriverNotificationRuntime(input);
+  const proofMediaStorageOptions = loadDriverProofMediaRepositoryStorageOptions(input.env);
   return {
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
     ...(mapProfile === undefined ? {} : { mapProfile }),
@@ -110,6 +117,10 @@ export function loadDsvV1ReadDependencies(input: {
       input.prisma,
       new PrismaDsvDriverAccountLinkService(input.prisma),
     ),
+    proofMediaService: new PrismaDriverProofMediaRepository(input.prisma, {
+      readAccessTtlSeconds: loadDriverProofMediaReadAccessPolicy(input.env).readAccessTtlSeconds,
+      ...proofMediaStorageOptions,
+    }),
     storeReviewAccess: new PrismaDsvStoreReviewAccess(input.prisma),
     timeConstraintCommandService: new PrismaDsvTimeConstraintCommandService(
       input.prisma,

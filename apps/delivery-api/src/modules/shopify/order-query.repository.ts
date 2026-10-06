@@ -1,3 +1,4 @@
+import { prepareOrdersV2Filters, V2_PROGRESS, V2_SERVICES, V2_FULFILLMENT, V2_PAYMENT } from './order-filters-v2.js';
 import { createHmac, randomBytes } from 'node:crypto';
 
 import { Prisma, type PrismaClient } from '@prisma/client';
@@ -12,7 +13,7 @@ import {
 import { parseOrderDisplaySequence } from './order-display-sequence.js';
 import {
   canonicalOrderInclude,
-  toCanonicalOrderRow,
+  toOrdersQueryRow,
   toCanonicalOrderWhere,
   type CanonicalOrderRecord,
   type BulkOrderPaymentValue,
@@ -87,12 +88,13 @@ export class PrismaOrderQueryRepository {
     if (input.page !== undefined && (input.after !== undefined || input.before !== undefined)) {
       throw new Error('page cannot be combined with cursors');
     }
-    const filters = input.filters ?? {};
+    let filters = input.filters ?? {};
     const now = this.now();
     const shop = await this.findShop(input);
     if (shop === null) return emptyPage(createOrdersFilterHash(filters, this.secret));
-    const appId = normalizeShopifyAppId(input.appId);
     const filterHash = createOrdersFilterHash(filters, this.secret);
+    filters = await prepareOrdersV2Filters(this.prisma, shop.id, filters);
+    const appId = normalizeShopifyAppId(input.appId);
     if (input.page !== undefined) {
       return this.listNumericPage({
         appId,
@@ -150,7 +152,7 @@ export class PrismaOrderQueryRepository {
     const hasExtra = rows.length > ORDERS_PAGE_SIZE;
     const kept = rows.slice(0, ORDERS_PAGE_SIZE);
     if (boundary === 'before') kept.reverse();
-    const mapped = kept.map(toCanonicalOrderRow);
+    const mapped = kept.map(order => toOrdersQueryRow(order, filters, now));
     const start = kept[0];
     const end = kept.at(-1);
     return {
@@ -213,7 +215,7 @@ export class PrismaOrderQueryRepository {
         startCursor: start === undefined ? null : this.cursorFor(start, { appId: input.appId, boundary: 'before', filterHash: input.filterHash, readWatermark, shopId: input.shopId }),
         totalPages
       },
-      rows: rows.map(toCanonicalOrderRow),
+      rows: rows.map(order => toOrdersQueryRow(order, input.filters, input.now)),
       sort: ORDERS_SORT
     };
   }
@@ -224,6 +226,7 @@ export class PrismaOrderQueryRepository {
     const shop = await this.findShop(input);
     const filterHash = createOrdersFilterHash(filters, this.secret);
     if (shop === null) return { countPrecision: 'exact' as const, facets: emptyFacets(), filterHash, totalCount: 0 };
+    if (filters.filterVersion === '2') return this.v2Facets(shop.id, filters, now, filterHash);
     const without = <K extends keyof ListCanonicalOrdersFilters>(...keys: K[]) => {
       const copy = { ...filters };
       for (const key of keys) delete copy[key];
@@ -255,13 +258,31 @@ export class PrismaOrderQueryRepository {
     };
   }
 
+  private async v2Facets(shopId: string, filters: ListCanonicalOrdersFilters, now: Date, filterHash: string) {
+    const preparedFilters = await prepareOrdersV2Filters(this.prisma, shopId, filters);
+    const scheduledKeys = ['scheduledDateFrom', 'scheduledDateTo', 'scheduledDateMissing', 'scheduledWeekdays', 'scheduledActualDates'] as const;
+    const without = (...keys: (keyof ListCanonicalOrdersFilters)[]) => { const copy = { ...preparedFilters }; for (const key of keys) delete copy[key]; return copy; };
+    const count = async (query: ListCanonicalOrdersFilters) => this.prisma.order.count({ where: toCanonicalOrderWhere(shopId, query, now) });
+    const options = async (key: 'serviceTypes' | 'deliveryProgress' | 'fulfillmentStatuses' | 'paymentStatuses', values: readonly string[]) => Promise.all(values.map(async value => ({ value, count: await count({ ...without(key), [key]: [value] }) })));
+    const [areas, services, progress, fulfillment, payments, missingDateCount, totalCount] = await Promise.all([
+      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryArea'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shopId, without('areas', 'areaMissing'), now) } }),
+      options('serviceTypes', V2_SERVICES), options('deliveryProgress', V2_PROGRESS), options('fulfillmentStatuses', V2_FULFILLMENT), options('paymentStatuses', V2_PAYMENT),
+      count({ ...without(...scheduledKeys), scheduledDateMissing: true }), count(preparedFilters)
+    ]);
+    const areaValues = areas.flatMap(row => row.deliveryArea?.trim() ? [row.deliveryArea] : []);
+    const areaCounts = await Promise.all(areaValues.map(async value => ({ value, count: await count({ ...without('areas', 'areaMissing'), areas: [value] }) })));
+    areaCounts.push({ value: '__MISSING__', count: await count({ ...without('areas', 'areaMissing'), areaMissing: true }) });
+    return { countPrecision: 'exact' as const, filterHash, totalCount, facets: { areas: areaCounts, serviceTypes: services, deliveryProgress: progress, fulfillmentStatuses: fulfillment, paymentStatuses: payments, scheduledDateMissing: [{ value: 'true', count: missingDateCount }] } };
+  }
+
   async mapPoints(input: { appId?: string; filters?: ListCanonicalOrdersFilters; limit: number; shopDomain: string }) {
-    const filters = input.filters ?? {};
+    let filters = input.filters ?? {};
     const shop = await this.findShop(input);
     const filterHash = createOrdersFilterHash(filters, this.secret);
     if (shop === null) return { filterHash, generatedAt: new Date().toISOString(), omittedCount: 0, points: [] };
     const boundedLimit = Math.min(Math.max(input.limit, 1), 2_000);
     const now = this.now();
+    filters = await prepareOrdersV2Filters(this.prisma, shop.id, filters);
     const where = toCanonicalOrderWhere(shop.id, filters, now);
     const [orders, totalCount] = await this.prisma.$transaction([
       this.prisma.order.findMany({
@@ -315,7 +336,7 @@ export class PrismaOrderQueryRepository {
     filters?: ListCanonicalOrdersFilters;
     shopDomain: string;
   }) {
-    const filters = input.filters ?? {};
+    let filters = input.filters ?? {};
     const shop = await this.findShop(input);
     if (shop === null || input.actor.trim() === '') throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
     const appId = normalizeShopifyAppId(input.appId);
@@ -325,10 +346,11 @@ export class PrismaOrderQueryRepository {
     const tokenHash = keyedHash(this.secret, token);
     const actorSubjectHash = keyedHash(this.secret, input.actor);
     const filterHash = createOrdersFilterHash(filters, this.secret);
+    filters = await prepareOrdersV2Filters(this.prisma, shop.id, filters);
     const exclusions = new Set(input.excludeOrderIds ?? []);
     const result = await this.prisma.$transaction(async (tx) => {
       const members = await tx.order.findMany({
-        select: { id: true },
+        select: { cancelledAt: true, id: true },
         where: { AND: [
           toCanonicalOrderWhere(shop.id, filters, now),
           { createdAt: { lte: now }, displayOrderSequence: { not: null } }
@@ -336,13 +358,15 @@ export class PrismaOrderQueryRepository {
       });
       const memberIds = new Set(members.map(({ id }) => id));
       if ([...exclusions].some((id) => !memberIds.has(id))) throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
+      const effectiveExclusions = new Set([...exclusions, ...members.filter(({ cancelledAt }) => cancelledAt !== null).map(({ id }) => id)]);
+      const selectedCount = members.filter(({ cancelledAt, id }) => cancelledAt === null && !exclusions.has(id)).length;
       const snapshot = await tx.orderSelectionSnapshot.create({
         data: {
           actorSubjectHash,
           appId,
           expiresAt,
           filterHash,
-          selectedCount: members.length - exclusions.size,
+          selectedCount,
           shopId: shop.id,
           snapshotWatermark: now,
           sort: ORDERS_SORT,
@@ -350,7 +374,7 @@ export class PrismaOrderQueryRepository {
         }
       });
       if (members.length > 0) await tx.orderSelectionSnapshotOrder.createMany({
-        data: members.map(({ id }) => ({ excludedAt: exclusions.has(id) ? now : null, orderId: id, snapshotId: snapshot.id }))
+        data: members.map(({ id }) => ({ excludedAt: effectiveExclusions.has(id) ? now : null, orderId: id, snapshotId: snapshot.id }))
       });
       return snapshot;
     });
@@ -371,17 +395,24 @@ export class PrismaOrderQueryRepository {
     selectionToken: string;
     shopDomain: string;
   }) {
-    const snapshot = await this.boundSnapshot(input);
-    const exclusions = new Set(input.excludeOrderIds);
-    const members = new Set(snapshot.orders.map(({ orderId }) => orderId));
-    if ([...exclusions].some((id) => !members.has(id))) throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
-    const now = new Date();
-    await this.prisma.$transaction([
-      this.prisma.orderSelectionSnapshotOrder.updateMany({ data: { excludedAt: null }, where: { snapshotId: snapshot.id } }),
-      this.prisma.orderSelectionSnapshotOrder.updateMany({ data: { excludedAt: now }, where: { orderId: { in: [...exclusions] }, snapshotId: snapshot.id } }),
-      this.prisma.orderSelectionSnapshot.update({ data: { selectedCount: members.size - exclusions.size }, where: { id: snapshot.id } })
-    ]);
-    return { expiresAt: snapshot.expiresAt.toISOString(), selectedCount: members.size - exclusions.size };
+    return this.prisma.$transaction(async (tx) => {
+      const snapshot = await this.boundSnapshot(input, tx);
+      const exclusions = new Set(input.excludeOrderIds);
+      const memberIds = snapshot.orders.map(({ orderId }) => orderId);
+      const members = new Set(memberIds);
+      if ([...exclusions].some((id) => !members.has(id))) throw new OrderSelectionSnapshotError('INVALID_SELECTION_SNAPSHOT');
+      const eligibleIds = new Set((await tx.order.findMany({
+        select: { id: true },
+        where: { cancelledAt: null, id: { in: memberIds }, shopId: snapshot.shopId }
+      })).map(({ id }) => id));
+      const effectiveExclusions = new Set([...exclusions, ...memberIds.filter((id) => !eligibleIds.has(id))]);
+      const selectedCount = [...eligibleIds].filter((id) => !exclusions.has(id)).length;
+      const now = this.now();
+      await tx.orderSelectionSnapshotOrder.updateMany({ data: { excludedAt: null }, where: { snapshotId: snapshot.id } });
+      await tx.orderSelectionSnapshotOrder.updateMany({ data: { excludedAt: now }, where: { orderId: { in: [...effectiveExclusions] }, snapshotId: snapshot.id } });
+      await tx.orderSelectionSnapshot.update({ data: { selectedCount }, where: { id: snapshot.id } });
+      return { expiresAt: snapshot.expiresAt.toISOString(), selectedCount };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
   async consumeSelectionSnapshot(input: { actor: string; appId?: string; selectionToken: string; shopDomain: string }) {

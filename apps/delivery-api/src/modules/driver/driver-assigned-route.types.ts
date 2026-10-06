@@ -1,4 +1,5 @@
 import type {
+  RoutePlanEndMode,
   RoutePlanRouteGeometry,
   RoutePlanRouteMetrics
 } from '../route-plans/route-plan.types.js';
@@ -113,6 +114,7 @@ export type DriverAssignedRoute = {
   routeGeometry: RoutePlanRouteGeometry | null;
   routeMapPreview: DriverRouteMapPreview | null;
   routeMetrics: RoutePlanRouteMetrics | null;
+  routeEndMode: RoutePlanEndMode;
   routeVersionId: string | null;
   routeStopPoints: DriverAssignedRouteStopPoint[];
   scheduledStartAt: string | null;

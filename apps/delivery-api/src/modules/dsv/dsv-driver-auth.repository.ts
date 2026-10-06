@@ -10,6 +10,7 @@ import {
   normalizeDsvDriverLoginId,
   normalizeDsvDriverPhone,
 } from './dsv-driver-identity.js';
+import { lockDsvDriverAccount } from './dsv-driver-account-lock.js';
 
 export type DsvDriverAccountView = {
   connectionStatus: 'LINKED' | 'UNLINKED';
@@ -175,94 +176,129 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
 
   async login(input: DsvDriverLoginInput): Promise<DsvDriverAuthSession> {
     const loginId = normalizeDsvDriverLoginId(input.loginId);
-    const now = new Date();
-    const account = await this.prisma.driverAccount.findUnique({
-      include: {
-        drivers: {
-          include: { shop: { select: { shopDomain: true } } },
-          where: { dsvProfile: { isNot: null }, status: 'ACTIVE' },
-        },
-      },
+    const candidate = await this.prisma.driverAccount.findUnique({
+      select: { id: true },
       where: { loginId },
     });
-    const passwordMatches = account?.passwordHash === null
-      || account?.passwordHash === undefined
-      || account.passwordSalt === null
-      || account.passwordSalt === undefined
-      ? await verifyPassword(input.password, DUMMY_PASSWORD_SALT, DUMMY_PASSWORD_HASH)
-      : await verifyPassword(input.password, account.passwordSalt, account.passwordHash);
-    const isLocked = account?.passwordLockedUntil instanceof Date
-      && account.passwordLockedUntil.getTime() > now.getTime();
-
-    if (account === null || account.status !== 'ACTIVE' || isLocked || !passwordMatches) {
-      if (account !== null && account.status === 'ACTIVE' && !isLocked && !passwordMatches) {
-        const failedAttempt = await this.prisma.driverAccount.update({
-          data: { failedPasswordAttempts: { increment: 1 } },
-          select: { failedPasswordAttempts: true },
-          where: { id: account.id },
-        });
-        if (failedAttempt.failedPasswordAttempts >= MAX_FAILED_PASSWORD_ATTEMPTS) {
-          await this.prisma.driverAccount.update({
-            data: { passwordLockedUntil: new Date(now.getTime() + PASSWORD_LOCK_MINUTES * 60 * 1000) },
-            where: { id: account.id },
-          });
-        }
-      }
+    if (candidate === null) {
+      await verifyPassword(input.password, DUMMY_PASSWORD_SALT, DUMMY_PASSWORD_HASH);
       throw new DsvDriverAuthCredentialsError();
     }
 
-    await this.prisma.driverAccount.update({
-      data: { failedPasswordAttempts: 0, passwordLockedUntil: null },
-      where: { id: account.id },
+    const session = await this.prisma.$transaction(async (tx) => {
+      await lockDsvDriverAccount(tx, candidate.id);
+      const now = new Date();
+      const account = await tx.driverAccount.findUnique({
+        include: {
+          drivers: {
+            include: { shop: { select: { shopDomain: true } } },
+            where: { dsvProfile: { isNot: null }, status: 'ACTIVE' },
+          },
+        },
+        where: { id: candidate.id },
+      });
+      const passwordMatches = account?.passwordHash === null
+        || account?.passwordHash === undefined
+        || account.passwordSalt === null
+        || account.passwordSalt === undefined
+        ? await verifyPassword(input.password, DUMMY_PASSWORD_SALT, DUMMY_PASSWORD_HASH)
+        : await verifyPassword(input.password, account.passwordSalt, account.passwordHash);
+      const isLocked = account?.passwordLockedUntil instanceof Date
+        && account.passwordLockedUntil.getTime() > now.getTime();
+
+      if (account === null || account.status !== 'ACTIVE' || isLocked || !passwordMatches) {
+        if (account !== null && account.status === 'ACTIVE' && !isLocked && !passwordMatches) {
+          const failedAttempt = await tx.driverAccount.update({
+            data: { failedPasswordAttempts: { increment: 1 } },
+            select: { failedPasswordAttempts: true },
+            where: { id: account.id },
+          });
+          if (failedAttempt.failedPasswordAttempts >= MAX_FAILED_PASSWORD_ATTEMPTS) {
+            await tx.driverAccount.update({
+              data: { passwordLockedUntil: new Date(now.getTime() + PASSWORD_LOCK_MINUTES * 60 * 1000) },
+              where: { id: account.id },
+            });
+          }
+        }
+        return null;
+      }
+
+      await tx.driverAccount.update({
+        data: { failedPasswordAttempts: 0, passwordLockedUntil: null },
+        where: { id: account.id },
+      });
+      const linkedAccount = await this.linkMatchingDriversInTransaction(tx, account);
+      return this.createSession(linkedAccount, tx);
     });
-    return this.createSession(await this.linkMatchingDrivers(account));
+    if (session === null) throw new DsvDriverAuthCredentialsError();
+    return session;
   }
 
   async refresh(input: DsvDriverRefreshInput): Promise<DsvDriverAuthSession> {
     const refreshToken = input.refreshToken.trim();
     if (refreshToken.length === 0) throw new DsvDriverAuthRefreshError();
 
-    const now = new Date();
-    const session = await this.prisma.driverAccountSession.findUnique({
-      include: {
-        account: {
-          include: {
-            drivers: {
-              include: { shop: { select: { shopDomain: true } } },
-              where: { dsvProfile: { isNot: null }, status: 'ACTIVE' },
+    const candidate = await this.prisma.driverAccountSession.findUnique({
+      select: { accountId: true, id: true },
+      where: { refreshTokenHash: hashRefreshToken(refreshToken) },
+    });
+    if (candidate === null) throw new DsvDriverAuthRefreshError();
+
+    const refreshed = await this.prisma.$transaction(async (tx) => {
+      await lockDsvDriverAccount(tx, candidate.accountId);
+      const now = new Date();
+      const session = await tx.driverAccountSession.findUnique({
+        include: {
+          account: {
+            include: {
+              drivers: {
+                include: { shop: { select: { shopDomain: true } } },
+                where: { dsvProfile: { isNot: null }, status: 'ACTIVE' },
+              },
             },
           },
         },
-      },
-      where: { refreshTokenHash: hashRefreshToken(refreshToken) },
-    });
-    if (
-      session === null
-      || session.revokedAt !== null
-      || session.expiresAt.getTime() <= now.getTime()
-      || session.account.status !== 'ACTIVE'
-    ) {
-      throw new DsvDriverAuthRefreshError();
-    }
+        where: { id: candidate.id },
+      });
+      if (
+        session === null
+        || session.accountId !== candidate.accountId
+        || session.revokedAt !== null
+        || session.expiresAt.getTime() <= now.getTime()
+        || session.account.status !== 'ACTIVE'
+      ) {
+        return null;
+      }
 
-    await this.prisma.driverAccountSession.update({
-      data: { lastUsedAt: now },
-      where: { id: session.id },
+      await tx.driverAccountSession.update({
+        data: { lastUsedAt: now },
+        where: { id: session.id },
+      });
+      const account = await this.linkMatchingDriversInTransaction(tx, session.account);
+      return {
+        account: accountView(account, account.drivers),
+        accountId: account.id,
+        expiresAt: session.expiresAt,
+        refreshToken,
+        tokenVersion: account.tokenVersion,
+      };
     });
-    const account = await this.linkMatchingDrivers(session.account);
-    return {
-      account: accountView(account, account.drivers),
-      accountId: account.id,
-      expiresAt: session.expiresAt,
-      refreshToken,
-      tokenVersion: account.tokenVersion,
-    };
+    if (refreshed === null) throw new DsvDriverAuthRefreshError();
+    return refreshed;
   }
 
   private async linkMatchingDrivers(account: AccountWithDrivers): Promise<AccountWithDrivers> {
     if (account.name === null || account.drivers.length > 0) return account;
+    return this.prisma.$transaction((tx) => this.linkMatchingDriversInTransaction(tx, account));
+  }
+
+  private async linkMatchingDriversInTransaction(
+    tx: Prisma.TransactionClient,
+    account: AccountWithDrivers,
+  ): Promise<AccountWithDrivers> {
+    if (account.name === null || account.drivers.length > 0) return account;
     const canonicalName = account.name;
-    const candidates = (await this.prisma.driver.findMany({
+    const candidates = (await tx.driver.findMany({
       select: {
         id: true,
         phone: true,
@@ -279,27 +315,25 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
     ));
     if (candidates.length === 0) return account;
     for (const candidate of candidates) {
-      await this.prisma.$transaction(async (transaction) => {
-        const linked = await transaction.driver.updateMany({
-          data: {
-            accountId: account.id,
-            authSubject: `driver-${candidate.id}`,
-            displayName: canonicalName,
-            inviteCode: null,
-            inviteCodeExpiresAt: null,
-            phone: account.phone,
-          },
-          where: { accountId: null, id: candidate.id, isStoreReviewData: account.isStoreReviewAccount === true },
-        });
-        if (linked.count === 1) {
-          await transaction.dsvDriverProfile.update({
-            data: { lookupName: canonicalName },
-            where: { driverId: candidate.id },
-          });
-        }
+      const linked = await tx.driver.updateMany({
+        data: {
+          accountId: account.id,
+          authSubject: `driver-${candidate.id}`,
+          displayName: canonicalName,
+          inviteCode: null,
+          inviteCodeExpiresAt: null,
+          phone: account.phone,
+        },
+        where: { accountId: null, id: candidate.id, isStoreReviewData: account.isStoreReviewAccount === true },
       });
+      if (linked.count === 1) {
+        await tx.dsvDriverProfile.update({
+          data: { lookupName: canonicalName },
+          where: { driverId: candidate.id },
+        });
+      }
     }
-    return this.prisma.driverAccount.findUniqueOrThrow({
+    return tx.driverAccount.findUniqueOrThrow({
       include: {
         drivers: {
           include: { shop: { select: { shopDomain: true } } },
@@ -310,10 +344,13 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
     });
   }
 
-  private async createSession(account: AccountWithDrivers): Promise<DsvDriverAuthSession> {
+  private async createSession(
+    account: AccountWithDrivers,
+    client: Pick<Prisma.TransactionClient, 'driverAccountSession'> = this.prisma,
+  ): Promise<DsvDriverAuthSession> {
     const refreshToken = randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    await this.prisma.driverAccountSession.create({
+    await client.driverAccountSession.create({
       data: {
         accountId: account.id,
         expiresAt,

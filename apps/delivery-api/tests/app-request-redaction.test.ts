@@ -15,6 +15,14 @@ describe('safe request logging', () => {
     );
   });
 
+  test.each([
+    '/api/dsv/driver/auth/password-reset/validate',
+    '/api/dsv/driver/auth/password-reset/complete',
+    '/api/dsv/drivers/66666666-6666-4666-8666-666666666666/password-reset-link',
+  ])('removes the full query from password reset request logs for %s', (path) => {
+    expect(redactSensitiveUrl(`${path}?token=private-token&password=private-password&loginId=private-login&name=private-name&phone=01099998888`)).toBe(path);
+  });
+
   test('allowlists generic driver event request logs without request or network data', async () => {
     const logLines: string[] = [];
     const app = await buildApp({

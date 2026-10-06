@@ -32,9 +32,11 @@ customer source data remains read-only.
 4. Existing Route Ops template content is not silently promoted or merged.
    `customerEmailSettings` remains authoritative unless a merchant explicitly
    imports and saves legacy content.
-5. The Shopify app does not add Admin GraphQL `email` or `customer` fields in
-   this lane. Recipient eligibility and exact addresses come from the delivery
-   API canonical order/preview contract. Missing addresses remain ineligible.
+5. Shopify order synchronization requests the complete field set consumed by
+   the canonical order mapper, including `Order.email`. Manual send never
+   performs a live Shopify fallback. Recipient eligibility and exact addresses
+   come from the delivery API canonical order/preview contract; missing
+   canonical addresses remain ineligible.
 6. Existing #243-#245 behavior is preserved: safe branded HTML, raster logo
    upload, draft test sends, and the simplified subject/body/divider/boxed
    business-card footer. Removed color, preview-text, and logo-alt controls are
@@ -52,15 +54,16 @@ customer source data remains read-only.
 - Route Ops keeps reminder plans and trigger controls but no longer edits email
   subject/body content after the ownership cutover.
 - Shopify-origin orders without a canonical delivery API email cannot be sent
-  through this feature. Expanding Shopify protected-customer-data access needs
-  separate approval, field-map/privacy updates, and Dashboard work.
+  through this feature. The 2026-09-08 field-completeness repair uses the
+  tenant's existing approved `read_orders` and `read_customers` access and adds
+  no scope, key, or send-time source lookup.
 - Preview, test, manual, and future automatic delivery must consume one
   canonical render result.
 
 ## Verification requirements
 
-- Static tests prove no Shopify email/customer GraphQL field or customer/order
-  mutation is added.
+- Static tests prove the read-only Shopify query includes every field consumed
+  by the canonical order mapper, including `Order.email`, and adds no mutation.
 - Migration tests prove V1/V2 compatibility and single-writer ownership for
   templates and `nearbyStopsThreshold`.
 - All send-path tests use fake transport; no real provider call is permitted.

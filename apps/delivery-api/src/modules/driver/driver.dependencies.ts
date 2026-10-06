@@ -13,7 +13,10 @@ import { PrismaDriverRouteSessionRepository } from './driver-route-session.repos
 import { PrismaDriverSelfServiceRepository } from './driver-self-service.repository.js';
 import { PrismaDriverTokenAccessRepository } from './driver-token-access.repository.js';
 import { readDriverJwtSecret } from './driver-token-verifier.js';
-import { createS3DriverProofMediaStorage } from './driver-proof-media-s3-storage.js';
+import {
+  createEc2IamRoleCredentialsProvider,
+  createS3DriverProofMediaStorage
+} from './driver-proof-media-s3-storage.js';
 import {
   createHttpDriverProofMediaScanMonitor,
   createHttpDriverProofMediaScanner
@@ -53,8 +56,9 @@ import {
   DsvAssignmentCommandService,
   assignmentMap
 } from '../dsv/dsv-assignment-command.service.js';
+import { PrismaCompletionAssistanceService } from './completion-assistance.service.js';
 
-export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 180;
+export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 365;
 export const DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS = 90;
 export const DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS = 5 * 60;
 export const DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND = 'local';
@@ -72,13 +76,11 @@ export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND'
   | 'DRIVER_PROOF_MEDIA_SCAN_MONITOR_BEARER_TOKEN'
   | 'DRIVER_PROOF_MEDIA_SCAN_MONITOR_URL'
-  | 'DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID'
   | 'DRIVER_PROOF_MEDIA_S3_BUCKET'
+  | 'DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER'
   | 'DRIVER_PROOF_MEDIA_S3_ENDPOINT'
   | 'DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE'
   | 'DRIVER_PROOF_MEDIA_S3_REGION'
-  | 'DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY'
-  | 'DRIVER_PROOF_MEDIA_S3_SESSION_TOKEN'
   | 'DRIVER_PROOF_MEDIA_SCANNER_BACKEND'
   | 'DRIVER_PROOF_MEDIA_SCANNER_BEARER_TOKEN'
   | 'DRIVER_PROOF_MEDIA_SCANNER_URL'
@@ -87,8 +89,15 @@ export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_ROUTE_MAP_PREVIEW_ENABLED'
   | 'DRIVER_ROUTE_MAP_PREVIEW_SECRET'
   | 'DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS'
+  | 'COMPLETION_ASSISTANCE_POLICY_JSON'
+  | 'COMPLETION_ASSISTANCE_ACCOUNT_IDS'
+  | 'COMPLETION_ASSISTANCE_ACTIVATION_ID'
+  | 'COMPLETION_ASSISTANCE_ACTIVATED_AT'
+  | 'COMPLETION_ASSISTANCE_DETECTION_ENABLED'
+  | 'COMPLETION_ASSISTANCE_WORKER_ENABLED'
   | 'DELIVERY_API_PUBLIC_URL'
-  | 'JWT_SECRET',
+  | 'JWT_SECRET'
+  | 'NODE_ENV',
   string
 >>;
 
@@ -154,6 +163,7 @@ export function loadDriverApiDependencies(
       ? {}
       : { adminNotificationService: input.adminNotificationService }),
     driverAssignedRouteService,
+    completionAssistanceService: new PrismaCompletionAssistanceService(input.prisma, { env: input.env }),
     driverRouteOrderService: new PrismaDriverRouteOrderService(input.prisma),
     driverDestinationNotesService: new PrismaDriverDestinationNotesRepository(input.prisma),
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
@@ -371,15 +381,19 @@ export function loadDriverProofMediaRepositoryStorageOptions(env: DriverApiRunti
     return { storageRoot: loadDriverProofMediaStorageRoot(env) };
   }
   if (backend === 's3') {
+    const credentialsProvider = readOptional(env.DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER) ?? 'ec2-iam-role';
+    if (credentialsProvider !== 'ec2-iam-role') {
+      throw new Error('DRIVER_PROOF_MEDIA_S3_CREDENTIALS_PROVIDER must be ec2-iam-role');
+    }
+    if (readOptional(env.DRIVER_PROOF_MEDIA_S3_ENDPOINT) !== undefined) {
+      throw new Error('DRIVER_PROOF_MEDIA_S3_ENDPOINT is not allowed with ec2-iam-role credentials');
+    }
     return {
       storage: createS3DriverProofMediaStorage({
         bucket: readRequiredForS3(env.DRIVER_PROOF_MEDIA_S3_BUCKET, 'DRIVER_PROOF_MEDIA_S3_BUCKET'),
-        accessKeyId: readRequiredForS3(env.DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID, 'DRIVER_PROOF_MEDIA_S3_ACCESS_KEY_ID'),
-        endpoint: readOptional(env.DRIVER_PROOF_MEDIA_S3_ENDPOINT),
+        credentials: createEc2IamRoleCredentialsProvider(),
         forcePathStyle: readOptionalBoolean(env.DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE, 'DRIVER_PROOF_MEDIA_S3_FORCE_PATH_STYLE'),
-        region: readRequiredForS3(env.DRIVER_PROOF_MEDIA_S3_REGION, 'DRIVER_PROOF_MEDIA_S3_REGION'),
-        secretAccessKey: readRequiredForS3(env.DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY, 'DRIVER_PROOF_MEDIA_S3_SECRET_ACCESS_KEY'),
-        sessionToken: readOptional(env.DRIVER_PROOF_MEDIA_S3_SESSION_TOKEN)
+        region: readRequiredForS3(env.DRIVER_PROOF_MEDIA_S3_REGION, 'DRIVER_PROOF_MEDIA_S3_REGION')
       })
     };
   }
@@ -388,6 +402,13 @@ export function loadDriverProofMediaRepositoryStorageOptions(env: DriverApiRunti
 }
 
 function loadDriverProofMediaRepositorySafetyOptions(env: DriverApiRuntimeEnv): DriverProofMediaRepositorySafetyOptions {
+  const scannerBackend = readOptional(env.DRIVER_PROOF_MEDIA_SCANNER_BACKEND)?.toLowerCase()
+    ?? DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND;
+  const scanMonitorBackend = readOptional(env.DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND)?.toLowerCase()
+    ?? DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND;
+  if (scannerBackend === 'none' && scanMonitorBackend !== 'none') {
+    throw new Error('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND must be none when scanner backend is none');
+  }
   return {
     ...loadDriverProofMediaScannerOption(env),
     ...loadDriverProofMediaScanMonitorOption(env)

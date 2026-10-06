@@ -1,0 +1,17 @@
+{
+  "Rules": [
+    {
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 1
+      },
+      "Expiration": {
+        "Days": 365
+      },
+      "Filter": {
+        "Prefix": "driver-proof/"
+      },
+      "ID": "driver-proof-media-365-day-expiration",
+      "Status": "Enabled"
+    }
+  ]
+}
