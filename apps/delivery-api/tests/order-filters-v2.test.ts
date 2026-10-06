@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { describe, expect, test } from 'vitest';
 import { readOrdersV2Filters } from '../src/modules/shopify/order-filters-v2.js';
 import { toCanonicalOrderWhere } from '../src/modules/shopify/order-sync.repository.js';
@@ -47,5 +48,36 @@ describe('orders v2 filter boundary', () => {
         },
       ],
     });
+  });
+
+  test('normalizes the dedicated order number prefix without widening to broad search', () => {
+    const filters = readOrdersV2Filters({
+      filterVersion: '2',
+      orderNumberPrefix: '  #233  ',
+    });
+
+    expect(filters).toEqual({ filterVersion: '2', orderNumberPrefix: '233' });
+    const clauses = toCanonicalOrderWhere('shop', filters).AND as Prisma.OrderWhereInput[];
+    expect(clauses).toContainEqual({
+      OR: [
+        { name: { mode: 'insensitive', startsWith: '233' } },
+        { name: { mode: 'insensitive', startsWith: '#233' } },
+      ],
+    });
+  });
+
+  test('escapes Prisma LIKE metacharacters in literal order number prefixes', () => {
+    const where = toCanonicalOrderWhere(
+      'shop',
+      readOrdersV2Filters({ filterVersion: '2', orderNumberPrefix: '#WEB_%' + '\\' }),
+    );
+
+    expect(JSON.stringify(where)).toContain(JSON.stringify('WEB\\_\\%\\\\').slice(1, -1));
+  });
+
+  test.each(['#', '##', '##233', '# #233'])('rejects unsupported hash prefixes without widening the cohort: %s', (orderNumberPrefix) => {
+    expect(() => readOrdersV2Filters({ filterVersion: '2', orderNumberPrefix })).toThrow(
+      'invalid order number prefix',
+    );
   });
 });

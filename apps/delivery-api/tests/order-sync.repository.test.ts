@@ -69,6 +69,21 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(unplannedSearch).toContain('"none"');
   });
 
+  test('restricts order number prefix matching to the displayed order name', () => {
+    const query = JSON.stringify(
+      toCanonicalOrderWhere('shop-id', { orderNumberPrefix: '233' }),
+    );
+
+    expect(query).toContain('"name"');
+    expect(query).toContain('"startsWith":"233"');
+    expect(query).toContain('"startsWith":"#233"');
+    expect(query).not.toContain('sourceOrderNumber');
+    expect(query).not.toContain('sourceOrderId');
+    expect(query).not.toContain('recipientName');
+    expect(query).not.toContain('address1');
+    expect(query).not.toContain('phone');
+  });
+
   test('creates new orders and lists canonical rows with planned status derived from route stops', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 1 });
     const repository = createOrderSyncRepository(prisma);

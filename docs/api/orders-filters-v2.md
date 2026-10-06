@@ -17,6 +17,7 @@ All Orders resources (`/admin/orders`, `/page`, `/facets`, `/map-points`, `/sele
 | cancelled | Upstream cancelledAt presence; independent from payment VOIDED and delivery stop CANCELLED. |
 | areas / areaMissing=true | Current fact area values, OR null/empty/no fact. |
 | search | Existing text search semantics. |
+| orderNumberPrefix | Displayed order number (`Order.name`) prefix only. The boundary trims whitespace and one optional leading `#`. A prefix with no value or another leading `#` is invalid. Matching is case-insensitive, left-to-right, and treats `%`, `_`, and `\\` as literal characters. It does not search source IDs, customer data, addresses, phones, GIDs, delivery fields, or planning status. Internal predicates consume the boundary-normalized value and do not strip `#` again. |
 
 Arrays are repeated URL keys or JSON string arrays (empty means all); values are deduplicated/sorted by the request boundary. Dimensions AND; values in one dimension OR. Range AND weekday operates on the same fact date. Reversed date bounds are sorted. BFF requests use body transport for session tokens; tokens never appear in query URLs. `orderedDateTimeZone` is authenticated store metadata on BFF requests. Internal actual-date resolution is never accepted from clients or added to cursor/filter hashes.
 

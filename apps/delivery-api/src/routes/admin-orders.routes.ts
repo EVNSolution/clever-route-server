@@ -1,4 +1,5 @@
 import { readOrdersV2Filters } from '../modules/shopify/order-filters-v2.js';
+import { normalizeOrderNumberPrefix } from '../modules/shopify/order-number-prefix.js';
 import { performance } from 'node:perf_hooks';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -1280,7 +1281,7 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
   const knownKeys = new Set([
     'deliveryArea', 'deliveryBatchEndDate', 'deliveryBatchStartDate', 'deliveryDate', 'deliveryDateFrom',
     'deliverySession', 'deliveryState', 'deliveryWeekday', 'geocodeStatus', 'operateDeliveryStatus',
-    'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'orderedDateTimeZone', 'planned', 'planningGroupKey', 'q',
+    'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'orderedDateTimeZone', 'orderNumberPrefix', 'planned', 'planningGroupKey', 'q',
     'readiness', 'routeOpsScope', 'routeOpsTab', 'routeOpsToday', 'routeScopeKey', 'scope', 'search',
     'serviceCategory', 'serviceType', 'tab'
   ]);
@@ -1380,6 +1381,8 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
   const search = readSingleQuery(query.search);
   const legacySearch = readSingleQuery(query.q);
   if (search !== null || legacySearch !== null) filters.search = (search ?? legacySearch) as string;
+  const orderNumberPrefix = normalizeOrderNumberPrefix(readSingleQuery(query.orderNumberPrefix) ?? undefined);
+  if (orderNumberPrefix !== undefined) filters.orderNumberPrefix = orderNumberPrefix;
   const deliveryState = readSingleQuery(query.deliveryState);
   if (deliveryState !== null) {
     if (!['unplanned', 'planned', 'assigned_undelivered', 'past_due', 'delivered', 'fulfilled', 'unfulfilled'].includes(deliveryState)) throw new Error('invalid deliveryState');
