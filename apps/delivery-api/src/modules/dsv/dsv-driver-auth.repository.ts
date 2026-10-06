@@ -1,3 +1,4 @@
+import { syncDsvDriverAttributionHook } from './dsv-execution-hooks.js';
 import {
   createHash,
   randomBytes,
@@ -150,6 +151,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
               data: { lookupName: name },
               where: { driverId: candidate.id },
             });
+            await syncDsvDriverAttributionHook(transaction, { driverId: candidate.id, commandId: `account-register:${account.id}` });
             linkedDrivers.push(candidate);
           }
         }
@@ -331,6 +333,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
           data: { lookupName: canonicalName },
           where: { driverId: candidate.id },
         });
+        await syncDsvDriverAttributionHook(tx, { driverId: candidate.id, commandId: `account-login-link:${account.id}` });
       }
     }
     return tx.driverAccount.findUniqueOrThrow({

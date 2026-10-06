@@ -1562,12 +1562,6 @@ describe('route grouping contracts', () => {
     expect(source).toContain('driver route notification was not sent after route mutation');
   });
 
-  test('keeps the parent route group Ready when the legacy child publish endpoint is called', () => {
-    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    expect(source).toContain("this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }");
-    expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
-  });
-
   test('publishes an ordinary route once, ignores Start-only lifecycle changes, then sends a reordered refresh', async () => {
     const provider = new FakeDriverPushProvider();
     const routePlan = {
@@ -1639,7 +1633,7 @@ describe('route grouping contracts', () => {
     expect('driverEvent' in prisma).toBe(false);
   });
 
-  test('publishes a child once per version and reports the persisted publication and push receipt', async () => {
+  test('publishes a child atomically, preserves parent Ready, and sends once per version', async () => {
     const provider = new FakeDriverPushProvider();
     const child = {
       grouping: { shop: { shopDomain: 'tenant.example' } },
@@ -1648,10 +1642,12 @@ describe('route grouping contracts', () => {
     };
     const attempts = new Map<string, { action: string; id: string; status: string; providerMessageId?: string }>();
     const prisma = {
-      $transaction: vi.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
+      $transaction: vi.fn((operation: (tx: unknown) => Promise<unknown>): Promise<unknown> => operation(prisma)),
+      $queryRaw: vi.fn().mockResolvedValue([]),
       routeGrouping: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       routeGroupingChildVersion: {
         findFirst: vi.fn().mockResolvedValue(child),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         update: vi.fn((input: { data: { publishedAt?: Date; notificationStatus?: string }; where: { id: string } }) => Promise.resolve({ ...child, ...input.data }))
       },
       driverPushToken: { findMany: vi.fn().mockResolvedValue([{ devicePushToken: 'token-1', id: 'token-1' }]) },
@@ -1672,8 +1668,11 @@ describe('route grouping contracts', () => {
     };
     const service = new PrismaRouteGroupingService(prisma as never, provider);
     const receipt = await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
-    const publishedWrite = prisma.routeGroupingChildVersion.update.mock.calls[0]?.[0] as unknown as { data: { publishedAt: Date } };
+    const publishedWrite = prisma.routeGroupingChildVersion.updateMany.mock.calls[0]?.[0] as unknown as { data: { publishedAt: Date } };
     expect(receipt.publishedAt).toBe(publishedWrite.data.publishedAt.toISOString());
+    expect(prisma.routeGrouping.updateMany).toHaveBeenCalledWith({
+      data: { status: 'READY' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } }
+    });
     expect(receipt.status).toBe('SENT');
     const repeat = await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
     expect(repeat.providerMessageId).toBe(receipt.providerMessageId);

@@ -1,3 +1,6 @@
+import { legacyDsvNotificationTokens } from '../dsv/dsv-notification-channel-routing.js';
+import { disabledDsvOperationalNotificationSendPolicy, type DsvOperationalNotificationSendPolicySource } from '../dsv/dsv-operational-driver-notification.service.js';
+import { syncDsvExecutionHook, closeDsvExecutionHook } from '../dsv/dsv-execution-hooks.js';
 import { assertRouteDispatchOwnership, claimRouteExecutionProjection, hasDispatchReservation, lockRouteExecutionStops, withoutDispatchReservation } from '../route-plans/route-execution-ownership.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { DriverEventType, Prisma, type DeliveryStopStatus, type DriverRouteNotificationStatus, type PrismaClient } from '@prisma/client';
@@ -232,6 +235,7 @@ type ReOptimizedCurrentRouteCandidate = OptimizedChildRouteCandidate & {
 };
 
 type RouteGroupingServiceOptions = {
+  operationalNotificationPolicy?: DsvOperationalNotificationSendPolicySource;
   maxChildRouteStopDistanceFromDepotMeters?: number;
 };
 
@@ -341,6 +345,10 @@ export async function replaceCurrentRouteGroupingChildVersion(
     orderIds: input.orderIds,
     shopId: input.shopId
   });
+  if (input.routePlanId !== null) {
+    await syncDsvExecutionHook(prisma, { shopId: input.shopId, routePlanId: input.routePlanId,
+      commandId: `child-successor:${nextChild.id}` });
+  }
   return nextChild.id;
 }
 
@@ -949,6 +957,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routePlanIds: childRoutePlanIds,
           shopId: group.shopId
         });
+        for (const routePlanId of childRoutePlanIds) await closeDsvExecutionHook(tx, { shopId: group.shopId, routePlanId, reason: 'CANCELLED' });
         const deletedRoutes = await tx.routePlan.deleteMany({
           where: { id: { in: childRoutePlanIds }, shopId: group.shopId, status: { not: 'IN_PROGRESS' } }
         });
@@ -1514,6 +1523,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routePlanIds: [routePlanId],
           shopId: group.shopId
         });
+        await closeDsvExecutionHook(tx, { shopId: group.shopId, routePlanId, reason: 'CANCELLED' });
         await tx.routePlan.delete({ where: { id: routePlanId } });
       }
 
@@ -1761,6 +1771,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         routePlanIds: [routePlanId],
         shopId: group.shopId
       });
+      await closeDsvExecutionHook(tx, { shopId: group.shopId, routePlanId, reason: 'CANCELLED' });
       await tx.routePlan.delete({ where: { id: routePlanId } });
     }
 
@@ -2470,10 +2481,17 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return { errorCode: 'ROUTE_NOT_FOUND_OR_OUT_OF_SCOPE', publishedAt: null, status: 'SKIPPED' };
     }
     const publishedAt = new Date();
-    await this.prisma.$transaction([
-      this.prisma.routeGroupingChildVersion.update({ data: { publishedAt }, where: { id: child.id } }),
-      this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } } })
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${input.routePlanId}::uuid AND "shopId" = ${child.shopId}::uuid FOR UPDATE`;
+      const published = await tx.routeGroupingChildVersion.updateMany({
+        data: { publishedAt }, where: { id: child.id, shopId: child.shopId, status: 'CURRENT', supersededAt: null }
+      });
+      if (published.count !== 1) throw new RouteGroupingConflictError('route child version changed before publication');
+      await tx.routeGrouping.updateMany({ data: { status: 'READY' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } } });
+      await syncDsvExecutionHook(tx, { shopId: child.shopId, routePlanId: input.routePlanId,
+        commandId: `publication:${child.id}`, firstPublication: child.publishedAt === null,
+        previousPublishedAt: child.publishedAt });
+    });
     const notification = await this.recordPublishedRouteNotification(child, input.routePlanId).catch((error: unknown) => {
       console.warn('[route-grouping] driver route notification failed after publish commit', {
         errorName: error instanceof Error ? error.name : typeof error,
@@ -2676,10 +2694,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   private async sendRouteNotificationToAccount(
     input: DriverRouteNotificationTarget & { action: DriverRoutePushAction }
   ): Promise<DriverRoutePushResult> {
-    const tokens = await this.prisma.driverPushToken.findMany({
+    const candidates = await this.prisma.driverPushToken.findMany({
       orderBy: { lastSeenAt: 'desc' },
       where: { accountId: input.accountId, status: 'ACTIVE' }
     });
+    const tokens = await legacyDsvNotificationTokens(this.prisma,
+      this.options.operationalNotificationPolicy ?? disabledDsvOperationalNotificationSendPolicy,
+      { accountId: input.accountId, action: input.action, routePlanId: input.routePlanId, tokens: candidates });
     if (tokens.length === 0) {
       return {
         errorCode: 'NO_ACTIVE_TOKEN',
@@ -4248,6 +4269,7 @@ async function archiveCurrentChildren(tx: Tx, group: LoadedGrouping, actor: stri
       if (cancelled.count !== 1) {
         throw new RouteGroupingValidationError(['in-progress child routes cannot be archived or deleted']);
       }
+      await closeDsvExecutionHook(tx, { shopId: group.shopId, routePlanId: child.routePlanId, reason: 'CANCELLED' });
       await tx.routePlanStop.deleteMany({ where: { routePlanId: child.routePlanId } });
     }
     await tx.routeGroupingChildVersion.update({ data: { status: 'ARCHIVED', supersededAt: new Date() }, where: { id: child.id } });

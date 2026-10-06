@@ -1,3 +1,4 @@
+import { loadDsvOperationalSendPolicy, type DsvOperationalSendPolicyEnv } from './dsv-operational-send-policy.js';
 import type { PrismaClient } from '@prisma/client';
 
 import { loadDriverPushProvider } from '../route-grouping/driver-push.provider.js';
@@ -9,7 +10,7 @@ type LoggerLike = {
   warn?(bindings: unknown, message?: string): void;
 };
 
-export type DsvDriverNotificationRuntimeEnv = Partial<Record<
+export type DsvDriverNotificationRuntimeEnv = DsvOperationalSendPolicyEnv & Partial<Record<
   'FIREBASE_PROJECT_ID' | 'GOOGLE_APPLICATION_CREDENTIALS',
   string
 >>;
@@ -28,7 +29,8 @@ export function createDsvDriverNotificationRuntime(input: {
   const dispatcher = new PrismaDsvDriverNotificationDispatcher(
     input.prisma,
     loadDriverPushProvider(input.env),
-    input.logger
+    input.logger,
+    () => loadDsvOperationalSendPolicy(input.env)
   );
   const worker = new DsvDriverNotificationWorker(input.prisma, dispatcher, {}, input.logger);
   return {

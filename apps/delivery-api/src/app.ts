@@ -50,6 +50,7 @@ import {
 } from './routes/wordpress-plugin.routes.js';
 import { registerDsvControlRoutes, type DsvControlDependencies } from './routes/dsv-control.routes.js';
 import { registerDsvV1ReadRoutes, type DsvV1ReadDependencies } from './routes/dsv-v1-read.routes.js';
+import { registerDsvExecutionRoutes, type DsvExecutionRouteDependencies } from './routes/dsv-execution.routes.js';
 import { registerDsvDriverAuthRoutes, type DsvDriverAuthDependencies } from './routes/dsv-driver-auth.routes.js';
 import {
   registerDsvDriverAppReleaseRoutes,
@@ -73,6 +74,7 @@ export type BuildAppOptions = {
   dsvDriverAuth?: DsvDriverAuthDependencies;
   dsvDriverAppRelease?: DsvDriverAppReleaseDependencies;
   dsvV1Read?: DsvV1ReadDependencies;
+  dsvExecution?: DsvExecutionRouteDependencies;
   logger?: FastifyServerOptions['logger'];
   trustedProxyAddresses?: string[];
   shopifyAuth?: ShopifyAuthDependencies;
@@ -266,6 +268,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.dsvV1Read !== undefined) {
     registerDsvV1ReadRoutes(app, options.dsvV1Read);
+  }
+
+  if (options.dsvExecution !== undefined) {
+    registerDsvExecutionRoutes(app, options.dsvExecution);
   }
 
   if (options.shopifyAuth !== undefined) {

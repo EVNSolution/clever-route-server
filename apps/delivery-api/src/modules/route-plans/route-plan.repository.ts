@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+
+import { closeDsvExecutionHook, syncDsvExecutionHook, resolveDsvStopNotificationsHook } from '../dsv/dsv-execution-hooks.js';
 import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import { assertRouteDispatchOwnership, claimRouteExecutionProjection } from './route-execution-ownership.js';
 import { DriverEventType, Prisma, type PrismaClient } from '@prisma/client';
@@ -343,6 +346,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           shopId: shop.id
         }
       });
+      if (['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(deliveryStopStatus)) {
+        await resolveDsvStopNotificationsHook(tx, { shopId: shop.id, deliveryStopId: input.deliveryStopId });
+      }
 
       let driverEvent: { createdAt: Date; id: string; occurredAt: Date } | null = null;
       const eventType = input.payload.status === 'COMPLETED' ? DriverEventType.STOP_DELIVERED : null;
@@ -499,6 +505,11 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) return null;
+      await tx.$queryRaw`
+        SELECT id FROM route_plans
+        WHERE id = ${input.routePlanId}::uuid AND "shopId" = ${shop.id}::uuid
+        FOR UPDATE
+      `;
 
       const routeStop = await tx.routePlanStop.findFirst({
         select: { id: true, routePlan: { select: { status: true } } },
@@ -558,6 +569,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             id: input.deliveryStopId,
             shopId: shop.id
           }
+        });
+        await syncDsvExecutionHook(tx, {
+          shopId: shop.id, routePlanId: input.routePlanId, commandId: `stop-override:${randomUUID()}`,
         });
       }
 
@@ -669,11 +683,17 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       }
 
       if (routePlan.driverId !== driverId) {
+        if (await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
+          throw new RoutePlanDriverAssignInvalidError('Grouped route drivers must be changed through route grouping assignment.');
+        }
         await tx.routePlan.update({
           data: { assignmentGeneration: { increment: 1 }, driverId },
           where: { id: routePlan.id }
         });
       }
+      await syncDsvExecutionHook(tx, {
+        shopId: shop.id, routePlanId: routePlan.id, commandId: `route-driver:${randomUUID()}`,
+      });
 
       return true;
     });
@@ -824,6 +844,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       }
       if (hasStopSequenceChange && await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
         throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
+      }
+      if (hasDriverChange && await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
+        throw new RoutePlanDriverAssignInvalidError('Grouped route drivers must be changed through route grouping assignment.');
       }
 
       if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
@@ -1065,6 +1088,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (updatedRoutePlan === null) {
         return null;
       }
+      await syncDsvExecutionHook(tx, {
+        shopId: shop.id, routePlanId: routePlan.id, commandId: `route-save:${randomUUID()}`,
+      });
 
       return {
         detail: await applyRouteGeometryCache(tx, toRoutePlanDetail(updatedRoutePlan)),
@@ -1539,6 +1565,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         routePlanIds: [input.routePlanId],
         shopId: shop.id
       });
+      await closeDsvExecutionHook(tx, { shopId: shop.id, routePlanId: input.routePlanId, reason: 'CANCELLED' });
       const deleted = await tx.routePlan.deleteMany({
         where: { id: input.routePlanId, shopId: shop.id, status: { not: 'IN_PROGRESS' } }
       });
@@ -1605,6 +1632,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           constraints: updateConstraintsRouteEndMode(routePlan.constraints, routeEndMode, effectiveDepot)
         },
         where: { id: routePlan.id }
+      });
+      await syncDsvExecutionHook(tx, {
+        shopId: shop.id, routePlanId: routePlan.id, commandId: `route-options:${randomUUID()}`,
       });
 
       return true;
@@ -2886,6 +2916,9 @@ async function collapseRouteGroupingSplitAfterChildDelete(
       });
       if (cancelled.count !== remainingRoutePlanIds.length) {
         throw new RoutePlanDeleteBlockedError('In-progress split siblings cannot be collapsed.');
+      }
+      for (const routePlanId of remainingRoutePlanIds) {
+        await closeDsvExecutionHook(tx, { shopId: input.shopId, routePlanId, reason: 'CANCELLED' });
       }
       await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: remainingRoutePlanIds } } });
     }

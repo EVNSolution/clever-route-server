@@ -1,3 +1,4 @@
+import { syncDsvDriverAttributionHook } from './dsv-execution-hooks.js';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
@@ -167,6 +168,7 @@ export class PrismaDsvDriverAccountLinkService implements DsvDriverAccountLinkSe
           shopId: shop.id,
         },
       });
+      await syncDsvDriverAttributionHook(tx, { driverId: driver.id, commandId: `account-link:${input.requestId}:${account.id}` });
       return { accountId: account.id, driverId: driver.id };
     });
   }

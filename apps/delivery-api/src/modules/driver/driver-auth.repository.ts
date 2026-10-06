@@ -1,3 +1,4 @@
+import { syncDsvDriverAttributionHook } from '../dsv/dsv-execution-hooks.js';
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
@@ -221,6 +222,9 @@ export class PrismaDriverAuthRepository {
           ...(candidate.id === driver.id && displayName !== null ? { displayName } : {})
         }
       })));
+      for (const candidate of drivers) {
+        await syncDsvDriverAttributionHook(transaction, { driverId: candidate.id, commandId: `account-invite:${created.id}` });
+      }
       return created;
     });
 

@@ -1242,6 +1242,19 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlan.update).not.toHaveBeenCalled();
   });
 
+  test.each(['assignRoutePlanDriver', 'saveRoutePlan'] as const)('rejects %s driver changes that bypass grouped child authority', async (method) => {
+    const { prisma } = createPrismaHarness({ routeGroupingChildVersionCount: 1 });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+    await expect(repository[method]({
+      routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com', payload: { driverId: 'driver-id' }
+    })).rejects.toBeInstanceOf(RoutePlanDriverAssignInvalidError);
+    expect(prisma.routePlan.update).not.toHaveBeenCalled();
+    expect(prisma.routeGroupingChildVersion.update).not.toHaveBeenCalled();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+  });
+
   test('rejects duplicate stop update payload orders before changing route stops', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaRoutePlanRepository(
