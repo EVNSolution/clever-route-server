@@ -5,6 +5,7 @@ import {
   type DeliveryStopStatus,
 } from '@prisma/client';
 import { orderedDateBoundary } from './ordered-date-range.js';
+import { normalizeOrderNumberPrefix } from './order-number-prefix.js';
 import type { CanonicalOrderRecord, ListCanonicalOrdersFilters } from './order-sync.repository.js';
 
 export const V2_PROGRESS = [
@@ -62,6 +63,7 @@ export type OrdersV2Filters = {
   deliveryProgress?: string[];
   fulfillmentStatuses?: string[];
   paymentStatuses?: string[];
+  orderNumberPrefix?: string;
   cancelled?: boolean;
   areas?: string[];
   areaMissing?: boolean;
@@ -76,6 +78,7 @@ const scalarKeys = [
   'scheduledDateMissing',
   'cancelled',
   'areaMissing',
+  'orderNumberPrefix',
   'search',
   'orderedDateTimeZone',
 ] as const;
@@ -174,6 +177,8 @@ export function readOrdersV2Filters(
     throw new Error('received date requires the store IANA timezone');
   const search = scalar('search');
   if (search) filters.search = search;
+  const orderNumberPrefix = normalizeOrderNumberPrefix(scalar('orderNumberPrefix'));
+  if (orderNumberPrefix !== undefined) filters.orderNumberPrefix = orderNumberPrefix;
   return filters;
 }
 

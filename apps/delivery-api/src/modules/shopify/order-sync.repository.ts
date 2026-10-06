@@ -28,6 +28,7 @@ import { requireOrdersPlanningReferenceDate } from "./order-pagination.js";
 import { parseOrderDisplaySequence } from "./order-display-sequence.js";
 import { ordersV2Where, prepareOrdersV2Filters, v2ProgressForRecord, type OrdersV2Filters } from './order-filters-v2.js';
 import { orderedDateBoundary } from './ordered-date-range.js';
+import { orderNumberPrefixWhere } from './order-number-prefix.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
 import { reconcileKfoodDeliveryWorkCompletion } from "../route-plans/kfood-delivery-completion.js";
@@ -1712,6 +1713,8 @@ export function toCanonicalOrderWhere(
     { sourcePlatform: { not: 'CUSTOM' } },
     { OR: [{ sellerOrderSourceKind: null }, { sellerOrderSourceKind: { not: 'CLEVER_ROUTE_COPY' } }] }
   ];
+  const orderNumberWhere = orderNumberPrefixWhere(filters.orderNumberPrefix);
+  if (orderNumberWhere !== null) AND.push(orderNumberWhere);
   if (filters.search !== undefined && filters.search.trim() !== "") {
     const search = filters.search.trim();
     const textFields = [
