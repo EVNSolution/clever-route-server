@@ -48,5 +48,7 @@ describe('route plan lifecycle', () => {
     expect(ROUTE_DRIVER_OPERATIONAL_STATUSES).not.toContain('COMPLETED');
     expect(ROUTE_DRIVER_OPERATIONAL_STATUSES).not.toContain('INCOMPLETE');
     expect(ROUTE_ACTIVE_COMPATIBILITY_STATUSES).not.toContain('COMPLETED');
+    expect(ROUTE_ACTIVE_COMPATIBILITY_STATUSES).not.toContain('INCOMPLETE');
+    expect(isRouteReadyStatus('INCOMPLETE')).toBe(false);
   });
 });

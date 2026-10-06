@@ -202,7 +202,9 @@ jobs:
            steps.classify.outputs.api_test_profile != 'route_geometry')
         env:
           CLEVER_RUN_DISPOSABLE_DB_TESTS: "1"
-        run: npm --prefix apps/delivery-api run test:db:disposable
+        run: |
+          npm --prefix apps/delivery-api run test:db:disposable
+          bash apps/delivery-api/scripts/test-original-observations-db.sh
 
       - name: Build delivery API once
         if: >-

@@ -4126,6 +4126,86 @@ paths:
           $ref: '#/components/responses/NotFound'
         '501':
           description: Route tracking is unavailable in this runtime.
+  /admin/route-plans/{routePlanId}/tracking/original-observations:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read bounded original location observations for the current route assignment
+      operationId: getAdminOriginalObservations
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      description: >-
+        Reads committed LOCATION_UPDATED DriverEvent facts, never derived geometry.
+        Requires the verified app/tenant and current assigned driver/generation.
+        No unknown query parameters; from/to define an exclusive-end UTC window of at most 24 hours.
+        Signed cursors expire after 15 minutes and require the same scope, window and limit.
+        Traversal stops at 5000 records; capReached indicates more records exist.
+      security:
+        - ShopifySessionToken: []
+      parameters:
+        - name: routePlanId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: X-Clever-App-Id
+          in: header
+          required: false
+          schema: { type: string }
+          description: Optional expected app ID, checked by the existing administrator session verifier.
+        - name: from
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/OriginalObservationInstant' }
+        - name: to
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/OriginalObservationInstant' }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 200 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 2048 }
+          description: Opaque nextCursor from a prior page. Never decode or persist it as identity.
+      responses:
+        '200':
+          description: Original observations or explicit empty result. No total-count query.
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OriginalObservationsEnvelope' }
+        '400':
+          description: INVALID_QUERY or INVALID_CURSOR, including expired or scope-mismatched cursors.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: ASSIGNMENT_CHANGED; restart the read with no cursor.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '500':
+          description: Existing global INTERNAL_SERVER_ERROR or DELIVERY_SCHEMA_NOT_READY handler.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '501':
+          description: NOT_IMPLEMENTED; original observation dependency is unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: READ_TIMEOUT; retry using a smaller time window.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   /admin/route-plans/{routePlanId}/tracking/stream:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -5925,6 +6005,69 @@ components:
           properties:
             address1: { type: string, minLength: 1 }
             countryCode: { type: string, pattern: '^[A-Za-z]{2}$' }
+    OriginalObservationInstant:
+      type: string
+      format: date-time
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$'
+      description: Valid UTC instant with at most six fractional digits. Responses retain stored microseconds.
+    OriginalObservation:
+      type: object
+      additionalProperties: false
+      required: [eventId, observedAt, storedAt, latitude, longitude, accuracyMeters, coordinateStatus, accuracyStatus, clientEventKey]
+      properties:
+        eventId: { type: string, format: uuid, description: Committed DriverEvent record provenance. }
+        observedAt: { $ref: '#/components/schemas/OriginalObservationInstant' }
+        storedAt: { $ref: '#/components/schemas/OriginalObservationInstant' }
+        latitude: { type: [number, 'null'], minimum: -90, maximum: 90 }
+        longitude: { type: [number, 'null'], minimum: -180, maximum: 180 }
+        accuracyMeters: { type: [number, 'null'], minimum: 0 }
+        coordinateStatus: { type: string, enum: [VALID, MISSING, INVALID, REDACTED] }
+        accuracyStatus: { type: string, enum: [VALID, MISSING, INVALID, REDACTED] }
+        clientEventKey:
+          type: [string, 'null']
+          description: App/tenant/route-scoped HMAC of stored client event ID, omitted for missing IDs and redacted observations.
+    OriginalObservationsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        error: { type: 'null' }
+        data:
+          type: object
+          additionalProperties: false
+          required: [schemaVersion, routePlanId, source, scope, window, observations, page, emptyReason]
+          properties:
+            schemaVersion: { type: integer, const: 1 }
+            routePlanId: { type: string, format: uuid }
+            source: { type: string, const: DRIVER_EVENT_LOCATION_UPDATED }
+            scope: { type: string, const: CURRENT_ASSIGNMENT }
+            window:
+              type: object
+              additionalProperties: false
+              required: [from, to]
+              properties:
+                from: { $ref: '#/components/schemas/OriginalObservationInstant' }
+                to: { $ref: '#/components/schemas/OriginalObservationInstant' }
+            observations:
+              type: array
+              maxItems: 500
+              items: { $ref: '#/components/schemas/OriginalObservation' }
+            emptyReason:
+              type: [string, 'null']
+              enum: [NO_ASSIGNED_DRIVER, NO_OBSERVATIONS, null]
+            page:
+              type: object
+              additionalProperties: false
+              required: [limit, returned, hasMore, nextCursor, totalReturned, pointCap, capReached, snapshotAt]
+              properties:
+                limit: { type: integer, minimum: 1, maximum: 500 }
+                returned: { type: integer, minimum: 0, maximum: 500 }
+                hasMore: { type: boolean }
+                nextCursor: { type: [string, 'null'], maxLength: 2048 }
+                totalReturned: { type: integer, minimum: 0, maximum: 5000 }
+                pointCap: { type: integer, const: 5000 }
+                capReached: { type: boolean }
+                snapshotAt: { $ref: '#/components/schemas/OriginalObservationInstant' }
     Error:
       type: object
       required: [code, message]
