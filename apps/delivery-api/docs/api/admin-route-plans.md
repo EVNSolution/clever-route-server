@@ -383,6 +383,11 @@ default of 5 minutes.
 
 ## GET `/admin/route-plans/:routePlanId/tracking`
 
+Original stored GPS facts have a separate bounded, authenticated read contract:
+[`tracking/original-observations`](./original-observations.md). That response
+uses committed event records for the current assignment; this existing
+snapshot and its simplified positions do not become original observations.
+
 Returns the current tracking snapshot and opens the same route-scoped SSE
 stream used by the embedded admin app. The snapshot keeps `recentPositions`
 for backward compatibility and adds `recordedPath` as the canonical historical

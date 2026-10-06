@@ -705,6 +705,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'patch', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/override' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/transition' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/tracking' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/tracking/original-observations' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/tracking/stream' },
     { method: 'get', path: '/customer-email/assets/:fileName' }
   ];
