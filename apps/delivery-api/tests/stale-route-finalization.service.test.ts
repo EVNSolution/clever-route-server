@@ -34,6 +34,17 @@ describe('PrismaStaleRouteFinalizationService', () => {
     expect(harness.lockRoutePlan.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER).toBeLessThan(
       harness.findFirst.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER
     );
+    expect(harness.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        id: 'route-id',
+        shopId: 'shop-id',
+        shop: {
+          appId: KFOOD_STALE_ROUTE_APP_ID,
+          shopDomain: KFOOD_STALE_ROUTE_SHOP_DOMAIN
+        },
+        status: 'IN_PROGRESS'
+      }
+    }));
     expect(harness.updateMany).toHaveBeenCalledWith({
       data: { status: 'INCOMPLETE' },
       where: expect.objectContaining({
@@ -84,6 +95,48 @@ describe('PrismaStaleRouteFinalizationService', () => {
     const result = await service.processDue(new Date('2026-09-18T12:00:00.000Z'));
 
     expect(result.skippedNotDue).toBe(1);
+    expect(harness.updateMany).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { finalized: 0, now: '2026-09-19T03:59:59.999Z' },
+    { finalized: 1, now: '2026-09-19T04:00:00.000Z' }
+  ])('uses the exact Toronto local-date boundary at $now', async ({ finalized, now }) => {
+    const harness = createHarness();
+    const service = new PrismaStaleRouteFinalizationService(harness.prisma);
+
+    const result = await service.processDue(new Date(now));
+
+    expect(result.finalized).toBe(finalized);
+    expect(result.skippedNotDue).toBe(1 - finalized);
+    expect(harness.updateMany).toHaveBeenCalledTimes(finalized);
+  });
+
+  test('does not finalize a late-started route using its older planned date', async () => {
+    const harness = createHarness({
+      driverEvents: [{ eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-09-19T03:30:00.000Z') }]
+    });
+    const service = new PrismaStaleRouteFinalizationService(harness.prisma);
+
+    const beforeActualWindowEnd = await service.processDue(new Date('2026-09-19T04:00:00.000Z'));
+
+    expect(beforeActualWindowEnd.skippedNotDue).toBe(1);
+    expect(harness.updateMany).not.toHaveBeenCalled();
+
+    const atActualWindowEnd = await service.processDue(new Date('2026-09-20T04:00:00.000Z'));
+
+    expect(atActualWindowEnd.finalized).toBe(1);
+    expect(harness.updateMany).toHaveBeenCalledOnce();
+  });
+
+  test('does not finalize when the locked route no longer matches the exact tenant and state scope', async () => {
+    const harness = createHarness({ staleRouteMatchesScope: false });
+    const service = new PrismaStaleRouteFinalizationService(harness.prisma);
+
+    const result = await service.processDue(new Date('2026-09-20T00:00:00.000Z'));
+
+    expect(result.skippedConcurrent).toBe(1);
+    expect(result.finalized).toBe(0);
     expect(harness.updateMany).not.toHaveBeenCalled();
   });
 
@@ -153,6 +206,7 @@ function createHarness(overrides: {
   driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
   lockedRows?: Array<{ id: string }>;
   navigationUntil?: Date;
+  staleRouteMatchesScope?: boolean;
   updatedCount?: number;
 } = {}) {
   const findMany = vi.fn().mockResolvedValue([{
@@ -208,7 +262,7 @@ function createHarness(overrides: {
       deliveryWorkCompletedVersionId: overrides.navigationUntil === undefined ? null : 'version-id',
       driverNavigationUntil: overrides.navigationUntil ?? null
     });
-    return Promise.resolve(staleRoute);
+    return Promise.resolve(overrides.staleRouteMatchesScope === false ? null : staleRoute);
   });
   const updateMany = vi.fn().mockResolvedValue({ count: overrides.updatedCount ?? 1 });
   const lockRoutePlan = vi.fn().mockResolvedValue(overrides.lockedRows ?? [{ id: 'route-id' }]);
