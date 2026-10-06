@@ -2,7 +2,6 @@ import { describe, expect, test } from 'vitest';
 
 import {
   DRIVER_DIAGNOSTIC_MAX_BATCH_BYTES,
-  parseDriverDiagnosticEnvelope,
   parseDriverDiagnosticEnvelopeDetailed,
   parseDriverDiagnosticSnapshot,
   type DriverDiagnosticBlocker,
@@ -134,30 +133,30 @@ describe('driver diagnostic contract parser', () => {
       }]
     });
 
-    const parsed = parseDriverDiagnosticEnvelope(unsafe);
+    const parsed = parseDriverDiagnosticEnvelopeDetailed(unsafe)?.envelope ?? null;
     expect(parsed).not.toBeNull();
     const serialized = JSON.stringify(parsed);
     expect(serialized).not.toMatch(/authorization|Bearer|latitude|longitude|phone|errorMessage|customer|address|token/iu);
   });
 
   test('rejects an unknown live reason instead of silently projecting healthy', () => {
-    expect(parseDriverDiagnosticEnvelope(envelope({
+    expect(parseDriverDiagnosticEnvelopeDetailed(envelope({
       liveSnapshot: snapshot({
         blockers: [{ ...blocker(), reason: 'FREE_TEXT_FAILURE' as never }]
       })
-    }))).toBeNull();
+    }))?.envelope ?? null).toBeNull();
   });
 
   test('accepts a user-initiated support report without retaining free text', () => {
     const record = envelope().records[0]!;
-    const parsed = parseDriverDiagnosticEnvelope(envelope({
+    const parsed = parseDriverDiagnosticEnvelopeDetailed(envelope({
       records: [{
         ...record,
         kind: 'USER_REPORT',
         message: 'customer address, PIN, and token must not persist',
         rawError: 'private stack trace'
       }]
-    }));
+    }))?.envelope ?? null;
 
     expect(parsed?.records[0]).toMatchObject({ diagnosticId: DIAGNOSTIC_ID, kind: 'USER_REPORT' });
     expect(JSON.stringify(parsed?.records[0])).not.toMatch(/message|rawError|customer address|PIN|token|stack trace/iu);
@@ -185,9 +184,9 @@ describe('driver diagnostic contract parser', () => {
   });
 
   test('enforces record count and serialized 64 KiB limits before sanitization', () => {
-    expect(parseDriverDiagnosticEnvelope(envelope({ records: Array.from({ length: 51 }, () => envelope().records[0]) })))
+    expect(parseDriverDiagnosticEnvelopeDetailed(envelope({ records: Array.from({ length: 51 }, () => envelope().records[0]) }))?.envelope ?? null)
       .toBeNull();
-    expect(parseDriverDiagnosticEnvelope(envelope({ ignored: 'x'.repeat(DRIVER_DIAGNOSTIC_MAX_BATCH_BYTES) })))
+    expect(parseDriverDiagnosticEnvelopeDetailed(envelope({ ignored: 'x'.repeat(DRIVER_DIAGNOSTIC_MAX_BATCH_BYTES) }))?.envelope ?? null)
       .toBeNull();
   });
 
@@ -202,13 +201,13 @@ describe('driver diagnostic contract parser', () => {
     const clientEventId = `completion-assistance-${operation}:${REQUEST_ID}`;
     const payload = envelope();
     const record = payload.records[0]!;
-    const parsed = parseDriverDiagnosticEnvelope(envelope({
+    const parsed = parseDriverDiagnosticEnvelopeDetailed(envelope({
       records: [{
         ...record,
         identifiers: { clientEventId },
         snapshot: snapshot({ blockers: [blocker({ clientEventId, reason: 'STORAGE_READ_FAILED', stage: 'STORAGE' })] })
       }]
-    }));
+    }))?.envelope ?? null;
     expect(parsed?.records[0]?.identifiers?.clientEventId).toBe(clientEventId);
     expect(parsed?.records[0]?.snapshot.blockers?.[0]?.clientEventId).toBe(clientEventId);
   });
@@ -216,9 +215,9 @@ describe('driver diagnostic contract parser', () => {
   test('accepts a strict version-7 UUID completion assistance identifier', () => {
     const clientEventId = 'completion-assistance-read:018f47a2-4b5c-7def-8abc-0123456789ab';
     const record = envelope().records[0]!;
-    const parsed = parseDriverDiagnosticEnvelope(envelope({
+    const parsed = parseDriverDiagnosticEnvelopeDetailed(envelope({
       records: [{ ...record, identifiers: { clientEventId } }]
-    }));
+    }))?.envelope ?? null;
     expect(parsed?.records[0]?.identifiers?.clientEventId).toBe(clientEventId);
   });
 
@@ -547,14 +546,14 @@ describe('driver runtime diagnostic projection', () => {
 
 describe('database integer wire bounds', () => {
   test('accepts the PostgreSQL integer boundary and rejects envelope overflow', () => {
-    expect(parseDriverDiagnosticEnvelope(envelope({ discardedRecordCount: 2_147_483_647 }))).not.toBeNull();
-    expect(parseDriverDiagnosticEnvelope(envelope({ discardedRecordCount: 2_147_483_648 }))).toBeNull();
+    expect(parseDriverDiagnosticEnvelopeDetailed(envelope({ discardedRecordCount: 2_147_483_647 }))?.envelope ?? null).not.toBeNull();
+    expect(parseDriverDiagnosticEnvelopeDetailed(envelope({ discardedRecordCount: 2_147_483_648 }))?.envelope ?? null).toBeNull();
   });
 
   test('rejects only an overflowing record sequence with an explicit record rejection', () => {
     const payload = envelope();
     const first = payload.records[0]!;
-    expect(parseDriverDiagnosticEnvelope(envelope({ records: [{ ...first, sequence: 2_147_483_647 }] }))).not.toBeNull();
+    expect(parseDriverDiagnosticEnvelopeDetailed(envelope({ records: [{ ...first, sequence: 2_147_483_647 }] }))?.envelope ?? null).not.toBeNull();
     expect(parseDriverDiagnosticEnvelopeDetailed(envelope({ records: [{ ...first, sequence: 2_147_483_648 }] })))
       .toMatchObject({ envelope: { records: [] }, rejectedRecords: [{ diagnosticId: DIAGNOSTIC_ID, code: 'INVALID_RECORD' }] });
   });

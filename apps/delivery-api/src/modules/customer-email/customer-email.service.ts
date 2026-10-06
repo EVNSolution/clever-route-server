@@ -1527,14 +1527,6 @@ function automaticSettingsVersion(settings: CustomerEmailSettings): string {
   return `v3:g${settings.globalVersion}:t${templateVersions}`;
 }
 
-export function readCustomerEmailSettingsPayload(value: unknown): CustomerEmailSettings | null {
-  try {
-    return validateCustomerEmailSettingsPayload(value);
-  } catch {
-    return null;
-  }
-}
-
 export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
   branding: Partial<CustomerEmailBranding>;
   expectedVersion: number;

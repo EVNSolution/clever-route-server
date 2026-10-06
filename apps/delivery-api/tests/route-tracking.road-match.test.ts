@@ -4,7 +4,6 @@ import {
   OsrmRouteTrackingRoadMatchProvider,
   buildRouteTrackingRoadMatchCacheWrite,
   buildRouteTrackingRoadMatchedPath,
-  shouldRefreshRouteTrackingRoadMatchedPath,
 } from '../src/modules/route-tracking/route-tracking.road-match.js';
 import type {
   RouteTrackingGeometryDocumentV1,
@@ -1496,32 +1495,6 @@ describe('route tracking road matching', () => {
     expect(result?.coverage).toBe('korea');
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(String((fetch.mock.calls as unknown as Array<[string]>)[0]![0])).not.toContain('-79.4');
-  });
-
-  test('does not refresh from cache when the watermark already covers the latest input', () => {
-    const record = trackingRecord({
-      roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:02:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v5',
-      roadMatchedSourcePointCount: 3,
-      roadMatchedWatermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:02:00.000Z:abc',
-      sourcePointCount: 3,
-    });
-
-    expect(shouldRefreshRouteTrackingRoadMatchedPath(record)).toBe(false);
-    expect(shouldRefreshRouteTrackingRoadMatchedPath(trackingRecord({
-      roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:01:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v5',
-      roadMatchedSourcePointCount: 2,
-      roadMatchedWatermark: 'route_tracking_road_match.v1:korea:2:2:2026-07-21T00:01:00.000Z:abc',
-      sourcePointCount: 3,
-    }))).toBe(true);
-    expect(shouldRefreshRouteTrackingRoadMatchedPath(trackingRecord({
-      roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:02:00.000Z'),
-      roadMatchedSchemaVersion: 'route_tracking_road_match.v4',
-      roadMatchedSourcePointCount: 3,
-      roadMatchedWatermark: 'route_tracking_road_match.v1:korea:3:2:2026-07-21T00:02:00.000Z:abc',
-      sourcePointCount: 3,
-    }))).toBe(true);
   });
 
   test('serializes cached road-matched geometry into the snapshot contract', () => {

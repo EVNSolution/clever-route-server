@@ -1,8 +1,6 @@
 import type {
   BootstrapPayload,
   CanonicalOrderDto,
-  MapProviderStatus,
-  RoutePlanDetailDto,
   RouteStopDto,
   StoreSettingsDto
 } from './types';
@@ -46,50 +44,6 @@ export type OrderWorksetContext = {
   routeDate?: string | null;
   scope?: OrderScopeFilter;
   today?: string;
-};
-
-export type OrderWorksetUnavailableReason =
-  | 'already_planned'
-  | 'address_review'
-  | 'completed_or_cancelled'
-  | 'delivery_date_review'
-  | 'different_delivery_date'
-  | 'different_route_scope'
-  | 'missing_address'
-  | 'missing_coordinates'
-  | 'missing_delivery_date'
-  | 'missing_route_scope'
-  | 'needs_review';
-
-export type OrderWorksetReason = {
-  code: OrderWorksetUnavailableReason;
-  label: string;
-};
-
-export type OrderWorksetSummary = {
-  reasonLabels: string[];
-  reasonsByCode: Record<OrderWorksetUnavailableReason, number>;
-  selectableCount: number;
-  selectableOrderIds: string[];
-  selectedCount: number;
-  unavailableCount: number;
-};
-
-export const ORDER_WORKSET_REASON_LABELS: Record<
-  OrderWorksetUnavailableReason,
-  string
-> = {
-  already_planned: 'Already planned',
-  address_review: 'Address Review',
-  completed_or_cancelled: 'Completed/cancelled',
-  delivery_date_review: 'Delivery date review',
-  different_delivery_date: 'Different delivery date',
-  different_route_scope: 'Different delivery session',
-  missing_address: 'Missing address',
-  missing_coordinates: 'Missing coordinates',
-  missing_delivery_date: 'Missing delivery date',
-  missing_route_scope: 'Missing route scope',
-  needs_review: 'Other metadata review'
 };
 
 export function createDefaultOrderFilters(): OrderFilterState {
@@ -138,10 +92,6 @@ export function buildOrderFetchQuery(filters: OrderFilters): string {
     ...serverFilters
   } = filters;
   return buildOrderQuery(serverFilters);
-}
-
-export function buildAreaOptionSourceFilters(filters: OrderFilters): OrderFilters {
-  return { ...filters, deliveryArea: '' };
 }
 
 export function deriveAreaFilterOptions(orders: CanonicalOrderDto[]): string[] {
@@ -644,125 +594,6 @@ export function matchesOrderTab(
   return !isPlannedOrder(order) && isRoutePlanEligibleForWorkset(order);
 }
 
-export function getOrderWorksetUnavailableReasons(
-  order: CanonicalOrderDto,
-  context: OrderWorksetContext = {}
-): OrderWorksetReason[] {
-  const reasons = new Set<OrderWorksetUnavailableReason>();
-  if (isCompletedOrCancelledOrder(order)) reasons.add('completed_or_cancelled');
-  if (isPlannedOrder(order)) reasons.add('already_planned');
-  if (isDeliveryDateReviewRequired(order)) {
-    reasons.add('delivery_date_review');
-  } else if (order.deliveryDate === null) {
-    reasons.add('missing_delivery_date');
-  }
-  if (!hasRouteScope(order)) reasons.add('missing_route_scope');
-  if (!hasResolvedCoordinates(order)) {
-    reasons.add(readCoordinateUnavailableReason(order));
-  }
-  if (hasUnrepresentedNeedsReviewReason(order, reasons)) {
-    reasons.add('needs_review');
-  }
-  if (
-    context.routeDate !== undefined &&
-    context.routeDate !== null &&
-    order.deliveryDate !== null &&
-    order.deliveryDate !== context.routeDate
-  ) {
-    reasons.add('different_delivery_date');
-  }
-  const routeScopeKey = getRouteScopeKey(order);
-  if (
-    context.routeScopeKey !== undefined &&
-    context.routeScopeKey !== null &&
-    routeScopeKey !== null &&
-    routeScopeKey !== context.routeScopeKey
-  ) {
-    reasons.add('different_route_scope');
-  }
-  return [...reasons].map((code) => ({
-    code,
-    label: ORDER_WORKSET_REASON_LABELS[code]
-  }));
-}
-
-export function formatOrderWorksetUnavailableReasons(
-  reasons: OrderWorksetReason[],
-  locale: string | null | undefined = 'en-CA'
-): OrderWorksetReason[] {
-  const labels = getStateCopy(locale).worksetReasons;
-  return reasons.map((reason) => ({ ...reason, label: labels[reason.code] }));
-}
-
-export function isOrderWorksetEligible(
-  order: CanonicalOrderDto,
-  context: OrderWorksetContext = {}
-): boolean {
-  return (
-    getOrderWorksetUnavailableReasons(order, context).length === 0 &&
-    isRoutePlanEligibleForWorkset(order)
-  );
-}
-
-export function summarizeOrderWorkset(
-  orders: CanonicalOrderDto[],
-  selectedOrderIds: ReadonlySet<string>,
-  context: OrderWorksetContext = {},
-  locale: string | null | undefined = 'en-CA'
-): OrderWorksetSummary {
-  const labels = getStateCopy(locale).worksetReasons;
-  const reasonsByCode = Object.fromEntries(
-    Object.keys(ORDER_WORKSET_REASON_LABELS).map((code) => [code, 0])
-  ) as Record<OrderWorksetUnavailableReason, number>;
-  const selectableOrderIds: string[] = [];
-  for (const order of orders) {
-    const reasons = getOrderWorksetUnavailableReasons(order, context);
-    if (reasons.length === 0 && isRoutePlanEligibleForWorkset(order)) {
-      selectableOrderIds.push(order.orderId);
-      continue;
-    }
-    for (const reason of reasons) reasonsByCode[reason.code] += 1;
-  }
-  const reasonLabels = (
-    Object.entries(reasonsByCode) as Array<
-      [OrderWorksetUnavailableReason, number]
-    >
-  )
-    .filter(([, count]) => count > 0)
-    .map(([code, count]) => `${labels[code]} ${count}`);
-  return {
-    reasonLabels,
-    reasonsByCode,
-    selectableCount: selectableOrderIds.length,
-    selectableOrderIds,
-    selectedCount: selectableOrderIds.filter((orderId) =>
-      selectedOrderIds.has(orderId)
-    ).length,
-    unavailableCount: orders.length - selectableOrderIds.length
-  };
-}
-
-export function summarizeSelection(
-  orders: CanonicalOrderDto[],
-  selectedOrderIds: ReadonlySet<string>
-): {
-  blockers: string[];
-  readySelected: CanonicalOrderDto[];
-} {
-  const selected = orders.filter((order) => selectedOrderIds.has(order.orderId));
-  const blockers = selected.flatMap((order) =>
-    order.blockerReasons.map((reason) => `${order.orderName}: ${reason}`)
-  );
-  return {
-    blockers,
-    readySelected: selected.filter(
-      (order) =>
-        order.blockerReasons.length === 0 &&
-        order.planningStatus === 'UNPLANNED'
-    )
-  };
-}
-
 function isRoutePlanEligibleForWorkset(order: CanonicalOrderDto): boolean {
   if (isPlannedOrder(order)) return false;
   return (
@@ -792,51 +623,6 @@ function isNeedsReviewOrder(order: CanonicalOrderDto): boolean {
   );
 }
 
-const BLOCKER_WORKSET_REASON_MAP: Partial<
-  Record<string, OrderWorksetUnavailableReason>
-> = {
-  ambiguous_delivery_day: 'delivery_date_review',
-  delivery_date_weekday_mismatch: 'delivery_date_review',
-  delivery_date_weekday_unverified: 'delivery_date_review',
-  delivery_day_unparsed: 'delivery_date_review',
-  missing_address: 'missing_address',
-  missing_coordinates: 'missing_coordinates',
-  missing_delivery_date: 'missing_delivery_date',
-  missing_route_scope: 'missing_route_scope'
-};
-
-function hasUnrepresentedNeedsReviewReason(
-  order: CanonicalOrderDto,
-  reasons: ReadonlySet<OrderWorksetUnavailableReason>
-): boolean {
-  const hasSpecificMetadataReason =
-    reasons.has('address_review') ||
-    reasons.has('delivery_date_review') ||
-    reasons.has('missing_address') ||
-    reasons.has('missing_coordinates') ||
-    reasons.has('missing_delivery_date') ||
-    reasons.has('missing_route_scope');
-  const hasUnrepresentedBlocker = order.blockerReasons.some((blocker) => {
-    if (blocker === 'missing_coordinates' && reasons.has('address_review')) {
-      return false;
-    }
-    if (blocker === 'missing_delivery_date' && reasons.has('delivery_date_review')) {
-      return false;
-    }
-    const mappedReason = BLOCKER_WORKSET_REASON_MAP[blocker];
-    return mappedReason === undefined || !reasons.has(mappedReason);
-  });
-  if (hasUnrepresentedBlocker) return true;
-  if (
-    order.health === 'needs_review' ||
-    order.metadataResolved === false ||
-    order.routeEligible === false
-  ) {
-    return !hasSpecificMetadataReason;
-  }
-  return false;
-}
-
 function isCompletedOrCancelledOrder(order: CanonicalOrderDto): boolean {
   return (
     order.deliveryStatus === 'completed' ||
@@ -849,17 +635,6 @@ function hasRouteScope(order: CanonicalOrderDto): boolean {
   return isPresent(order.serviceType) && isPresent(order.deliverySession);
 }
 
-function getRouteScopeKey(order: CanonicalOrderDto): string | null {
-  if (!hasRouteScope(order) || order.deliveryDate === null) return null;
-  return [
-    order.deliveryDate,
-    order.serviceType,
-    order.deliverySession,
-    order.timeWindowStart ?? '',
-    order.timeWindowEnd ?? ''
-  ].join('|');
-}
-
 function hasResolvedCoordinates(order: CanonicalOrderDto): boolean {
   return (
     typeof order.coordinates.latitude === 'number' &&
@@ -867,13 +642,6 @@ function hasResolvedCoordinates(order: CanonicalOrderDto): boolean {
     typeof order.coordinates.longitude === 'number' &&
     Number.isFinite(order.coordinates.longitude)
   );
-}
-
-function readCoordinateUnavailableReason(
-  order: CanonicalOrderDto
-): OrderWorksetUnavailableReason {
-  if (!hasGeocodableAddress(order)) return 'missing_address';
-  return isAddressReviewRequired(order) ? 'address_review' : 'missing_coordinates';
 }
 
 export function isAddressReviewRequired(order: CanonicalOrderDto): boolean {
@@ -942,10 +710,6 @@ export function moveStop(stops: RouteStopDto[], deliveryStopId: string, directio
 }
 
 
-export function moveStopBefore(stops: RouteStopDto[], draggedStopId: string, targetStopId: string): RouteStopDto[] {
-  return moveStopToDropPosition(stops, draggedStopId, targetStopId, 'before');
-}
-
 export type StopDropPosition = 'before' | 'after';
 
 export function moveStopToDropPosition(
@@ -984,46 +748,6 @@ export function moveStopToSequence(
 
 export function resequenceStops(stops: RouteStopDto[]): RouteStopDto[] {
   return stops.map((stop, index) => ({ ...stop, sequence: index + 1 }));
-}
-
-export function deriveRouteStats(detail: RoutePlanDetailDto | null): {
-  attempted: number;
-  completed: number;
-  missingCoordinates: number;
-  stops: number;
-} {
-  if (detail === null) return { attempted: 0, completed: 0, missingCoordinates: 0, stops: 0 };
-  return detail.stops.reduce(
-    (stats, stop) => ({
-      attempted: stats.attempted + (stop.status.toUpperCase() === 'ATTEMPTED' ? 1 : 0),
-      completed: stats.completed + (stop.status.toUpperCase() === 'COMPLETED' ? 1 : 0),
-      missingCoordinates: stats.missingCoordinates + (stop.coordinates.latitude === null || stop.coordinates.longitude === null ? 1 : 0),
-      stops: stats.stops + 1
-    }),
-    { attempted: 0, completed: 0, missingCoordinates: 0, stops: 0 }
-  );
-}
-
-export function geometryLabel(detail: RoutePlanDetailDto | null, routerStatus: MapProviderStatus, locale: string | null | undefined = 'en-CA'): string {
-  const t = getStateCopy(locale).geometry;
-  if (detail === null) return t.noRouteSelected;
-  if (detail.routeGeometry !== null) return t.roadGeometry;
-  if (countRoutableRoutePoints(detail) < 2) return t.noCoordinates;
-  if (routerStatus === 'not_configured') return t.routerNotConfigured;
-  return t.roadGeometryUnavailable;
-}
-
-function countRoutableRoutePoints(detail: RoutePlanDetailDto): number {
-  const depot = detail.routePlan.depot;
-  const points = [
-    depot === null ? null : { latitude: depot.latitude, longitude: depot.longitude },
-    ...detail.stops.map((stop) => stop.coordinates)
-  ];
-  return points.filter((point): point is { latitude: number; longitude: number } =>
-    point !== null &&
-    Number.isFinite(point.latitude) &&
-    Number.isFinite(point.longitude)
-  ).length;
 }
 
 export function hideSetupActions(bootstrap: BootstrapPayload): boolean {

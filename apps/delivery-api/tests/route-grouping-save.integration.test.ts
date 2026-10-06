@@ -13,7 +13,7 @@ import {
 } from '../src/modules/driver/driver-event.repository.js';
 import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
 import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
-import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 import { PrismaRouteGroupingService, rebindCurrentOrdersToRouteVersion } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import { PrismaOrderQueryRepository } from '../src/modules/shopify/order-query.repository.js';

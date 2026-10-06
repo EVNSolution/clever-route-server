@@ -421,7 +421,3 @@ export function parseDriverDiagnosticEnvelopeDetailed(value: unknown): ParsedDri
     rejectedRecords
   };
 }
-
-export function parseDriverDiagnosticEnvelope(value: unknown): DriverDiagnosticEnvelope | null {
-  return parseDriverDiagnosticEnvelopeDetailed(value)?.envelope ?? null;
-}

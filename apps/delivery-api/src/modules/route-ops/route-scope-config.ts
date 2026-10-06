@@ -165,14 +165,6 @@ export function isActiveDeliverySession(config: RouteScopeConfigDto, value: unkn
   return isActiveRouteScopeValue(config.deliverySessions, value);
 }
 
-export function buildActiveServiceTypes(config: RouteScopeConfigDto): RouteScopeValueDto[] {
-  return config.serviceTypes.filter((item) => item.enabled);
-}
-
-export function buildActiveDeliverySessions(config: RouteScopeConfigDto): RouteScopeValueDto[] {
-  return config.deliverySessions.filter((item) => item.enabled);
-}
-
 function normalizeRouteScopeValues(input: {
   builtIns: readonly RouteScopeValueDto[];
   raw: unknown;

@@ -145,18 +145,9 @@ describe('route membership mutation authority', () => {
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot is malformed'])");
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot tuple does not match grouping authority'])");
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority'])");
-    expect(assignmentAuthority).not.toContain('currentRouteBindingAuthorityState(child.id, snapshotOrderIds, group.orders)');
     expect(assignmentAuthority).toContain("return resolveChildSnapshotAssignments(group, child, 'CURRENT')");
     expect(assignmentAuthority).toContain("return resolveChildSnapshotAssignments(group, child, 'CURRENT_READ')");
     expect(assignmentAuthority).not.toContain('.filter((assignment)');
-    const bindingAuthority = source.slice(
-      source.indexOf('export function currentRouteBindingAuthorityState('),
-      source.indexOf('type OptimizedDraftRoute =')
-    );
-    expect(bindingAuthority).toContain('order.currentRouteVersionId === childVersionId');
-    expect(bindingAuthority).toContain('boundOrderIds.length === 0');
-    expect(bindingAuthority).toContain('order.currentRouteVersionId === null');
-    expect(bindingAuthority).toContain("return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH'");
     // Draft partition discovery also reads membership; actual child mutations still require CURRENT authority.
     expect(source.match(/readCurrentChildAssignments\(/gu)).toHaveLength(5);
     const copy = source.slice(source.indexOf('async copyGrouping('), source.indexOf('async copyStandaloneRoutePlan('));
