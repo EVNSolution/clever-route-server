@@ -8,7 +8,7 @@ import {
 } from '../src/modules/route-plans/stale-route-finalization.service.js';
 
 describe('PrismaStaleRouteFinalizationService', () => {
-  test('finalizes only an exact K-food route after its tracking event window ends', async () => {
+  test('keeps the existing INCOMPLETE policy for a stale route with an unresolved ARRIVED stop', async () => {
     const harness = createHarness();
     const service = new PrismaStaleRouteFinalizationService(harness.prisma);
 
@@ -49,6 +49,38 @@ describe('PrismaStaleRouteFinalizationService', () => {
       data: { status: 'INCOMPLETE' },
       where: expect.objectContaining({
         assignmentGeneration: 3n,
+        id: 'route-id',
+        shopId: 'shop-id',
+        status: 'IN_PROGRESS'
+      }) as unknown
+    });
+  });
+
+  test('keeps a valid delivery-complete route in navigation grace before expiry', async () => {
+    const harness = createHarness({ navigationUntil: new Date('2026-09-20T01:00:00.000Z') });
+    const service = new PrismaStaleRouteFinalizationService(harness.prisma);
+
+    const result = await service.processDue(new Date('2026-09-20T00:59:59.999Z'));
+
+    expect(result.skippedNotDue).toBe(1);
+    expect(harness.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('completes a valid delivery-complete route at the exact navigation expiry boundary', async () => {
+    const navigationUntil = new Date('2026-09-20T01:00:00.000Z');
+    const harness = createHarness({ navigationUntil });
+    const service = new PrismaStaleRouteFinalizationService(harness.prisma);
+
+    const result = await service.processDue(navigationUntil);
+
+    expect(result.finalized).toBe(1);
+    expect(harness.updateMany).toHaveBeenCalledWith({
+      data: { status: 'COMPLETED' },
+      where: expect.objectContaining({
+        assignmentGeneration: 3n,
+        deliveryWorkCompletedGeneration: 3n,
+        deliveryWorkCompletedVersionId: 'version-id',
+        driverNavigationUntil: navigationUntil,
         id: 'route-id',
         shopId: 'shop-id',
         status: 'IN_PROGRESS'
@@ -98,8 +130,7 @@ describe('PrismaStaleRouteFinalizationService', () => {
   });
 
   test('does not finalize when the locked route no longer matches the exact tenant and state scope', async () => {
-    const harness = createHarness();
-    harness.findFirst.mockResolvedValueOnce(null);
+    const harness = createHarness({ staleRouteMatchesScope: false });
     const service = new PrismaStaleRouteFinalizationService(harness.prisma);
 
     const result = await service.processDue(new Date('2026-09-20T00:00:00.000Z'));
@@ -174,6 +205,8 @@ function createHarness(overrides: {
   constraints?: unknown;
   driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
   lockedRows?: Array<{ id: string }>;
+  navigationUntil?: Date;
+  staleRouteMatchesScope?: boolean;
   updatedCount?: number;
 } = {}) {
   const findMany = vi.fn().mockResolvedValue([{
@@ -181,7 +214,7 @@ function createHarness(overrides: {
     planDate: new Date('2026-09-17T00:00:00.000Z'),
     shopId: 'shop-id'
   }]);
-  const findFirst = vi.fn().mockResolvedValue({
+  const staleRoute = {
     assignmentGeneration: 3n,
     constraints: overrides.constraints ?? { timezone: 'America/Toronto' },
     driverEvents: overrides.driverEvents ?? [
@@ -191,6 +224,45 @@ function createHarness(overrides: {
     planDate: new Date('2026-09-17T00:00:00.000Z'),
     shopId: 'shop-id',
     updatedAt: new Date('2026-09-17T12:00:00.000Z')
+  };
+  const completedAt = overrides.navigationUntil === undefined
+    ? null
+    : new Date(overrides.navigationUntil.getTime() - 2 * 60 * 60_000);
+  const completionRoute = {
+    assignmentGeneration: 3n,
+    deliveryWorkCompletedAt: completedAt,
+    deliveryWorkCompletedGeneration: overrides.navigationUntil === undefined ? null : 3n,
+    deliveryWorkCompletedVersionId: overrides.navigationUntil === undefined ? null : 'version-id',
+    driverNavigationUntil: overrides.navigationUntil ?? null,
+    id: 'route-id',
+    routeGroupingChildVersions: [{
+      id: 'version-id',
+      snapshot: {
+        membershipSchemaVersion: 1,
+        stops: [{ deliveryStopId: 'stop-id', orderId: 'order-id', sequence: 1 }]
+      }
+    }],
+    routeStops: [{
+      deliveryStopId: 'stop-id',
+      sequence: 1,
+      deliveryStop: {
+        orderId: 'order-id',
+        order: { currentRouteVersionId: 'version-id' },
+        status: overrides.navigationUntil === undefined ? 'ARRIVED' : 'DELIVERED'
+      }
+    }],
+    status: 'IN_PROGRESS'
+  };
+  const findFirst = vi.fn((query: { select?: { routeGroupingChildVersions?: unknown; deliveryWorkCompletedAt?: unknown } }) => {
+    if (query.select?.routeGroupingChildVersions !== undefined) return Promise.resolve(completionRoute);
+    if (query.select?.deliveryWorkCompletedAt !== undefined) return Promise.resolve({
+      ...staleRoute,
+      deliveryWorkCompletedAt: completedAt,
+      deliveryWorkCompletedGeneration: overrides.navigationUntil === undefined ? null : 3n,
+      deliveryWorkCompletedVersionId: overrides.navigationUntil === undefined ? null : 'version-id',
+      driverNavigationUntil: overrides.navigationUntil ?? null
+    });
+    return Promise.resolve(overrides.staleRouteMatchesScope === false ? null : staleRoute);
   });
   const updateMany = vi.fn().mockResolvedValue({ count: overrides.updatedCount ?? 1 });
   const lockRoutePlan = vi.fn().mockResolvedValue(overrides.lockedRows ?? [{ id: 'route-id' }]);

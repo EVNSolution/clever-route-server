@@ -70,19 +70,3 @@ export function coordinatesFromGeoJsonPolygon(value: unknown): PolygonRing {
     })
     .filter((entry): entry is Coordinate => entry !== null);
 }
-
-export function geoJsonPolygonFromCoordinates(vertices: PolygonRing): { type: 'Polygon'; coordinates: number[][][] } {
-  const ring = vertices.map((vertex) => [vertex.longitude, vertex.latitude]);
-  const first = ring[0];
-  const last = ring[ring.length - 1];
-  const closed =
-    first !== undefined &&
-    last !== undefined &&
-    first[0] === last[0] &&
-    first[1] === last[1]
-      ? ring
-      : first === undefined
-        ? ring
-        : [...ring, first];
-  return { type: 'Polygon', coordinates: [closed] };
-}

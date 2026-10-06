@@ -1,3 +1,4 @@
+import { projectVisibleDsvGrouping } from '../modules/dsv/dsv-test-visibility.js';
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2417,12 +2418,16 @@ function registerRouteOpsAppRoutes(
           ...(deliveryDate === null ? {} : { deliveryDate }),
           shopDomain,
         };
-        const [routePlans, routeGroups] = await Promise.all([
+        const [routePlans, rawRouteGroups] = await Promise.all([
           services.routePlanService.listRoutePlans(routeListInput),
           services.routeGroupingService === undefined
             ? Promise.resolve([])
             : services.routeGroupingService.listGroupings(routeListInput),
         ]);
+        const routeGroups = rawRouteGroups.flatMap(group => {
+          const visible = projectVisibleDsvGrouping({ shopDomain }, group);
+          return visible === null ? [] : [visible];
+        });
         const childRoutePlanIds = new Set(
           routeGroups.flatMap((group) =>
             group.children
@@ -2547,10 +2552,11 @@ function registerRouteOpsAppRoutes(
             groupingId: request.params.routeGroupId,
             shopDomain,
           });
-          if (grouping === null) {
+          const visible = grouping === null ? null : projectVisibleDsvGrouping({ shopDomain }, grouping);
+          if (visible === null) {
             throw new WooCommerceOnboardingError("NOT_FOUND", "Route grouping not found", 404);
           }
-          return routeOpsData({ routeGroup: grouping });
+          return routeOpsData({ routeGroup: visible });
         },
       ),
   );
@@ -3099,6 +3105,9 @@ function registerRouteOpsAppRoutes(
             });
             return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
           } catch (error) {
+            if (error instanceof RouteExecutionConflictError) {
+              throw new WooCommerceOnboardingError(error.code, error.message, 409);
+            }
             if (error instanceof RoutePlanPublishInvalidError) {
               throw new WooCommerceOnboardingError(
                 error.code,
@@ -4870,6 +4879,9 @@ function requireRouteGroupingService(
 }
 
 function toRouteGroupingHttpError(error: unknown): Error {
+  if (error instanceof RouteExecutionConflictError) {
+    return createRouteOpsHttpError(error.code, error.message, 409);
+  }
   if (error instanceof RouteGroupingBranchLockConflictError) {
     return createRouteOpsHttpError(error.code, error.message, 409);
   }

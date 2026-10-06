@@ -146,9 +146,12 @@ export type GeocodeDiagnostics = {
 };
 
 export type CanonicalOrderRow = {
+  filterVersion?: '2';
+  queryDeliveryProgress?: string;
   cancelledAt: string | null;
   currencyCode: string | null;
   customerNote?: string | null;
+  deliveryInstructions?: string | null;
   deliveryArea: string | null;
   deliveryBatchEndDate: string | null;
   deliveryBatchStartDate: string | null;
@@ -176,6 +179,7 @@ export type CanonicalOrderRow = {
   metadataResolved?: boolean;
   normalizedPaymentReason?: string | null;
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
+  note?: string | null;
   orderId: string;
   paidAt?: string | null;
   paymentMethodFamily?: string | null;
@@ -322,6 +326,7 @@ export type SyncedOrderDeliveryFactInput = {
 };
 
 export type SyncedOrderWithDeliveryStopInput = {
+  deliveryTimeZone?: string;
   deliveryFact?: SyncedOrderDeliveryFactInput | null;
   deliveryStop: SyncedDeliveryStopInput | null;
   orderItems?: OrderItemDto[] | undefined;
@@ -389,6 +394,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       : "READY_TO_PLAN";
 
   return {
+    ...(options.deliveryCycle === undefined ? {} : { deliveryTimeZone: options.deliveryCycle.timeZone }),
     deliveryFact: {
       batchEligible: readiness === "READY_TO_PLAN",
       commerceConnectionId: null,
@@ -416,6 +422,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       geocodeStatus: hasCoordinates ? "RESOLVED" : "PENDING",
       mappingDiagnostics: {
         deliveryDateSource: scope.deliveryDateSource,
+        ...(options.deliveryCycle === undefined ? {} : { deliveryTimeZone: options.deliveryCycle.timeZone }),
       },
       matchedMappingPaths: {
         deliveryArea:
@@ -480,6 +487,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       processedAt: parseOptionalDate(node.processedAt),
       rawPayload: {
         ...sourceSnapshot,
+        ...(options.deliveryCycle === undefined ? {} : { deliveryTimeZone: options.deliveryCycle.timeZone }),
         attributes,
         deliveryArea,
         deliveryBatchEndDate: scope.deliveryBatchEndDate,

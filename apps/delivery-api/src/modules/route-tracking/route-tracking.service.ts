@@ -14,6 +14,7 @@ import {
 import {
   loadRouteTrackingEventWindow,
   occurredAtWithinRouteTrackingEventWindow,
+  type RouteTrackingEventWindow,
 } from './route-tracking.event-window.js';
 import type {
   RouteTrackingPositionEventV1,
@@ -250,7 +251,7 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       .map((row) => toPositionEvent(row))
       .filter((position): position is RouteTrackingPositionEventV1 => position !== null);
     const progress = buildProgressSnapshot(latestProgressRow, latestDriverStageRow, routeStops);
-    const executionEvidence = await this.getExecutionEvidence(input.routePlanId, recentPositions);
+    const executionEvidence = await this.getExecutionEvidence(input.routePlanId, recentPositions, eventWindow);
     const cachedRoadMatch = buildRouteTrackingRoadMatchedPath(usableRecordedGeometry);
     const roadMatchedPath = cachedRoadMatch !== null
       && usableRecordedGeometry !== null
@@ -277,7 +278,8 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
 
   private async getExecutionEvidence(
     routePlanId: string,
-    positions: RouteTrackingPositionEventV1[]
+    positions: RouteTrackingPositionEventV1[],
+    eventWindow: RouteTrackingEventWindow | null
   ): Promise<RouteExecutionEvidenceV1> {
     const lifecycleSelect = {
       createdAt: true,
@@ -299,8 +301,16 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
         where: { eventType: 'ROUTE_COMPLETED', routePlanId }
       })
     ]);
-    const start = toLifecycleEvidence(startRow, 'ROUTE_STARTED');
-    const completion = toLifecycleEvidence(completionRow, 'ROUTE_COMPLETED');
+    const start = startRow !== null && (eventWindow === null
+      || occurredAtWithinRouteTrackingEventWindow(eventWindow, startRow.occurredAt))
+      ? toLifecycleEvidence(startRow, 'ROUTE_STARTED')
+      : null;
+    // An earlier completion belongs to a previous execution, even on the same route.
+    const completion = completionRow !== null
+      && (eventWindow === null || occurredAtWithinRouteTrackingEventWindow(eventWindow, completionRow.occurredAt))
+      && (startRow === null || completionRow.occurredAt.getTime() >= startRow.occurredAt.getTime())
+      ? toLifecycleEvidence(completionRow, 'ROUTE_COMPLETED')
+      : null;
     const firstPosition = positions[0] ?? null;
     const lastPosition = positions.at(-1) ?? null;
     if (start === null && completion === null) {

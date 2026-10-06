@@ -54,7 +54,6 @@ export function registerShopifyWebhookRoutes(
     if (headers === null) {
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Missing Shopify webhook headers'));
     }
-
     const appId = verifyShopifyWebhookAppId({
       appCredentials: dependencies.appCredentials,
       hmac: headers.hmac,
@@ -62,6 +61,12 @@ export function registerShopifyWebhookRoutes(
     });
     if (appId === null) {
       return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid Shopify webhook HMAC'));
+    }
+    if (
+      headers.topic === 'app/uninstalled'
+      && (headers.triggeredAt === null || headers.triggeredAt.getTime() > Date.now())
+    ) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Valid Shopify triggered-at header is required'));
     }
 
     const record = {

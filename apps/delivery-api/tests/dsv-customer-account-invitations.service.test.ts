@@ -3,7 +3,6 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
   DsvCustomerAccountServiceError,
-  loadDsvCustomerAccountWebPublicOrigin,
   PrismaDsvCustomerAccountService,
 } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
 import { defaultDsvOperationalSettings } from '../src/modules/dsv/dsv-operational-settings.js';
@@ -17,13 +16,6 @@ const activeSessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const token = 'valid_token_value_12345678901234567890';
 
 describe('PrismaDsvCustomerAccountService', () => {
-  test('validates http(s) DSV web public origins only', () => {
-    expect(loadDsvCustomerAccountWebPublicOrigin('https://dsv.example.com')).toBe('https://dsv.example.com');
-    expect(loadDsvCustomerAccountWebPublicOrigin('')).toBeUndefined();
-    expect(() => loadDsvCustomerAccountWebPublicOrigin('https://dsv.example.com/path')).toThrow(/origin/u);
-    expect(() => loadDsvCustomerAccountWebPublicOrigin('javascript:alert(1)')).toThrow(/origin/u);
-  });
-
   test('returns null for invalid, consumed, revoked, or cross-boundary invites and identifies expiration', async () => {
     const harness = createHarness();
     const service = harness.service;

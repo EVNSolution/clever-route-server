@@ -14,6 +14,7 @@ export async function cleanupResolvedDriverEventAttempts(
   const batchSize = positiveInteger(options.batchSize, DEFAULT_BATCH_SIZE);
   const maxRows = positiveInteger(options.maxRows, DEFAULT_MAX_ROWS);
   const deadlineAt = Math.min(options.deadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + DEFAULT_DEADLINE_MS);
+  const expiredAttemptPredicate = cleanupEligibilityPredicate(now);
   let deletedCount = 0;
   while (deletedCount < maxRows && Date.now() < deadlineAt) {
     const take = Math.min(batchSize, maxRows - deletedCount);
@@ -21,11 +22,7 @@ export async function cleanupResolvedDriverEventAttempts(
       WITH candidates AS (
         SELECT "id"
         FROM "driver_event_attempts"
-        WHERE "retainedUntil" < ${now}
-          AND (
-            "status" IN ('APPLIED', 'DUPLICATE')
-            OR ("status" = 'REJECTED' AND "reconciledAt" IS NOT NULL)
-          )
+        WHERE ${expiredAttemptPredicate}
         ORDER BY "retainedUntil" ASC, "id" ASC
         LIMIT ${take}
         FOR UPDATE SKIP LOCKED
@@ -42,14 +39,21 @@ export async function cleanupResolvedDriverEventAttempts(
     SELECT EXISTS (
       SELECT 1
       FROM "driver_event_attempts"
-      WHERE "retainedUntil" < ${now}
-        AND (
-          "status" IN ('APPLIED', 'DUPLICATE')
-          OR ("status" = 'REJECTED' AND "reconciledAt" IS NOT NULL)
-        )
+      WHERE ${expiredAttemptPredicate}
     ) AS "exists"
   `);
   return { continuationRequired: remaining[0]?.exists === true, deletedCount };
+}
+
+function cleanupEligibilityPredicate(now: Date): Prisma.Sql {
+  return Prisma.sql`
+    "retainedUntil" < ${now}
+    AND (
+      "eventType" = 'LOCATION_UPDATED'
+      OR "status" IN ('APPLIED', 'DUPLICATE')
+      OR ("status" = 'REJECTED' AND "reconciledAt" IS NOT NULL)
+    )
+  `;
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {

@@ -62,6 +62,215 @@ describeDatabase('completion assistance PostgreSQL transactions', () => {
     return { shop, account, driver, route, version, stop, service, env, identity, candidate, register, response, setTime, stopState };
   }
 
+  async function kfoodReturnFixture(options: {
+    finalStatus?: 'ARRIVED' | 'DELIVERED' | 'EN_ROUTE' | 'PENDING';
+    firstStatus?: 'ARRIVED' | 'DELIVERED';
+    shopDomain?: string;
+    appId?: string;
+    commandCoordinates?: boolean;
+  } = {}) {
+    const suffix = randomUUID();
+    const appId = options.appId ?? 'clever-route-kfood';
+    const shopDomain = options.shopDomain ?? '7hrud1-xq.myshopify.com';
+    const shop = await prisma.shop.upsert({
+      where: { appId_shopDomain: { appId, shopDomain } },
+      create: { appId, shopDomain }, update: {}
+    });
+    const account = await prisma.driverAccount.create({ data: { phone: `kfood-return-${suffix}` } });
+    const driver = await prisma.driver.create({ data: { accountId: account.id, displayName: 'Kfood return intent', shopId: shop.id } });
+    const route = await prisma.routePlan.create({ data: {
+      shopId: shop.id, driverId: driver.id, name: `Kfood return ${suffix}`, planDate: new Date(base),
+      constraints: {}, metrics: {}, optimizerVersion: 'integration', status: 'IN_PROGRESS'
+    } });
+    const grouping = await prisma.routeGrouping.create({ data: { shopId: shop.id, name: `Kfood return ${suffix}`, planDate: new Date(base) } });
+    const groupingVersion = await prisma.routeGroupingVersion.create({ data: { shopId: shop.id, groupingId: grouping.id, version: 1 } });
+    const version = await prisma.routeGroupingChildVersion.create({ data: {
+      shopId: shop.id, groupingId: grouping.id, groupingVersionId: groupingVersion.id,
+      routePlanId: route.id, driverId: driver.id, version: 1, snapshot: {}
+    } });
+    const stops = [];
+    const statuses = [options.firstStatus ?? 'DELIVERED', options.finalStatus ?? 'ARRIVED'] as const;
+    for (const [index, status] of statuses.entries()) {
+      const order = await prisma.order.create({ data: {
+        name: `#kfood-${suffix}-${index}`, rawPayload: {}, shopId: shop.id,
+        shopifyOrderGid: `gid://shopify/Order/kfood-${suffix}-${index}`, currentRouteVersionId: version.id
+      } });
+      const stop = await prisma.deliveryStop.create({ data: {
+        orderId: order.id, shopId: shop.id, status, latitude: 37, longitude: 127, geocodeStatus: 'RESOLVED'
+      } });
+      await prisma.routePlanStop.create({ data: { shopId: shop.id, routePlanId: route.id, deliveryStopId: stop.id, sequence: index + 1 } });
+      stops.push({ ...stop, order });
+    }
+    await prisma.routeGroupingChildVersion.update({ where: { id: version.id }, data: { snapshot: {
+      membershipSchemaVersion: 1,
+      stops: stops.map(({ id, order }, index) => ({ sequence: index + 1, deliveryStopId: id, orderId: order.id }))
+    } } });
+    if (options.commandCoordinates === true) {
+      const policy = {
+        version: 'kfood_return_intent_only_v1', maxAccuracyMeters: 20, enterRadiusMeters: 50, exitRadiusMeters: 100,
+        dwellMs: 60_000, maxGapMs: 30_000, minDwellSamples: 3, ambiguityRadiusMeters: 200
+      };
+      await prisma.driverCompletionPolicy.createMany({ data: { version: policy.version, policy, createdAt: new Date(base) }, skipDuplicates: true });
+      await prisma.driverCompletionRun.create({ data: {
+        id: randomUUID(), accountId: account.id, shopId: shop.id, driverId: driver.id, routePlanId: route.id,
+        assignmentGeneration: route.assignmentGeneration, expectedRouteVersionId: version.id, routeName: route.name,
+        stops: stops.map(({ id, status }, index) => ({
+          deliveryStopId: id, status, coordinates: index === 0 ? { latitude: 43.65, longitude: -79.38 } : null
+        })),
+        policyVersions: [policy.version], activationId: null, createdAt: new Date(base)
+      } });
+    }
+    const env = {
+      COMPLETION_ASSISTANCE_POLICY_JSON: 'null', COMPLETION_ASSISTANCE_ACCOUNT_IDS: '',
+      COMPLETION_ASSISTANCE_DETECTION_ENABLED: 'false', COMPLETION_ASSISTANCE_WORKER_ENABLED: 'false'
+    };
+    const service = new PrismaCompletionAssistanceService(prisma, { env, now: () => new Date(base + 180_000) });
+    const run = (await service.snapshot(account.id)).runs.find((item) => item.routePlanId === route.id);
+    return {
+      account, driver, env, route, service, shop, stops, version, run,
+      command: run === undefined ? null : {
+        kind: 'return_intent' as const, commandId: randomUUID(), runId: run.runId, routePlanId: route.id,
+        assignmentGeneration: run.assignmentGeneration, expectedRouteVersionId: version.id, occurredAt: iso(180_000)
+      }
+    };
+  }
+
+  test('K-food detection-off return intent completes only the final ARRIVED stop and replays without extending grace', async () => {
+    const f = await kfoodReturnFixture();
+    expect(f.run).toMatchObject({
+      routePlanId: f.route.id,
+      policy: { version: 'kfood_return_intent_only_v1' },
+      stops: [{ coordinates: null }, { coordinates: null }]
+    });
+    expect(f.command).not.toBeNull();
+    const applied = await f.service.command(f.account.id, f.command!);
+    expect(applied).toMatchObject({ status: 'applied' });
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[1]!.id } })).status).toBe('DELIVERED');
+    const completed = await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } });
+    expect(completed).toMatchObject({
+      status: 'IN_PROGRESS', deliveryWorkCompletedGeneration: f.route.assignmentGeneration,
+      deliveryWorkCompletedVersionId: f.version.id
+    });
+    expect(completed.deliveryWorkCompletedAt?.toISOString()).toBe(iso(180_000));
+    expect(completed.driverNavigationUntil?.toISOString()).toBe(iso(180_000 + 2 * 60 * 60_000));
+    const returnEvent = await prisma.driverEvent.findFirst({ where: {
+      routePlanId: f.route.id, deliveryStopId: f.stops[1]!.id, eventType: 'STOP_DELIVERED',
+      clientEventId: `completion-assistance:return-intent:${f.command!.commandId}`
+    } });
+    expect((returnEvent?.payload as Record<string, unknown> | undefined)?.source).toBe('DRIVER_RETURN_INTENT');
+    expect(await prisma.customerRouteNotificationFact.findUnique({
+      where: { idempotencyKey: `completion-assistance:return-intent:${f.command!.commandId}` }
+    })).toMatchObject({ status: 'SKIPPED', requestedUiStatus: 'COMPLETED', errorCode: 'COMPLETION_ASSISTANCE_NOTIFICATIONS_DISABLED' });
+    expect(await f.service.command(f.account.id, f.command!)).toEqual({ ...applied, status: 'duplicate' });
+    expect((await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } })).driverNavigationUntil).toEqual(completed.driverNavigationUntil);
+  });
+
+  test('K-food all-terminal return intent only reconciles route completion', async () => {
+    const f = await kfoodReturnFixture();
+    expect(f.command).not.toBeNull();
+    await prisma.deliveryStop.update({ where: { id: f.stops[1]!.id }, data: { status: 'DELIVERED' } });
+    expect(await f.service.command(f.account.id, f.command!)).toMatchObject({ status: 'applied' });
+    expect((await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } })).deliveryWorkCompletedAt?.toISOString()).toBe(iso(180_000));
+    expect(await prisma.driverEvent.count({ where: {
+      routePlanId: f.route.id, clientEventId: `completion-assistance:return-intent:${f.command!.commandId}`
+    } })).toBe(0);
+  });
+
+  test('K-food return-only run durably rejects crafted candidate and response commands without side effects', async () => {
+    const f = await kfoodReturnFixture();
+    expect(f.run).toBeDefined();
+    const candidateId = randomUUID();
+    const candidate: CompletionCandidate = {
+      candidateId, runId: f.run!.runId, routePlanId: f.route.id,
+      assignmentGeneration: f.run!.assignmentGeneration, expectedRouteVersionId: f.version.id,
+      deliveryStopId: f.stops[1]!.id, arrivalAt: iso(60_000), dwellCompletedAt: iso(120_000), exitAt: iso(180_000),
+      evidence: [60_000, 120_000, 180_000].map((offset) => ({
+        latitude: 43.65, longitude: -79.38, accuracyMeters: 5, occurredAt: iso(offset)
+      })),
+      policyVersion: 'kfood_return_intent_only_v1', status: 'awaiting_response', revision: 0
+    };
+    const candidateCommand: CompletionCommand = {
+      kind: 'candidate', commandId: randomUUID(), candidate, occurredAt: candidate.exitAt
+    };
+    const responseCommand: CompletionCommand = {
+      kind: 'response', commandId: randomUUID(), candidateId, runId: f.run!.runId, routePlanId: f.route.id,
+      assignmentGeneration: f.run!.assignmentGeneration, expectedRouteVersionId: f.version.id,
+      deliveryStopId: f.stops[1]!.id, response: 'completed', expectedRevision: 0, occurredAt: iso(180_000)
+    };
+    const beforeEvents = await prisma.driverEvent.count({ where: { routePlanId: f.route.id } });
+    const beforeFacts = await prisma.customerRouteNotificationFact.count({ where: { routePlanId: f.route.id } });
+    expect(await f.service.command(f.account.id, candidateCommand)).toMatchObject({ status: 'rejected', reason: 'return_intent_only' });
+    expect(await f.service.command(f.account.id, responseCommand)).toMatchObject({ status: 'rejected', reason: 'return_intent_only' });
+    expect(await prisma.driverCompletionCandidate.count({ where: { runId: f.run!.runId } })).toBe(0);
+    expect(await prisma.driverCompletionReceipt.count({ where: {
+      accountId: f.account.id, commandId: { in: [candidateCommand.commandId, responseCommand.commandId] }
+    } })).toBe(2);
+    expect(await prisma.driverEvent.count({ where: { routePlanId: f.route.id } })).toBe(beforeEvents);
+    expect(await prisma.customerRouteNotificationFact.count({ where: { routePlanId: f.route.id } })).toBe(beforeFacts);
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[1]!.id } })).status).toBe('ARRIVED');
+  });
+
+  test('K-food return-only coordinate-bearing run disables projection and still rejects crafted inference', async () => {
+    const f = await kfoodReturnFixture({ commandCoordinates: true });
+    expect(f.run).toBeDefined();
+    expect(f.run!.policy).toBeNull();
+    const candidate: CompletionCandidate = {
+      candidateId: randomUUID(), runId: f.run!.runId, routePlanId: f.route.id,
+      assignmentGeneration: f.run!.assignmentGeneration, expectedRouteVersionId: f.version.id,
+      deliveryStopId: f.stops[1]!.id, arrivalAt: iso(60_000), dwellCompletedAt: iso(120_000), exitAt: iso(180_000),
+      evidence: [60_000, 120_000, 180_000].map((offset) => ({
+        latitude: 43.65, longitude: -79.38, accuracyMeters: 5, occurredAt: iso(offset)
+      })),
+      policyVersion: 'kfood_return_intent_only_v1', status: 'awaiting_response', revision: 0
+    };
+    expect(await f.service.command(f.account.id, {
+      kind: 'candidate', commandId: randomUUID(), candidate, occurredAt: candidate.exitAt
+    })).toMatchObject({ status: 'rejected', reason: 'return_intent_only' });
+    expect(await prisma.driverCompletionCandidate.count({ where: { runId: f.run!.runId } })).toBe(0);
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[1]!.id } })).status).toBe('ARRIVED');
+  });
+
+  test.each([
+    { name: 'PENDING final stop', options: { finalStatus: 'PENDING' as const }, reason: 'final_arrival_not_ready' },
+    { name: 'EN_ROUTE final stop', options: { finalStatus: 'EN_ROUTE' as const }, reason: 'final_arrival_not_ready' },
+    { name: 'multiple unresolved stops', options: { firstStatus: 'ARRIVED' as const }, reason: 'final_arrival_not_ready' },
+    { name: 'an earlier sole unresolved stop', options: { firstStatus: 'ARRIVED' as const, finalStatus: 'DELIVERED' as const }, reason: 'final_arrival_not_ready' }
+  ])('K-food return intent rejects $name', async ({ options, reason }) => {
+    const f = await kfoodReturnFixture(options);
+    expect(f.command).not.toBeNull();
+    expect(await f.service.command(f.account.id, f.command!)).toMatchObject({ status: 'rejected', reason });
+    expect((await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } })).deliveryWorkCompletedAt).toBeNull();
+  });
+
+  test.each(['order-version', 'membership', 'current-version'] as const)('K-food return intent rejects changed %s ownership', async (change) => {
+    const f = await kfoodReturnFixture();
+    expect(f.command).not.toBeNull();
+    if (change === 'order-version') {
+      await prisma.order.update({ where: { id: f.stops[1]!.order.id }, data: { currentRouteVersionId: null } });
+    } else if (change === 'membership') {
+      await prisma.routeGroupingChildVersion.update({ where: { id: f.version.id }, data: { snapshot: {
+        membershipSchemaVersion: 1,
+        stops: [{ sequence: 1, deliveryStopId: f.stops[0]!.id, orderId: f.stops[0]!.order.id }]
+      } } });
+    } else {
+      await prisma.routeGroupingChildVersion.update({ where: { id: f.version.id }, data: { status: 'ARCHIVED', supersededAt: new Date(base + 181_000) } });
+      await prisma.routeGroupingChildVersion.create({ data: {
+        shopId: f.shop.id, groupingId: f.version.groupingId, groupingVersionId: f.version.groupingVersionId,
+        routePlanId: f.route.id, driverId: f.driver.id, version: 2, snapshot: {}
+      } });
+    }
+    expect(await f.service.command(f.account.id, f.command!)).toMatchObject({
+      status: 'rejected', reason: change === 'current-version' ? 'run_invalidated' : 'route_membership_changed'
+    });
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[1]!.id } })).status).toBe('ARRIVED');
+  });
+
+  test('null-policy run issuance remains scoped to the exact K-food tenant', async () => {
+    const foreign = await kfoodReturnFixture({ shopDomain: `foreign-${randomUUID()}.myshopify.com` });
+    expect(foreign.run).toBeUndefined();
+    expect(foreign.command).toBeNull();
+  });
+
   test('exact 24h boundary, inference and consecutive offline corrections preserve real ARRIVED and immutable receipts', async () => {
     const f = await fixture();
     const orderBefore = await prisma.order.findUniqueOrThrow({ where: { id: f.stop.orderId } });

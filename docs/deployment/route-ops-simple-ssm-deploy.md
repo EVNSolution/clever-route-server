@@ -215,6 +215,17 @@ always stages the previous static image, even if normal forward deploy would ski
 static, because recovery integrity is more important than speed. Do not touch `caddy` unless
 the rollback is specifically an ingress change.
 
+For K-food completion markers introduced by PR #477, an older API cannot safely
+maintain marker ownership. The simple wrapper stops the candidate and backs up
+and clears the four marker fields under route locks before automatic rollback.
+Manual rollback must perform that same guarded cleanup and zero-marker audit
+before starting an older API, or select a marker-aware image. Preserve the
+private backup, existing order/stop outcomes, route status and assignment
+generation. Do not restore stale markers after an older API has served writes.
+An older API also cannot replay the deferred K-food completion acknowledgement.
+Automatic legacy rollback requires zero such acknowledgements; otherwise it
+fails closed and requires a compatible image or forward fix.
+
 ## DB/schema risk boundary
 
 Image rollback is not database rollback. A deploy is `db-risk: true` when it

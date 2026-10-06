@@ -119,6 +119,34 @@ describe('Shopify webhook routes', () => {
     }
   });
 
+  test.each([
+    ['missing', null],
+    ['invalid', 'not-a-date'],
+    ['future', '2099-01-01T00:00:00.000Z']
+  ])('rejects app uninstall with a %s triggered-at header before durable admission', async (_label, triggeredAt) => {
+    const { dependencies, recordWebhook } = createDependencyHarness();
+    const app = await buildApp({ shopifyWebhook: dependencies });
+    const uninstallPayload = JSON.stringify({ id: 123 });
+    const headers = webhookHeaders({ rawBody: uninstallPayload });
+    headers['x-shopify-topic'] = 'app/uninstalled';
+    if (triggeredAt === null) delete headers['x-shopify-triggered-at'];
+    else headers['x-shopify-triggered-at'] = triggeredAt;
+
+    try {
+      const response = await app.inject({
+        headers,
+        method: 'POST',
+        payload: uninstallPayload,
+        url: '/shopify/webhooks'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(recordWebhook).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('records a valid webhook receipt with normalized Shopify headers', async () => {
     const { dependencies, recordWebhook } = createDependencyHarness();
     const app = await buildApp({ shopifyWebhook: dependencies });

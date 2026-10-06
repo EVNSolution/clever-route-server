@@ -33,6 +33,7 @@ type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 type ShopifyTokenExchangeResponse = {
   access_token?: unknown;
+  error?: unknown;
   expires_in?: unknown;
   refresh_token?: unknown;
   refresh_token_expires_in?: unknown;
@@ -86,7 +87,7 @@ export class ShopifyTokenExchangeClient {
       throw new Error('Shopify token exchange failed');
     }
 
-    return parseTokenExchangeResponse(payload);
+    return parseExpiringOfflineTokenResponse(payload, 'exchange');
   }
 
   async refreshOfflineToken(input: {
@@ -113,10 +114,17 @@ export class ShopifyTokenExchangeClient {
     });
 
     if (!response.ok) {
+      const errorCode = optionalString(payload.error);
+      if (
+        (response.status === 400 || response.status === 401)
+        && (errorCode === 'invalid_grant' || errorCode === 'invalid_request')
+      ) {
+        throw new ShopifyTokenRefreshRejectedError(response.status, errorCode);
+      }
       throw new Error('Shopify token refresh failed');
     }
 
-    return parseTokenExchangeResponse(payload);
+    return parseExpiringOfflineTokenResponse(payload, 'refresh');
   }
 
   private findCredential(appId = DEFAULT_SHOPIFY_APP_ID): ShopifyTokenExchangeCredential {
@@ -160,6 +168,18 @@ export class ShopifyTokenExchangeTimeoutError extends Error {
   }
 }
 
+export class ShopifyTokenRefreshRejectedError extends Error {
+  readonly code = 'SHOPIFY_TOKEN_REFRESH_REJECTED';
+
+  constructor(
+    readonly statusCode: 400 | 401,
+    readonly shopifyErrorCode: 'invalid_grant' | 'invalid_request' = 'invalid_grant'
+  ) {
+    super('Shopify token refresh was rejected');
+    this.name = 'ShopifyTokenRefreshRejectedError';
+  }
+}
+
 export function loadShopifyTokenExchangeTimeoutMs(value: string | undefined): number {
   if (value === undefined || value.trim() === '') return 3_000;
   return normalizeTimeout(Number(value));
@@ -180,23 +200,20 @@ function requireOption(value: string | undefined, name: string): string {
   return value.trim();
 }
 
-function parseTokenExchangeResponse(
-  payload: ShopifyTokenExchangeResponse
+function parseExpiringOfflineTokenResponse(
+  payload: ShopifyTokenExchangeResponse,
+  operation: 'exchange' | 'refresh'
 ): ShopifyTokenExchangeResult {
-  if (typeof payload.access_token !== 'string' || payload.access_token.trim() === '') {
-    throw new Error('Shopify token exchange response missing access_token');
-  }
-
-  if (typeof payload.scope !== 'string') {
-    throw new Error('Shopify token exchange response missing scope');
-  }
-
   return {
-    accessToken: payload.access_token,
-    expiresIn: optionalNumber(payload.expires_in),
-    refreshToken: optionalString(payload.refresh_token),
-    refreshTokenExpiresIn: optionalNumber(payload.refresh_token_expires_in),
-    scope: payload.scope
+    accessToken: requiredNonEmptyString(payload.access_token, 'access_token', operation),
+    expiresIn: requiredPositiveNumber(payload.expires_in, 'expires_in', operation),
+    refreshToken: requiredNonEmptyString(payload.refresh_token, 'refresh_token', operation),
+    refreshTokenExpiresIn: requiredPositiveNumber(
+      payload.refresh_token_expires_in,
+      'refresh_token_expires_in',
+      operation
+    ),
+    scope: requiredNonEmptyString(payload.scope, 'scope', operation)
   };
 }
 
@@ -233,18 +250,6 @@ async function readJson(response: Response): Promise<ShopifyTokenExchangeRespons
   }
 }
 
-function optionalNumber(value: unknown): number | null {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error('Shopify token exchange response has invalid numeric metadata');
-  }
-
-  return value;
-}
-
 function optionalString(value: unknown): string | null {
   if (value === undefined || value === null) {
     return null;
@@ -254,6 +259,28 @@ function optionalString(value: unknown): string | null {
     throw new Error('Shopify token exchange response has invalid string metadata');
   }
 
+  return value;
+}
+
+function requiredNonEmptyString(
+  value: unknown,
+  fieldName: string,
+  operation: 'exchange' | 'refresh'
+): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`Shopify token ${operation} response missing ${fieldName}`);
+  }
+  return value;
+}
+
+function requiredPositiveNumber(
+  value: unknown,
+  fieldName: string,
+  operation: 'exchange' | 'refresh'
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`Shopify token ${operation} response has invalid ${fieldName}`);
+  }
   return value;
 }
 

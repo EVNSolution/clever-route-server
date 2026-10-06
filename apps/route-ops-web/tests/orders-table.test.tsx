@@ -2,15 +2,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
 import {
-  buildRouteDetailPath,
   buildEditableMetadataFields,
   buildNextPlanSelection,
-  buildOrderInventoryRows,
   buildOrderMapMarkerStates,
-  buildRouteDraftSelection,
   buildVisibleSelectedOrderIds,
-  filterOrdersByRoutePlan,
-  getRouteDraftFirstCreateReason,
   getRouteDraftCreateReasons,
   normalizeOrderMetadataPatchForFields,
   OrderDetailChoiceDropdown,
@@ -19,21 +14,17 @@ import {
   formatBlockerReason,
   formatMethodLabel,
   formatMethodStatusLabel,
-  formatOrderReceivedLabel,
   formatOperationalStatus,
   formatTableReadinessStatus,
   formatPaymentStatusLabel,
-  getRouteRepairPrompt,
   ORDERS_TABLE_COLUMN_COUNT,
   RoutePlanPanel,
   OrderTable,
   type OrderMetadataPatch,
 } from "../src/pages/OrdersPage";
 import {
-  getOrderBlockerLabels,
+  getOrderDetailLabels,
   getOrderFieldLabels,
-  orderBlockerLabels,
-  orderFieldLabels,
 } from "../src/i18n";
 import { createDefaultOrderFilters } from "../src/state";
 import type {
@@ -101,27 +92,6 @@ describe("Orders compact operations table", () => {
     expect(html).toContain('aria-controls="order-detail-order-11453"');
     expect(html).not.toContain("Diagnostics");
     expect(html).not.toContain("Route eligible");
-  });
-
-  test("formats source-created order labels with localized update markers", () => {
-    expect(formatOrderReceivedLabel(orderFixture(), "en-CA")).toBe(
-      "2026-06-04 THU\nupdated 2026-06-05 FRI",
-    );
-    expect(formatOrderReceivedLabel(orderFixture(), "ko-KR")).toBe(
-      "2026-06-04 목요일\n수정 2026-06-05 금요일",
-    );
-    expect(
-      formatOrderReceivedLabel(
-        orderFixture({ sourceUpdatedDate: "2026-06-04" }),
-        "en-CA",
-      ),
-    ).toBe("2026-06-04 THU");
-    expect(
-      formatOrderReceivedLabel(
-        orderFixture({ sourceCreatedDate: null, sourceUpdatedDate: null }),
-        "en-CA",
-      ),
-    ).toBe("—");
   });
 
   test("keeps the order table mounted during filter refreshes to avoid scroll jumps", () => {
@@ -200,37 +170,6 @@ describe("Orders compact operations table", () => {
     );
   });
 
-
-  test("builds a compact printable inventory table from filtered order items", () => {
-    const rows = buildOrderInventoryRows([
-      orderFixture({
-        orderName: "#1001",
-        sourceOrderNumber: "1001",
-        items: [
-          { name: "<b>Soup</b>", options: [], productId: 1, quantity: 1, sku: null, variationId: 0 },
-          { name: "Kimchi", options: [{ key: "size", value: "Large" }], productId: 2, quantity: 2, sku: "K", variationId: 0 },
-        ],
-      }),
-      orderFixture({
-        orderName: "#1002",
-        sourceOrderNumber: "1002",
-        items: [
-          { name: "Soup", options: [], productId: 1, quantity: 3, sku: null, variationId: 0 },
-        ],
-      }),
-    ]);
-
-    expect(rows).toContainEqual({
-      orderRefs: ["1x #1001", "3x #1002"],
-      product: "Soup",
-      quantity: 4,
-    });
-    expect(rows).toContainEqual({
-      orderRefs: ["2x #1001"],
-      product: "Kimchi (size: Large)",
-      quantity: 2,
-    });
-  });
 
   test("renders reliable order total in order detail only", () => {
     const html = renderOrderTable(
@@ -413,12 +352,6 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Geocode &amp; add");
     expect(html).not.toContain("Geocode and add order");
     expect(html).not.toContain("Use bulk geocode");
-    expect(getRouteRepairPrompt(missingCoordinates)).toEqual({
-      canGeocode: true,
-      routeDetail: "Need coordinates",
-      statusDetail: "use bulk geocode",
-      statusLabel: "Need coordinates",
-    });
     expect(formatOperationalStatus(missingCoordinates).label).toBe(
       "Need coordinates",
     );
@@ -452,12 +385,6 @@ describe("Orders compact operations table", () => {
     expect(html).toContain('name="address1"');
     expect(html).not.toContain("use bulk geocode");
     expect(html).not.toContain("Use Bulk geocode from the order list.");
-    expect(getRouteRepairPrompt(addressReview)).toEqual({
-      canGeocode: false,
-      routeDetail: "Address Review",
-      statusDetail: "Verify address",
-      statusLabel: "Address Review",
-    });
     expect(formatOperationalStatus(addressReview)).toEqual(
       expect.objectContaining({
         detail: "Verify address",
@@ -508,12 +435,6 @@ describe("Orders compact operations table", () => {
     expect(formatOperationalStatus(dateReview).meaning).toContain(
       "A delivery date hint exists",
     );
-    expect(getRouteRepairPrompt(dateReview)).toEqual({
-      canGeocode: false,
-      routeDetail: "Delivery date review",
-      statusDetail: "Verify delivery date",
-      statusLabel: "Delivery date review",
-    });
     expect(html).not.toContain("Delivery date review");
     expect(html).toContain("Verify delivery date");
     expect(html).not.toContain("Warning meaning: A delivery date hint exists");
@@ -911,6 +832,8 @@ describe("Orders compact operations table", () => {
   });
 
   test("centralizes order i18n labels and avoids raw fallback labels", () => {
+    const orderFieldLabels = getOrderFieldLabels("en-CA");
+    const orderBlockerLabels = getOrderDetailLabels("en-CA").blockerReasons;
     expect(orderFieldLabels["meta_data._tomatono_delivery_day"]).toBe(
       "Delivery day",
     );
@@ -923,7 +846,7 @@ describe("Orders compact operations table", () => {
     );
     expect(orderBlockerLabels.missing_coordinates).toBe("Need coordinates");
     expect(getOrderFieldLabels("ko-KR").address1).toBe("도로명 주소");
-    expect(getOrderBlockerLabels("ko-KR").missing_coordinates).toBe(
+    expect(getOrderDetailLabels("ko-KR").blockerReasons.missing_coordinates).toBe(
       "좌표 필요",
     );
     expect(formatDiagnosticPathLabel("unknown.path")).toBe("Order metadata");
@@ -1054,7 +977,7 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Missing delivery date");
   });
 
-  test("route draft selection keeps every selected order and validates create separately", () => {
+  test("route draft validation reports mismatched delivery dates and types", () => {
     const first = orderFixture({ orderId: "first" });
     const sameScope = orderFixture({
       orderId: "same-scope",
@@ -1074,21 +997,8 @@ describe("Orders compact operations table", () => {
       timeWindowStart: null,
     });
 
-    const draft = buildRouteDraftSelection(
-      [first, sameScope, otherDate, otherSession],
-      new Set(["first", "same-scope", "other-date", "other-session"]),
-    );
-
-    expect(draft.deliveryDate).toBeNull();
-    expect(draft.orderIds).toEqual([
-      "first",
-      "same-scope",
-      "other-date",
-      "other-session",
-    ]);
-    expect(draft.warning).toBeNull();
-    expect(getRouteDraftFirstCreateReason([first, sameScope])).toBeNull();
-    expect(getRouteDraftFirstCreateReason([first])).toBeNull();
+    expect(getRouteDraftCreateReasons([first, sameScope])).toEqual([]);
+    expect(getRouteDraftCreateReasons([first])).toEqual([]);
     expect(
       getRouteDraftCreateReasons([first, otherDate, otherSession]),
     ).toEqual([
@@ -1134,17 +1044,12 @@ describe("Orders compact operations table", () => {
     const third = orderFixture({ orderId: "third", orderName: "#11455" });
     const filters = createDefaultOrderFilters();
 
-    const clickedDraft = buildRouteDraftSelection(
-      [first, second, third],
-      new Set(["third", "first", "second"]),
-    );
-
-    expect(clickedDraft.orderIds).toEqual(["third", "first", "second"]);
+    const selectedOrderIds = new Set(["third", "first", "second"]);
 
     const clickedMarkers = buildOrderMapMarkerStates({
       filters,
       orders: [first, second, third],
-      selectedOrderIds: new Set(clickedDraft.orderIds),
+      selectedOrderIds,
       worksetContext: { scope: "planning" },
     });
 
@@ -1163,39 +1068,6 @@ describe("Orders compact operations table", () => {
         new Set(["delivery", "pickup"]),
       ),
     ).toEqual(["delivery"]);
-    expect(
-      buildRouteDraftSelection(
-        [delivery, pickup],
-        new Set(buildVisibleSelectedOrderIds([delivery], new Set(["delivery", "pickup"]))),
-      ),
-    ).toMatchObject({
-      orderIds: ["delivery"],
-      routeType: "delivery",
-    });
-  });
-
-  test("planned route helpers filter orders by route and build the route detail URL", () => {
-    const routeOrder = orderFixture({
-      orderId: "route-order",
-      orderName: "#11460",
-      planningStatus: "PLANNED",
-      routePlanId: "route/id",
-      routePlanName: "Route 1",
-    });
-    const otherOrder = orderFixture({
-      orderId: "other-order",
-      orderName: "#11461",
-    });
-
-    expect(
-      filterOrdersByRoutePlan([routeOrder, otherOrder], "route/id")?.map(
-        (order) => order.orderId,
-      ),
-    ).toEqual(["route-order"]);
-    expect(filterOrdersByRoutePlan([routeOrder, otherOrder], null)).toBeNull();
-    expect(buildRouteDetailPath("route/id")).toBe(
-      "/admin/ui/app/routes/route%2Fid",
-    );
   });
 
   test("planned route markers stay blue and unfaded even when subfilters differ", () => {

@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { afterAll, describe, expect, test } from 'vitest';
 
 import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
-import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 
@@ -41,13 +41,21 @@ describeDatabase('admin active route reorder and redispatch', () => {
     expect(provider.sentMessages).toHaveLength(1);
 
     const before = await prisma.routePlanStop.findMany({ where: { routePlanId: route.id }, orderBy: { sequence: 'asc' } });
+    // Dispatch records an execution reservation and advances the edit version.
+    // The admin reloads that version before saving; pre-dispatch edits stay stale.
+    const publishedRoute = await prisma.routePlan.findUniqueOrThrow({ where: { id: route.id } });
     const order = [stops[0]!, stops[2]!, stops[1]!];
     const payload = {
-      expectedUpdatedAt: route.updatedAt.toISOString(),
+      expectedUpdatedAt: publishedRoute.updatedAt.toISOString(),
       stops: order.map((stop, index) => ({
         deliveryStopId: stop.id, shopifyOrderGid: stop.order.shopifyOrderGid, sequence: index + 1
       }))
     };
+    if (method === 'saveRoutePlan') {
+      await expect(repository.saveRoutePlan({
+        ...scope, payload: { ...payload, expectedUpdatedAt: route.updatedAt.toISOString() }
+      })).rejects.toMatchObject({ code: 'ROUTE_PLAN_CONFLICT' });
+    }
     await repository[method]({ ...scope, payload });
 
     const after = await prisma.routePlanStop.findMany({ where: { routePlanId: route.id }, orderBy: { sequence: 'asc' } });

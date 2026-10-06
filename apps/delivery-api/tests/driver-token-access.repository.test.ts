@@ -1,3 +1,4 @@
+import { visibleDsvRouteWhere } from '../src/modules/dsv/dsv-test-visibility.js';
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverTokenAccessRepository } from '../src/modules/driver/driver-token-access.repository.js';
@@ -59,10 +60,15 @@ describe('PrismaDriverTokenAccessRepository', () => {
 
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
       select: {
+        assignmentGeneration: true,
+        deliveryWorkCompletedAt: true,
+        deliveryWorkCompletedGeneration: true,
+        deliveryWorkCompletedVersionId: true,
         driver: {
           select: { account: { select: { isStoreReviewAccount: true } }, accountId: true, authSubject: true, id: true, isStoreReviewData: true, status: true }
         },
         id: true,
+        driverNavigationUntil: true,
         isStoreReviewData: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
@@ -70,12 +76,13 @@ describe('PrismaDriverTokenAccessRepository', () => {
           take: 1,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { id: true, shopDomain: true } },
+        shop: { select: { appId: true, id: true, shopDomain: true } },
         status: true,
       },
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: 'route-plan-id',
+        ...visibleDsvRouteWhere(),
         status: { in: ['READY', 'IN_PROGRESS', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] }
       }
     });
@@ -120,6 +127,52 @@ describe('PrismaDriverTokenAccessRepository', () => {
     })).resolves.toBeNull();
   });
 
+  test('keeps token access through navigation grace and rejects it at the exact expiry boundary', async () => {
+    const routePlan = {
+      assignmentGeneration: 4n,
+      deliveryWorkCompletedAt: new Date('2026-10-01T16:00:00.000Z'),
+      deliveryWorkCompletedGeneration: 4n,
+      deliveryWorkCompletedVersionId: '22222222-2222-4222-8222-222222222222',
+      driverNavigationUntil: new Date('2026-10-01T18:00:00.000Z'),
+      driver: {
+        accountId: 'account-id', authSubject: 'driver-driver-id', id: 'driver-id', status: 'ACTIVE' as const
+      },
+      id: 'route-plan-id',
+      routeGroupingChildVersions: [{ publishedAt: new Date('2026-10-01T15:00:00.000Z') }],
+      shop: { appId: 'clever-route-kfood', id: 'shop-id', shopDomain: '7hrud1-xq.myshopify.com' },
+      status: 'IN_PROGRESS'
+    };
+    const before = new PrismaDriverTokenAccessRepository(createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 }, routePlan
+    }).prisma as never, () => new Date('2026-10-01T17:59:59.999Z'));
+    const atBoundary = new PrismaDriverTokenAccessRepository(createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 }, routePlan
+    }).prisma as never, () => new Date('2026-10-01T18:00:00.000Z'));
+    const foreignTenant = new PrismaDriverTokenAccessRepository(createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan: { ...routePlan, shop: { ...routePlan.shop, appId: 'clever-route-dsv' } }
+    }).prisma as never, () => new Date('2026-10-01T18:00:00.000Z'));
+
+    await expect(before.resolveDriverRouteAccess({
+      accountId: 'account-id', routePlanId: 'route-plan-id', tokenVersion: 2
+    })).resolves.toMatchObject({ routePlanId: 'route-plan-id' });
+    await expect(atBoundary.resolveDriverRouteAccess({
+      accountId: 'account-id', routePlanId: 'route-plan-id', tokenVersion: 2
+    })).resolves.toBeNull();
+    await expect(atBoundary.resolveDriverRouteAccess({
+      accountId: 'account-id', routePlanId: 'route-plan-id', tokenVersion: 2
+    }, { allowCompleted: true })).resolves.toBeNull();
+    const finalized = new PrismaDriverTokenAccessRepository(createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 }, routePlan: { ...routePlan, status: 'COMPLETED' }
+    }).prisma as never, () => new Date('2026-10-01T18:00:00.000Z'));
+    await expect(finalized.resolveDriverRouteAccess({
+      accountId: 'account-id', routePlanId: 'route-plan-id', tokenVersion: 2
+    }, { allowCompleted: true })).resolves.toBeNull();
+    await expect(foreignTenant.resolveDriverRouteAccess({
+      accountId: 'account-id', routePlanId: 'route-plan-id', tokenVersion: 2
+    })).resolves.toMatchObject({ routePlanId: 'route-plan-id' });
+  });
+
   test('resolves the same completed assignment only for completion retry authentication', async () => {
     const routePlan = {
       driver: {
@@ -152,6 +205,7 @@ describe('PrismaDriverTokenAccessRepository', () => {
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         id: 'route-plan-id',
+        ...visibleDsvRouteWhere(),
         status: { in: ['READY', 'IN_PROGRESS', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'COMPLETED', 'INCOMPLETE'] }
       }
     }));
@@ -260,6 +314,10 @@ function createPrismaHarness(input: {
   account?: { status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED'; tokenVersion: number } | null;
   driver?: { tokenVersion: number } | null;
   routePlan?: {
+    assignmentGeneration?: bigint;
+    deliveryWorkCompletedAt?: Date | null;
+    deliveryWorkCompletedGeneration?: bigint | null;
+    deliveryWorkCompletedVersionId?: string | null;
     driver: {
       account?: { isStoreReviewAccount: boolean };
       accountId: string | null;
@@ -269,9 +327,10 @@ function createPrismaHarness(input: {
       status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
     } | null;
     id: string;
+    driverNavigationUntil?: Date | null;
     isStoreReviewData?: boolean;
     routeGroupingChildVersions?: Array<{ publishedAt: Date | null }>;
-    shop: { id: string; shopDomain: string };
+    shop: { appId?: string; id: string; shopDomain: string };
     status?: string;
   } | null;
   tokenVersion?: number;

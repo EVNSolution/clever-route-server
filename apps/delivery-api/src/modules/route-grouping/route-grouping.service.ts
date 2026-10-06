@@ -1,5 +1,6 @@
+import { assertRouteDispatchOwnership, claimRouteExecutionProjection, hasDispatchReservation, lockRouteExecutionStops, withoutDispatchReservation } from '../route-plans/route-execution-ownership.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { DriverEventType, type DriverRouteNotificationStatus, type Prisma, type PrismaClient } from '@prisma/client';
+import { DriverEventType, Prisma, type DeliveryStopStatus, type DriverRouteNotificationStatus, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type {
   DriverPushProvider,
@@ -20,6 +21,7 @@ import {
 } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import { toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
+import { toRouteDeliveryDisplayStatus } from '../route-plans/kfood-delivery-completion.js';
 import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from '../route-plans/route-plan-summary-normalization.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
@@ -33,7 +35,6 @@ import {
 import {
   CustomOrderReferenceCopyNotAllowedError,
   RouteGroupingBranchLockConflictError,
-  RouteGroupingCopyLockedError,
   RouteGroupingConflictError,
   RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
@@ -136,6 +137,9 @@ type CurrentOrderRouteVersionWriter = {
 };
 
 type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
+  routePlan: {
+    updateMany(args: Prisma.RoutePlanUpdateManyArgs): Promise<{ count: number }>;
+  };
   routeGroupingChildVersion: {
     create(args: Prisma.RouteGroupingChildVersionCreateArgs): Promise<{ id: string }>;
     updateMany(args: Prisma.RouteGroupingChildVersionUpdateManyArgs): Promise<{ count: number }>;
@@ -164,31 +168,6 @@ type ChildRouteGeometrySnapshot = {
   routeMetrics: RoutePlanRouteMetrics | null;
   routeStopPoints: RoutePlanRouteStopPoint[];
 };
-
-export function currentRouteBindingAuthorityState(
-  childVersionId: string,
-  snapshotOrderIds: string[],
-  assignments: Array<{ orderId: string; order: { currentRouteVersionId: string | null } }>
-): 'EXACT' | 'LEGACY_UNBOUND' | 'MISMATCH' {
-  const snapshotOrderIdSet = new Set(snapshotOrderIds);
-  if (snapshotOrderIdSet.size !== snapshotOrderIds.length) return 'MISMATCH';
-
-  const snapshotAssignments = assignments.filter(({ orderId }) => snapshotOrderIdSet.has(orderId));
-  if (snapshotAssignments.length !== snapshotOrderIds.length) return 'MISMATCH';
-
-  const boundOrderIds = assignments
-    .filter(({ order }) => order.currentRouteVersionId === childVersionId)
-    .map(({ orderId }) => orderId)
-    .sort();
-  const sortedSnapshotOrderIds = [...snapshotOrderIds].sort();
-  const exactBinding = sortedSnapshotOrderIds.length === boundOrderIds.length
-    && sortedSnapshotOrderIds.every((orderId, index) => orderId === boundOrderIds[index]);
-  if (exactBinding) return 'EXACT';
-
-  const entirelyUnbound = boundOrderIds.length === 0
-    && snapshotAssignments.every(({ order }) => order.currentRouteVersionId === null);
-  return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH';
-}
 
 type OptimizedDraftRoute = {
   assignments: LoadedAssignment[];
@@ -279,7 +258,7 @@ type PublishedRouteChild = Prisma.RouteGroupingChildVersionGetPayload<{
 
 export async function rebindCurrentOrdersToRouteVersion(
   prisma: CurrentOrderRouteVersionWriter,
-  input: { groupingId: string; nextRouteVersionId: string; orderIds: string[]; shopId: string }
+  input: { groupingId: string; nextRouteVersionId: string; orderIds: string[]; shopId: string; planning?: boolean }
 ): Promise<number> {
   const orderIds = [...new Set(input.orderIds)];
   if (orderIds.length === 0) return 0;
@@ -294,7 +273,7 @@ export async function rebindCurrentOrdersToRouteVersion(
       shopId: input.shopId
     }
   });
-  if (result.count !== orderIds.length) {
+  if (input.planning !== true && result.count !== orderIds.length) {
     throw new RouteGroupingConflictError('route order ownership changed; reload and retry');
   }
   return result.count;
@@ -309,6 +288,7 @@ export async function replaceCurrentRouteGroupingChildVersion(
     groupingVersionId: string;
     notificationStatus: DriverRouteNotificationStatus;
     orderIds: string[];
+    planning?: boolean;
     publishedAt: Date | null;
     routePlanId: string | null;
     shopId: string;
@@ -339,9 +319,25 @@ export async function replaceCurrentRouteGroupingChildVersion(
     },
     select: { id: true }
   });
+  if (input.routePlanId !== null) {
+    await prisma.routePlan.updateMany({
+      data: {
+        deliveryWorkCompletedAt: null,
+        deliveryWorkCompletedGeneration: null,
+        deliveryWorkCompletedVersionId: null,
+        driverNavigationUntil: null
+      },
+      where: {
+        deliveryWorkCompletedVersionId: input.currentChildId,
+        id: input.routePlanId,
+        shopId: input.shopId
+      }
+    });
+  }
   await rebindCurrentOrdersToRouteVersion(prisma, {
     groupingId: input.groupingId,
     nextRouteVersionId: nextChild.id,
+    planning: input.planning ?? false,
     orderIds: input.orderIds,
     shopId: input.shopId
   });
@@ -396,6 +392,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
       if (shop === null) throw new RouteGroupingValidationError(['shop not found']);
+      if (input.initialRoute !== undefined) {
+        const requestId = input.initialRoute.requestId;
+        await lockRouteGroupingDraftSave(tx, requestId);
+        const existing = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: requestId } });
+        if (existing !== null) {
+          if (existing.shopId !== shop.id || existing.name !== input.name
+            || formatDateOnly(existing.planDate) !== formatDateOnly(dateRange.planDate)
+            || !sameStringSequence(existing.orders.map(({ orderId }) => orderId), orderIds)) {
+            throw new RouteGroupingConflictError('initial route request changed; start a new request');
+          }
+          return existing.id;
+        }
+      }
       if (hasValidDepotCoordinates(input.depot)) {
         await tx.shop.update({
           data: {
@@ -421,6 +430,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const orderedFacts = orderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is typeof facts[number] => fact !== undefined);
       const grouping = await tx.routeGrouping.create({
         data: {
+          ...(input.initialRoute === undefined ? {} : { id: input.initialRoute.requestId }),
           createdBy: input.createdBy,
           dateRangeEnd: dateRange.end,
           dateRangeStart: dateRange.start,
@@ -456,6 +466,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         orderIds,
         shopId: shop.id
       });
+      if (input.initialRoute !== undefined) {
+        const saved = await this.saveDraftInTransaction(tx, {
+          appId: input.appId,
+          groupingId: grouping.id,
+          mode: 'MANUAL_ORDER',
+          routes: [{ branchId: null, label: input.name, orderIds, routePlanId: null,
+            routeKey: `initial:${grouping.id}`, tempId: grouping.id }],
+          shopDomain: input.shopDomain
+        }, { materializeUnassignedRoutes: true, initialRouteName: input.name });
+        if (saved === null || saved.children.length !== 1 || saved.children[0]?.routePlanId === null) {
+          throw new RouteGroupingValidationError(['initial route was not created']);
+        }
+      }
       return grouping.id;
     });
     const detail = await this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
@@ -470,6 +493,25 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
       });
       if (shop === null) return null;
+      // Serialize a logical request across tenants and sources before locking its source.
+      // The first version retains the immutable fingerprint even after later route edits.
+      const copyRequestReason = input.requestId === undefined ? undefined : `copy-request:v1:${createHash('sha256').update(JSON.stringify({
+        actor: input.actor, expectedUpdatedAt: parseExpectedUpdatedAt(input.expectedUpdatedAt).toISOString(),
+        groupingId: input.groupingId, mode: input.mode, shopId: shop.id
+      })).digest('hex')}`;
+      if (input.requestId !== undefined) {
+        await lockRouteGroupingDraftSave(tx, input.requestId);
+        const existing = await tx.routeGrouping.findUnique({ select: { id: true, shopId: true }, where: { id: input.requestId } });
+        if (existing !== null) {
+          const receipt = await tx.routeGroupingVersion.findUnique({
+            select: { changeReason: true }, where: { groupingId_version: { groupingId: existing.id, version: 1 } }
+          });
+          if (existing.shopId !== shop.id || receipt?.changeReason !== copyRequestReason) {
+            throw new RouteGroupingConflictError('copy request changed; start a new request');
+          }
+          return existing.id;
+        }
+      }
       await lockRouteGroupingCopySource(tx, input.groupingId, shop.id);
       const source = await tx.routeGrouping.findFirst({
         include: groupingInclude(),
@@ -486,11 +528,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         if (customOrderIds.length > 0) {
           throw new CustomOrderReferenceCopyNotAllowedError();
         }
-        await assertReferenceCopyOrdersUnlocked(tx, source);
       }
 
       const copy = await tx.routeGrouping.create({
         data: {
+          ...(input.requestId === undefined ? {} : { id: input.requestId }),
           createdBy: input.actor,
           dateRangeEnd: source.dateRangeEnd,
           dateRangeStart: source.dateRangeStart,
@@ -504,8 +546,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         },
         select: { id: true }
       });
-      await tx.routeGroupingVersion.create({
-        data: { actor: input.actor, groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 }
+      const copyVersion = await tx.routeGroupingVersion.create({
+        data: { actor: input.actor, ...(copyRequestReason === undefined ? {} : { changeReason: copyRequestReason }), groupingId: copy.id, shopId: source.shopId, status: 'CURRENT', version: 1 },
+        select: { id: true }
       });
 
       const copiedMemberships = input.mode === 'REFERENCE'
@@ -525,6 +568,36 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         orderIds: copiedMemberships.map((membership) => membership.orderId),
         shopId: source.shopId
       });
+      const sourceChildren = source.childVersions.filter(isOperationalCurrentChild);
+      // Both modes preserve planning partitions; Reference retains the actual order identities.
+      if (sourceChildren.length > 0 || source.orders.length > 0) {
+        const loadedCopy = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: copy.id } });
+        if (loadedCopy === null) throw new RouteGroupingValidationError(['copied grouping not found']);
+        const copiedAssignmentBySequence = new Map(loadedCopy.orders.map((assignment) => [assignment.sourceSequence, assignment]));
+        const orderedChildren = sourceChildren.sort((a, b) =>
+          (readChildSnapshot(a.snapshot).sortOrder ?? 0) - (readChildSnapshot(b.snapshot).sortOrder ?? 0));
+        for (const [index, child] of orderedChildren.entries()) {
+          const assignments = readCurrentChildAssignments(source, child).map((assignment) => {
+            const copied = copiedAssignmentBySequence.get(assignment.sourceSequence);
+            if (copied === undefined) throw new RouteGroupingValidationError(['copied route order not found']);
+            return copied;
+          });
+          const routeIdx = await nextGlobalRouteIdx(tx, source.shopId);
+          await createDraftChildRoutePlan(tx, loadedCopy, {
+            assignments, color: readChildSnapshot(child.snapshot).color, driverId: null,
+            groupingVersionId: copyVersion.id, name: child.routePlan?.name ?? childRouteSlotName(child),
+            optimized: null, preserveName: true, routeIdx, sortOrder: index + 1
+          });
+        }
+        if (sourceChildren.length === 0) {
+          await createDraftChildRoutePlan(tx, loadedCopy, {
+            assignments: loadedCopy.orders, color: null, driverId: null,
+            groupingVersionId: copyVersion.id, name: `${source.name} Copy`, optimized: null,
+            preserveName: true, routeIdx: await nextGlobalRouteIdx(tx, source.shopId), sortOrder: 1
+          });
+        }
+        await recomputeAssignments(tx, copy.id);
+      }
       return copy.id;
     });
     if (groupingId === null) return null;
@@ -566,7 +639,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
       const copy = await tx.routePlan.create({
         data: {
-          constraints: toJson(source.constraints),
+          constraints: withoutDispatchReservation(toJson(source.constraints)),
           createdBy: input.actor,
           depotLatitude: source.depotLatitude,
           depotLongitude: source.depotLongitude,
@@ -755,6 +828,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       await rebindCurrentOrdersToRouteVersion(tx, {
         groupingId: grouping.id,
         nextRouteVersionId: sourceChild.id,
+        planning: true,
         orderIds: sourceOrderIds,
         shopId: shop.id
       });
@@ -986,6 +1060,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       } else {
         await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       }
+      if (input.targetRoutePlanId !== undefined) {
+        await lockRoutePlanMembership(tx, input.targetRoutePlanId, group.shopId);
+      }
+      await lockManualAdditionOrders(tx, group.shopId, addOrderIds, input.targetRoutePlanId);
 
       if (removeOrderIds.length > 0) {
         const membershipAuthority = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
@@ -1033,7 +1111,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           },
           where: { orderId: { in: newOrderIds }, shopId: group.shopId }
         });
-        const blockers = validateCreateFacts({ dateRange: loadedGroupDateRange(group), facts, orderIds: newOrderIds });
+        const blockers = validateManualAdditionFacts({ facts, orderIds: newOrderIds });
         if (blockers.length > 0) throw new RouteGroupingValidationError(blockers);
         const orderedFacts = newOrderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is typeof facts[number] => fact !== undefined);
         const maxSequence = await tx.routeGroupingOrder.aggregate({ _max: { sourceSequence: true }, where: { groupingId: group.id } });
@@ -1263,6 +1341,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
         const snapshot = readChildSnapshot(child.snapshot);
         await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: child.id,
           driverId: lockedRoutePlan.driverId ?? child.driverId,
           groupingId: group.id,
@@ -1485,6 +1564,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             assignments.map((assignment) => assignment.orderId)
           );
           if (!assignmentsChanged && !routeDetailsChanged) continue;
+          if (assignmentsChanged && targetChild.routePlanId !== null
+            && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
+            await assertRouteDispatchOwnership(tx, {
+              deliveryStopIds: assignments.map((assignment) => assignment.deliveryStopId),
+              routePlanId: targetChild.routePlanId, shopId: group.shopId
+            });
+          }
           if (targetChild.routePlanId !== null) {
             if (lockedRoutePlan === undefined) throw new RouteGroupingValidationError(['route plan changed; reload and retry']);
             assertLockedRoutePlanChildAuthority(lockedRoutePlan, targetChild.id, route.expectedRoutePlanUpdatedAt);
@@ -1527,6 +1613,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             routeDetailsChanged
           });
           const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
+            planning: true,
             currentChildId: targetChild.id,
             driverId,
             groupingId: group.id,
@@ -1549,6 +1636,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             ),
             version: loaded.currentVersion
           });
+          if (assignmentsChanged && targetChild.routePlanId !== null
+            && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
+            await claimRouteExecutionProjection(tx, { routePlanId: targetChild.routePlanId, shopId: group.shopId });
+          }
           if (
             targetChild.routePlanId !== null
             && lockedRoutePlan?.status === 'IN_PROGRESS'
@@ -1595,7 +1686,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   async saveDraftInTransaction(
     tx: Tx,
     input: SaveRouteGroupingDraftInput,
-    options: { materializeUnassignedRoutes?: boolean } = {}
+    options: { initialRouteName?: string; materializeUnassignedRoutes?: boolean } = {}
   ): Promise<RouteGroupingDetailDto | null> {
     const routes = normalizeDraftRoutes(input.routes);
     const deletedRoutePlanIds = normalizeExplicitDraftIds(input.deletedRoutePlanIds ?? [], 'deletedRoutePlanIds');
@@ -1710,6 +1801,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           || (route.color !== undefined && route.color !== (previousSnapshot.color ?? null))
           || (previousSnapshot.sortOrder !== undefined && route.sortOrder !== previousSnapshot.sortOrder);
         if (!assignmentsChanged && !routeDetailsChanged) continue;
+        if (assignmentsChanged && targetChild.routePlanId !== null
+          && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
+          await assertRouteDispatchOwnership(tx, {
+            deliveryStopIds: assignments.map((assignment) => assignment.deliveryStopId),
+            routePlanId: targetChild.routePlanId, shopId: group.shopId
+          });
+        }
         if (lockedRoutePlan !== null && lockedRoutePlan !== undefined) {
           assertLockedRoutePlanChildAuthority(lockedRoutePlan, targetChild.id, route.expectedRoutePlanUpdatedAt);
           assertLockedRoutePlanSuccessorPolicy({
@@ -1754,6 +1852,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routeDetailsChanged
         });
         const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
+          planning: true,
           currentChildId: targetChild.id,
           driverId,
           groupingId: group.id,
@@ -1776,6 +1875,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           ),
           version: loaded.currentVersion
         });
+        if (assignmentsChanged && targetChild.routePlanId !== null
+          && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
+          await claimRouteExecutionProjection(tx, { routePlanId: targetChild.routePlanId, shopId: group.shopId });
+        }
         if (
           targetChild.routePlanId !== null
           && lockedRoutePlan?.status === 'IN_PROGRESS'
@@ -1822,8 +1925,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         color: route.color,
         driverId,
         groupingVersionId: currentGroupingVersion.id,
-        name: newChildRouteName(route.label, routeIdx),
+        name: options.initialRouteName ?? newChildRouteName(route.label, routeIdx),
         optimized: null,
+        preserveName: options.initialRouteName !== undefined,
         routeIdx,
         scheduledStartAt: route.scheduledStartAt,
         scheduledStartTimeZone: route.scheduledStartTimeZone,
@@ -2022,6 +2126,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await rebindCurrentOrdersToRouteVersion(tx, {
           groupingId: loaded.id,
           nextRouteVersionId: childVersion.id,
+          planning: true,
           orderIds: numberedCandidate.assignments.map((assignment) => assignment.orderId),
           shopId: loaded.shopId
         });
@@ -2177,6 +2282,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: candidate.routePlanId } });
           await createChildRouteGeometryCache(tx, candidate.routePlanId, authoritativeCandidate);
           await replaceCurrentRouteGroupingChildVersion(tx, {
+            planning: true,
             currentChildId: currentChild.id,
             driverId: authoritativeCandidate.driverId,
             groupingId: loaded.id,
@@ -2213,6 +2319,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await rebindCurrentOrdersToRouteVersion(tx, {
           groupingId: loaded.id,
           nextRouteVersionId: childVersion.id,
+          planning: true,
           orderIds: numberedCandidate.assignments.map((assignment) => assignment.orderId),
           shopId: loaded.shopId
         });
@@ -2294,6 +2401,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await rebindCurrentOrdersToRouteVersion(tx, {
           groupingId: loaded.id,
           nextRouteVersionId: childVersion.id,
+          planning: true,
           orderIds: assignments.map((assignment) => assignment.orderId),
           shopId: loaded.shopId
         });
@@ -3376,6 +3484,7 @@ async function invalidateCustomStopChildRoutes(tx: Tx, groupingId: string, deliv
     await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: child.routePlanId } });
     const snapshot = readChildSnapshot(child.snapshot);
     await replaceCurrentRouteGroupingChildVersion(tx, {
+      planning: true,
       currentChildId: child.id,
       driverId: lockedRoutePlan.driverId ?? child.driverId,
       groupingId: loaded.id,
@@ -3483,6 +3592,10 @@ function groupingRoutesListSelect() {
           select: {
             constraints: true,
             createdAt: true,
+            assignmentGeneration: true,
+            deliveryWorkCompletedAt: true,
+            deliveryWorkCompletedGeneration: true,
+            deliveryWorkCompletedVersionId: true,
             driver: { select: { displayName: true } },
             driverEvents: {
               orderBy: { occurredAt: 'desc' as const },
@@ -3491,6 +3604,7 @@ function groupingRoutesListSelect() {
               where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] } }
             },
             driverId: true,
+            driverNavigationUntil: true,
             id: true,
             name: true,
             planDate: true,
@@ -3602,35 +3716,9 @@ async function lockRouteGroupingCopySource(tx: Tx, groupingId: string, shopId: s
   `;
 }
 
-async function assertReferenceCopyOrdersUnlocked(tx: Tx, source: LoadedGrouping): Promise<void> {
-  const deliveryStopIds = source.orders.map((assignment) => assignment.deliveryStopId);
-  if (deliveryStopIds.length === 0) return;
-  const memberships = await tx.routePlanStop.findMany({
-    select: {
-      deliveryStopId: true,
-      routePlan: {
-        select: {
-          driverEvents: {
-            orderBy: { occurredAt: 'desc' },
-            select: { eventType: true },
-            take: 1
-          },
-          status: true
-        }
-      }
-    },
-    where: { deliveryStopId: { in: deliveryStopIds }, shopId: source.shopId }
-  });
-  const lockedStopIds = new Set(memberships
-    .filter(({ routePlan }) => {
-      const status = toRouteExecutionStatus(routePlan.status, routePlan.driverEvents);
-      return status === 'IN_PROGRESS' || status === 'COMPLETED' || status === 'INCOMPLETE';
-    })
-    .map(({ deliveryStopId }) => deliveryStopId));
-  const orderIds = source.orders
-    .filter((assignment) => lockedStopIds.has(assignment.deliveryStopId))
-    .map((assignment) => assignment.orderId);
-  if (orderIds.length > 0) throw new RouteGroupingCopyLockedError(orderIds);
+function virtualCopyStopStatus(status: DeliveryStopStatus): DeliveryStopStatus {
+  return status === 'DELIVERED' || status === 'FAILED' || status === 'SKIPPED' || status === 'CANCELLED'
+    ? status : 'PENDING';
 }
 
 async function createVirtualCopyMemberships(
@@ -3676,6 +3764,7 @@ async function createVirtualCopyMemberships(
             province: sourceStop.province,
             recipientName: sourceStop.recipientName,
             serviceMinutes: sourceStop.serviceMinutes,
+            status: virtualCopyStopStatus(sourceStop.status),
             timeWindowEnd: sourceStop.timeWindowEnd,
             timeWindowStart: sourceStop.timeWindowStart
           }
@@ -3756,7 +3845,7 @@ async function createStandaloneVirtualOrderCopy(
           province: sourceStop.province,
           recipientName: sourceStop.recipientName,
           serviceMinutes: sourceStop.serviceMinutes,
-          status: 'PENDING',
+          status: virtualCopyStopStatus(sourceStop.status),
           timeWindowEnd: sourceStop.timeWindowEnd,
           timeWindowStart: sourceStop.timeWindowStart
         }
@@ -3986,7 +4075,16 @@ type GroupingDateRange = { end: Date; endText: string; planDate: Date; start: Da
 type DeliveryFactForGrouping = {
   deliveryDate: Date | null;
   deliverySession: string | null;
-  order: { cancelledAt: Date | null; deliveryStops: Array<{ latitude: unknown; longitude: unknown; routePlanStops: Array<{ id: string }> }> };
+  order: {
+    cancelledAt: Date | null;
+    currentRouteVersionId: string | null;
+    deliveryStops: Array<{
+      latitude: unknown;
+      longitude: unknown;
+      routePlanStops: Array<{ id: string }>;
+      status: DeliveryStopStatus;
+    }>;
+  };
   orderId: string;
   routeScopeKey: string | null;
   serviceType: string | null;
@@ -4046,7 +4144,46 @@ function sharedFactValue(facts: DeliveryFactForGrouping[], key: 'deliverySession
   return facts.every((fact) => fact[key] === first) ? first : null;
 }
 
-function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
+function validateManualAdditionFacts(input: { facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
+  const blockers = validateCreateFacts({ facts: input.facts, orderIds: input.orderIds });
+  for (const orderId of input.orderIds) {
+    const fact = input.facts.find((candidate) => candidate.orderId === orderId);
+    const stop = fact?.order.deliveryStops[0];
+    if (stop === undefined) continue;
+    if (['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(stop.status)) {
+      blockers.push('completed orders cannot be added to a route grouping');
+    }
+  }
+  return [...new Set(blockers)];
+}
+
+async function lockManualAdditionOrders(tx: Tx, shopId: string, orderIds: string[], targetRoutePlanId?: string): Promise<void> {
+  const ids = normalizeIds(orderIds).sort().map((orderId) => Prisma.sql`${orderId}::uuid`);
+  if (ids.length === 0) return;
+  const stops = await tx.deliveryStop.findMany({
+    select: { id: true },
+    where: {
+      shopId,
+      OR: [
+        { orderId: { in: orderIds } },
+        ...(targetRoutePlanId === undefined ? [] : [{ routePlanStops: { some: { routePlanId: targetRoutePlanId } } }])
+      ]
+    }
+  });
+  // Dispatch also locks stops before updating order projections. Take the full
+  // target membership first so append can recheck ownership without inversion.
+  await lockRouteExecutionStops(tx, stops.map((stop) => stop.id));
+  await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+    FROM "orders"
+    WHERE "shopId" = ${shopId}::uuid
+      AND "id" IN (${Prisma.join(ids)})
+    ORDER BY "id"
+    FOR UPDATE
+  `;
+}
+
+function validateCreateFacts(input: { dateRange?: GroupingDateRange; facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
   const blockers: string[] = [];
   if (input.facts.length !== input.orderIds.length) blockers.push('selected orders must have delivery facts');
   for (const orderId of input.orderIds) {
@@ -4054,7 +4191,8 @@ function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: Deliv
     if (fact === undefined) continue;
     if (fact.order.cancelledAt !== null) blockers.push('cancelled orders cannot be added to a route grouping');
     const deliveryDate = formatDateOnly(fact.deliveryDate);
-    if (deliveryDate !== null && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
+    if (input.dateRange !== undefined && deliveryDate !== null
+      && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
       blockers.push('selected orders must fall within grouping date range');
     }
     const stop = fact.order.deliveryStops[0];
@@ -4339,12 +4477,8 @@ function resolveChildSnapshotAssignments<TAssignment extends {
     .sort((left, right) => left.sequence - right.sequence)
     .map((stop) => stop.deliveryStopId);
   if (modernSnapshot && authority === 'CURRENT') {
-    const snapshotOrderIds = orderedSnapshotStops.map((stop) => stop.orderId);
-    const bindingAuthority = currentRouteBindingAuthorityState(child.id, snapshotOrderIds, group.orders);
     if (snapshotStopIds.length !== routePlanStopIds.length
-      || snapshotStopIds.some((stopId, index) => stopId !== routePlanStopIds[index])
-      || bindingAuthority === 'MISMATCH'
-      || (authority === 'CURRENT' && bindingAuthority !== 'EXACT')) {
+      || snapshotStopIds.some((stopId, index) => stopId !== routePlanStopIds[index])) {
       throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority']);
     }
   }
@@ -4390,16 +4524,20 @@ async function appendGroupingOrdersToChildRoute(
 
   const currentAssignments = currentChildAssignments(group, targetChild);
   const currentStopIds = new Set(currentAssignments.map((assignment) => assignment.deliveryStopId));
+  // Each group still partitions its orders across children; other groups may
+  // independently plan the same real order without taking execution ownership.
+  const siblingStopIds = new Set(group.childVersions
+    .filter((child) => isOperationalCurrentChild(child) && child.id !== targetChild.id)
+    .flatMap((child) => currentChildAssignments(group, child).map((assignment) => assignment.deliveryStopId)));
   const additionsToAppend = (additions as LoadedAssignment[]).filter((assignment) => {
-    const otherRouteMembership = assignment.deliveryStop.routePlanStops.some(
-      ({ routePlanId }) => routePlanId !== targetRoutePlanId
-    );
-    if (otherRouteMembership) {
+    if (siblingStopIds.has(assignment.deliveryStopId)) {
       throw new RouteGroupingValidationError(['selected orders are already assigned to another child route']);
     }
     return !currentStopIds.has(assignment.deliveryStopId);
   });
   if (additionsToAppend.length === 0) return;
+  const eligibilityBlockers = validateManualChildAdditions(additionsToAppend);
+  if (eligibilityBlockers.length > 0) throw new RouteGroupingValidationError(eligibilityBlockers);
 
   const assignments = [...currentAssignments, ...additionsToAppend];
   assertLockedRoutePlanSuccessorPolicy({
@@ -4408,6 +4546,16 @@ async function appendGroupingOrdersToChildRoute(
     routeDetailsChanged: false,
     status: lockedRoutePlan.status
   });
+  const reservesExecution = targetChild.publishedAt !== null
+    || lockedRoutePlan.status === 'IN_PROGRESS'
+    || hasDispatchReservation(lockedRoutePlan.constraints);
+  if (reservesExecution) {
+    await assertRouteDispatchOwnership(tx, {
+      deliveryStopIds: assignments.map((assignment) => assignment.deliveryStopId),
+      routePlanId: targetRoutePlanId,
+      shopId: group.shopId
+    });
+  }
   const snapshot = readChildSnapshot(targetChild.snapshot);
   await syncRoutePlanStopsPreservingRows(tx, group.shopId, targetRoutePlanId, assignments);
   await tx.routePlan.update({
@@ -4416,6 +4564,7 @@ async function appendGroupingOrdersToChildRoute(
   });
   await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
   await replaceCurrentRouteGroupingChildVersion(tx, {
+    planning: true,
     currentChildId: targetChild.id,
     driverId: lockedRoutePlan.driverId ?? targetChild.driverId,
     groupingId: group.id,
@@ -4437,6 +4586,23 @@ async function appendGroupingOrdersToChildRoute(
     ),
     version: targetChild.version
   });
+  if (reservesExecution) {
+    await claimRouteExecutionProjection(tx, { routePlanId: targetRoutePlanId, shopId: group.shopId });
+  }
+}
+
+function validateManualChildAdditions(assignments: LoadedAssignment[]): string[] {
+  const blockers: string[] = [];
+  for (const assignment of assignments) {
+    if (assignment.order.cancelledAt !== null) blockers.push('cancelled orders cannot be added to a route grouping');
+    if (['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(assignment.deliveryStop.status)) {
+      blockers.push('completed orders cannot be added to a route grouping');
+    }
+    if (decimalNumber(assignment.deliveryStop.latitude) === null || decimalNumber(assignment.deliveryStop.longitude) === null) {
+      blockers.push('selected orders must have coordinates');
+    }
+  }
+  return [...new Set(blockers)];
 }
 
 async function rewriteRoutePlanStops(tx: Tx, shopId: string, routePlanId: string, assignments: LoadedAssignment[]): Promise<void> {
@@ -4681,6 +4847,7 @@ async function createDraftChildRoutePlan(
     groupingVersionId: string;
     name: string;
     optimized: RouteGroupingDraftRouteInput['optimized'] | null;
+    preserveName?: boolean;
     routeIdx: number | undefined;
     scheduledStartAt?: string | null | undefined;
     scheduledStartTimeZone?: string | null | undefined;
@@ -4689,7 +4856,8 @@ async function createDraftChildRoutePlan(
   }
 ): Promise<{ id: string; name: string }> {
   const depot = readDepotFromShop(group);
-  const name = stripGeneratedChildRouteVersion(input.name.trim() || `#${input.routeIdx ?? input.sortOrder ?? 1}`);
+  const requestedName = input.name.trim() || `#${input.routeIdx ?? input.sortOrder ?? 1}`;
+  const name = input.preserveName === true ? requestedName : stripGeneratedChildRouteVersion(requestedName);
   const isStoreReviewData = await resolveRouteStoreReviewData(
     tx,
     group.shopId,
@@ -4736,6 +4904,7 @@ async function createDraftChildRoutePlan(
   await rebindCurrentOrdersToRouteVersion(tx, {
     groupingId: group.id,
     nextRouteVersionId: childVersion.id,
+    planning: true,
     orderIds: input.assignments.map((assignment) => assignment.orderId),
     shopId: group.shopId
   });
@@ -5099,7 +5268,7 @@ function toRoutesListChildDto(
       routeMetrics,
       scheduledStartAt: readScheduledStartAt(routePlan.constraints),
       scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
-      status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+      status: toRouteDeliveryDisplayStatus(routePlan),
       stopsCount: routePlan.routeStops.length,
       totalAmount: normalizeRouteTotalAmount(assignments.map(({ order }) => order)),
       updatedAt: routePlan.updatedAt.toISOString()
@@ -5440,7 +5609,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     routeMetrics,
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
     scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
-    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
+    status: toRouteDeliveryDisplayStatus(routePlan),
     stopsCount: routePlan.routeStops.length,
     totalAmount: normalizeRouteTotalAmount(assignments.map(({ order }) => order)),
     updatedAt: routePlan.updatedAt.toISOString()
@@ -5449,7 +5618,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
 
 export function deriveGroupingDisplayStatus(group: {
   childVersions: Array<{
-    routePlan: { driverEvents: Array<{ eventType: string }>; status: string } | null;
+    routePlan: DeliveryDisplayRoute | null;
     status: string;
     supersededAt: Date | null;
   }>;
@@ -5458,7 +5627,7 @@ export function deriveGroupingDisplayStatus(group: {
   if (group.status === 'CANCELLED') return 'CANCELLED';
   const statuses = group.childVersions
     .filter((child) => isOperationalCurrentChild(child))
-    .map((child) => toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents));
+    .map((child) => toRouteDeliveryDisplayStatus(child.routePlan ?? { status: 'READY' }));
   if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED')) return 'COMPLETED';
   if (statuses.some((status) => status === 'IN_PROGRESS')) return 'IN_PROGRESS';
   if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED' || status === 'INCOMPLETE')) {
@@ -5469,10 +5638,20 @@ export function deriveGroupingDisplayStatus(group: {
 }
 
 function deriveChildDisplayStatus(child: {
-  routePlan: { driverEvents: Array<{ eventType: string }>; status: string } | null;
+  routePlan: DeliveryDisplayRoute | null;
 }): RouteGroupingChildDisplayStatus {
-  return toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents);
+  return toRouteDeliveryDisplayStatus(child.routePlan ?? { status: 'READY' });
 }
+
+type DeliveryDisplayRoute = {
+  assignmentGeneration?: bigint;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
+  driverEvents?: Array<{ eventType: string }>;
+  driverNavigationUntil?: Date | null;
+  status: string;
+};
 
 function normalizeNotificationStatus(status: string): RouteGroupingNotificationStatus {
   if (status === 'SENT' || status === 'FAILED' || status === 'PENDING') return status;

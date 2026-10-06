@@ -1413,9 +1413,11 @@ export function registerDriverEventRoutes(
         .send(driverAuthenticationErrorResponse(authentication.status));
     }
     const driverContext = authentication.context;
+    const transportRequestId = validatedTransportRequestId(request);
 
     let admission: { attemptId: string; attemptNumber: number } | null = null;
-    if (isDriverEventContractV2Intent(request.body)) {
+    const gpsDiagnosticIntent = isDriverLocationDiagnosticIntent(request.body);
+    if (isDriverEventContractV2Intent(request.body) || gpsDiagnosticIntent) {
       try {
         admission = await dependencies.driverEventService.admitDriverEventAttempt(
           admissionInputFromAuthenticatedRequest(request, driverContext)
@@ -1431,9 +1433,18 @@ export function registerDriverEventRoutes(
             failureStage: 'ADMISSION',
             outcome: 'failed'
           });
-          return reply.code(503).send(errorResponse(error.code, 'Driver event admission is temporarily unavailable'));
+          if (gpsDiagnosticIntent) {
+            request.log.warn({
+              errorCode: error.code,
+              event: 'driver_location_attempt_admission_failed',
+              requestId: request.id
+            }, 'failed to admit driver location diagnostic attempt');
+          } else {
+            return reply.code(503).send(errorResponse(error.code, 'Driver event admission is temporarily unavailable'));
+          }
+        } else {
+          throw error;
         }
-        throw error;
       }
     }
 
@@ -1442,12 +1453,12 @@ export function registerDriverEventRoutes(
       eventInput = readDriverEventBody(request.body);
     } catch {
       if (admission !== null) {
-        await dependencies.driverEventService.finalizeDriverEventAttempt(admission.attemptId, {
+        await finalizeDriverEventAttemptSafely(request, dependencies, admission.attemptId, {
           errorCode: 'BAD_REQUEST',
           failureStage: 'WIRE_VALIDATION',
           retryable: false,
           status: 'REJECTED'
-        });
+        }, gpsDiagnosticIntent);
         logDriverEventContractMetric(request, driverContext, {
           attemptNumber: admission.attemptNumber,
           failureStage: 'WIRE_VALIDATION',
@@ -1458,12 +1469,12 @@ export function registerDriverEventRoutes(
     }
     if (eventInput.routePlanId !== null && eventInput.routePlanId !== driverContext.routePlanId) {
       if (admission !== null) {
-        await dependencies.driverEventService.finalizeDriverEventAttempt(admission.attemptId, {
+        await finalizeDriverEventAttemptSafely(request, dependencies, admission.attemptId, {
           errorCode: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH',
           failureStage: 'AUTHORIZATION_SCOPE',
           retryable: false,
           status: 'REJECTED'
-        });
+        }, gpsDiagnosticIntent);
         logDriverEventContractMetric(request, driverContext, {
           attemptNumber: admission.attemptNumber,
           failureStage: 'AUTHORIZATION_SCOPE',
@@ -1483,9 +1494,9 @@ export function registerDriverEventRoutes(
         driverId: driverContext.driverId,
         payload: request.body,
         routePlanId: driverContext.routePlanId,
-        ...(eventInput.driverContractVersion === 2
-          ? { requestId: request.id }
-          : {}),
+        ...(transportRequestId === null
+          ? {}
+          : { requestId: transportRequestId }),
         shopDomain: driverContext.shopDomain,
         shopId: driverContext.shopId
       });
@@ -1560,7 +1571,7 @@ export function registerDriverEventRoutes(
       throw error;
     }
 
-    if (eventInput.driverContractVersion === 2 && eventInput.eventType !== 'LOCATION_UPDATED') {
+    if ((eventInput.driverContractVersion === 2 && eventInput.eventType !== 'LOCATION_UPDATED') || gpsDiagnosticIntent) {
       logDriverEventContractMetric(request, driverContext, {
         ...(admission === null ? {} : { attemptNumber: admission.attemptNumber }),
         failureStage: 'COMMITTED',
@@ -2124,6 +2135,10 @@ function isDriverEventContractV2Intent(body: DriverEventRequestBody | undefined)
   return body !== undefined && body.driverContractVersion === 2 && body.eventType !== 'LOCATION_UPDATED';
 }
 
+function isDriverLocationDiagnosticIntent(body: DriverEventRequestBody | undefined): boolean {
+  return body?.eventType === 'LOCATION_UPDATED';
+}
+
 function admissionInputFromAuthenticatedRequest(
   request: FastifyRequest<{ Body: DriverEventRequestBody }>,
   context: DriverRouteAccessScope
@@ -2133,16 +2148,41 @@ function admissionInputFromAuthenticatedRequest(
     appVersion: safeBoundedText(body.appVersion, 64),
     assignmentGeneration: safeAssignmentGeneration(body.assignmentGeneration),
     clientEventId: safeOpaqueIdentifier(body.clientEventId),
-    driverContractVersion: 2,
+    driverContractVersion: safePositiveInteger(body.driverContractVersion) ?? 1,
     driverId: context.driverId,
     eventType: safeBoundedText(body.eventType, 64),
     expectedRouteVersionId: safeUuid(body.expectedRouteVersionId),
     occurredAt: safeDate(body.occurredAt),
-    requestId: request.id,
+    requestId: validatedTransportRequestId(request),
     routePlanId: context.routePlanId,
     shopId: context.shopId,
     versionCode: safePositiveInteger(body.versionCode)
   };
+}
+
+function validatedTransportRequestId(request: FastifyRequest): string | null {
+  const value = request.headers['x-request-id'];
+  return typeof value === 'string' ? safeUuid(value)?.toLowerCase() ?? null : null;
+}
+
+async function finalizeDriverEventAttemptSafely(
+  request: FastifyRequest,
+  dependencies: DriverApiDependencies,
+  attemptId: string,
+  result: DriverEventAttemptFinalization,
+  bestEffort: boolean
+): Promise<void> {
+  try {
+    await dependencies.driverEventService.finalizeDriverEventAttempt(attemptId, result);
+  } catch (error) {
+    if (!bestEffort) throw error;
+    request.log.warn({
+      ...safeErrorTelemetry(error),
+      errorCode: 'DRIVER_LOCATION_ATTEMPT_FINALIZATION_FAILED',
+      event: 'driver_location_attempt_finalization_failed',
+      requestId: request.id
+    }, 'failed to finalize driver location diagnostic attempt');
+  }
 }
 
 function safeBoundedText(value: unknown, maxLength: number): string | null {

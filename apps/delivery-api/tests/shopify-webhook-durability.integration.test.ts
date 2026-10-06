@@ -158,6 +158,79 @@ describeDatabase('Shopify order webhook PostgreSQL durability', () => {
     await prisma.shopifyWebhookEvent.delete({ where: { shopId_webhookId: { shopId: shop.id, webhookId } } });
   });
 
+  test('invalidates only the matching app token and fences duplicate or delayed uninstall after reinstall', async () => {
+    const prisma = createClient();
+    const webhooks = new PrismaShopifyWebhookEventRepository(prisma);
+    const tokens = new PrismaShopTokenRepository(prisma);
+    const shopDomain = uniqueShopDomain('app-uninstalled');
+    const installedAt = new Date(Date.now() - 60_000);
+    const uninstallAt = new Date(Date.now() - 20_000);
+    const reinstallAt = new Date(Date.now() - 5_000);
+    await tokens.upsertShopToken({ ...tokenInput(shopDomain), installedAt });
+    await tokens.upsertShopToken({ ...tokenInput(shopDomain), appId: 'clever-other', installedAt });
+
+    const webhookId = randomUUID();
+    const uninstallInput = {
+      appId: 'clever',
+      apiVersion: '2026-07',
+      eventId: randomUUID(),
+      payload: { email: 'owner@private.invalid', id: 1 },
+      rawBody: '{"id":1}',
+      shopDomain,
+      topic: 'app/uninstalled',
+      triggeredAt: uninstallAt,
+      webhookId
+    };
+    await expect(webhooks.recordWebhook(uninstallInput)).resolves.toEqual({
+      duplicate: false,
+      status: 'PROCESSED',
+      webhookId
+    });
+
+    const uninstalled = await tokens.findByShopDomain({ appId: 'clever', shopDomain });
+    expect(uninstalled).toMatchObject({
+      adminAccessTokenCiphertext: null,
+      adminRefreshTokenCiphertext: null,
+      uninstalledAt: uninstallAt
+    });
+    expect(await tokens.findByShopDomain({ appId: 'clever-other', shopDomain }))
+      .toMatchObject({ adminAccessTokenCiphertext: 'ciphertext-access', uninstalledAt: null });
+    const event = await prisma.shopifyWebhookEvent.findFirstOrThrow({
+      where: { shop: { appId: 'clever', shopDomain }, webhookId }
+    });
+    expect(event).toMatchObject({
+      payload: { redacted: true, schema: 'shopify_webhook_tombstone_v1', terminalStatus: 'PROCESSED' },
+      status: 'PROCESSED'
+    });
+
+    await expect(webhooks.recordWebhook({
+      ...uninstallInput,
+      eventId: randomUUID(),
+      triggeredAt: new Date(uninstallAt.getTime() - 10_000),
+      webhookId: randomUUID()
+    })).resolves.toMatchObject({ duplicate: true, status: 'IGNORED' });
+    expect(await tokens.findByShopDomain({ appId: 'clever', shopDomain }))
+      .toMatchObject({ uninstalledAt: uninstallAt });
+
+    await tokens.upsertShopToken({
+      ...tokenInput(shopDomain),
+      adminAccessTokenCiphertext: 'reinstalled-access',
+      installedAt: reinstallAt
+    });
+    await expect(webhooks.recordWebhook(uninstallInput)).resolves.toEqual({
+      duplicate: true,
+      status: 'IGNORED',
+      webhookId
+    });
+    await expect(webhooks.recordWebhook({
+      ...uninstallInput,
+      eventId: randomUUID(),
+      webhookId: randomUUID()
+    })).resolves.toMatchObject({ duplicate: true, status: 'IGNORED' });
+    expect(await tokens.findByShopDomain({ appId: 'clever', shopDomain }))
+      .toMatchObject({ adminAccessTokenCiphertext: 'reinstalled-access', uninstalledAt: null });
+  });
+
   test('retains only replay identity through processing and retry then terminalizes while preserving duplicate acceptance', async () => {
     const prisma = createClient();
     await clearDueWebhookFixtures(prisma);

@@ -1,3 +1,4 @@
+import { visibleDsvOrderWhere, visibleDsvVehicleWhere, visibleDsvRouteWhere, visibleDsvAssignmentWhere, visibleDsvOrderCountSql } from './dsv-test-visibility.js';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 
@@ -456,6 +457,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       where: {
         customerId: principal.customerId,
         isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
         ...orderCursorWhere(page.cursor),
         deliveryStops: {
@@ -506,6 +508,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       where: {
         customerId: principal.customerId,
         isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
         deliveryStops: {
           some: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId: principal.shopId },
@@ -597,6 +600,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       take: limit + 1,
       where: {
         isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
         ...orderCursorWhere(page.cursor),
         ...(orderNumber === undefined
@@ -641,6 +645,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       select: customerDeliveryOrderSelect(serviceDate, principal.shopId),
       where: {
         isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
         deliveryStops: {
           some: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId: principal.shopId },
@@ -672,6 +677,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       ...(serviceDate === undefined ? {} : { deliveryDate: serviceDateAsDbDate(serviceDate) }),
       order: {
         isStoreReviewData: false,
+        ...visibleDsvOrderWhere(principal.shopId),
         shopId: principal.shopId,
       },
       shopId: principal.shopId,
@@ -756,7 +762,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
           vehicleType: true,
         },
         take: page.limit + 1,
-        where: { dsvProfile: { isNot: null }, shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'label') },
+        where: { dsvProfile: { isNot: null }, shopId: principal.shopId, ...visibleDsvVehicleWhere(principal.shopId), ...labelCursorWhere(page.cursor, 'label') },
       });
       const assignmentsByVehicleId = await this.listVehicleDriverAssignments(
         principal.shopId,
@@ -808,6 +814,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
             WHERE orders."shopId" = customers."shopId"
               AND orders."customerId" = customers.id
               AND orders."isStoreReviewData" = false
+              ${visibleDsvOrderCountSql(principal.shopId)}
           ) AS "orderCount",
           status::text AS status
         FROM customers
@@ -970,7 +977,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
   ): Promise<DsvV1VehicleTemperatureHistoryResult> {
     const vehicle = await this.prisma.vehicle.findFirst({
       select: { id: true },
-      where: { id: input.vehicleId, shopId: principal.shopId },
+      where: { id: input.vehicleId, shopId: principal.shopId, ...visibleDsvVehicleWhere(principal.shopId) },
     });
     if (vehicle === null) throw new DsvV1ReadQueryError('NOT_FOUND', 'Vehicle not found.');
     const to = input.to ?? this.clock();
@@ -1018,7 +1025,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     const timezone = await this.resolveTenantTimezone(shopId);
     const vehicle = await this.prisma.vehicle.findFirst({
       select: { id: true },
-      where: { id: input.vehicleId, shopId },
+      where: { id: input.vehicleId, shopId, ...visibleDsvVehicleWhere(shopId) },
     });
     if (vehicle === null) throw new DsvV1ReadQueryError('NOT_FOUND', 'Vehicle not found.');
 
@@ -1047,6 +1054,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         planDate: serviceDateAsDbDate(serviceDate),
         shopId,
         status: { not: 'CANCELLED' },
+        ...visibleDsvRouteWhere(shopId),
         vehicleId: vehicle.id,
       },
     });
@@ -1227,6 +1235,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       where: {
         driver: { isStoreReviewData: false },
         shopId,
+        ...visibleDsvAssignmentWhere(shopId),
         vehicleId: { in: [...vehicleIds] },
       },
     });

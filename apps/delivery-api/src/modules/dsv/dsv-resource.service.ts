@@ -1,3 +1,4 @@
+import { visibleDsvVehicleWhere, visibleDsvAssignmentWhere } from './dsv-test-visibility.js';
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
@@ -104,11 +105,11 @@ export class PrismaDsvResourceService implements DsvResourceService {
       this.prisma.vehicle.findMany({
         include: { dsvProfile: true, dsvTelematicsDevice: true },
         orderBy: [{ licensePlate: 'asc' }],
-        where: { dsvProfile: { isNot: null }, shopId: shop.id },
+        where: { dsvProfile: { isNot: null }, shopId: shop.id, ...visibleDsvVehicleWhere(shop.id) },
       }),
       this.prisma.dsvVehicleDriverAssignment.findMany({
         orderBy: [{ createdAt: 'asc' }],
-        where: { driver: reviewWhere, shopId: shop.id },
+        where: { driver: reviewWhere, shopId: shop.id, ...visibleDsvAssignmentWhere(shop.id) },
       }),
     ]);
     return {

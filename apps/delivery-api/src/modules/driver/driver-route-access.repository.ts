@@ -1,8 +1,14 @@
+import { visibleDsvRouteWhere, isVisibleDsvRoute } from '../dsv/dsv-test-visibility.js';
 import type { PrismaClient } from '@prisma/client';
 import {
   ROUTE_DRIVER_OPERATIONAL_STATUSES,
   toRouteExecutionStatus
 } from '../route-plans/route-plan-lifecycle.js';
+import {
+  hasDeliveryNavigationGraceExpired,
+  KFOOD_DELIVERY_APP_ID,
+  KFOOD_DELIVERY_SHOP_DOMAIN
+} from '../route-plans/kfood-delivery-completion.js';
 import type {
   RouteGroupingChildDto,
   RouteGroupingDraftRouteInput,
@@ -40,11 +46,16 @@ type DriverRoutePlanRecord = {
     status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
   } | null;
   id: string;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
+  driverNavigationUntil?: Date | null;
   isStoreReviewData?: boolean;
   name: string;
   planDate: Date;
   routeGroupingChildVersions?: Array<{ id: string; publishedAt: Date | null }>;
   shop: {
+    appId: string;
     shopDomain: string;
   };
   status: string;
@@ -53,6 +64,9 @@ type DriverRoutePlanRecord = {
 const routePlanSelect = {
   assignmentGeneration: true,
   constraints: true,
+  deliveryWorkCompletedAt: true,
+  deliveryWorkCompletedGeneration: true,
+  deliveryWorkCompletedVersionId: true,
   driver: {
     select: {
       account: { select: { id: true, isStoreReviewAccount: true, status: true, tokenVersion: true } },
@@ -64,6 +78,7 @@ const routePlanSelect = {
     }
   },
   id: true,
+  driverNavigationUntil: true,
   isStoreReviewData: true,
   name: true,
   planDate: true,
@@ -73,11 +88,12 @@ const routePlanSelect = {
     take: 1,
     where: { status: 'CURRENT' as const, supersededAt: null }
   },
-  shop: { select: { shopDomain: true } },
+  shop: { select: { appId: true, shopDomain: true } },
   status: true
 } as const;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SHARED_SCOPE_PAGE_SIZE = 3;
 
 export class PrismaDriverRouteAccessRepository {
   constructor(
@@ -101,11 +117,12 @@ export class PrismaDriverRouteAccessRepository {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routeContext,
+        AND: [visibleDsvRouteWhere()],
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
 
-    if (routePlan === null) {
+    if (routePlan === null || hasExpiredKfoodNavigation(routePlan, this.now())) {
       return { status: 'NOT_FOUND' };
     }
 
@@ -123,7 +140,18 @@ export class PrismaDriverRouteAccessRepository {
       }
     });
 
-    const routes = routePlans.flatMap((routePlan): DriverRouteAccessInvitedRoute[] => {
+    const tenantVisiblePlans = routePlans.filter(plan => (
+      isVisibleDsvRoute({ shopDomain: plan.shop.shopDomain }, plan.id)
+    ));
+    // An existing excluded route must not cause a presentation read to manufacture a new standby route.
+    if (routePlans.length > 0 && tenantVisiblePlans.length === 0) return { status: 'NOT_FOUND' };
+    const visiblePlans = tenantVisiblePlans.filter(plan => !hasExpiredKfoodNavigation(plan, this.now()));
+    // An expired assignment still proves an authenticated driver relationship. Keep My Routes empty
+    // without manufacturing a standby assignment after the navigation grace ends.
+    if (tenantVisiblePlans.length > 0 && visiblePlans.length === 0) {
+      return { status: 'ROUTES_FOUND', routes: [] };
+    }
+    const routes = visiblePlans.flatMap((routePlan): DriverRouteAccessInvitedRoute[] => {
       const result = mapRoutePlan(routePlan, { accountId, routeContext: routePlan.id });
       return result.status === 'INVITED' ? [result] : [];
     });
@@ -259,27 +287,46 @@ export class PrismaDriverRouteAccessRepository {
       return { status: 'NOT_FOUND' };
     }
 
-    const routePlans = await this.prisma.routePlan.findMany({
-      orderBy: [{ planDate: 'asc' }, { name: 'asc' }],
-      select: routePlanSelect,
-      take: 3,
-      where: {
-        OR: [
-          { status: 'IN_PROGRESS' },
-          {
-            routeGroupingChildVersions: {
-              some: { publishedAt: { not: null }, status: 'CURRENT', supersededAt: null }
+    const now = this.now();
+    const visibleRoutePlans: DriverRoutePlanRecord[] = [];
+    let cursorId: string | undefined;
+    let expiryPaginationActive = false;
+    while (true) {
+      const page = await this.prisma.routePlan.findMany({
+        ...(cursorId === undefined ? {} : { cursor: { id: cursorId }, skip: 1 }),
+        orderBy: [{ planDate: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+        select: routePlanSelect,
+        take: SHARED_SCOPE_PAGE_SIZE,
+        where: {
+          ...visibleDsvRouteWhere(),
+          OR: [
+            { status: 'IN_PROGRESS' },
+            {
+              routeGroupingChildVersions: {
+                some: { publishedAt: { not: null }, status: 'CURRENT', supersededAt: null }
+              }
             }
-          }
-        ],
-        constraints: { path: ['routeScope', 'routeScopeKey'], equals: input.routeContext },
-        driver: { is: { accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE' } },
-        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
-        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
+          ],
+          constraints: { path: ['routeScope', 'routeScopeKey'], equals: input.routeContext },
+          driver: { is: { accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE' } },
+          driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+          status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
+        }
+      });
+      const unexpiredPage = page.filter((routePlan) => !hasExpiredKfoodNavigation(routePlan, now));
+      visibleRoutePlans.push(...unexpiredPage.filter(isDriverVisibleRoutePlan).slice(0, 3 - visibleRoutePlans.length));
+      expiryPaginationActive ||= unexpiredPage.length !== page.length;
+      if (
+        visibleRoutePlans.length >= 2
+        || page.length < SHARED_SCOPE_PAGE_SIZE
+        || !expiryPaginationActive
+      ) {
+        break;
       }
-    });
-
-    const visibleRoutePlans = routePlans.filter(isDriverVisibleRoutePlan);
+      const nextCursorId = page.at(-1)?.id;
+      if (nextCursorId === undefined || nextCursorId === cursorId) break;
+      cursorId = nextCursorId;
+    }
 
     if (visibleRoutePlans.length === 0) {
       return { status: 'NOT_FOUND' };
@@ -374,6 +421,12 @@ function isDriverVisibleRoutePlan(routePlan: DriverRoutePlanRecord): boolean {
       currentRouteVersion.publishedAt != null
       || toRouteExecutionStatus(routePlan.status) === 'IN_PROGRESS'
     );
+}
+
+function hasExpiredKfoodNavigation(routePlan: DriverRoutePlanRecord, now: Date): boolean {
+  return routePlan.shop.appId === KFOOD_DELIVERY_APP_ID
+    && routePlan.shop.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
+    && hasDeliveryNavigationGraceExpired(routePlan, now);
 }
 
 function buildCompanyGuidance(routePlan: DriverRoutePlanRecord): DriverRouteAccessCompanyGuidance {

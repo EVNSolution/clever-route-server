@@ -1,3 +1,5 @@
+import { dsvReviewedTestExclusions as exclusions } from '../src/modules/dsv/dsv-reviewed-test-exclusions.js';
+import { PrismaDsvStoreReviewAccess } from '../src/modules/dsv/dsv-store-review-access.js';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp, type BuildAppOptions } from '../src/app.js';
@@ -51,6 +53,30 @@ const diagnosticAbortedAttemptId = '44444444-4444-4444-8444-444444444444';
 const proofMediaId = '66666666-6666-4666-8666-666666666666';
 
 describe('DSV v1 read routes', () => {
+  test.each([['operator', dsvOperatorScopes], ['developer', undefined]] as const)(
+    'authenticated %s maps and customer direct reads cannot retrieve excluded data', async (_role, scopes) => {
+      const storeReviewAccess = new PrismaDsvStoreReviewAccess({ routePlan: { findFirst: vi.fn().mockResolvedValue(null) } } as never);
+      const listCustomerMessages = vi.fn<DsvOrderMessageService['listCustomerMessages']>().mockResolvedValue([]);
+      const { app, sessionResolver, routePlanService } = await createHarness({ storeReviewAccess,
+        orderMessageService: { create: vi.fn(), listCustomerMessages, markDriverMessageRead: vi.fn(), updateCustomerNotificationSettings: vi.fn() } });
+      sessionResolver.resolve.mockResolvedValue(createDsvAdminPrincipal({ shopId: exclusions.shopId, shopDomain: exclusions.shopDomain, ...(scopes === undefined ? {} : { scopes }) }));
+      const admin = signedCookie('dsv-shop:tomatonofood.com');
+      routePlanService.listRoutePlans.mockResolvedValue([routePlanSummary(), { ...routePlanSummary(), id: exclusions.routePlanIds[0] }]);
+      routePlanService.getRoutePlanDetail.mockResolvedValue(routePlanDetail({}));
+      try {
+        const map = await app.inject({ headers: { cookie: admin.cookie }, method: 'GET', url: '/api/dsv/v1/control/routes?serviceDate=2026-07-23' });
+        expect(map.statusCode).toBe(200);
+        expect(map.body).not.toContain(exclusions.routePlanIds[0]);
+        expect(routePlanService.getRoutePlanDetail).toHaveBeenCalledTimes(1);
+        sessionResolver.resolve.mockResolvedValue(createDsvCustomerUserPrincipalFromAccount({ account: { customerId, shopId: exclusions.shopId, status: 'ACTIVE' }, shopDomain: exclusions.shopDomain }));
+        const response = await app.inject({ headers: { cookie: admin.cookie }, method: 'GET', url: `/api/dsv/v1/customer/seller-orders/${exclusions.sellerOrderIds[0]}/messages` });
+        expect(response.statusCode).toBe(403);
+        expect(response.body).not.toContain(exclusions.sellerOrderIds[0]);
+        expect(listCustomerMessages).not.toHaveBeenCalled();
+      } finally { await app.close(); }
+    },
+  );
+
   test('returns a private short-lived POD access envelope to the scoped DSV records admin without CSRF', async () => {
     const createAdminProofMediaReadAccess = vi.fn(() => Promise.resolve({
       contentType: 'image/jpeg',

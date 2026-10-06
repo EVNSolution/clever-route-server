@@ -870,7 +870,7 @@ describe('PrismaDriverEventRepository', () => {
       },
       eventId: 'original-delivery-id'
     });
-    expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
     expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
     expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
   });
@@ -930,7 +930,7 @@ describe('PrismaDriverEventRepository', () => {
       },
       eventId: 'original-failure-id'
     });
-    expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
   });
 
   test('returns duplicate pickup snapshot with missing duration without hydrating geometry cache', async () => {
@@ -1953,6 +1953,9 @@ function createPrismaHarness(input: {
   Object.assign(prisma, {
     $queryRaw: vi.fn((query: unknown) => {
       const text = sqlText(query);
+      if (text.includes('SELECT DISTINCT s.')) {
+        return Promise.resolve(input.conflictingRoutePlanStop === undefined || input.conflictingRoutePlanStop === null ? [] : [{ ...input.conflictingRoutePlanStop, orderId: 'order-id', orderName: '#1001', routeName: 'Other route' }]);
+      }
       if (text.includes('information_schema.columns')) {
         operations.push(text.includes("table_name = 'driver_events'")
           ? 'schema:driver_events'
