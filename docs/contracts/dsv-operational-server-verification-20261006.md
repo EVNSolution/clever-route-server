@@ -52,7 +52,7 @@ Container: uniquely named, loopback-only PostgreSQL 17, synthetic tenants/accoun
 Target: `127.0.0.1:55496/dsv_operational`; optional existing G003: `127.0.0.1:55433/clever_g003`.
 The pre-existing local Homebrew PostgreSQL cluster was not used or changed.
 
-Fresh migrations: all 113 applied to both isolated databases. Actual G003 regression: 37 passed. Latest DSV DB suite count is recorded in the final results below.
+Fresh migrations: all 113 applied to DSV, G002, and G003 isolated databases. Actual G002 regression: 7 passed. Actual G003 regression: 37 passed. Latest DSV DB suite: 30 passed. The optional G002 lane uses `DSV_OPERATIONAL_INCLUDE_G002=1` and loopback port 55488.
 
 Coverage includes publication/intent atomicity, two start events and receipts, forced rollback, forced concurrent same-command receipt waits, arbitrary legacy partial-start repair, command conflict, tenant/account isolation, selector exclusion/history, vehicle selection clipping, immutable UVIS evidence across restart, no catch-up burst, post-lock context rebind, ambiguous vehicle attribution, expired-lease takeover, late-worker CAS, transient provider retry without business ordinal change, real persisted principal/capability/inbox/resolver, operations acknowledge/resolve race, independent N07 lifetime, terminal-stop N06 closure and report rejection, content override rollback, and fresh LIVE activation evidence.
 
@@ -60,7 +60,7 @@ Source data and provider results are synthetic. Provider tests use fake sends on
 
 ## Review and final checks
 
-Independent source review found and fixed authorization scopes, attempt starvation, dynamic kill-switch/routing parity, geofence post-lock attribution, selector races, internal receipt-hash hints, N04/N05 resolution, independent N07 lifetime, generic writer coverage, terminal N06/report behavior, LIVE activation, and missing hysteresis. Final source verdict: APPROVE, zero unresolved source findings. This is conditional on final checks and is not management approval to merge or deploy.
+Independent source review found and fixed authorization scopes, attempt starvation, dynamic kill-switch/routing parity, geofence post-lock attribution, selector races, internal receipt-hash hints, N04/N05 resolution, independent N07 lifetime, generic writer coverage, terminal N06/report behavior, LIVE activation, and missing hysteresis. Additional CI regression exposed a blanket grouped-assignment rejection. The legacy API now uses a shared immutable successor and transactional attribution/intent sync. A route advisory/row lock inversion was also removed. These repairs receive fresh source review and DB regression proof. Review does not authorize management merge or deployment.
 
 Full admin-shell regression requires the existing Route Ops static artifact. A fresh unchanged `apps/route-ops-web` build supplied that artifact. No frontend product source changed.
 
@@ -69,28 +69,31 @@ Full admin-shell regression requires the existing Route Ops static artifact. A f
 | prisma:generate | PASS, Prisma 6.19.3, fresh generated client |
 | lint | PASS, full API ESLint; final added timing/DB tests also checked separately |
 | typecheck | PASS, final full compiler after timing fixture type correction |
-| test | PASS, 275 files, 3,219 tests; 24 files / 277 guarded or optional tests skipped |
+| test | PASS, 275 files, 3,219 tests; 24 files / 279 guarded or optional tests skipped |
 | build | PASS, full delivery-api TypeScript build |
 | Unchanged Route Ops web artifact | PASS, fresh build for existing admin-shell tests |
-| Actual PostgreSQL DSV | PASS, 28/28, fresh 113-migration database |
+| Actual PostgreSQL DSV | PASS, 30/30, fresh 113-migration database |
+| Actual PostgreSQL G002 | PASS, 7/7, legacy grouped driver API and immutable successor proof |
 | Actual PostgreSQL G003 | PASS, 37/37, fresh 113-migration database |
 | P0 fixture | PASS, JSON parse, all 23 IDs, frozen hash/source-byte equality, normalized behavior assertions |
 | Scripts and whitespace | PASS, bash -n and git diff --check |
 
-Full tests emit expected negative-path proof-media error logs. The build observer counts three such log lines; Vitest reports zero failed tests. Integration skips in the ordinary test command remain distinct from the 28+37 actual DB tests above. Other optional integration suites are not claimed as locally executed here.
+Full tests emit expected negative-path proof-media error logs. The build observer counts three such log lines; Vitest reports zero failed tests. Integration skips in the ordinary test command remain distinct from the 30+7+37 actual DB tests above. Other optional integration suites are not claimed as locally executed here.
 
 Latest timing coverage exercises the real tickReminders service at exact before/due/after instants: T01–T09, T11, T12, cap injection, monitor expiry, delayed confirmation, and recovery. Actual DB T10/T11 also proves one N04, pause on warehouse re-entry, preserved ordinal, fresh departure across midnight, zero just before T+300, and exactly one at T+300. Six is only a synthetic T07 policy.
 
 Local log root: `~/.codex/build-logs/dsv-server-20261006/` (logs remain outside Git).
 
-- Full lint: `clever-route-server/20261006T173348.039234+0900-9c517aa2f483-dsv-full-lint-final/summary.json`.
-- Final typecheck: `clever-route-server/20261006T173913.565316+0900-9c517aa2f483-dsv-full-typecheck-final4/summary.json`.
-- Full tests: `clever-route-server/20261006T173842.070842+0900-9c517aa2f483-dsv-full-test-final2/summary.json`.
-- API build: `clever-route-server/20261006T173729.901241+0900-9c517aa2f483-dsv-api-build-final/summary.json`.
+- Full lint: `clever-route-server/20261006T175421.518225+0900-32dda9af664e-dsv-compat-full-lint/summary.json`.
+- Final typecheck: `clever-route-server/20261006T175831.939836+0900-32dda9af664e-dsv-compat-full-typecheck2/summary.json`.
+- Full tests: `clever-route-server/20261006T175743.212243+0900-32dda9af664e-dsv-compat-full-test2/summary.json`.
+- API build: `clever-route-server/20261006T175700.332394+0900-32dda9af664e-dsv-compat-api-build/summary.json`.
 - Actual DSV DB: `dsv-operational-disposable-20261006-final8.log`, SHA-256 `45cbe2f2e3a27e052cd06271e4dff3c54e671a0cabd8ea645a0774431f943c35`.
 - G003 and preceding 27 DSV cases: `dsv-operational-disposable-20261006-final6.log`, SHA-256 `0f4ffbafffeda6bd65700568009bd3de178807821ac0c1b53726a521adc50a29`.
 
-The logs record the base SHA because validation ran on the uncommitted implementation worktree. The PR commit identifies the final reviewed source. Production evidence is not included.
+After the CI compatibility repair, G002/G003/DSV were rerun together: `dsv-g002-g003-operational-20261006-final5.log`, SHA-256 `9a3b1e4f2902d18d70f0d93d58c409b5c67e2cc359156f47e43ad3ba07393bfb`. All 74 tests passed. Forced row-wait cases now prove grouped assignment versus sync and internal close without a command ID. They finish without lock inversion and commit coherent generation, child, epoch, recipient, N01/N03, and close state. The old child remains ARCHIVED. Legacy API success expectations remain unchanged. Source re-review: APPROVE, zero unresolved findings.
+
+The logs identify checkout HEAD at invocation; validation includes the implementation worktree changes. The final PR commit identifies the reviewed source. Production evidence is not included.
 
 ## Remaining release work
 

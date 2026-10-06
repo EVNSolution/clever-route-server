@@ -434,6 +434,201 @@ live('DSV operational server PostgreSQL integration', () => {
       .resolves.toMatchObject({ assignmentEpoch: 2n, vehicleId: replacementVehicle.id });
   });
 
+  test('commits grouped driver assignment, execution epoch, child snapshot, and intents after the route lock', async () => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'grouped-driver-assignment');
+    await prisma.$transaction((transaction) => (
+      new PrismaDsvExecutionContextService(transaction).syncForRoute({
+        commandId: randomUUID(),
+        now: new Date('2026-10-06T00:05:00.000Z'),
+        routePlanId: fixture.routePlanId,
+        shopId: fixture.shopId,
+      })
+    ));
+    const baseline = await prisma.dsvExecutionContext.findUniqueOrThrow({
+      select: { assignmentEpoch: true, routeVersion: true },
+      where: { id: fixture.contextId },
+    });
+    expect(baseline).toEqual({ assignmentEpoch: 1n, routeVersion: 2 });
+    const replacementAccount = await prisma.driverAccount.create({
+      data: {
+        name: 'Synthetic replacement account',
+        phone: `+82${randomUUID().replaceAll('-', '').slice(0, 15)}`,
+        status: 'ACTIVE',
+      },
+    });
+    const replacementDriver = await prisma.driver.create({
+      data: {
+        accountId: replacementAccount.id,
+        displayName: 'Synthetic replacement driver',
+        shopId: fixture.shopId,
+        status: 'ACTIVE',
+      },
+    });
+    const assignmentClient = namedClient('dsv_grouped_driver_assignment');
+    const blockerClient = namedClient('dsv_grouped_driver_blocker');
+    const synchronizationClient = namedClient('dsv_grouped_driver_synchronization');
+    let releaseRouteLock!: () => void;
+    let routeLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseRouteLock = resolve; });
+    const locked = new Promise<void>((resolve) => { routeLocked = resolve; });
+    const blocker = blockerClient.$transaction(async (transaction) => {
+      await transaction.$queryRaw`
+        SELECT id FROM route_plans
+        WHERE id = ${fixture.routePlanId}::uuid
+        FOR UPDATE
+      `;
+      routeLocked();
+      await release;
+    }, { timeout: 20_000 });
+    await locked;
+    let assigned;
+    try {
+      const assignment = new PrismaRoutePlanRepository(assignmentClient, { allowAnyShopDomain: true })
+        .assignRoutePlanDriver({
+          payload: { driverId: replacementDriver.id },
+          routePlanId: fixture.routePlanId,
+          shopDomain: fixture.shopDomain,
+        });
+      await waitForLockedApplication(prisma, 'dsv_grouped_driver_assignment');
+      const synchronization = synchronizationClient.$transaction((transaction) => (
+        new PrismaDsvExecutionContextService(transaction).syncForRoute({
+          commandId: randomUUID(),
+          now: new Date('2026-10-06T00:10:00.000Z'),
+          routePlanId: fixture.routePlanId,
+          shopId: fixture.shopId,
+        })
+      ));
+      await waitForLockedApplication(prisma, 'dsv_grouped_driver_synchronization');
+      releaseRouteLock();
+      [assigned] = await Promise.all([assignment, synchronization]);
+      await blocker;
+    } finally {
+      releaseRouteLock();
+      await Promise.allSettled([
+        blocker,
+        assignmentClient.$disconnect(),
+        blockerClient.$disconnect(),
+        synchronizationClient.$disconnect(),
+      ]);
+    }
+
+    expect(assigned).toMatchObject({ routePlan: { driverId: replacementDriver.id } });
+    await expect(prisma.routePlan.findUniqueOrThrow({ where: { id: fixture.routePlanId } }))
+      .resolves.toMatchObject({ assignmentGeneration: 2n, driverId: replacementDriver.id });
+    const currentChildren = await prisma.routeGroupingChildVersion.findMany({
+      select: { driverId: true, snapshot: true },
+      where: { routePlanId: fixture.routePlanId, status: 'CURRENT', supersededAt: null },
+    });
+    expect(currentChildren).toHaveLength(1);
+    expect(currentChildren[0]).toMatchObject({ driverId: replacementDriver.id });
+    expect(currentChildren[0]?.snapshot).toMatchObject({ assignmentGeneration: '2' });
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({
+        assignmentEpoch: 2n,
+        driverId: replacementDriver.id,
+        recipientAccountId: replacementAccount.id,
+        routeVersion: baseline.routeVersion,
+      });
+    await expect(prisma.dsvOperationalNotification.findMany({
+      orderBy: { kind: 'asc' },
+      select: { assignmentEpoch: true, businessStatus: true, kind: true, recipientAccountId: true },
+      where: { executionContextId: fixture.contextId, kind: { in: ['N01', 'N03'] } },
+    })).resolves.toEqual([
+      {
+        assignmentEpoch: 2n,
+        businessStatus: 'OPEN',
+        kind: 'N01',
+        recipientAccountId: replacementAccount.id,
+      },
+      {
+        assignmentEpoch: 1n,
+        businessStatus: 'OPEN',
+        kind: 'N03',
+        recipientAccountId: fixture.accountId,
+      },
+    ]);
+  }, 20_000);
+
+  test('serializes grouped driver assignment before execution close without a lock-order cycle', async () => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'grouped-driver-close-race');
+    const replacementAccount = await prisma.driverAccount.create({
+      data: {
+        name: 'Synthetic close-race account',
+        phone: `+82${randomUUID().replaceAll('-', '').slice(0, 15)}`,
+        status: 'ACTIVE',
+      },
+    });
+    const replacementDriver = await prisma.driver.create({
+      data: {
+        accountId: replacementAccount.id,
+        displayName: 'Synthetic close-race driver',
+        shopId: fixture.shopId,
+        status: 'ACTIVE',
+      },
+    });
+    const assignmentClient = namedClient('dsv_grouped_close_assignment');
+    const blockerClient = namedClient('dsv_grouped_close_blocker');
+    const closeClient = namedClient('dsv_grouped_close_execution');
+    let releaseRouteLock!: () => void;
+    let routeLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseRouteLock = resolve; });
+    const locked = new Promise<void>((resolve) => { routeLocked = resolve; });
+    const blocker = blockerClient.$transaction(async (transaction) => {
+      await transaction.$queryRaw`
+        SELECT id FROM route_plans
+        WHERE id = ${fixture.routePlanId}::uuid
+        FOR UPDATE
+      `;
+      routeLocked();
+      await release;
+    }, { timeout: 20_000 });
+    await locked;
+    let assigned;
+    let closed;
+    try {
+      const assignment = new PrismaRoutePlanRepository(assignmentClient, { allowAnyShopDomain: true })
+        .assignRoutePlanDriver({
+          payload: { driverId: replacementDriver.id },
+          routePlanId: fixture.routePlanId,
+          shopDomain: fixture.shopDomain,
+        });
+      await waitForLockedApplication(prisma, 'dsv_grouped_close_assignment');
+      const close = closeClient.$transaction((transaction) => (
+        new PrismaDsvExecutionContextService(transaction).closeForRoute({
+          now: new Date('2026-10-06T00:10:00.000Z'),
+          reason: 'COMPLETED',
+          routePlanId: fixture.routePlanId,
+          shopId: fixture.shopId,
+        })
+      ));
+      await waitForLockedApplication(prisma, 'dsv_grouped_close_execution');
+      releaseRouteLock();
+      [assigned, closed] = await Promise.all([assignment, close]);
+      await blocker;
+    } finally {
+      releaseRouteLock();
+      await Promise.allSettled([
+        blocker,
+        assignmentClient.$disconnect(),
+        blockerClient.$disconnect(),
+        closeClient.$disconnect(),
+      ]);
+    }
+
+    expect(assigned).toMatchObject({ routePlan: { driverId: replacementDriver.id } });
+    expect(closed).toMatchObject({ executionContextId: fixture.contextId, outcome: 'ACCEPT', status: 'COMPLETED' });
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({
+        assignmentEpoch: 2n,
+        driverId: replacementDriver.id,
+        recipientAccountId: replacementAccount.id,
+        status: 'COMPLETED',
+      });
+    await expect(prisma.dsvOperationalNotification.count({
+      where: { businessStatus: 'OPEN', executionContextId: fixture.contextId },
+    })).resolves.toBe(0);
+  }, 20_000);
+
   test('rejects a reused command id with a different fence and keeps the winning state', async () => {
     const fixture = await createOperationalFixture(prisma, createdShopIds, 'command-mismatch');
     const service = commandService(prisma);

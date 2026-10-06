@@ -833,9 +833,12 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         if (saved.status === 'rejected') {
           expect(saved.reason).toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
           expect(await prisma.routePlanStop.count({ where: { routePlanId } })).toBe(2);
-          expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+          const assignmentSuccessor = await prisma.routeGroupingChildVersion.findFirstOrThrow({
             where: { routePlanId, status: 'CURRENT', supersededAt: null }
-          })).id).toBe(savedDraftChild.id);
+          });
+          expect(assignmentSuccessor.id).not.toBe(savedDraftChild.id);
+          expect(assignmentSuccessor).toMatchObject({ driverId: driverB });
+          expect(assignmentSuccessor.snapshot).toMatchObject({ assignmentGeneration: '2' });
           await expect(routeGroupingService.saveDraft(saveInput)).resolves.not.toBeNull();
         } else {
           expect(saved.value).not.toBeNull();
@@ -946,9 +949,12 @@ describe('driver event contract v2 PostgreSQL invariants', () => {
         name: 'Concurrent authoritative name',
         status: 'READY'
       });
-      expect((await prisma.routeGroupingChildVersion.findFirstOrThrow({
+      const reassignmentSuccessor = await prisma.routeGroupingChildVersion.findFirstOrThrow({
         where: { routePlanId, status: 'CURRENT', supersededAt: null }
-      })).id).toBe(publicSavedChild.id);
+      });
+      expect(reassignmentSuccessor.id).not.toBe(publicSavedChild.id);
+      expect(reassignmentSuccessor).toMatchObject({ driverId: driverA });
+      expect(reassignmentSuccessor.snapshot).toMatchObject({ assignmentGeneration: '3' });
       await expect(reOptimizationService.reOptimizeRoutes({
         actor: 'route-ops:test', groupingId: priorChild.groupingId, shopDomain: 'g002-evidence.invalid'
       })).resolves.not.toBeNull();

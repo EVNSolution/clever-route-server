@@ -7,12 +7,15 @@ readonly database_name='dsv_operational'
 readonly database_user='dsv_operational'
 readonly database_password='dsv_operational'
 readonly database_url="postgresql://${database_user}:${database_password}@127.0.0.1:${host_port}/${database_name}?schema=public"
+readonly g002_database_url='postgresql://clever_g002:clever_g002@127.0.0.1:55488/clever_g002?schema=public'
 readonly g003_database_url='postgresql://clever_g003:clever_g003@127.0.0.1:55433/clever_g003?schema=public'
+readonly include_g002="${DSV_OPERATIONAL_INCLUDE_G002:-0}"
 readonly include_g003="${DSV_OPERATIONAL_INCLUDE_G003:-1}"
 
 if [[ "${1:-}" == '--plan' ]]; then
   printf '%s\n' \
     "DSV operational P1-P3: 127.0.0.1:${host_port} / ${database_name}" \
+    'Driver event contract G002 regression (opt-in): 127.0.0.1:55488 / clever_g002' \
     'DSV import G003 regression: 127.0.0.1:55433 / clever_g003'
   exit 0
 fi
@@ -39,6 +42,9 @@ cleanup() {
 trap cleanup EXIT
 
 publish_args=(--publish "127.0.0.1:${host_port}:5432")
+if [[ "$include_g002" == '1' ]]; then
+  publish_args+=(--publish '127.0.0.1:55488:5432')
+fi
 if [[ "$include_g003" == '1' ]]; then
   publish_args+=(--publish '127.0.0.1:55433:5432')
 fi
@@ -64,6 +70,16 @@ if [[ "$(docker exec "$container_name" psql -U "$database_user" -d "$database_na
 fi
 
 DATABASE_URL="$database_url" npm run prisma:migrate:deploy
+if [[ "$include_g002" == '1' ]]; then
+  docker exec "$container_name" psql -v ON_ERROR_STOP=1 -U "$database_user" -d "$database_name" \
+    -c "CREATE ROLE clever_g002 LOGIN PASSWORD 'clever_g002'" \
+    -c 'CREATE DATABASE clever_g002 OWNER clever_g002' >/dev/null
+  DATABASE_URL="$g002_database_url" npm run prisma:migrate:deploy
+  G002_DATABASE_TARGET_CLASS='safe-local-g002-disposable' \
+  DATABASE_URL="$g002_database_url" \
+  DRIVER_EVENT_CONTRACT_V2_DATABASE_URL="$g002_database_url" \
+  npm test -- driver-event-contract-v2.integration.test.ts --maxWorkers=1
+fi
 if [[ "$include_g003" == '1' ]]; then
   docker exec "$container_name" psql -v ON_ERROR_STOP=1 -U "$database_user" -d "$database_name" \
     -c "CREATE ROLE clever_g003 LOGIN PASSWORD 'clever_g003'" \

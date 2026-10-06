@@ -76,10 +76,7 @@ export class PrismaDsvExecutionContextService {
       status: null,
     };
     const execute = async () => this.closeForRouteClaimed(input);
-    if (input.commandId === undefined) {
-      await lockCommand(this.tx, input.shopId, `route:${input.routePlanId}`);
-      return execute();
-    }
+    if (input.commandId === undefined) return execute();
     return this.runCommand<DsvExecutionCloseResult>({
       commandId: input.commandId,
       commandName: `CLOSE_EXECUTION_${input.reason}:${input.routePlanId}`,
@@ -200,7 +197,6 @@ export class PrismaDsvExecutionContextService {
 
   private async syncForRouteClaimed(input: DsvExecutionSyncInput): Promise<DsvExecutionSyncResult> {
     const now = input.now ?? new Date();
-    await lockCommand(this.tx, input.shopId, `route:${input.routePlanId}`);
     await lockRoutePlan(this.tx, input.shopId, input.routePlanId);
     if (input.executionContextId !== undefined) {
       await lockCommand(this.tx, input.shopId, `context:${input.executionContextId}`);

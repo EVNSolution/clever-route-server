@@ -659,7 +659,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       }
 
       const routePlan = await tx.routePlan.findFirst({
-        select: { driverId: true, id: true },
+        select: { assignmentGeneration: true, driverId: true, id: true },
         where: {
           id: input.routePlanId,
           shopId: shop.id
@@ -682,18 +682,17 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       }
 
-      if (routePlan.driverId !== driverId) {
-        if (await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
-          throw new RoutePlanDriverAssignInvalidError('Grouped route drivers must be changed through route grouping assignment.');
-        }
-        await tx.routePlan.update({
-          data: { assignmentGeneration: { increment: 1 }, driverId },
-          where: { id: routePlan.id }
+      const syncedByChildSuccessor = routePlan.driverId === driverId
+        ? false
+        : await updateRouteDriverWithGroupingAuthority(tx, {
+          assignmentGeneration: routePlan.assignmentGeneration + 1n,
+          driverId, routePlanId: routePlan.id, shopId: shop.id
+        });
+      if (!syncedByChildSuccessor) {
+        await syncDsvExecutionHook(tx, {
+          shopId: shop.id, routePlanId: routePlan.id, commandId: `route-driver:${randomUUID()}`,
         });
       }
-      await syncDsvExecutionHook(tx, {
-        shopId: shop.id, routePlanId: routePlan.id, commandId: `route-driver:${randomUUID()}`,
-      });
 
       return true;
     });
@@ -845,9 +844,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (hasStopSequenceChange && await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
         throw new RoutePlanStopUpdateInvalidError('Grouped route stops must be changed through route grouping membership.');
       }
-      if (hasDriverChange && await hasCurrentRouteGroupingChild(tx, routePlan.id)) {
-        throw new RoutePlanDriverAssignInvalidError('Grouped route drivers must be changed through route grouping assignment.');
-      }
+      let driverSyncedByChildSuccessor = false;
 
       if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
         const claimed = await tx.routePlan.updateMany({
@@ -1062,9 +1059,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             }
           }
 
-          await tx.routePlan.update({
-            data: { assignmentGeneration: { increment: 1 }, driverId: nextDriverId },
-            where: { id: routePlan.id }
+          driverSyncedByChildSuccessor = await updateRouteDriverWithGroupingAuthority(tx, {
+            assignmentGeneration: routePlan.assignmentGeneration + 1n,
+            driverId: nextDriverId, routePlanId: routePlan.id, shopId: shop.id
           });
           operations.push({ name: 'driver', reason: nextDriverId === null ? 'driver_cleared' : 'driver_changed', status: 'applied' });
         }
@@ -1088,9 +1085,11 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (updatedRoutePlan === null) {
         return null;
       }
-      await syncDsvExecutionHook(tx, {
-        shopId: shop.id, routePlanId: routePlan.id, commandId: `route-save:${randomUUID()}`,
-      });
+      if (!driverSyncedByChildSuccessor) {
+        await syncDsvExecutionHook(tx, {
+          shopId: shop.id, routePlanId: routePlan.id, commandId: `route-save:${randomUUID()}`,
+        });
+      }
 
       return {
         detail: await applyRouteGeometryCache(tx, toRoutePlanDetail(updatedRoutePlan)),
@@ -2771,6 +2770,66 @@ async function readCurrentRouteGroupingChild(tx: Prisma.TransactionClient, route
     throw new RoutePlanStopUpdateInvalidError('Grouped route has ambiguous CURRENT membership authority.');
   }
   return children[0] ?? null;
+}
+
+async function updateRouteDriverWithGroupingAuthority(
+  tx: Prisma.TransactionClient,
+  input: { assignmentGeneration: bigint; driverId: string | null; routePlanId: string; shopId: string }
+): Promise<boolean> {
+  const currentChild = await readCurrentRouteGroupingChild(tx, input.routePlanId);
+  await tx.routePlan.update({
+    data: { assignmentGeneration: { increment: 1 }, driverId: input.driverId },
+    where: { id: input.routePlanId }
+  });
+  if (currentChild === null) return false;
+
+  const projectedOrders = await tx.order.findMany({
+    select: { id: true },
+    where: { currentRouteVersionId: currentChild.id, shopId: input.shopId }
+  });
+  const orderIds = [...new Set([
+    ...projectedOrders.map((order) => order.id),
+    ...readRouteGroupingSnapshotOrderIds(currentChild.snapshot)
+  ])];
+  await replaceCurrentRouteGroupingChildVersion(tx, {
+    currentChildId: currentChild.id,
+    driverId: input.driverId,
+    groupingId: currentChild.groupingId,
+    groupingVersionId: currentChild.groupingVersionId,
+    notificationStatus: currentChild.notificationStatus,
+    orderIds,
+    publishedAt: currentChild.publishedAt,
+    routePlanId: input.routePlanId,
+    shopId: input.shopId,
+    snapshot: withRouteGroupingSnapshotAssignment(
+      currentChild.snapshot,
+      input.driverId,
+      input.assignmentGeneration
+    ),
+    version: currentChild.version
+  });
+  return true;
+}
+
+function readRouteGroupingSnapshotOrderIds(snapshot: Prisma.JsonValue): string[] {
+  const object = objectOrNull(snapshot);
+  if (object === null || !Array.isArray(object.stops)) return [];
+  return object.stops.flatMap((stop) => {
+    const orderId = objectOrNull(stop)?.orderId;
+    return typeof orderId === 'string' ? [orderId] : [];
+  });
+}
+
+function withRouteGroupingSnapshotAssignment(
+  snapshot: Prisma.JsonValue,
+  driverId: string | null,
+  assignmentGeneration: bigint
+): Prisma.InputJsonValue {
+  const object = objectOrNull(snapshot);
+  if (object === null) {
+    throw new RoutePlanDriverAssignInvalidError('Grouped route membership snapshot is malformed.');
+  }
+  return toJson({ ...object, assignmentGeneration: assignmentGeneration.toString(), driverId });
 }
 
 async function hasCurrentRouteGroupingChild(tx: Prisma.TransactionClient, routePlanId: string): Promise<boolean> {
