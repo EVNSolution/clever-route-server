@@ -95,10 +95,19 @@ export class FirebaseAdminDsvOperationalPushProvider implements DsvOperationalPu
   }
 }
 
-export function notificationCopy(kind: DsvOperationalDriverNotificationKind): { body: string; title: string } {
+export function notificationCopy(
+  kind: DsvOperationalDriverNotificationKind,
+  serviceDate?: Date,
+): { body: string; title: string } {
   switch (kind) {
-    case 'N01':
-      return { body: '앱에서 새 배차를 확인해 주세요.', title: '배차가 등록되었습니다' };
+    case 'N01': {
+      if (serviceDate === undefined || Number.isNaN(serviceDate.getTime())) {
+        throw new Error('N01 notification copy requires a valid execution service date.');
+      }
+      const month = serviceDate.getUTCMonth() + 1;
+      const day = serviceDate.getUTCDate();
+      return { body: '앱에서 새 배차를 확인해 주세요.', title: `${month}월 ${day}일 배차가 등록되었습니다.` };
+    }
     case 'N02':
       return { body: '앱에서 변경된 배차를 확인해 주세요.', title: '배차가 변경되었습니다' };
     case 'N03':

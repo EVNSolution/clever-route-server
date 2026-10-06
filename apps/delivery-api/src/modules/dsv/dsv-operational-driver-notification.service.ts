@@ -130,6 +130,7 @@ export class PrismaDsvOperationalDriverNotificationService {
         businessStatus: true,
         createdAt: true,
         expiresAt: true,
+        executionContextId: true,
         id: true,
         kind: true,
       },
@@ -148,6 +149,16 @@ export class PrismaDsvOperationalDriverNotificationService {
       },
     });
     const page = rows.slice(0, limit);
+    const n01ContextIds = [...new Set(page
+      .filter((row) => row.kind === 'N01')
+      .map((row) => row.executionContextId))];
+    const n01Contexts = n01ContextIds.length === 0
+      ? []
+      : await this.prisma.dsvExecutionContext.findMany({
+        select: { id: true, serviceDate: true },
+        where: { id: { in: n01ContextIds }, shopId: input.principal.shopId },
+      });
+    const serviceDateByContext = new Map(n01Contexts.map((context) => [context.id, context.serviceDate]));
     const acknowledgements = acknowledgementActorId === null || page.length === 0
       ? []
       : await this.prisma.dsvOperationalNotificationAck.findMany({
@@ -165,7 +176,10 @@ export class PrismaDsvOperationalDriverNotificationService {
         id: row.id,
         kind: row.kind,
         summary: isDriverKind(row.kind)
-          ? notificationCopy(row.kind)
+          ? notificationCopy(
+            row.kind,
+            row.kind === 'N01' ? serviceDateByContext.get(row.executionContextId) : undefined,
+          )
           : { body: '관제 화면에서 예외 내용을 확인해 주세요.', title: '배송 예외 보고' },
       })),
       nextCursor: rows.length > limit && page.length > 0
@@ -498,6 +512,12 @@ export class PrismaDsvOperationalDriverNotificationService {
       return 'skipped';
     }
     const fresh = await this.loadAttemptSendState(attempt);
+    const serviceDate = fresh.notification?.kind === 'N01'
+      ? await this.prisma.dsvExecutionContext.findFirst({
+        select: { serviceDate: true },
+        where: { id: fresh.notification.executionContextId, shopId: attempt.shopId },
+      })
+      : null;
     const sendNow = this.options.clock?.() ?? new Date();
     const sendPolicy = this.currentPolicy();
     if (!isCompleteLivePolicy(sendPolicy)) {
@@ -521,6 +541,16 @@ export class PrismaDsvOperationalDriverNotificationService {
       }, sendNow);
       return 'skipped';
     }
+    if (fresh.notification!.kind === 'N01' && serviceDate === null) {
+      await this.completeLease(input, {
+        completedAt: sendNow,
+        errorCode: 'EXECUTION_SERVICE_DATE_MISSING',
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: 'SKIPPED',
+      }, sendNow);
+      return 'skipped';
+    }
     const stillOwnsLease = await this.prisma.dsvOperationalNotificationAttempt.findFirst({
       select: { id: true },
       where: {
@@ -532,7 +562,7 @@ export class PrismaDsvOperationalDriverNotificationService {
     });
     if (stillOwnsLease === null) return 'skipped';
     const kind = fresh.notification!.kind as DsvOperationalDriverNotificationKind;
-    const copy = notificationCopy(kind);
+    const copy = notificationCopy(kind, serviceDate?.serviceDate);
     const providerResult = await this.provider.send({
       ...copy,
       collapseKey: kind === 'N06'

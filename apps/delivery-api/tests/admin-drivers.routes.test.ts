@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { DsvResourceInUseError } from '../src/modules/dsv/dsv-resource-deletion-guard.js';
 import type { AdminDriverRow } from '../src/modules/driver/admin-driver.types.js';
 import type { AdminDriversDependencies } from '../src/routes/admin-drivers.routes.js';
 
@@ -362,6 +363,28 @@ describe('Admin drivers routes', () => {
         appId: 'clever',
         driverId: 'driver-id',
         shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns conflict when an active DSV execution protects the driver', async () => {
+    const { deleteDriver, dependencies } = createDependencyHarness();
+    deleteDriver.mockRejectedValueOnce(new DsvResourceInUseError('driver'));
+    const app = await buildApp({ adminDrivers: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'DELETE',
+        url: '/admin/drivers/driver-id'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'RESOURCE_IN_USE', message: 'driver is referenced by DSV operational history' }
       });
     } finally {
       await app.close();

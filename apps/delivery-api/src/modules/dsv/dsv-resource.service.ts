@@ -3,6 +3,11 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { DsvPrincipal } from './dsv-principal.js';
+import {
+  assertDsvResourceDeletionAllowed,
+  DsvResourceInUseError,
+  isResourceDeletionForeignKeyConflict,
+} from './dsv-resource-deletion-guard.js';
 import { PrismaDsvStoreReviewAccess, type DsvStoreReviewAccess } from './dsv-store-review-access.js';
 
 type DsvResourceAccess = { principal: DsvPrincipal };
@@ -171,8 +176,22 @@ export class PrismaDsvResourceService implements DsvResourceService {
   async deleteDriver(input: DsvResourceAccess & { driverId: string; shopDomain: string }): Promise<void> {
     await this.reviewDataAccess.assertAccessible(input.principal, { driverIds: [input.driverId] });
     const shop = await this.requireShop(input.shopDomain);
-    const result = await this.prisma.driver.deleteMany({ where: { dsvProfile: { isNot: null }, id: input.driverId, shopId: shop.id } });
-    if (result.count === 0) throw new DsvResourceNotFoundError('driver');
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const exists = await assertDsvResourceDeletionAllowed(tx, {
+          resource: 'driver', resourceId: input.driverId, shopId: shop.id,
+        });
+        if (!exists) throw new DsvResourceNotFoundError('driver');
+        const result = await tx.driver.deleteMany({
+          where: { dsvProfile: { isNot: null }, id: input.driverId, shopId: shop.id },
+        });
+        if (result.count === 0) throw new DsvResourceNotFoundError('driver');
+      });
+    } catch (error) {
+      if (error instanceof DsvResourceNotFoundError || error instanceof DsvResourceInUseError) throw error;
+      if (isResourceDeletionForeignKeyConflict(error)) throw new DsvResourceInUseError('driver');
+      throw error;
+    }
   }
 
   async createVehicle(input: DsvVehicleInput & { shopDomain: string }): Promise<DsvVehicleView> {
@@ -245,8 +264,22 @@ export class PrismaDsvResourceService implements DsvResourceService {
 
   async deleteVehicle(input: { shopDomain: string; vehicleId: string }): Promise<void> {
     const shop = await this.requireShop(input.shopDomain);
-    const result = await this.prisma.vehicle.deleteMany({ where: { dsvProfile: { isNot: null }, id: input.vehicleId, shopId: shop.id } });
-    if (result.count === 0) throw new DsvResourceNotFoundError('vehicle');
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const exists = await assertDsvResourceDeletionAllowed(tx, {
+          resource: 'vehicle', resourceId: input.vehicleId, shopId: shop.id,
+        });
+        if (!exists) throw new DsvResourceNotFoundError('vehicle');
+        const result = await tx.vehicle.deleteMany({
+          where: { dsvProfile: { isNot: null }, id: input.vehicleId, shopId: shop.id },
+        });
+        if (result.count === 0) throw new DsvResourceNotFoundError('vehicle');
+      });
+    } catch (error) {
+      if (error instanceof DsvResourceNotFoundError || error instanceof DsvResourceInUseError) throw error;
+      if (isResourceDeletionForeignKeyConflict(error)) throw new DsvResourceInUseError('vehicle');
+      throw error;
+    }
   }
 
   async assignDriver(input: {

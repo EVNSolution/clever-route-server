@@ -249,6 +249,26 @@ describe('PrismaDsvGeofenceService retry bounds', () => {
     expect(context.reminderDueAt).toEqual(new Date(nextDueAt));
   });
 
+  it('does not duplicate the T+300 reminder when the worker restarts and retries the same instant', async () => {
+    const dueAt = new Date('2026-10-06T07:35:00.000Z');
+    const context = reminderContext({
+      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
+      reminderDueAt: dueAt,
+    });
+    const harness = createReminderHarness(context);
+
+    await expect(new PrismaDsvGeofenceService(harness.prisma as never, { policy: livePolicy })
+      .tickReminders(dueAt)).resolves.toBe(1);
+    await expect(new PrismaDsvGeofenceService(harness.prisma as never, { policy: livePolicy })
+      .tickReminders(dueAt)).resolves.toBe(0);
+    expect(harness.notification.createMany).toHaveBeenCalledOnce();
+    expect(context).toMatchObject({
+      reminderDueAt: new Date('2026-10-06T07:40:00.000Z'),
+      reminderOrdinal: 1,
+    });
+  });
+
   it('T11 preserves the execution and reminder ordinal across midnight', async () => {
     const context = reminderContext({
       departureObservedAt: new Date('2026-10-06T23:58:00.000Z'),

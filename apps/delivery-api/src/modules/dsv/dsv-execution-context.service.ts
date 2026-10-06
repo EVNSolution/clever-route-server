@@ -27,6 +27,7 @@ type ExecutionRow = {
   recipientAccountId: string | null;
   routePlanId: string;
   routeVersion: number;
+  serviceDate: Date;
   shopId: string;
   startedAt: Date | null;
   status: string;
@@ -242,6 +243,7 @@ export class PrismaDsvExecutionContextService {
       }) as ExecutionRow | null;
       if (context === null) throw new DsvExecutionContextError('EXECUTION_CONTEXT_SCOPE_INVALID');
       if (context.status !== 'ACTIVE') throw new DsvExecutionContextError('CLOSED_EXECUTION_CONTEXT');
+      assertExecutionServiceDate(context, route);
       await this.validateRebindEffectiveAt(context, route, now);
       await this.rebindRoute(context, route, now);
       return this.updateExistingContext(context, route, now);
@@ -322,6 +324,7 @@ export class PrismaDsvExecutionContextService {
     route: RouteSnapshot,
     now: Date,
   ): Promise<DsvExecutionSyncResult> {
+    assertExecutionServiceDate(context, route);
     const assignmentChanged = context.driverId !== route.driverId
       || context.recipientAccountId !== route.recipientAccountId
       || context.vehicleId !== route.vehicleId;
@@ -596,10 +599,12 @@ async function loadRouteSnapshot(
   }
   let driver: { accountId: string | null };
   try {
-    driver = await validateDriver(tx, shopId, route.driverId);
-    if (route.vehicleId !== null) await validateVehicle(tx, shopId, route.vehicleId);
+    driver = await lockAndValidateDriver(tx, shopId, route.driverId);
+    if (route.vehicleId !== null) await lockAndValidateVehicle(tx, shopId, route.vehicleId);
   } catch (error) {
-    if (hasExistingMapping && error instanceof DsvExecutionContextError) {
+    if (hasExistingMapping && error instanceof DsvExecutionContextError
+      && error.code !== 'DRIVER_RESOURCE_MISSING'
+      && error.code !== 'VEHICLE_RESOURCE_MISSING') {
       return { closeReason: 'CANCELLED', route: null };
     }
     throw error;
@@ -639,6 +644,36 @@ async function loadRouteSnapshot(
     startedAt: route.driverEvents[0]?.occurredAt ?? null,
     vehicleId: route.vehicleId,
   } };
+}
+
+function assertExecutionServiceDate(context: ExecutionRow, route: RouteSnapshot): void {
+  if (context.serviceDate.toISOString().slice(0, 10) !== route.planDate.toISOString().slice(0, 10)) {
+    throw new DsvExecutionContextError('EXECUTION_SERVICE_DATE_MISMATCH');
+  }
+}
+
+async function lockAndValidateDriver(
+  tx: Tx,
+  shopId: string,
+  driverId: string,
+): Promise<{ accountId: string | null }> {
+  const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id FROM drivers
+    WHERE id = ${driverId}::uuid AND "shopId" = ${shopId}::uuid
+    FOR KEY SHARE
+  `);
+  if (locked.length !== 1) throw new DsvExecutionContextError('DRIVER_RESOURCE_MISSING');
+  return validateDriver(tx, shopId, driverId);
+}
+
+async function lockAndValidateVehicle(tx: Tx, shopId: string, vehicleId: string): Promise<void> {
+  const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id FROM vehicles
+    WHERE id = ${vehicleId}::uuid AND "shopId" = ${shopId}::uuid
+    FOR KEY SHARE
+  `);
+  if (locked.length !== 1) throw new DsvExecutionContextError('VEHICLE_RESOURCE_MISSING');
+  await validateVehicle(tx, shopId, vehicleId);
 }
 
 async function validateDriver(tx: Tx, shopId: string, driverId: string): Promise<{ accountId: string | null }> {

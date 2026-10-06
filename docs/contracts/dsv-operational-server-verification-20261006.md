@@ -60,7 +60,7 @@ The final two DSV DB cases use the production multi-child draft writers. Public 
 
 Source data and provider results are synthetic. Provider tests use fake sends only. Guarded integration skips in the ordinary unit command are not counted as DB proof.
 
-## Review and final checks
+## Original P1–P3 review and checks
 
 Independent source review found and fixed authorization scopes, attempt starvation, dynamic kill-switch/routing parity, geofence post-lock attribution, selector races, internal receipt-hash hints, N04/N05 resolution, independent N07 lifetime, generic writer coverage, terminal N06/report behavior, LIVE activation, and missing hysteresis. Full CI regression also exposed grouped-assignment compatibility and premature draft synchronization. The legacy API now uses a shared immutable successor and transactional attribution/intent sync. A route advisory/row lock inversion was removed. Child replacement now has no implicit execution hook. All nine callers synchronize at their completed business boundary. Unpublished drafts create no context or N01. Published draft writers finish projections, assignment recomputation, and grouping READY before sorted synchronization. Strict published-snapshot validation and same-transaction rollback remain enforced. These repairs received fresh source review and the full actual DB regression profile. Review does not authorize management merge or deployment.
 
@@ -104,7 +104,71 @@ After the CI compatibility repair, G002/G003/DSV were rerun together: `dsv-g002-
 - Final DSV operational lane: `dsv-operational-multichild-20261006-final.log`, SHA-256 `e109e627a78fdc0aa17592b22de2ede4f3cbaf65065fda5a8db78300757d7221`.
 - Final original observations DB: `original-observations-db-20261006-final.log`, SHA-256 `e455bac24f6ed3269daf3d7cf3bd90d674fb533ec5ddb68569bb43c6cdbd0948`.
 
-The logs identify checkout HEAD at invocation; validation includes the implementation worktree changes. The final PR commit identifies the reviewed source. Production evidence is not included.
+The logs identify checkout HEAD at invocation; validation includes the implementation worktree changes. These are the original P1–P3 results through management review baseline `90465a872662bbf6d7b7abf9fe011e74290441e8`. The following section records the subsequent management corrections. Production evidence is not included.
+
+## PR #483 management corrections
+
+Review input: `.omx/plans/dsv-notification-server-review-20261006.md` in the canonical server checkout. Reviewed baseline: `90465a872662bbf6d7b7abf9fe011e74290441e8`. Corrections continue the existing PR branch. Target #482 and change-control #310 remain unchanged. These records are technical evidence, not operating-policy approval.
+
+| Finding | Reproduced defect | Correction and regression scope |
+|---|---|---|
+| R1: driver/vehicle deletion | Actual PostgreSQL allowed all three deletion entrypoints to remove newly assigned resources while ACTIVE scalar contexts remained. Fixtures assert zero import-row resource references. | Shared transaction rejects nonterminal published routes, ACTIVE contexts, and import-row references with RESOURCE_IN_USE. Sorted route locks precede the resource lock and a fresh reference check. Context synchronization holds resource KEY SHARE locks. Tests assert complete no-change on rejection, normal unreferenced deletion, preserved closed history, and both winners of assignment/publication races. |
+| R2: first exit observation | Unit reproduction returned NONE/EXITING for exitMinSamples=1, exitDwellSeconds=0. | First valid outside observation uses the same confirmation predicate as later observations. Persisted synthetic raw UVIS proof covers DEPARTED, T+299.999 seconds with zero N05, T+300 seconds with one N05, retry, and restart. Existing multi-sample/dwell, neutral band, gap, and re-entry cases remain. |
+| R3: N01 date | Two unit reproductions showed the generic title without the execution date. | Push and inbox use execution.serviceDate for “n월 n일 배차가 등록되었습니다.”. Future dates, different service days, calendar-boundary retry, unchanged schema-v1 payload, and final fresh checks are tested. Existing-context date mismatch rejects instead of moving an execution to another business day. |
+
+Independent code review also found that the new serviceDate lookup must precede the final fresh policy, authority, and lease checks. The lookup now occurs before those checks. A policy change to OFF during the lookup results in zero provider calls. Review also found a missing matching-date invariant in SAME_EXECUTION; replacement and existing-context synchronization now reject a different business date. Actual PostgreSQL verifies mapping, receipt, notification, and context rollback on rejection.
+
+The publication-versus-deletion tests use the production grouped publication writer and PostgreSQL trigger gates. Publication winning first preserves the resource, ACTIVE context, N01, and publication receipt while deletion rejects. Deletion winning first leaves route.driverId null and preserves legacy physical publication evidence plus one SKIPPED_NON_DSV receipt; its external result is FAILED/NOTIFICATION_PROCESSING_FAILED. It creates no context, mapping, or N01. Independent code and design reviews accepted this existing partial-success boundary. No product writer was changed to erase that history or skipped-command result.
+
+Correction log root: `/Users/jiin/.codex/build-logs/dsv-review-fixes-20261006/`. Red runs are intentional defect reproductions and are not final passing results.
+
+- R1 actual PostgreSQL red: `r1-prefixed-deletion-guard-reproduction.log`; original 32 cases passed, three new deletion rejection cases failed as expected. SHA-256 `8aba81e1d149d930fa4385aa1ae5db2d1395f0acd00da7dec1ce2b4d49ecfea6`.
+- R2 red: `clever-route-server/20261006T212940.141690+0900-90465a872662-r2-red-geofence-engine/summary.json`.
+- R2 focused green: `clever-route-server/20261006T213034.545710+0900-90465a872662-r2-green-final-focused/summary.json`; 44 passed.
+- R3 red: `clever-route-server/20261006T213011.244645+0900-90465a872662-dsv-r3-n01-red/summary.json`.
+- R3 focused green after freshness repair: `clever-route-server/20261006T213605.151600+0900-90465a872662-dsv-r3-n01-final-green/summary.json`; 32 passed.
+
+Supplemental publication-race test development exposed a test-only Prisma P2010 when selecting an advisory-lock function's void value. The gate now selects a boolean value. A subsequent expectation incorrectly required publication rollback and zero command receipts; it was corrected to assert the existing FAILED result, physical publication evidence, one skipped receipt, and zero execution artifacts. These intermediate runs are not counted as passing proof.
+
+The unchanged original-observations lane initially failed its late-storage fixture twice (4/5). Diagnostics showed DB snapshot `12:54:17.840315Z`, Prisma-created stored time `12:54:17.803Z`, DB clock `12:54:17.843Z`, and host clock `12:54:17.805Z`. The host clock lagged the VM DB by about 38 ms, so the fixture did not satisfy its required late-storage condition. Only the fixture now sets its stored time to the DB cursor snapshot plus one microsecond and explicitly asserts storedAfterSnapshot=true. The production query is unchanged. This verifies a stored-time cursor fence; it does not claim a commit-time fence for transactions opened before the snapshot.
+
+| Fresh PostgreSQL check | Result |
+|---|---|
+| Full existing disposable profile | PASS, 23 files / 282 tests, including the first 42 DSV cases |
+| Final DSV lane after two added publication races | PASS, 44/44; 113 migrations; no resource or execution lock failure |
+| Distinct cases covered by the profile and final DSV lane | 284; repeated DSV invocations are not added to this count |
+| Original observations after deterministic fixture repair | PASS, 5/5; fresh 113-migration database |
+
+- Full profile: `full-disposable-db-profile-final.log`; SHA-256 `76550a98777f25e2308f5355c334842baedb041c1d5ee5608ab16510ab78bacc`.
+- Final DSV: `r1-r3-actual-db-final-44-run5.log`; SHA-256 `2092e70f5ffaa01be2bb0dbba28ca2b5dfc9a7afc309b8849e7d951f2cf061f3`.
+- Final original observations: `original-observations-db-final-run4.log`; SHA-256 `cee96c8c5308a7413e1cfddb83cb65b2727b569a839b5778eb5c67a4b386b0c8`.
+- Original clock diagnosis: `original-observations-db-diagnostic.log`; SHA-256 `b4b6d30de50c1183f531d5e1245dcd3cc539bc4a89f2021854b1e6db47489301`.
+
+Independent code and design review verdicts: APPROVE, no unresolved source findings. Reviews include deletion/publication race semantics, immutable serviceDate, final send freshness, and the original-observations fixture correction. Final exact-commit CI is linked from PR #483 after push. The correction report and contract are part of that commit.
+
+The first full correction typecheck found two test-only type errors: a mock call array typed as a one-element tuple, and an unchecked raw-query row destructure. The mock call type now permits an array; the DB assertion now checks exactly one true result row. No product type or query changed. The fresh typecheck rerun passed.
+
+Prisma generation and checks identify baseline HEAD at invocation because the corrections were still uncommitted. Their source is the correction commit attached to PR #483.
+
+| Fresh required API gate | Result |
+|---|---|
+| prisma:generate | PASS, Prisma 6.19.3 generated client |
+| lint | PASS, full API and all final regression fixtures |
+| typecheck | PASS, full API and tests |
+| test | PASS, 276 files / 3,241 tests; 24 files / 293 guarded or optional tests skipped |
+| build | PASS, full delivery-api TypeScript build |
+| P0 fixture | PASS, JSON parse, 23 distinct cases, unchanged frozen SHA-256 |
+| Hygiene and whitespace | PASS, ignore hygiene, secrets scan, scanner tests, git diff --check |
+
+The three expected proof-media negative-path error logs remain; Vitest reports zero failed tests. The ordinary test command's 293 skipped tests are not DB passes. Fresh actual PostgreSQL results are listed separately above. The unchanged existing Route Ops artifact supplies local admin-shell tests; no frontend source changed. All final Node gates use a 4,096 MiB old-space limit and run sequentially after DB work.
+
+- Prisma: `clever-route-server/20261006T214122.082951+0900-90465a872662-dsv-review-prisma-generate/summary.json`.
+- Final lint: `clever-route-server/20261006T215858.493606+0900-90465a872662-dsv-review-final-lint/summary.json`.
+- Final typecheck: `clever-route-server/20261006T215810.679647+0900-90465a872662-dsv-review-final-typecheck/summary.json`.
+- Full tests: `clever-route-server/20261006T220007.772482+0900-90465a872662-dsv-review-final-full-test/summary.json`.
+- API build: `clever-route-server/20261006T220055.338956+0900-90465a872662-dsv-review-final-api-build/summary.json`.
+
+All disposable containers were removed. The task-owned Colima VM was stopped, and Docker context restored to its initial default. Canonical checkout and other worktrees were preserved.
 
 ## Remaining release work
 
@@ -116,5 +180,6 @@ The logs identify checkout HEAD at invocation; validation includes the implement
 - Driver PR61/Issue62: separate app integration/security release blocker.
 - Actual GPS shadow, migration/deploy rehearsal, runtime proof, authenticated devices and FCM acceptance remain unperformed.
 - P4/P5 client workflows and P6 activation remain separate. P7 is excluded.
+- P6 WATCH: verify actual provider readiness before the new channel replaces legacy sending. This remains a later activation condition, without expanding the current default-OFF corrections.
 
 Server P1–P3 completion means source implementation, synthetic proof, actual disposable DB proof, and an unmerged reviewable PR. It does not mean fleet/live readiness.

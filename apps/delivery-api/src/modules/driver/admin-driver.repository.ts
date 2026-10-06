@@ -11,6 +11,11 @@ import type {
 } from './admin-driver.types.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
+import {
+  assertDsvResourceDeletionAllowed,
+  DsvResourceInUseError,
+  isResourceDeletionForeignKeyConflict,
+} from '../dsv/dsv-resource-deletion-guard.js';
 
 type AdminDriverPrismaClient = Pick<PrismaClient, '$transaction' | 'driver' | 'driverAccount' | 'driverSession' | 'shop'>;
 
@@ -131,12 +136,23 @@ export class PrismaAdminDriverRepository {
       throw new Error('Shop not found');
     }
 
-    const deletedDriver = await this.prisma.driver.delete({
-      select: { id: true },
-      where: { id: input.driverId, shopId: shop.id }
-    });
-
-    return deletedDriver.id;
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const exists = await assertDsvResourceDeletionAllowed(tx, {
+          resource: 'driver', resourceId: input.driverId, shopId: shop.id,
+        });
+        if (!exists) throw new Error('Driver not found');
+        const deletedDriver = await tx.driver.delete({
+          select: { id: true },
+          where: { id: input.driverId, shopId: shop.id }
+        });
+        return deletedDriver.id;
+      });
+    } catch (error) {
+      if (error instanceof DsvResourceInUseError) throw error;
+      if (isResourceDeletionForeignKeyConflict(error)) throw new DsvResourceInUseError('driver');
+      throw error;
+    }
   }
 
   async updateDriverName(input: UpdateAdminDriverNameInput): Promise<AdminDriverRow> {

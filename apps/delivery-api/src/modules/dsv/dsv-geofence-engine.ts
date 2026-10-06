@@ -80,14 +80,19 @@ export function advanceDsvGeofence(
       }
     }
   } else if (state.phase === 'INSIDE') {
-    if (outsideExit) state = startCandidate(state, 'EXITING', observedAt);
+    if (outsideExit) {
+      state = startCandidate(state, 'EXITING', observedAt);
+      if (meetsConfirmation(state, observation.observedAt, policy.exitMinSamples, policy.exitDwellSeconds)) {
+        state = confirmOutside(state, observedAt);
+        transition = 'DEPARTED';
+      }
+    }
   } else if (!outsideExit) {
     state = resetInside(state);
   } else {
     state.candidateSampleCount += 1;
     if (meetsConfirmation(state, observation.observedAt, policy.exitMinSamples, policy.exitDwellSeconds)) {
-      state = resetOutside(state);
-      state.firstOutsideAt = previous.firstOutsideAt ?? previous.candidateStartedAt ?? observedAt;
+      state = confirmOutside(state, observedAt);
       transition = 'DEPARTED';
     }
   }
@@ -176,6 +181,11 @@ function confirmInside(state: DsvGeofenceTargetState): DsvGeofenceTargetState {
     phase: 'INSIDE',
     visitOrdinal: state.visitOrdinal + 1,
   };
+}
+
+function confirmOutside(state: DsvGeofenceTargetState, observedAt: string): DsvGeofenceTargetState {
+  const firstOutsideAt = state.firstOutsideAt ?? state.candidateStartedAt ?? observedAt;
+  return { ...resetOutside(state), firstOutsideAt };
 }
 
 function resetCandidate(state: DsvGeofenceTargetState): DsvGeofenceTargetState {

@@ -52,6 +52,36 @@ describe('PrismaDsvExecutionContextService D03 transition contract', () => {
     }
   });
 
+  test('locks current driver then vehicle resources before writing an execution snapshot', async () => {
+    const harness = createHarness();
+
+    await harness.service.syncForRoute(baseSync('resource-lock-order'));
+
+    const sqlCalls = harness.tx.$queryRaw.mock.calls.map(([query]: Array<{ strings?: readonly string[] }>) =>
+      query?.strings?.join(' ') ?? '');
+    const driverLock = sqlCalls.findIndex((sql) => sql.includes('SELECT id FROM drivers'));
+    const vehicleLock = sqlCalls.findIndex((sql) => sql.includes('SELECT id FROM vehicles'));
+    expect(driverLock).toBeGreaterThan(-1);
+    expect(vehicleLock).toBeGreaterThan(driverLock);
+    expect(sqlCalls[driverLock]).toContain('FOR KEY SHARE');
+    expect(sqlCalls[vehicleLock]).toContain('FOR KEY SHARE');
+    expect(harness.contexts).toHaveLength(1);
+  });
+
+  test('rejects a deleted driver snapshot instead of writing scalar execution attribution', async () => {
+    const harness = createHarness();
+    harness.tx.$queryRaw.mockImplementation((query: { strings?: readonly string[] }) => {
+      const sql = query.strings?.join(' ') ?? '';
+      return Promise.resolve(sql.includes('SELECT id FROM drivers') ? [] : [{ locked: 1 }]);
+    });
+
+    await expect(harness.service.syncForRoute(baseSync('deleted-driver-race')))
+      .rejects.toMatchObject({ code: 'DRIVER_RESOURCE_MISSING' });
+    expect(harness.contexts).toHaveLength(0);
+    expect(harness.notifications).toHaveLength(0);
+    expect(harness.commands).toHaveLength(0);
+  });
+
   test('D03-02 replays the same publication command when server-observed publication hints change', async () => {
     covers('D03-02');
     const harness = createHarness();
@@ -245,6 +275,38 @@ describe('PrismaDsvExecutionContextService D03 transition contract', () => {
     expect(harness.contexts[0]!.routePlanId).toBe('route-am-replacement');
     expect(harness.mappings.filter((item) => item.validUntil === null).map((item) => item.routePlanId)).toEqual(['route-am-replacement']);
     observe('D03-15', 'ACCEPT', harness, result.notificationKinds);
+  });
+
+  test('rejects an implicit plan-date change without changing an existing execution', async () => {
+    const harness = createHarness();
+    const created = await harness.service.syncForRoute(baseSync('same-route-date-create'));
+    harness.routes['route-am']!.planDate = new Date('2026-10-06T00:00:00.000Z');
+
+    await expect(harness.service.syncForRoute({ ...baseSync('same-route-date-change'), firstPublication: false }))
+      .rejects.toMatchObject({ code: 'EXECUTION_SERVICE_DATE_MISMATCH' });
+    expect(harness.contexts[0]).toMatchObject({
+      id: created.executionContextId,
+      routePlanId: 'route-am',
+      serviceDate: new Date('2026-10-05T00:00:00.000Z'),
+    });
+    expect(harness.mappings.filter((item) => item.validUntil === null).map((item) => item.routePlanId))
+      .toEqual(['route-am']);
+  });
+
+  test('rejects a cross-day SAME_EXECUTION rebind before changing route mappings', async () => {
+    const harness = createHarness({ routes: ['route-am', 'route-next-day'] });
+    harness.routes['route-next-day']!.planDate = new Date('2026-10-06T00:00:00.000Z');
+    harness.routes['route-next-day']!.stops = structuredClone(harness.routes['route-am']!.stops);
+    harness.routes['route-next-day']!.child.stopIds = harness.routes['route-next-day']!.stops.map((item) => item.id);
+    const created = await harness.service.syncForRoute(baseSync('cross-day-create'));
+
+    await expect(harness.service.syncForRoute({
+      commandId: 'cross-day-rebind', executionContextId: created.executionContextId!, now: NOW,
+      routePlanId: 'route-next-day', shopId: 'shop-1', tripIntent: 'SAME_EXECUTION',
+    })).rejects.toMatchObject({ code: 'EXECUTION_SERVICE_DATE_MISMATCH' });
+    expect(harness.mappings.filter((item) => item.validUntil === null).map((item) => item.routePlanId))
+      .toEqual(['route-am']);
+    expect(harness.contexts[0]!.routePlanId).toBe('route-am');
   });
 
   test('D03-16 closes an execution and resolves warnings without reopening it', async () => {
@@ -519,6 +581,7 @@ type Route = {
   child: { driverId: string; id: string; legacySnapshot?: boolean; publishedAt: Date | null; stopIds: string[] };
   driverId: string | null;
   planningColor?: string;
+  planDate: Date;
   routePlanId: string;
   startedAt: Date | null;
   status: string;
@@ -541,6 +604,7 @@ function createHarness(options: { routes?: string[]; startedAt?: Date | null; st
       accountId: routePlanId.includes('target') ? 'account-b' : 'account-a',
       child: { driverId: routePlanId.includes('target') ? 'driver-b' : 'driver-a', id: `${routePlanId}-child`, publishedAt: NOW, stopIds: stops.map((item) => item.id) },
       driverId: routePlanId.includes('target') ? 'driver-b' : 'driver-a',
+      planDate: new Date('2026-10-05T00:00:00.000Z'),
       routePlanId,
       startedAt: options.startedAt ?? null,
       status: options.startedAt === undefined || options.startedAt === null ? 'READY' : 'IN_PROGRESS',
@@ -565,7 +629,7 @@ function createHarness(options: { routes?: string[]; startedAt?: Date | null; st
       if (route === undefined || where.id_shopId.shopId !== 'shop-1') return null;
       return {
         depotLatitude: 37.5, depotLongitude: 127.0, driverId: route.driverId, id: route.routePlanId,
-        planDate: new Date('2026-10-05T00:00:00.000Z'),
+        planDate: route.planDate,
         driverEvents: route.startedAt === null ? [] : [{ occurredAt: route.startedAt }],
         routeStops: route.stops.map((item) => ({
           deliveryStop: {

@@ -7,6 +7,7 @@ import {
 } from './admin-session-auth.js';
 
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
+import { DsvResourceInUseError } from '../modules/dsv/dsv-resource-deletion-guard.js';
 import type { AdminDriverServiceContract, CreatePendingDriverInput } from '../modules/driver/admin-driver.types.js';
 
 export type AdminDriversDependencies = {
@@ -136,6 +137,9 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
 
       return reply.code(200).send({ data: { driverId }, error: null });
     } catch (error) {
+      if (error instanceof DsvResourceInUseError) {
+        return reply.code(409).send(errorResponse(error.code, error.message));
+      }
       request.log.error(
         {
           driverId: request.params.id,

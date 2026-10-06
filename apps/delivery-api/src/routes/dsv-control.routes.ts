@@ -64,6 +64,7 @@ import type {
   DsvResourceService,
   DsvVehicleInput,
 } from '../modules/dsv/dsv-resource.service.js';
+import { DsvResourceInUseError } from '../modules/dsv/dsv-resource-deletion-guard.js';
 import {
   DsvDriverAccountLinkCandidateError,
   type DsvDriverAccountLinkService,
@@ -2191,6 +2192,9 @@ function sendResourceError(reply: FastifyReply, error: unknown): unknown {
     return sendError(reply, 404, 'NOT_FOUND', error.message);
   }
   if (error instanceof DsvResourceConflictError) {
+    return sendError(reply, 409, error.code, error.message);
+  }
+  if (error instanceof DsvResourceInUseError) {
     return sendError(reply, 409, error.code, error.message);
   }
   throw error;

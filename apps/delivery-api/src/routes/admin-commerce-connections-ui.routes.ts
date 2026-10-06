@@ -10,6 +10,7 @@ import {
   type AdminCommerceActor,
 } from "../modules/commerce/admin-commerce-auth.js";
 import type { AdminDriverServiceContract } from "../modules/driver/admin-driver.types.js";
+import { DsvResourceInUseError } from "../modules/dsv/dsv-resource-deletion-guard.js";
 import type { SafeWooCommerceConnection } from "../modules/commerce/commerce-connection.service.js";
 import type {
   AdminStoreSettings,
@@ -3245,10 +3246,17 @@ function registerRouteOpsAppRoutes(
               404,
             );
           }
-          await dependencies.driverService.deleteDriver({
-            driverId: request.params.driverId,
-            shopDomain,
-          });
+          try {
+            await dependencies.driverService.deleteDriver({
+              driverId: request.params.driverId,
+              shopDomain,
+            });
+          } catch (error) {
+            if (error instanceof DsvResourceInUseError) {
+              throw createRouteOpsHttpError(error.code, error.message, 409);
+            }
+            throw error;
+          }
           const drivers = await dependencies.driverService.listDrivers({
             shopDomain,
           });

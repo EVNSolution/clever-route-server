@@ -271,10 +271,26 @@ describe('PrismaAdminDriverRepository', () => {
     expect(prisma.driverAccount.delete).not.toHaveBeenCalled();
     expect(driverId).toBe('driver-id');
   });
+
+  test('rejects deleting an admin driver referenced by an active execution', async () => {
+    const { prisma } = createPrismaHarness({
+      activeExecution: { id: 'execution-id', routePlanId: 'route-id' },
+      deletedDriver: { id: 'driver-id' }
+    });
+    const repository = new PrismaAdminDriverRepository(prisma as never);
+
+    await expect(repository.deleteDriver({
+      driverId: 'driver-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toMatchObject({ code: 'RESOURCE_IN_USE' });
+
+    expect(prisma.driver.delete).not.toHaveBeenCalled();
+  });
 });
 
 function createPrismaHarness(input: {
   account?: { id: string } | null;
+  activeExecution?: { id: string; routePlanId: string } | null;
   createdDriver?: ReturnType<typeof driverRecord>;
   deletedDriver?: { id: string };
   existingDriver?: ReturnType<typeof driverRecord> | null;
@@ -298,6 +314,10 @@ function createPrismaHarness(input: {
       delete: ReturnType<typeof vi.fn>;
       findUnique: ReturnType<typeof vi.fn>;
     };
+    dsvExecutionContext: {
+      findFirst: ReturnType<typeof vi.fn>;
+      findMany: ReturnType<typeof vi.fn>;
+    };
     driverSession: {
       updateMany: ReturnType<typeof vi.fn>;
     };
@@ -310,8 +330,21 @@ function createPrismaHarness(input: {
 } {
   const shop = input.shop === undefined ? { id: 'shop-id' } : input.shop;
   const createdDriver = input.createdDriver ?? driverRecord();
+  const queryRaw = vi.fn((query: { strings?: readonly string[] }) => {
+    const sql = query.strings?.join(' ') ?? '';
+    if (sql.includes('SELECT DISTINCT resource_route')) {
+      return Promise.resolve(input.activeExecution === undefined || input.activeExecution === null
+        ? []
+        : [{ id: input.activeExecution.routePlanId }]);
+    }
+    if (sql.includes('FROM drivers driver')) return Promise.resolve([{ id: 'driver-id' }]);
+    if (sql.includes('AS blocked')) {
+      return Promise.resolve([{ blocked: input.activeExecution !== undefined && input.activeExecution !== null }]);
+    }
+    return Promise.resolve([{ locked: true }]);
+  });
   const prisma = {
-      $queryRaw: vi.fn(() => Promise.resolve([{ locked: true }])),
+      $queryRaw: queryRaw,
       $transaction: vi.fn(),
       driver: {
         create: vi.fn(() => Promise.resolve(createdDriver)),
@@ -324,6 +357,12 @@ function createPrismaHarness(input: {
       driverAccount: {
         delete: vi.fn(),
         findUnique: vi.fn(() => Promise.resolve(input.account ?? null))
+      },
+      dsvExecutionContext: {
+        findFirst: vi.fn(() => Promise.resolve(input.activeExecution ?? null)),
+        findMany: vi.fn(() => Promise.resolve(input.activeExecution === undefined || input.activeExecution === null
+          ? []
+          : [{ routePlanId: input.activeExecution.routePlanId }]))
       },
       driverSession: {
         updateMany: vi.fn(() => Promise.resolve({ count: 0 }))

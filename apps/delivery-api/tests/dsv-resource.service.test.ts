@@ -345,4 +345,45 @@ describe('PrismaDsvResourceService', () => {
     expect(reviewDataAccess.assertAccessible).toHaveBeenCalledWith(principal, { driverIds: [driverId] });
     expect(prisma.shop.findUnique).not.toHaveBeenCalled();
   });
+
+  test.each([
+    ['driver', () => ({ driverId, principal: adminPrincipal, shopDomain: 'tomatonofood.com' })],
+    ['vehicle', () => ({ shopDomain: 'tomatonofood.com', vehicleId })],
+  ] as const)('rejects deleting a %s referenced by an active execution', async (resource, input) => {
+    const driverDeleteMany = vi.fn(() => Promise.resolve({ count: 1 }));
+    const vehicleDeleteMany = vi.fn(() => Promise.resolve({ count: 1 }));
+    const transaction = {
+      $queryRaw: vi.fn((query: { strings?: readonly string[] }) => {
+        const sql = query.strings?.join(' ') ?? '';
+        if (sql.includes('SELECT DISTINCT resource_route')) return Promise.resolve([{ id: 'route-id' }]);
+        if (sql.includes('AS blocked')) return Promise.resolve([{ blocked: true }]);
+        if (sql.includes('FROM drivers driver') || sql.includes('FROM vehicles vehicle')) {
+          return Promise.resolve([{ id: resource === 'driver' ? driverId : vehicleId }]);
+        }
+        return Promise.resolve([{ id: 'route-id' }]);
+      }),
+      driver: { deleteMany: driverDeleteMany },
+      dsvExecutionContext: {
+        findFirst: vi.fn(() => Promise.resolve({ id: 'execution-id', routePlanId: 'route-id' })),
+      },
+      vehicle: { deleteMany: vehicleDeleteMany },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (tx: typeof transaction) => unknown) => operation(transaction)),
+      driver: { deleteMany: driverDeleteMany },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ id: shopId })) },
+      vehicle: { deleteMany: vehicleDeleteMany },
+    };
+    const service = new PrismaDsvResourceService(prisma as never, {
+      assertAccessible: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const deletion = resource === 'driver'
+      ? service.deleteDriver(input())
+      : service.deleteVehicle(input());
+
+    await expect(deletion).rejects.toMatchObject({ code: 'RESOURCE_IN_USE' });
+    expect(driverDeleteMany).not.toHaveBeenCalled();
+    expect(vehicleDeleteMany).not.toHaveBeenCalled();
+  });
 });

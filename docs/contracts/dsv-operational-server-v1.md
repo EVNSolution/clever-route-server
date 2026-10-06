@@ -20,6 +20,8 @@ INITIAL_EXECUTION is an internal first-valid-publication operation. Upload outco
 
 An already-published unmapped route, or a vehicle with same-date execution history, requires explicit mapping. Physical legacy publication can remain valid while logical monitoring waits. Afternoon trips require NEW_EXECUTION. SAME_EXECUTION requires a named ACTIVE context, matching tenant/date, and monotonic effective time. Mapping intervals use [validFrom, validUntil). Zero-length closed history is allowed and cannot accept samples.
 
+serviceDate is the immutable date of the logical execution. Existing-context synchronization and SAME_EXECUTION replacement reject a different route plan date with EXECUTION_SERVICE_DATE_MISMATCH. A different business day requires a new execution. Date comparisons use the stored date-only UTC calendar key, without converting publication or send time.
+
 Replacement routes keep identity only through explicit mapping or a proven grouping successor. Mapping history and observation time prevent old samples from moving to a new route. Default vehicle-driver registry links alone do not change route attribution.
 
 Several ACTIVE executions may share a vehicle. A sole eligible context can accept its observation. Several eligible contexts require a selector valid at observation time. PostgreSQL exclusion constraints prevent overlapping tenant/vehicle selector intervals. Closing or replacing vehicle attribution clips its selector history. No latest-route heuristic is used.
@@ -29,6 +31,12 @@ Content edits resolve prior N01/N02/N06 links, create N02, and preserve the miss
 Generic route save/assignment preserves the existing grouped driver API. Under the route row lock, it increments legacy generation and uses the shared immutable-child replacement writer. The successor preserves publication, grouping version, and membership; it records the new driver and generation. Order projections, epoch, and intents commit together. The previous child remains archived evidence. No grouping parent lock is added. Route row locks serialize mapping and route mutation; an additional per-route advisory lock would invert that order. Import, publication, grouping, stop override, depot, account-link, cancellation, and event writers invoke hooks inside their transaction. Generated production Prisma clients cannot silently bypass missing tables. Narrow legacy unit-test ports can omit the new delegate; actual PostgreSQL tests verify the production path.
 
 The immutable-child replacement helper does not synchronize execution by itself. Each caller synchronizes at its completed business boundary in the same transaction. Multi-child draft writers finish stop changes, projection claims, assignment recomputation, and grouping READY before synchronizing affected routes in a stable order. An unpublished draft without a context creates neither a context nor N01. First valid publication performs that operation. Invalid published snapshots still reject and roll back the business transaction.
+
+DSV driver deletion, common admin driver deletion, and DSV vehicle deletion use one transactional guard. A nonterminal route with a CURRENT, non-superseded published child, any ACTIVE execution reference, or an existing import-row reference rejects deletion with RESOURCE_IN_USE (HTTP 409). Rejection changes no resource, route, context, warning, timer, or intent. It creates no N03. Unreferenced resources retain normal deletion behavior. Closed execution scalar references and stored content remain historical evidence.
+
+The guard locks known directly assigned and ACTIVE-context routes in sorted order, then locks the resource FOR UPDATE, then rechecks current references. It never locks newly discovered routes after the resource lock. Execution publication and synchronization lock the route first, then the driver and vehicle FOR KEY SHARE, and revalidate resource existence and scope. Foreign-key assignment locks and these explicit locks prevent concurrent assignment or publication from bypassing deletion checks. A snapshot that still names a missing resource rejects and rolls back rather than publishing a stale scalar reference.
+
+If deletion wins before first publication, the route driver FK becomes null. The existing grouped publication boundary may retain physical publishedAt and a durable SKIPPED_NON_DSV command result, then return FAILED/NOTIFICATION_PROCESSING_FAILED from its legacy notification wrapper. It creates no execution, mapping, or N01. This preserves existing partial-publication evidence and skipped-command retry semantics. Publication winning first instead makes deletion reject with RESOURCE_IN_USE.
 
 ## Atomic business commands
 
@@ -43,6 +51,8 @@ UVIS saves original samples and eligible jobs atomically. The processor uses per
 State is keyed by context, epoch, and target. Immutable transition evidence records sample ID, content version, epoch, policy version, first boundary observation, confirming observation, and server confirmation time. Operations DTOs do not copy raw coordinates. The scalar sample reference can remain after raw retention removes a sample.
 
 Invalid coordinates, implausible jumps, stale/future observations, duplicates, and reverse time cannot advance state. GPS gaps reset unfinished dwell evidence. Inner entry and larger outer exit radii provide hysteresis. The neutral band preserves confirmed state and cancels pending entry/exit candidates. Dwell duration and distinct sample count are both required. Repeated visits use a visit ordinal. Overlapping pending destinations do not choose an arbitrary target.
+
+When exitMinSamples=1 and exitDwellSeconds=0, the first valid observation outside the outer exit radius confirms DEPARTED. The same confirmation rule applies on the first and subsequent outside observations. Higher sample counts, positive dwell, neutral-band cancellation, GPS-gap reset, and re-entry retain their existing behavior.
 
 After locking the context, the processor revalidates mapping, effective time, version, epoch, selector, monitor window, and attribution. Old samples cannot attach after concurrent route replacement. Job claims use leases. Ambiguous or unavailable attribution retries within a bounded technical budget, then ends with an ignored reason. Restart preserves committed evidence.
 
@@ -65,6 +75,8 @@ SHADOW records decisions without N04/N05/N06 intents. LIVE requires liveEligible
 | N07 | Separate delivery exception | Authorized operations report; no driver FCM |
 
 Business mutation and intent commit together. Logical keys prevent duplicates. Per-token/per-capability attempts prevent repeated materialization and starvation. Business states are OPEN, RESOLVED, CANCELLED, EXPIRED. READ/OPENED acknowledgements do not resolve warnings.
+
+N01 push title and inbox title are “n월 n일 배차가 등록되었습니다.”, using the referenced execution's serviceDate. The stored UTC date-only month and day are used for future executions and retries across a calendar boundary. Intent creation time and provider send time do not select the displayed date. The existing body and schema-v1 payload keys remain compatible. Missing execution date fails closed. Date loading precedes the final fresh policy, authority, and lease checks; no extra asynchronous lookup occurs between the final lease check and provider invocation.
 
 Immediately before provider send, the worker checks fresh policy, lease owner/expiry, latest intent, tenant, active driver/account/vehicle, current published assignment, epoch, content compatibility, target, and capability. N03 reveals only release. N04/N05 retain timing through content revisions and resolve current authorized details. N06 requires its exact pending target. N07 is operations-only.
 

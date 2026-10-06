@@ -55,6 +55,30 @@ describe('DSV geofence transition engine', () => {
       });
   });
 
+  it('R2 confirms a one-sample zero-dwell departure on the first valid outer observation', () => {
+    const previous = confirmedInsideState();
+    const observation = {
+      latitude: 37.503,
+      longitude: 127,
+      observedAt: new Date('2026-10-06T22:30:00.000Z'),
+      sampleId: 'single-outside',
+    };
+    const departure = advanceDsvGeofence(previous, observation, target, {
+      ...policy,
+      exitDwellSeconds: 0,
+      exitMinSamples: 1,
+    });
+
+    expect(departure).toMatchObject({
+      state: { firstOutsideAt: '2026-10-06T22:30:00.000Z', phase: 'OUTSIDE' },
+      transition: 'DEPARTED',
+    });
+    expect(dsvGeofenceTransitionEvidence(previous, observation)).toEqual({
+      confirmedObservedAt: observation.observedAt,
+      firstObservedAt: observation.observedAt,
+    });
+  });
+
   it('G02/G03 preserves confirmed presence through the neutral band and confirms only an outer-radius exit', () => {
     let state = emptyDsvGeofenceState();
     ({ state } = step(state, 'pass-inside', '2026-10-06T22:00:00.000Z', 37.5, 127));

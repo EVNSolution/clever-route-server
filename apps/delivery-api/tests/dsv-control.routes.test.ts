@@ -17,6 +17,7 @@ import { DsvForbiddenError, dsvAdminScopes, dsvOperatorScopes, type DsvPrincipal
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
 import { DsvResourceConflictError } from '../src/modules/dsv/dsv-resource.service.js';
+import { DsvResourceInUseError } from '../src/modules/dsv/dsv-resource-deletion-guard.js';
 import type { DsvResourceService } from '../src/modules/dsv/dsv-resource.service.js';
 import { defaultRouteOpsUiSettings } from '../src/modules/route-ops/route-ops-ui-settings.js';
 import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-config.js';
@@ -2517,6 +2518,24 @@ describe('DSV control routes', () => {
         data: null,
         error: { code: 'VEHICLE_ASSIGNMENT_EXISTS' },
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns resource-in-use conflict for protected DSV resource deletion', async () => {
+    const { app, resourceService } = await createHarness();
+    try {
+      resourceService.deleteVehicle.mockRejectedValueOnce(new DsvResourceInUseError('vehicle'));
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: '/api/dsv/vehicles/77777777-7777-4777-8777-777777777777',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ data: null, error: { code: 'RESOURCE_IN_USE' } });
     } finally {
       await app.close();
     }

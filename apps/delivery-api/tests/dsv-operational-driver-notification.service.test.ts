@@ -5,7 +5,10 @@ import {
   disabledDsvOperationalNotificationSendPolicy,
   type DsvOperationalNotificationSendPolicy,
 } from '../src/modules/dsv/dsv-operational-driver-notification.service.js';
-import type { DsvOperationalPushProvider } from '../src/modules/dsv/dsv-operational-driver-notification.provider.js';
+import {
+  notificationCopy,
+  type DsvOperationalPushProvider,
+} from '../src/modules/dsv/dsv-operational-driver-notification.provider.js';
 import { createDsvAdminPrincipal, type DsvDriverPrincipal } from '../src/modules/dsv/dsv-principal.js';
 
 const now = new Date('2026-10-06T03:00:00.000Z');
@@ -13,10 +16,26 @@ const accountId = '10000000-0000-4000-8000-000000000001';
 const shopId = '20000000-0000-4000-8000-000000000001';
 const notificationId = '30000000-0000-4000-8000-000000000001';
 const executionContextId = '40000000-0000-4000-8000-000000000001';
+const secondExecutionContextId = '40000000-0000-4000-8000-000000000002';
 const routePlanId = '50000000-0000-4000-8000-000000000001';
 const tokenId = '60000000-0000-4000-8000-000000000001';
 const capabilityId = '70000000-0000-4000-8000-000000000001';
 const attemptId = '80000000-0000-4000-8000-000000000001';
+
+describe('DSV operational N01 copy', () => {
+  test.each([
+    ['future service date', '2026-10-08T00:00:00.000Z', '10월 8일 배차가 등록되었습니다.'],
+    ['year rollover service date', '2027-01-01T00:00:00.000Z', '1월 1일 배차가 등록되었습니다.'],
+  ])('uses the execution service date for %s', (_caseName, value, expectedTitle) => {
+    const serviceDate = new Date(value);
+
+    expect(notificationCopy('N01', serviceDate)).toEqual({
+      body: '앱에서 새 배차를 확인해 주세요.',
+      title: expectedTitle,
+    });
+    expect(notificationCopy('N01', serviceDate)).toEqual(notificationCopy('N01', serviceDate));
+  });
+});
 
 const driverPrincipal: DsvDriverPrincipal = {
   driverId: '90000000-0000-4000-8000-000000000001',
@@ -45,6 +64,7 @@ describe('PrismaDsvOperationalDriverNotificationService capability and inbox', (
     prisma.dsvOperationalNotification.findMany.mockResolvedValue([{
       businessStatus: 'OPEN',
       createdAt: now,
+      executionContextId,
       expiresAt: new Date(now.getTime() + 60_000),
       id: notificationId,
       kind: 'N01',
@@ -52,6 +72,10 @@ describe('PrismaDsvOperationalDriverNotificationService capability and inbox', (
     prisma.dsvOperationalNotificationAck.findMany.mockResolvedValue([{
       createdAt: now,
       notificationId,
+    }]);
+    prisma.dsvExecutionContext.findMany.mockResolvedValue([{
+      id: executionContextId,
+      serviceDate: new Date('2026-10-08T00:00:00.000Z'),
     }]);
     const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider);
 
@@ -65,7 +89,7 @@ describe('PrismaDsvOperationalDriverNotificationService capability and inbox', (
         expiresAt: new Date(now.getTime() + 60_000).toISOString(),
         id: notificationId,
         kind: 'N01',
-        summary: { body: '앱에서 새 배차를 확인해 주세요.', title: '배차가 등록되었습니다' },
+        summary: { body: '앱에서 새 배차를 확인해 주세요.', title: '10월 8일 배차가 등록되었습니다.' },
       }],
       nextCursor: null,
     });
@@ -74,6 +98,40 @@ describe('PrismaDsvOperationalDriverNotificationService capability and inbox', (
       where: expect.objectContaining({ audience: 'DRIVER', recipientAccountId: accountId, shopId }) as unknown,
     }));
     expect(JSON.stringify(result)).not.toContain('payload');
+  });
+
+  test('keeps two N01 inbox items distinct by execution service date', async () => {
+    const { prisma, provider } = createBaseHarness();
+    prisma.dsvOperationalNotification.findMany.mockResolvedValue([
+      {
+        businessStatus: 'OPEN',
+        createdAt: now,
+        executionContextId,
+        expiresAt: new Date(now.getTime() + 60_000),
+        id: notificationId,
+        kind: 'N01',
+      },
+      {
+        businessStatus: 'OPEN',
+        createdAt: new Date(now.getTime() - 1_000),
+        executionContextId: secondExecutionContextId,
+        expiresAt: new Date(now.getTime() + 60_000),
+        id: '30000000-0000-4000-8000-000000000002',
+        kind: 'N01',
+      },
+    ]);
+    prisma.dsvExecutionContext.findMany.mockResolvedValue([
+      { id: executionContextId, serviceDate: new Date('2026-10-08T00:00:00.000Z') },
+      { id: secondExecutionContextId, serviceDate: new Date('2026-10-09T00:00:00.000Z') },
+    ]);
+    const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider);
+
+    const result = await service.list({ now, principal: driverPrincipal });
+
+    expect(result.items.map((item) => item.summary.title)).toEqual([
+      '10월 8일 배차가 등록되었습니다.',
+      '10월 9일 배차가 등록되었습니다.',
+    ]);
   });
 
   test('binds capability to the authenticated account and current token generation', async () => {
@@ -354,6 +412,39 @@ describe('PrismaDsvOperationalDriverNotificationService sender', () => {
     expect(JSON.stringify(provider.send.mock.calls[0]?.[0])).not.toContain('latitude');
   });
 
+  test('uses the future execution service date for N01 push instead of the send date', async () => {
+    const { prisma, provider } = createSenderHarness({ kind: 'N01' });
+    provider.send.mockResolvedValue({ providerMessageId: 'fcm-n01', status: 'SENT' });
+    const policy = { ...livePolicy, allowedKinds: ['N01'] as const };
+    const sendDate = now;
+    const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider, policy, { clock: () => sendDate });
+
+    await expect(service.runOnce(sendDate)).resolves.toMatchObject({ sent: 1 });
+
+    expect(provider.send).toHaveBeenCalledWith(expect.objectContaining({
+      body: '앱에서 새 배차를 확인해 주세요.',
+      title: '1월 2일 배차가 등록되었습니다.',
+    }));
+  });
+
+  test('keeps the same N01 service-date copy across a provider retry', async () => {
+    const { prisma, provider } = createSenderHarness({ kind: 'N01' });
+    provider.send
+      .mockResolvedValueOnce({ errorCode: 'TEMPORARY', status: 'FAILED' })
+      .mockResolvedValueOnce({ providerMessageId: 'fcm-n01-retry', status: 'SENT' });
+    const policy = { ...livePolicy, allowedKinds: ['N01'] as const };
+    const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider, policy, { clock: () => now });
+
+    await service.runOnce(now);
+    await service.runOnce(now);
+
+    expect(provider.send).toHaveBeenCalledTimes(2);
+    expect(provider.send.mock.calls.map(([message]) => message.title)).toEqual([
+      '1월 2일 배차가 등록되었습니다.',
+      '1월 2일 배차가 등록되었습니다.',
+    ]);
+  });
+
   test('re-reads the notification authority immediately before provider send', async () => {
     const { notification, prisma, provider } = createSenderHarness();
     prisma.dsvOperationalNotification.findFirst
@@ -377,6 +468,32 @@ describe('PrismaDsvOperationalDriverNotificationService sender', () => {
       return reads >= 4 ? disabledDsvOperationalNotificationSendPolicy : livePolicy;
     };
     const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider, policySource, { clock: () => now });
+
+    await expect(service.runOnce(now)).resolves.toMatchObject({ attempted: 1, sent: 0, skipped: 1 });
+
+    expect(provider.send).not.toHaveBeenCalled();
+    expect(prisma.dsvOperationalNotificationAttempt.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ errorCode: 'LIVE_POLICY_DISABLED', status: 'SKIPPED' }) as unknown,
+    }));
+  });
+
+  test('honors a policy kill switch that changes during the N01 service-date read', async () => {
+    const { context, prisma, provider } = createSenderHarness({ kind: 'N01' });
+    const n01Policy = { ...livePolicy, allowedKinds: ['N01'] as const };
+    let disabledDuringDateRead = false;
+    prisma.dsvExecutionContext.findFirst.mockImplementation((query: { select?: Record<string, boolean> }) => {
+      if (query.select?.serviceDate === true && Object.keys(query.select).length === 1) {
+        disabledDuringDateRead = true;
+        return Promise.resolve({ serviceDate: context.serviceDate });
+      }
+      return Promise.resolve(context);
+    });
+    const service = new PrismaDsvOperationalDriverNotificationService(
+      prisma as never,
+      provider,
+      () => disabledDuringDateRead ? disabledDsvOperationalNotificationSendPolicy : n01Policy,
+      { clock: () => now },
+    );
 
     await expect(service.runOnce(now)).resolves.toMatchObject({ attempted: 1, sent: 0, skipped: 1 });
 
@@ -600,7 +717,7 @@ function createBaseHarness() {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     dsvDeliveryException: { findFirst: vi.fn() },
-    dsvExecutionContext: { findFirst: vi.fn() },
+    dsvExecutionContext: { findFirst: vi.fn(), findMany: vi.fn().mockResolvedValue([]) },
     dsvNotificationCapability: {
       findFirst: vi.fn(),
       findMany: vi.fn().mockResolvedValue([]),
@@ -636,7 +753,7 @@ function createBaseHarness() {
   return { prisma, provider };
 }
 
-function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N03' | 'N04' | 'N05' | 'N06'; ordinal?: number } = {}) {
+function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N01' | 'N03' | 'N04' | 'N05' | 'N06'; ordinal?: number } = {}) {
   const { prisma, provider } = createBaseHarness();
   const notification = {
     assignmentEpoch: 1n,
@@ -653,7 +770,7 @@ function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N03' | 
     routeVersion: 1,
     targetStopId: overrides.kind === 'N06' ? 'b0000000-0000-4000-8000-000000000001' : null,
   };
-  prisma.dsvOperationalNotification.findMany.mockResolvedValueOnce([]);
+  prisma.dsvOperationalNotification.findMany.mockResolvedValue([]);
   prisma.$queryRaw.mockResolvedValue([{ id: notificationId, kind: notification.kind, recipientAccountId: accountId, shopId }]);
   prisma.dsvNotificationCapability.findMany.mockResolvedValue([{ id: capabilityId, kinds: [notification.kind], tokenId }]);
   prisma.dsvOperationalNotificationAttempt.findMany.mockResolvedValue([{
@@ -693,7 +810,7 @@ function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N03' | 
     tokenHash: 'token-hash',
     updatedAt: now,
   });
-  prisma.dsvExecutionContext.findFirst.mockResolvedValue({
+  const context = {
     closedAt: null,
     driverId: driverPrincipal.driverId,
     id: executionContextId,
@@ -703,10 +820,12 @@ function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N03' | 
     notificationMode: 'LIVE',
     policy: { authorizationId: 'change-control-123', policyVersion: 'synthetic-v1' },
     routePlanId,
+    serviceDate: new Date('2027-01-02T00:00:00.000Z'),
     startedAt: null,
     status: 'ACTIVE',
     vehicleId: 'vehicle-1',
-  });
+  };
+  prisma.dsvExecutionContext.findFirst.mockResolvedValue(context);
   prisma.routePlan.findFirst.mockResolvedValue({
     driver: { accountId, status: 'ACTIVE' },
     driverId: driverPrincipal.driverId,
@@ -714,7 +833,7 @@ function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N03' | 
     vehicle: { status: 'ACTIVE' },
     vehicleId: 'vehicle-1',
   });
-  return { notification, prisma, provider };
+  return { context, notification, prisma, provider };
 }
 
 function mockCurrentContext(prisma: ReturnType<typeof createBaseHarness>['prisma']): void {
