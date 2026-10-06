@@ -9,9 +9,12 @@ export const ROUTE_DRIVER_OPERATIONAL_STATUSES = [
   'ASSIGNED'
 ] as const satisfies readonly RoutePlanStatus[];
 
+// Read/history scope for routes, proof media, and feedback. Active-session
+// restoration must use ROUTE_DRIVER_OPERATIONAL_STATUSES instead.
 export const ROUTE_DRIVER_VISIBLE_STATUSES = [
   ...ROUTE_DRIVER_OPERATIONAL_STATUSES,
-  'COMPLETED'
+  'COMPLETED',
+  'INCOMPLETE'
 ] as const satisfies readonly RoutePlanStatus[];
 
 export const ROUTE_ACTIVE_COMPATIBILITY_STATUSES = [
@@ -31,7 +34,7 @@ export const ROUTE_READY_COMPATIBILITY_STATUSES = [
   'ASSIGNED'
 ] as const satisfies readonly RoutePlanStatus[];
 
-export type RouteExecutionStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+export type RouteExecutionStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'INCOMPLETE' | 'CANCELLED';
 
 export function toRouteExecutionStatus(
   status: string | null | undefined,
@@ -39,6 +42,7 @@ export function toRouteExecutionStatus(
 ): RouteExecutionStatus {
   if (status === 'IN_PROGRESS') return 'IN_PROGRESS';
   if (status === 'COMPLETED') return 'COMPLETED';
+  if (status === 'INCOMPLETE') return 'INCOMPLETE';
   if (status === 'CANCELLED') return 'CANCELLED';
   if (driverEvents.some((event) => event.eventType === 'ROUTE_COMPLETED')) return 'COMPLETED';
   if (driverEvents.some((event) => event.eventType === 'ROUTE_PAUSED')) return 'READY';

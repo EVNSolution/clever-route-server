@@ -9,6 +9,7 @@ const routePlanStatusMap = {
   READY: 'published',
   IN_PROGRESS: 'published',
   COMPLETED: 'published',
+  INCOMPLETE: 'published',
   DRAFT: 'published',
   PUBLISHED: 'published',
   OPTIMIZED: 'published',
@@ -27,7 +28,7 @@ const stopStatusMap = {
 } as const satisfies Record<string, WordPressPluginStopStatus>;
 
 const readyCompatibilityStatuses = ['READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] as const satisfies readonly RoutePlanStatus[];
-const visibleCompatibilityStatuses = [...readyCompatibilityStatuses, 'IN_PROGRESS', 'COMPLETED'] as const satisfies readonly RoutePlanStatus[];
+const visibleCompatibilityStatuses = [...readyCompatibilityStatuses, 'IN_PROGRESS', 'COMPLETED', 'INCOMPLETE'] as const satisfies readonly RoutePlanStatus[];
 
 export function toWordPressRoutePlanStatus(status: string): WordPressPluginRoutePlanStatus {
   const mapped = routePlanStatusMap[status as keyof typeof routePlanStatusMap];

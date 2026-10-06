@@ -325,6 +325,19 @@ export type AdminRouteStopOverrideResult = {
   routePlan: RoutePlanDetail;
 };
 
+export type AdminRouteStopGeometryRefreshGuard = {
+  expectedRoutePlanUpdatedAt: string;
+  expectedStopUpdatedAts: Array<{
+    deliveryStopId: string;
+    updatedAt: string;
+  }>;
+  shapeSignature: string;
+};
+
+export type AdminRouteStopOverrideRepositoryResult = AdminRouteStopOverrideResult & {
+  refreshGuard: AdminRouteStopGeometryRefreshGuard | null;
+};
+
 export type UpdateRoutePlanDriverPayload = {
   driverId: string | null;
 };

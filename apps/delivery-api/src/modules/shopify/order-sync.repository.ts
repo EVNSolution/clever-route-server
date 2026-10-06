@@ -1,3 +1,4 @@
+import { visibleDsvOrderWhere, hasDsvTestExclusions } from '../dsv/dsv-test-visibility.js';
 import { Prisma, type PrismaClient } from "@prisma/client";
 
 import { redactDiagnosticPath, redactDiagnosticValue } from "../security/diagnostic-redaction.js";
@@ -25,8 +26,11 @@ import type { AssignedRouteAddressChangedEvent } from "../notifications/admin-we
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
 import { requireOrdersPlanningReferenceDate } from "./order-pagination.js";
 import { parseOrderDisplaySequence } from "./order-display-sequence.js";
+import { ordersV2Where, prepareOrdersV2Filters, v2ProgressForRecord, type OrdersV2Filters } from './order-filters-v2.js';
+import { orderedDateBoundary } from './ordered-date-range.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
+import { reconcileKfoodDeliveryWorkCompletion } from "../route-plans/kfood-delivery-completion.js";
 import {
   assertShopifyShopPrivacyWriteAllowed,
   lockShopifyOrderPrivacyIdentity,
@@ -35,6 +39,7 @@ import {
 import { isPickupComplete, pickupCompleteAfter, torontoDateOnly } from './pickup-order-completion.js';
 
 const SHOPIFY_UNFULFILLED_STATUSES = ["UNFULFILLED", "OPEN", "RESTOCKED"];
+const TERMINAL_DELIVERY_STOP_STATUSES = new Set<BulkOrderStateValue>(["CANCELLED", "DELIVERED", "FAILED", "SKIPPED"]);
 
 export type OrderSyncReason = "orders_page_open" | "manual_refresh" | "route_create_preflight";
 
@@ -70,7 +75,7 @@ export type AssertOrdersSnapshotRefreshableInput = {
   shopifyOrderGids: string[];
 };
 
-export type ListCanonicalOrdersFilters = {
+export type ListCanonicalOrdersFilters = OrdersV2Filters & {
   deliveryState?: "unplanned" | "planned" | "assigned_undelivered" | "past_due" | "delivered" | "fulfilled" | "unfulfilled";
   deliveryBatchEndDate?: string;
   deliveryBatchStartDate?: string;
@@ -84,6 +89,7 @@ export type ListCanonicalOrdersFilters = {
   orderHealth?: OrderHealth;
   orderedDateFrom?: string;
   orderedDateTo?: string;
+  orderedDateTimeZone?: string;
   planned?: boolean;
   planningGroupKey?: string;
   readiness?: CanonicalOrderReadiness;
@@ -93,8 +99,14 @@ export type ListCanonicalOrdersFilters = {
   routeOpsToday?: string;
   scope?: "history" | "planning";
   search?: string;
+  serviceCategory?: "DELIVERY" | "PICKUP";
   serviceType?: string;
   tab?: "all" | "needs_review" | "planned" | "unplanned";
+};
+
+const ORDER_SERVICE_CATEGORIES = {
+  DELIVERY: ["DELIVERY", "EVENING_DELIVERY"],
+  PICKUP: ["PICKUP"],
 };
 
 export type ListCanonicalOrdersInput = {
@@ -228,6 +240,7 @@ type OrderSyncPrismaClient = Pick<
   | "order"
   | "orderItem"
   | "orderDeliveryFact"
+  | "routePlan"
   | "shopifyOrderRedactionTombstone"
   | "shopifyWebhookEvent"
   | "shop"
@@ -235,7 +248,7 @@ type OrderSyncPrismaClient = Pick<
 
 type OrderSyncWriteClient = Pick<
   PrismaClient,
-  "$queryRaw" | "deliveryStop" | "inventory" | "inventoryEvent" | "inventoryOrder" | "order" | "orderItem" | "orderDeliveryFact" | "shopifyOrderRedactionTombstone" | "shopifyWebhookEvent"
+  "$queryRaw" | "deliveryStop" | "inventory" | "inventoryEvent" | "inventoryOrder" | "order" | "orderItem" | "orderDeliveryFact" | "routePlan" | "shopifyOrderRedactionTombstone" | "shopifyWebhookEvent"
 >;
 
 export type OrderSyncNotificationLogger = {
@@ -259,7 +272,10 @@ type ExistingDeliveryFact = {
   deliveryDateWeekday?: string | null;
   deliveryDateWeekdayMismatch?: boolean;
   deliveryDateWeekdayVerified?: boolean;
+  deliveryDayParseStatus?: string;
+  deliveryDayUnparsedReason?: string | null;
   deliverySession: string | null;
+  deliveryWeekday?: string | null;
   geocodeStatus?: string;
   mappingDiagnostics: unknown;
   planningGroupKey: string | null;
@@ -282,6 +298,7 @@ type ExistingDeliveryStop = {
   longitude: unknown;
   postalCode: string | null;
   province: string | null;
+  status: string;
   routePlanStops?: Array<{
     routePlan: {
       id: string;
@@ -295,6 +312,8 @@ type ExistingDeliveryStop = {
 };
 
 export type CanonicalOrderRecord = {
+  currentRouteVersionId?: string | null;
+  currentRouteVersion?: { status: string; supersededAt: Date | null; routePlan?: { status: string } | null } | null;
   cancelledAt: Date | null;
   currencyCode: string | null;
   deliveryFacts?: DeliveryFactCanonicalRecord[];
@@ -604,7 +623,7 @@ export class PrismaOrderSyncRepository {
 
     const order = await this.prisma.order.findFirst({
       include: canonicalOrderInclude(),
-      where: { id: input.orderId, shopId: shop.id },
+      where: { id: input.orderId, shopId: shop.id, ...visibleDsvOrderWhere(shop.id) },
     });
 
     return order === null ? null : toCanonicalOrderRow(order);
@@ -619,14 +638,15 @@ export class PrismaOrderSyncRepository {
     }
 
     const now = this.options.now?.() ?? new Date();
+    const preparedFilters = await prepareOrdersV2Filters(this.prisma, shop.id, input.filters ?? {});
     const orders = (await this.prisma.order.findMany({
       include: canonicalOrderInclude(),
       orderBy: { updatedAtShopify: "desc" },
-      where: toCanonicalOrderWhere(shop.id, input.filters ?? {}, now),
+      where: toCanonicalOrderWhere(shop.id, preparedFilters, now),
     })) as CanonicalOrderRecord[];
 
     return orders
-      .map((order) => toCanonicalOrderRow(order))
+      .map((order) => toOrdersQueryRow(order, input.filters ?? {}, now))
       .filter((row) => matchesDerivedFilters(row, input.filters ?? {}, now));
   }
 
@@ -656,7 +676,7 @@ export class PrismaOrderSyncRepository {
     const orders = (await this.prisma.order.findMany({
       include: canonicalOrderInclude(),
       orderBy: { updatedAtShopify: "desc" },
-      where: { shopId: shop.id, OR },
+      where: { shopId: shop.id, OR, ...visibleDsvOrderWhere(shop.id) },
     })) as CanonicalOrderRecord[];
 
     return orders.map((order) => toCanonicalOrderRow(order));
@@ -689,6 +709,7 @@ export class PrismaOrderSyncRepository {
           ? {}
           : { deliveryDate: parseDateOnly(input.deliveryDate) }),
         shopId: shop.id,
+        ...(hasDsvTestExclusions(shop.id) ? { order: visibleDsvOrderWhere(shop.id) } : {}),
       },
     })) as DeliveryFactCandidateRecord[];
     return summarizeDeliveryBatchCandidates(facts);
@@ -702,14 +723,68 @@ export class PrismaOrderSyncRepository {
 
     const orderIds = [...new Set(input.orderIds)];
     const orders = await this.prisma.order.findMany({
-      select: { id: true, rawPayload: true },
+      select: {
+        deliveryStops: {
+          select: {
+            routePlanStops: { select: { routePlanId: true } },
+          },
+        },
+        id: true,
+        rawPayload: true,
+      },
       where: { id: { in: orderIds }, shopId: shop.id },
     });
     if (orders.length === 0) return [];
 
     await this.prisma.$transaction(async (tx) => {
       if (input.field === "state") {
-        for (const order of orders) {
+        const currentMemberships = await tx.order.findMany({
+          select: {
+            deliveryStops: {
+              select: {
+                routePlanStops: { select: { routePlanId: true } },
+              },
+            },
+            id: true,
+            rawPayload: true,
+          },
+          where: { id: { in: orderIds }, shopId: shop.id },
+        });
+        const routePlanIds = routePlanIdsForStatusPatch(currentMemberships);
+        for (const routePlanId of routePlanIds) {
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "route_plans"
+            WHERE "id" = ${routePlanId}::uuid
+              AND "shopId" = ${shop.id}::uuid
+            FOR UPDATE
+          `;
+        }
+        for (const orderId of [...orderIds].sort()) {
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "orders"
+            WHERE "id" = ${orderId}::uuid
+              AND "shopId" = ${shop.id}::uuid
+            FOR UPDATE
+          `;
+        }
+        const revalidatedOrders = await tx.order.findMany({
+          select: {
+            deliveryStops: {
+              select: {
+                routePlanStops: { select: { routePlanId: true } },
+              },
+            },
+            id: true,
+            rawPayload: true,
+          },
+          where: { id: { in: orderIds }, shopId: shop.id },
+        });
+        if (!sameStringArray(routePlanIds, routePlanIdsForStatusPatch(revalidatedOrders))) {
+          throw new OrderSyncRouteLockedError("Order route membership changed during status correction.");
+        }
+        for (const order of revalidatedOrders) {
           await tx.order.update({
             data: {
               rawPayload: toJson({
@@ -728,6 +803,16 @@ export class PrismaOrderSyncRepository {
             },
             update: { status: input.value as BulkOrderStateValue },
             where: { shopId_orderId: { orderId: order.id, shopId: shop.id } },
+          });
+        }
+        const now = this.options.now?.() ?? new Date();
+        const allowStart = TERMINAL_DELIVERY_STOP_STATUSES.has(input.value as BulkOrderStateValue);
+        for (const routePlanId of routePlanIds) {
+          await reconcileKfoodDeliveryWorkCompletion(tx, {
+            allowStart,
+            now,
+            routePlanId,
+            shopId: shop.id,
           });
         }
         return;
@@ -771,6 +856,10 @@ export class PrismaOrderSyncRepository {
       const fact = order.deliveryFacts?.[0] ?? null;
       const stop = order.deliveryStops?.[0] ?? null;
       const patch = input.patch;
+      const deliveryTimeZone = readPersistedDeliveryTimeZone({
+        mappingDiagnostics: fact?.mappingDiagnostics,
+        rawPayload: order.rawPayload,
+      });
       const deliveryDate =
         patch.deliveryDate === undefined
           ? formatDateOnlyNullable(
@@ -896,10 +985,15 @@ export class PrismaOrderSyncRepository {
           sourcePlatform: order.sourcePlatform ?? "SHOPIFY",
           sourceSiteUrl: order.sourceSiteUrl ?? null,
           sourceUpdatedAt: order.sourceUpdatedAt ?? order.updatedAtShopify,
-          timeWindowEnd: parseTorontoTimeWindow(deliveryDate, timeWindowEnd),
-          timeWindowStart: parseTorontoTimeWindow(
+          timeWindowEnd: parseDeliveryTimeWindow(
+            deliveryDate,
+            timeWindowEnd,
+            deliveryTimeZone,
+          ),
+          timeWindowStart: parseDeliveryTimeWindow(
             deliveryDate,
             timeWindowStart,
+            deliveryTimeZone,
           ),
         },
         update: {
@@ -920,10 +1014,15 @@ export class PrismaOrderSyncRepository {
           reviewReasons: toJson(reviewReasons),
           routeScopeKey: scope.routeScopeKey,
           serviceType,
-          timeWindowEnd: parseTorontoTimeWindow(deliveryDate, timeWindowEnd),
-          timeWindowStart: parseTorontoTimeWindow(
+          timeWindowEnd: parseDeliveryTimeWindow(
+            deliveryDate,
+            timeWindowEnd,
+            deliveryTimeZone,
+          ),
+          timeWindowStart: parseDeliveryTimeWindow(
             deliveryDate,
             timeWindowStart,
+            deliveryTimeZone,
           ),
         },
         where: { shopId_orderId: { orderId: order.id, shopId: shop.id } },
@@ -955,8 +1054,16 @@ export class PrismaOrderSyncRepository {
           patch.province === undefined
             ? (stop?.province ?? null)
             : patch.province,
-        timeWindowEnd: parseTorontoTimeWindow(deliveryDate, timeWindowEnd),
-        timeWindowStart: parseTorontoTimeWindow(deliveryDate, timeWindowStart),
+        timeWindowEnd: parseDeliveryTimeWindow(
+          deliveryDate,
+          timeWindowEnd,
+          deliveryTimeZone,
+        ),
+        timeWindowStart: parseDeliveryTimeWindow(
+          deliveryDate,
+          timeWindowStart,
+          deliveryTimeZone,
+        ),
       };
       await tx.deliveryStop.upsert({
         create: { ...stopWrite, orderId: order.id, shopId: shop.id },
@@ -1296,7 +1403,46 @@ export class PrismaOrderSyncRepository {
     tx: OrderSyncWriteClient;
   }): Promise<OrderWriteWithNotificationIntents> {
     assertManualRefreshRouteUnlocked(input.existing?.deliveryStops?.[0] ?? null, input.syncReason);
+    const existingFact = resolveExistingFactForScheduleProtection(
+      input.existing,
+      input.synced,
+    );
+    const existingStop = input.existing?.deliveryStops?.[0] ?? null;
+    const correctedFields = readRouteOpsCorrectedFields(
+      existingFact?.mappingDiagnostics,
+    );
+    const shopifyRouteScheduleGuard = buildShopifyRouteScheduleGuard({
+      existingFact,
+      existingRawPayload: input.existing?.rawPayload,
+      existingStop,
+      synced: input.synced,
+    });
+    const downgradeGuard = buildWooScheduleDowngradeGuard({
+      existingFact,
+      incomingFact: input.synced.deliveryFact ?? null,
+      sourceUpdatedAt: input.synced.order.sourceUpdatedAt ?? input.synced.order.updatedAtShopify,
+    });
+    const protectedFields = new Set([
+      ...correctedFields,
+      ...shopifyRouteScheduleGuard.fields,
+      ...downgradeGuard.fields,
+    ]);
     const orderWrite = toOrderWrite(input.synced.order);
+    if (
+      (input.synced.order.sourcePlatform ?? "SHOPIFY") === "SHOPIFY" &&
+      existingFact !== null &&
+      hasProtectedScheduleFields(protectedFields)
+    ) {
+      orderWrite.rawPayload = toJson(
+        applyProtectedDerivedScheduleRawPayload({
+          currentDeliveryTimeZone: input.synced.deliveryTimeZone,
+          existingFact,
+          existingRawPayload: input.existing?.rawPayload,
+          incomingRawPayload: input.synced.order.rawPayload,
+          protectedFields,
+        }),
+      );
+    }
     const existingRawPayload = objectOrNull(input.existing?.rawPayload);
     const manualPaymentStatus = readManualPaymentStatus(
       existingRawPayload?.cleverManualPaymentStatus,
@@ -1309,7 +1455,7 @@ export class PrismaOrderSyncRepository {
     );
     if (manualPaymentStatus !== null || manualPaymentMethod !== null || manualDeliveryStatus !== null) {
       orderWrite.rawPayload = toJson({
-        ...input.synced.order.rawPayload,
+        ...(objectOrNull(orderWrite.rawPayload) ?? input.synced.order.rawPayload),
         ...(manualPaymentStatus === null ? {} : { cleverManualPaymentStatus: manualPaymentStatus }),
         ...(manualPaymentMethod === null ? {} : { cleverManualPaymentMethod: manualPaymentMethod }),
         ...(manualDeliveryStatus === null ? {} : { cleverManualDeliveryStatus: manualDeliveryStatus }),
@@ -1364,25 +1510,11 @@ export class PrismaOrderSyncRepository {
       });
     }
 
-    const existingFact = withInferredLegacyRouteOpsCorrections(input.existing, input.synced);
-    const existingStop = input.existing?.deliveryStops?.[0] ?? null;
     const notificationEvents: AssignedRouteAddressChangedEvent[] = [];
-    const correctedFields = readRouteOpsCorrectedFields(
-      existingFact?.mappingDiagnostics,
-    );
-    const downgradeGuard = buildWooScheduleDowngradeGuard({
-      existingFact,
-      incomingFact: input.synced.deliveryFact ?? null,
-      sourceUpdatedAt: input.synced.order.sourceUpdatedAt ?? input.synced.order.updatedAtShopify,
-    });
-    const protectedFields = new Set([
-      ...correctedFields,
-      ...downgradeGuard.fields,
-    ]);
 
     let stopId: string | null = null;
     if (input.synced.deliveryStop === null) {
-      if (!hasCorrectedStopFields(protectedFields)) {
+      if (!hasProtectedStopFields(protectedFields)) {
         await input.tx.deliveryStop.updateMany({
           data: clearedDeliveryStopWrite(),
           where: { orderId: order.id, shopId: input.shopId },
@@ -1391,6 +1523,7 @@ export class PrismaOrderSyncRepository {
     } else {
       const incomingDeliveryStopWrite = toDeliveryStopWrite(
         input.synced.deliveryStop,
+        input.synced.deliveryTimeZone,
       );
       const deliveryStopWrite = applyCorrectedStopFields(
         incomingDeliveryStopWrite,
@@ -1431,7 +1564,13 @@ export class PrismaOrderSyncRepository {
     ) {
       const factWrite = applyCorrectedFactFields(
         withWooScheduleDowngradeGuardDiagnostics(
-          toOrderDeliveryFactWrite(input.synced.deliveryFact),
+          withShopifyRouteScheduleGuardDiagnostics(
+            toOrderDeliveryFactWrite(
+              input.synced.deliveryFact,
+              input.synced.deliveryTimeZone,
+            ),
+            shopifyRouteScheduleGuard,
+          ),
           downgradeGuard,
         ),
         existingFact,
@@ -1511,6 +1650,18 @@ async function findExistingOrderForSync(
   });
 }
 
+function routePlanIdsForStatusPatch(orders: Array<{
+  deliveryStops: Array<{ routePlanStops: Array<{ routePlanId: string }> }>;
+}>): string[] {
+  return [...new Set(orders.flatMap((order) =>
+    order.deliveryStops.flatMap((stop) => stop.routePlanStops.map(({ routePlanId }) => routePlanId)),
+  ))].sort();
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 function isRetryableTransactionConflict(error: unknown): boolean {
   return objectOrNull(error)?.code === "P2034";
 }
@@ -1529,6 +1680,7 @@ function isExistingNewerThanSnapshot(
 
 export function canonicalOrderInclude(): Prisma.OrderInclude {
   return {
+    currentRouteVersion: { select: { status: true, supersededAt: true, routePlan: { select: { status: true } } } },
     deliveryFacts: {
       take: 1,
     },
@@ -1556,6 +1708,7 @@ export function toCanonicalOrderWhere(
   now: Date = new Date(),
 ): Prisma.OrderWhereInput {
   const AND: Prisma.OrderWhereInput[] = [
+    ...(hasDsvTestExclusions(shopId) ? [visibleDsvOrderWhere(shopId)] : []),
     { sourcePlatform: { not: 'CUSTOM' } },
     { OR: [{ sellerOrderSourceKind: null }, { sellerOrderSourceKind: { not: 'CLEVER_ROUTE_COPY' } }] }
   ];
@@ -1608,6 +1761,7 @@ export function toCanonicalOrderWhere(
     ] satisfies Prisma.OrderWhereInput[];
     AND.push({ OR: textFields });
   }
+  if (filters.filterVersion === '2') return { shopId, AND: [...AND, ...ordersV2Where(filters, now)] };
   const fact: Prisma.OrderDeliveryFactWhereInput = {};
   if (filters.deliveryArea !== undefined) fact.deliveryArea = { equals: filters.deliveryArea.trim(), mode: 'insensitive' };
   if (filters.deliveryDate !== undefined) fact.deliveryDate = parseDateOnly(filters.deliveryDate);
@@ -1622,6 +1776,9 @@ export function toCanonicalOrderWhere(
   if (filters.readiness !== undefined) fact.readiness = filters.readiness;
   if (filters.routeScopeKey !== undefined) fact.routeScopeKey = filters.routeScopeKey;
   if (filters.serviceType !== undefined) fact.serviceType = filters.serviceType;
+  if (filters.serviceCategory !== undefined) {
+    fact.AND = [{ serviceType: { in: ORDER_SERVICE_CATEGORIES[filters.serviceCategory] } }];
+  }
   if (Object.keys(fact).length > 0) AND.push({ deliveryFacts: { some: fact } });
 
   if (filters.planned !== undefined) {
@@ -1633,13 +1790,16 @@ export function toCanonicalOrderWhere(
   if (filters.deliveryBatchEndDate !== undefined) {
     AND.push({ rawPayload: { path: ['deliveryBatchEndDate'], equals: filters.deliveryBatchEndDate } });
   }
+  // Order.processedAt is copied from Shopify's displayed/original order date,
+  // not the ingestion job processedAt or CLEVER Order.createdAt (DB import time).
+  // The web Order Date must use this same source instant in the store IANA zone.
   if (filters.orderedDateFrom !== undefined) {
     const from = parseDateOnly(filters.orderedDateFrom);
-    if (from !== null) AND.push({ processedAt: { gte: from } });
+    if (from !== null) AND.push({ processedAt: { gte: orderedDateBoundary(filters.orderedDateFrom, filters.orderedDateTimeZone) } });
   }
   if (filters.orderedDateTo !== undefined) {
     const to = parseDateOnly(filters.orderedDateTo);
-    if (to !== null) AND.push({ processedAt: { lt: new Date(to.getTime() + 86_400_000) } });
+    if (to !== null) AND.push({ processedAt: { lt: orderedDateBoundary(filters.orderedDateTo, filters.orderedDateTimeZone, true) } });
   }
   if (filters.deliveryState === 'fulfilled') AND.push({ fulfillmentStatus: { equals: 'FULFILLED', mode: 'insensitive' } });
   if (filters.deliveryState === 'unfulfilled') AND.push({ fulfillmentStatus: { in: SHOPIFY_UNFULFILLED_STATUSES, mode: 'insensitive' } });
@@ -1788,6 +1948,11 @@ function matchesDerivedFilters(
   if (
     filters.serviceType !== undefined &&
     row.serviceType !== filters.serviceType
+  )
+    return false;
+  if (
+    filters.serviceCategory !== undefined &&
+    !ORDER_SERVICE_CATEGORIES[filters.serviceCategory].includes(row.serviceType ?? "")
   )
     return false;
   if (
@@ -2059,7 +2224,9 @@ function existingDeliveryFactSelect(): Prisma.OrderDeliveryFactSelect {
     deliveryDateWeekdayMismatch: true,
     deliveryDateWeekdayVerified: true,
     deliveryDayParseStatus: true,
+    deliveryDayUnparsedReason: true,
     deliverySession: true,
+    deliveryWeekday: true,
     geocodeStatus: true,
     mappingDiagnostics: true,
     matchedMappingPaths: true,
@@ -2089,6 +2256,7 @@ function existingDeliveryStopSelect() {
     longitude: true,
     postalCode: true,
     province: true,
+    status: true,
     routePlanStops: {
       select: {
         routePlan: {
@@ -2129,13 +2297,58 @@ function assertManualRefreshRouteUnlocked(
   }
 }
 
+function resolveExistingFactForScheduleProtection(
+  existing: ExistingOrder | null,
+  incoming: SyncedOrderWithDeliveryStopInput,
+): ExistingDeliveryFact | null {
+  const existingFact = withInferredLegacyRouteOpsCorrections(existing, incoming);
+  if (existingFact !== null) return existingFact;
+  if ((incoming.order.sourcePlatform ?? "SHOPIFY") !== "SHOPIFY") return null;
+  const stop = existing?.deliveryStops?.[0] ?? null;
+  const incomingFact = incoming.deliveryFact ?? null;
+  if (stop === null || incomingFact === null || !hasRouteScheduleEvidence(stop)) {
+    return null;
+  }
+  const raw = objectOrNull(existing?.rawPayload);
+  const deliveryDate = stop.deliveryDate ?? parseDateOnly(readString(raw?.deliveryDate));
+  const deliveryDateText = formatDateOnlyNullable(deliveryDate);
+  // Current source settings cannot establish a legacy schedule's local clock.
+  // Keep unknown historical metadata unknown while retaining its UTC instants.
+  return {
+    batchEligible: incomingFact.batchEligible,
+    deliveryArea: readString(raw?.deliveryArea),
+    deliveryDate,
+    deliveryDateWeekday: weekdayForDate(deliveryDateText),
+    deliveryDateWeekdayMismatch: false,
+    deliveryDateWeekdayVerified: deliveryDate !== null,
+    deliveryDayParseStatus: incomingFact.deliveryDayParseStatus,
+    deliveryDayUnparsedReason: incomingFact.deliveryDayUnparsedReason,
+    deliverySession: readDeliverySession(raw?.deliverySession),
+    deliveryWeekday: weekdayForDate(deliveryDateText),
+    geocodeStatus: incomingFact.geocodeStatus,
+    mappingDiagnostics: {
+      deliveryDateSource: raw?.deliveryDateSource ?? null,
+      deliveryTimeZone: raw?.deliveryTimeZone ?? null,
+      deliveryTimeZoneProvenance: raw?.deliveryTimeZoneProvenance ?? null,
+      legacyRouteScheduleFromStop: true,
+    },
+    planningGroupKey: readString(raw?.planningGroupKey),
+    readiness: incomingFact.readiness,
+    reviewReasons: incomingFact.reviewReasons,
+    routeScopeKey: readString(raw?.routeScopeKey),
+    serviceType: readString(raw?.serviceType),
+    timeWindowEnd: stop.timeWindowEnd,
+    timeWindowStart: stop.timeWindowStart,
+  };
+}
+
 function withInferredLegacyRouteOpsCorrections(
   existing: ExistingOrder | null,
   incoming: SyncedOrderWithDeliveryStopInput,
 ): ExistingDeliveryFact | null {
   const fact = existing?.deliveryFacts?.[0] ?? null;
   const stop = existing?.deliveryStops?.[0] ?? null;
-  if (fact === null || stop === null || (stop.routePlanStops?.length ?? 0) === 0) return fact;
+  if (fact === null || stop === null || !hasRouteScheduleEvidence(stop)) return fact;
 
   const raw = objectOrNull(existing?.rawPayload);
   const sourceAddress = readShippingAddress(existing?.shippingAddress, null);
@@ -2247,11 +2460,245 @@ type WooScheduleDowngradeGuard = {
   evidence: Record<string, unknown> | null;
 };
 
+type ShopifyRouteScheduleGuard = {
+  deliveryDateSource: unknown;
+  deliveryTimeZoneProvenance: string | null;
+  deliveryTimeZone: string | null;
+  fields: Set<string>;
+  evidence: Record<string, unknown> | null;
+};
+
+const DERIVED_SCHEDULE_FIELDS = [
+  "deliveryArea",
+  "deliveryDate",
+  "deliveryDateWeekday",
+  "deliveryDateWeekdayMismatch",
+  "deliveryDateWeekdayVerified",
+  "deliverySession",
+  "deliveryWeekday",
+  "planningGroupKey",
+  "routeScopeKey",
+  "serviceType",
+  "timeWindowEnd",
+  "timeWindowStart",
+] as const;
+
 function readRouteOpsCorrectedFields(value: unknown): Set<string> {
   const diagnostics = objectOrNull(value);
   const corrections = objectOrNull(diagnostics?.routeOpsCorrections);
   const fields = objectOrNull(corrections?.fields);
   return new Set(Object.keys(fields ?? {}));
+}
+
+function hasRouteScheduleEvidence(stop: ExistingDeliveryStop): boolean {
+  const hasScheduleRoute = (stop.routePlanStops ?? []).some(
+    ({ routePlan }) => routePlan.status !== "CANCELLED",
+  );
+  return (
+    hasScheduleRoute ||
+    ["ASSIGNED", "EN_ROUTE", "ARRIVED", "DELIVERED"].includes(stop.status)
+  );
+}
+
+function buildShopifyRouteScheduleGuard(input: {
+  existingFact: ExistingDeliveryFact | null;
+  existingRawPayload: unknown;
+  existingStop: ExistingDeliveryStop | null;
+  synced: SyncedOrderWithDeliveryStopInput;
+}): ShopifyRouteScheduleGuard {
+  const scheduleRouteMemberships = (input.existingStop?.routePlanStops ?? []).filter(
+    ({ routePlan }) => routePlan.status !== "CANCELLED",
+  );
+  const stopStatus = input.existingStop?.status ?? null;
+  if (
+    (input.synced.order.sourcePlatform ?? "SHOPIFY") !== "SHOPIFY" ||
+    input.existingFact === null ||
+    (input.existingStop === null || !hasRouteScheduleEvidence(input.existingStop))
+  ) {
+    return {
+      deliveryDateSource: null,
+      deliveryTimeZoneProvenance: null,
+      deliveryTimeZone: null,
+      evidence: null,
+      fields: new Set(),
+    };
+  }
+  const existingRaw = objectOrNull(input.existingRawPayload);
+  const existingDiagnostics = objectOrNull(input.existingFact.mappingDiagnostics);
+  const deliveryDateSource =
+    existingDiagnostics?.deliveryDateSource ??
+    existingRaw?.deliveryDateSource ??
+    null;
+  const persistedDeliveryTimeZone = readPersistedDeliveryTimeZone({
+      mappingDiagnostics: input.existingFact.mappingDiagnostics,
+      rawPayload: input.existingRawPayload,
+    });
+  const currentShopDeliveryTimeZone = normalizeDeliveryTimeZone(
+    input.synced.deliveryTimeZone,
+  );
+  if (
+    input.synced.deliveryTimeZone !== undefined &&
+    readString(input.synced.deliveryTimeZone) !== null &&
+    currentShopDeliveryTimeZone === null
+  ) {
+    throw new Error(`Invalid delivery timezone: ${input.synced.deliveryTimeZone}`);
+  }
+  const deliveryTimeZone =
+    persistedDeliveryTimeZone ?? currentShopDeliveryTimeZone;
+  const deliveryTimeZoneProvenance =
+    persistedDeliveryTimeZone !== null
+      ? (readString(existingDiagnostics?.deliveryTimeZoneProvenance) ??
+        readString(existingRaw?.deliveryTimeZoneProvenance) ??
+        "persisted_schedule")
+      : currentShopDeliveryTimeZone === null
+        ? null
+        : "current_shop";
+  const fields = new Set<string>(DERIVED_SCHEDULE_FIELDS);
+  return {
+    deliveryDateSource,
+    deliveryTimeZoneProvenance,
+    deliveryTimeZone,
+    evidence: {
+      deliveryDateSource,
+      deliveryTimeZoneProvenance,
+      deliveryTimeZone,
+      preservedFields: [...fields],
+      reason: "existing_route_schedule",
+      routePlans: scheduleRouteMemberships.map(({ routePlan }) => ({
+        id: routePlan.id,
+        status: routePlan.status,
+      })),
+      stopStatus,
+      sourceUpdatedAt:
+        input.synced.order.sourceUpdatedAt?.toISOString() ??
+        input.synced.order.updatedAtShopify.toISOString(),
+      version: 1,
+    },
+    fields,
+  };
+}
+
+function withShopifyRouteScheduleGuardDiagnostics<
+  T extends ReturnType<typeof toOrderDeliveryFactWrite>,
+>(write: T, guard: ShopifyRouteScheduleGuard): T {
+  if (guard.evidence === null) return write;
+  const diagnostics = {
+    ...(objectOrNull(write.mappingDiagnostics) ?? {}),
+    deliveryDateSource: guard.deliveryDateSource,
+    ...(guard.deliveryTimeZone === null
+      ? {}
+      : { deliveryTimeZone: guard.deliveryTimeZone }),
+    ...(guard.deliveryTimeZoneProvenance === null
+      ? {}
+      : { deliveryTimeZoneProvenance: guard.deliveryTimeZoneProvenance }),
+    shopifyRouteScheduleGuard: guard.evidence,
+  };
+  return {
+    ...write,
+    mappingDiagnostics: toJson(diagnostics),
+  };
+}
+
+function hasProtectedScheduleFields(fields: Set<string>): boolean {
+  return DERIVED_SCHEDULE_FIELDS.some((field) => fields.has(field));
+}
+
+function applyProtectedDerivedScheduleRawPayload(input: {
+  currentDeliveryTimeZone?: string | undefined;
+  existingFact: ExistingDeliveryFact;
+  existingRawPayload: unknown;
+  incomingRawPayload: Record<string, unknown>;
+  protectedFields: Set<string>;
+}): Record<string, unknown> {
+  const existingRaw = objectOrNull(input.existingRawPayload);
+  const existingDiagnostics = objectOrNull(
+    input.existingFact.mappingDiagnostics,
+  );
+  const persistedDeliveryTimeZone = readPersistedDeliveryTimeZone({
+    mappingDiagnostics: input.existingFact.mappingDiagnostics,
+    rawPayload: input.existingRawPayload,
+  });
+  const incomingDeliveryTimeZone = readString(
+    input.incomingRawPayload.deliveryTimeZone ?? input.currentDeliveryTimeZone,
+  );
+  const currentShopDeliveryTimeZone = normalizeDeliveryTimeZone(
+    incomingDeliveryTimeZone,
+  );
+  if (
+    incomingDeliveryTimeZone !== null &&
+    currentShopDeliveryTimeZone === null
+  ) {
+    throw new Error(`Invalid delivery timezone: ${incomingDeliveryTimeZone}`);
+  }
+  const protectedDeliveryTimeZone =
+    persistedDeliveryTimeZone ?? currentShopDeliveryTimeZone;
+  const protectedDeliveryTimeZoneProvenance =
+    persistedDeliveryTimeZone !== null
+      ? (readString(existingDiagnostics?.deliveryTimeZoneProvenance) ??
+        readString(existingRaw?.deliveryTimeZoneProvenance) ??
+        "persisted_schedule")
+      : currentShopDeliveryTimeZone === null
+        ? null
+        : "current_shop";
+  const localTimeWindowStart =
+    readRouteScopeTime(input.existingFact.routeScopeKey, "start") ??
+    readString(existingRaw?.timeWindowStart);
+  const localTimeWindowEnd =
+    readRouteScopeTime(input.existingFact.routeScopeKey, "end") ??
+    readString(existingRaw?.timeWindowEnd);
+  return {
+    ...input.incomingRawPayload,
+    ...(input.protectedFields.has("deliveryArea")
+      ? { deliveryArea: input.existingFact.deliveryArea }
+      : {}),
+    ...(input.protectedFields.has("deliveryDate")
+      ? {
+          deliveryDate: formatDateOnlyNullable(input.existingFact.deliveryDate),
+          deliveryBatchEndDate: existingRaw?.deliveryBatchEndDate ?? null,
+          deliveryBatchStartDate: existingRaw?.deliveryBatchStartDate ?? null,
+          deliveryDateSource:
+            existingDiagnostics?.deliveryDateSource ??
+            existingRaw?.deliveryDateSource ??
+            null,
+        }
+      : {}),
+    ...(["deliveryDate", "timeWindowEnd", "timeWindowStart"].some((field) =>
+      input.protectedFields.has(field),
+    )
+      ? {
+          ...(protectedDeliveryTimeZone === null
+            ? {}
+            : { deliveryTimeZone: protectedDeliveryTimeZone }),
+          ...(protectedDeliveryTimeZoneProvenance === null
+            ? {}
+            : {
+                deliveryTimeZoneProvenance:
+                  protectedDeliveryTimeZoneProvenance,
+              }),
+        }
+      : {}),
+    ...(input.protectedFields.has("deliverySession")
+      ? { deliverySession: input.existingFact.deliverySession }
+      : {}),
+    ...(input.protectedFields.has("deliveryWeekday")
+      ? { deliveryWeekday: input.existingFact.deliveryWeekday ?? null }
+      : {}),
+    ...(input.protectedFields.has("planningGroupKey")
+      ? { planningGroupKey: input.existingFact.planningGroupKey }
+      : {}),
+    ...(input.protectedFields.has("routeScopeKey")
+      ? { routeScopeKey: input.existingFact.routeScopeKey }
+      : {}),
+    ...(input.protectedFields.has("serviceType")
+      ? { serviceType: input.existingFact.serviceType }
+      : {}),
+    ...(input.protectedFields.has("timeWindowEnd")
+      ? { timeWindowEnd: localTimeWindowEnd }
+      : {}),
+    ...(input.protectedFields.has("timeWindowStart")
+      ? { timeWindowStart: localTimeWindowStart }
+      : {}),
+  };
 }
 
 function buildWooScheduleDowngradeGuard(input: {
@@ -2429,6 +2876,15 @@ function hasCorrectedStopFields(fields: Set<string>): boolean {
   ].some((field) => fields.has(field));
 }
 
+function hasProtectedStopFields(fields: Set<string>): boolean {
+  return (
+    hasCorrectedStopFields(fields) ||
+    ["deliveryDate", "timeWindowEnd", "timeWindowStart"].some((field) =>
+      fields.has(field),
+    )
+  );
+}
+
 function applyCorrectedStopFields<
   T extends {
     address1: string | null;
@@ -2479,17 +2935,71 @@ function applyCorrectedFactFields<
   T extends ReturnType<typeof toOrderDeliveryFactWrite>,
 >(write: T, existing: ExistingDeliveryFact | null, fields: Set<string>): T {
   if (existing === null || fields.size === 0) return write;
+  const writeDiagnostics = objectOrNull(write.mappingDiagnostics);
+  const existingDiagnostics = objectOrNull(existing.mappingDiagnostics);
+  const preserveScheduleProvenance = [
+    "deliveryDate",
+    "timeWindowEnd",
+    "timeWindowStart",
+  ].some((field) => fields.has(field));
+  const persistedDeliveryTimeZone = preserveScheduleProvenance
+    ? readPersistedDeliveryTimeZone({
+        mappingDiagnostics: existing.mappingDiagnostics,
+        rawPayload: null,
+      })
+    : null;
+  const incomingDeliveryTimeZone = readString(
+    writeDiagnostics?.deliveryTimeZone,
+  );
+  const currentShopDeliveryTimeZone = normalizeDeliveryTimeZone(
+    incomingDeliveryTimeZone,
+  );
+  if (
+    preserveScheduleProvenance &&
+    incomingDeliveryTimeZone !== null &&
+    currentShopDeliveryTimeZone === null
+  ) {
+    throw new Error(`Invalid delivery timezone: ${incomingDeliveryTimeZone}`);
+  }
+  const protectedDeliveryTimeZone =
+    persistedDeliveryTimeZone ?? currentShopDeliveryTimeZone;
+  const protectedDeliveryTimeZoneProvenance =
+    persistedDeliveryTimeZone !== null
+      ? (readString(existingDiagnostics?.deliveryTimeZoneProvenance) ??
+        "persisted_schedule")
+      : currentShopDeliveryTimeZone === null
+        ? null
+        : "current_shop";
   const mergedDiagnostics = {
-    ...objectOrNull(write.mappingDiagnostics),
-    ...(objectOrNull(existing.mappingDiagnostics)?.routeOpsCorrections ===
-    undefined
+    ...writeDiagnostics,
+    ...(preserveScheduleProvenance
+      ? {
+          deliveryDateSource:
+            existingDiagnostics?.deliveryDateSource ??
+            writeDiagnostics?.deliveryDateSource ??
+            null,
+          ...(protectedDeliveryTimeZone === null
+            ? {}
+            : { deliveryTimeZone: protectedDeliveryTimeZone }),
+          ...(protectedDeliveryTimeZoneProvenance === null
+            ? {}
+            : {
+                deliveryTimeZoneProvenance:
+                  protectedDeliveryTimeZoneProvenance,
+              }),
+        }
+      : {}),
+    ...(existingDiagnostics?.routeOpsCorrections === undefined
       ? {}
       : {
-          routeOpsCorrections: objectOrNull(existing.mappingDiagnostics)
-            ?.routeOpsCorrections,
+          routeOpsCorrections: existingDiagnostics.routeOpsCorrections,
         }),
   };
-  const correctedScope = buildManualScope({
+  // A routed Shopify schedule is immutable here, including unknown local scope.
+  // Rebuilding it from stored UTC clock values would invent local window times.
+  const correctedScope = writeDiagnostics?.shopifyRouteScheduleGuard !== undefined
+    ? { planningGroupKey: existing.planningGroupKey, routeScopeKey: existing.routeScopeKey }
+    : buildManualScope({
     deliveryArea: existing.deliveryArea,
     deliveryDate: formatDateOnlyNullable(existing.deliveryDate),
     deliverySession: readDeliverySession(existing.deliverySession),
@@ -2529,8 +3039,28 @@ function applyCorrectedFactFields<
             existing.deliveryDateWeekdayVerified ?? true,
         }
       : {}),
+    ...(fields.has("deliveryDayParseStatus")
+      ? {
+          deliveryDayParseStatus:
+            (existing.deliveryDayParseStatus as T["deliveryDayParseStatus"]) ??
+            write.deliveryDayParseStatus,
+        }
+      : {}),
+    ...(fields.has("deliveryDayUnparsedReason")
+      ? {
+          deliveryDayUnparsedReason:
+            existing.deliveryDayUnparsedReason ?? null,
+        }
+      : {}),
     ...(fields.has("deliverySession")
       ? { deliverySession: readDeliverySession(existing.deliverySession) }
+      : {}),
+    ...(fields.has("deliveryWeekday")
+      ? {
+          deliveryWeekday: readDeliveryWeekday(
+            existing.deliveryWeekday ?? null,
+          ),
+        }
       : {}),
     ...(fields.has("geocodeStatus")
       ? { geocodeStatus: readGeocodeStatus(existing.geocodeStatus) }
@@ -2750,6 +3280,7 @@ function weekdayForDate(value: string | null): DeliveryWeekday | null {
 
 function toDeliveryStopWrite(
   input: SyncedOrderWithDeliveryStopInput["deliveryStop"],
+  deliveryTimeZone?: string,
 ): {
   address1: string | null;
   address2: string | null;
@@ -2784,13 +3315,15 @@ function toDeliveryStopWrite(
     postalCode: input.postalCode,
     province: input.province,
     recipientName: input.recipientName,
-    timeWindowEnd: parseTorontoTimeWindow(
+    timeWindowEnd: parseDeliveryTimeWindow(
       input.deliveryDate,
       input.timeWindowEnd,
+      deliveryTimeZone,
     ),
-    timeWindowStart: parseTorontoTimeWindow(
+    timeWindowStart: parseDeliveryTimeWindow(
       input.deliveryDate,
       input.timeWindowStart,
+      deliveryTimeZone,
     ),
   };
 }
@@ -2861,7 +3394,10 @@ function toOrderWrite(input: SyncedOrderWithDeliveryStopInput["order"]): {
   };
 }
 
-function toOrderDeliveryFactWrite(input: SyncedOrderDeliveryFactInput): {
+function toOrderDeliveryFactWrite(
+  input: SyncedOrderDeliveryFactInput,
+  deliveryTimeZone?: string,
+): {
   batchEligible: boolean;
   commerceConnectionId: string | null;
   computedAt: Date;
@@ -2926,13 +3462,15 @@ function toOrderDeliveryFactWrite(input: SyncedOrderDeliveryFactInput): {
     sourcePlatform: input.sourcePlatform,
     sourceSiteUrl: input.sourceSiteUrl,
     sourceUpdatedAt: input.sourceUpdatedAt,
-    timeWindowEnd: parseTorontoTimeWindow(
+    timeWindowEnd: parseDeliveryTimeWindow(
       input.deliveryDate,
       input.timeWindowEnd,
+      deliveryTimeZone,
     ),
-    timeWindowStart: parseTorontoTimeWindow(
+    timeWindowStart: parseDeliveryTimeWindow(
       input.deliveryDate,
       input.timeWindowStart,
+      deliveryTimeZone,
     ),
   };
 }
@@ -3143,10 +3681,25 @@ function hasMetadataResolved(input: {
   return !input.reviewReasons.some((reason) => metadataBlockers.has(reason));
 }
 
+export function toOrdersQueryRow(order: CanonicalOrderRecord, filters: ListCanonicalOrdersFilters, now: Date): CanonicalOrderRow {
+  const row = toCanonicalOrderRow(order);
+  if (filters.filterVersion !== '2') return row;
+  const fact = order.deliveryFacts?.[0];
+  return { ...row, filterVersion: '2',
+    deliveryDate: fact?.deliveryDate?.toISOString().slice(0, 10) ?? null,
+    deliveryArea: fact?.deliveryArea ?? null,
+    serviceType: fact?.serviceType ?? null,
+    queryDeliveryProgress: v2ProgressForRecord(order, now, filters.orderedDateTimeZone)
+  };
+}
+
 export function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
   const stop = order.deliveryStops[0] ?? null;
   const fact = order.deliveryFacts?.[0] ?? null;
   const raw = objectOrNull(order.rawPayload);
+  const sourcePlatform = order.sourcePlatform ?? "SHOPIFY";
+  const note = readOrderNote(raw, sourcePlatform);
+  const customerNote = readCustomerNote(raw, sourcePlatform);
   const shippingAddress = readShippingAddress(order.shippingAddress, stop);
   const latitude = decimalNumber(stop?.latitude);
   const longitude = decimalNumber(stop?.longitude);
@@ -3224,7 +3777,8 @@ export function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrder
   return {
     cancelledAt: formatDateTime(order.cancelledAt),
     currencyCode: order.currencyCode,
-    customerNote: stop?.instructions ?? readString(raw?.customer_note) ?? readString(raw?.customerNote),
+    ...(customerNote === undefined ? {} : { customerNote }),
+    ...(stop === null ? {} : { deliveryInstructions: stop.instructions }),
     deliveryArea: fact?.deliveryArea ?? readString(raw?.deliveryArea),
     deliveryBatchEndDate: readString(raw?.deliveryBatchEndDate),
     deliveryBatchStartDate: readString(raw?.deliveryBatchStartDate),
@@ -3261,6 +3815,7 @@ export function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrder
     name: order.name,
     normalizedPaymentReason: readString(raw?.normalizedPaymentReason),
     normalizedPaymentStatus,
+    ...(note === undefined ? {} : { note }),
     orderCreatedAt: readString(raw?.orderCreatedAt),
     orderDateLocal: readString(raw?.orderDateLocal),
     metadataResolved,
@@ -3450,13 +4005,50 @@ function parseDateOnly(value: string | null): Date | null {
   return new Date(`${value}T00:00:00.000Z`);
 }
 
-function parseTorontoTimeWindow(
+function parseDeliveryTimeWindow(
   deliveryDate: string | null,
   time: string | null,
+  deliveryTimeZone?: string | null,
 ): Date | null {
   if (deliveryDate === null || time === null) return null;
   if (!/^\d{2}:\d{2}$/u.test(time)) return null;
-  return zonedTimeToUtc(deliveryDate, time, "America/Toronto");
+  const requestedTimeZone = readString(deliveryTimeZone);
+  const normalizedTimeZone = normalizeDeliveryTimeZone(requestedTimeZone);
+  if (requestedTimeZone !== null && normalizedTimeZone === null) {
+    throw new Error(`Invalid delivery timezone: ${requestedTimeZone}`);
+  }
+  return zonedTimeToUtc(
+    deliveryDate,
+    time,
+    normalizedTimeZone ?? "America/Toronto",
+  );
+}
+
+function readPersistedDeliveryTimeZone(input: {
+  mappingDiagnostics: unknown;
+  rawPayload: unknown;
+}): string | null {
+  const diagnostics = objectOrNull(input.mappingDiagnostics);
+  const rawPayload = objectOrNull(input.rawPayload);
+  const persistedTimeZone =
+    readString(diagnostics?.deliveryTimeZone) ??
+    readString(rawPayload?.deliveryTimeZone);
+  const normalizedTimeZone = normalizeDeliveryTimeZone(persistedTimeZone);
+  if (persistedTimeZone !== null && normalizedTimeZone === null) {
+    throw new Error(`Invalid persisted delivery timezone: ${persistedTimeZone}`);
+  }
+  return normalizedTimeZone;
+}
+
+function normalizeDeliveryTimeZone(value: string | null | undefined): string | null {
+  const candidate = readString(value);
+  if (candidate === null) return null;
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: candidate }).format(0);
+    return candidate;
+  } catch {
+    return null;
+  }
 }
 
 function zonedTimeToUtc(
@@ -3559,6 +4151,40 @@ function readBoolean(value: unknown): boolean | null {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function readCustomerNote(
+  raw: Record<string, unknown> | null,
+  sourcePlatform: CommerceSourcePlatform,
+): string | null | undefined {
+  const direct = readProjectedTextProperty(raw, "customerNote");
+  if (direct !== undefined) return direct;
+  if (sourcePlatform !== "WOOCOMMERCE") {
+    const legacy = readProjectedTextProperty(raw, "customer_note");
+    if (legacy !== undefined) return legacy;
+  }
+  return readProjectedTextProperty(objectOrNull(raw?.customer), "note");
+}
+
+function readOrderNote(
+  raw: Record<string, unknown> | null,
+  sourcePlatform: CommerceSourcePlatform,
+): string | null | undefined {
+  const note = readProjectedTextProperty(raw, "note");
+  if (note !== undefined || sourcePlatform !== "WOOCOMMERCE") return note;
+  return readProjectedTextProperty(raw, "customer_note");
+}
+
+function readProjectedTextProperty(
+  object: Record<string, unknown> | null,
+  key: string,
+): string | null | undefined {
+  if (object === null || !Object.prototype.hasOwnProperty.call(object, key)) {
+    return undefined;
+  }
+  const value = object[key];
+  if (value === null) return null;
+  return typeof value === "string" ? value.trim() : null;
 }
 
 function readYmd(value: unknown): string | null {

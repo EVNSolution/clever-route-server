@@ -113,6 +113,7 @@ function createRoadMatchProvider(
   if (Object.keys(baseUrls).length === 0) return undefined;
   return new OsrmRouteTrackingRoadMatchProvider({
     baseUrls,
+    classificationMode: 'legacy-whole-match',
     gpsPrecisionMeters: UVIS_ROAD_MATCH_GPS_PRECISION_METERS,
     maxMatchPoints: UVIS_ROAD_MATCH_MAX_POINTS,
     timeoutMs: readTimeout(env.UVIS_ROAD_MATCH_TIMEOUT_MS),

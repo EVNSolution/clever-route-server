@@ -1,3 +1,4 @@
+import { visibleDsvProofWhere, visibleDsvOrderWhere, hasDsvTestExclusions } from '../dsv/dsv-test-visibility.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
@@ -133,7 +134,8 @@ export class PrismaDriverProofMediaRepository {
         id: input.mediaId,
         routePlanId: input.routePlanId,
         shopId: input.shopId,
-        uploadStatus: 'READY'
+        uploadStatus: 'READY',
+        ...visibleDsvProofWhere(input.shopId)
       }
     });
     if (media === null) {
@@ -168,7 +170,8 @@ export class PrismaDriverProofMediaRepository {
         contentType: true,
         deliveryStopLinks: {
           orderBy: { deliveryStopId: 'asc' },
-          select: { deliveryStopId: true }
+          select: { deliveryStopId: true },
+          ...(hasDsvTestExclusions(input.shopId) ? { where: { deliveryStop: { order: visibleDsvOrderWhere(input.shopId) } } } : {})
         },
         id: true,
         kind: true,
@@ -182,7 +185,8 @@ export class PrismaDriverProofMediaRepository {
         deletedAt: null,
         id: input.mediaId,
         shopId: input.shopId,
-        uploadStatus: 'READY'
+        uploadStatus: 'READY',
+        ...visibleDsvProofWhere(input.shopId)
       }
     });
     if (media === null) {

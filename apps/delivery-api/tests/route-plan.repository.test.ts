@@ -106,6 +106,7 @@ describe('PrismaRoutePlanRepository', () => {
   test.each([
     ['published', 'PUBLISHED', [], 'READY'],
     ['started', 'READY', [{ eventType: 'ROUTE_STARTED' }], 'IN_PROGRESS'],
+    ['paused', 'READY', [{ eventType: 'ROUTE_PAUSED' }], 'READY'],
     ['completed', 'READY', [{ eventType: 'ROUTE_COMPLETED' }], 'COMPLETED']
   ])('keeps grouped publication evidence after the route is %s', async (_label, status, driverEvents, expectedStatus) => {
     const publishedAt = new Date('2026-09-11T13:00:00.000Z');
@@ -129,6 +130,52 @@ describe('PrismaRoutePlanRepository', () => {
       publishedAt: publishedAt.toISOString(),
       status: expectedStatus
     });
+  });
+
+  test('projects a persisted delivery-work completion marker immediately while execution remains in progress', async () => {
+    const completedAt = new Date('2026-10-01T22:00:00.000Z');
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        deliveryWorkCompletedAt: completedAt,
+        deliveryWorkCompletedGeneration: 3n,
+        deliveryWorkCompletedVersionId: 'route-version-id',
+        driverNavigationUntil: new Date('2026-10-02T00:00:00.000Z'),
+        assignmentGeneration: 3n,
+        driverEvents: [{ eventType: 'ROUTE_STARTED' }],
+        status: 'IN_PROGRESS'
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const detail = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(detail?.routePlan.status).toBe('COMPLETED');
+  });
+
+  test('does not project completion from a marker belonging to another assignment generation', async () => {
+    const completedAt = new Date('2026-10-01T22:00:00.000Z');
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        deliveryWorkCompletedAt: completedAt,
+        deliveryWorkCompletedGeneration: 2n,
+        deliveryWorkCompletedVersionId: 'route-version-id',
+        driverNavigationUntil: new Date('2026-10-02T00:00:00.000Z'),
+        assignmentGeneration: 3n,
+        driverEvents: [{ eventType: 'ROUTE_STARTED' }],
+        status: 'IN_PROGRESS'
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const detail = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(detail?.routePlan.status).toBe('IN_PROGRESS');
   });
 
   test('projects standalone publication attempts but does not inherit them into an unpublished grouped version', async () => {
@@ -305,7 +352,12 @@ describe('PrismaRoutePlanRepository', () => {
         etaSource: 'PLANNED_DEPARTURE',
         etaStatus: 'READY'
       },
-      where: { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 }
+      where: {
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
+        deliveryStopId: 'stop-1',
+        routePlanId: 'route-plan-id',
+        sequence: 1
+      }
     });
     const secondEtaDataMatcher: unknown = expect.objectContaining({
       estimatedArrivalAt: new Date('2026-08-18T00:05:00.000Z'),
@@ -314,8 +366,53 @@ describe('PrismaRoutePlanRepository', () => {
     });
     expect(prisma.routePlanStop.updateMany).toHaveBeenNthCalledWith(2, {
       data: secondEtaDataMatcher,
-      where: { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2 }
+      where: {
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
+        deliveryStopId: 'stop-2',
+        routePlanId: 'route-plan-id',
+        sequence: 2
+      }
     });
+  });
+
+  test('planned ETA persistence never overwrites arrived or terminal stops on a ready route', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanProjection: {
+        constraints: {},
+        driverId: 'driver-id',
+        planDate: new Date('2026-08-18T00:00:00.000Z'),
+        routeGroupingChildVersions: [],
+        routeStops: [
+          { deliveryStop: { serviceMinutes: 5 }, deliveryStopId: 'stop-1', sequence: 1 },
+          { deliveryStop: { serviceMinutes: 5 }, deliveryStopId: 'stop-2', sequence: 2 }
+        ],
+        shop: { commerceConnections: [], routeOpsUiSettings: null },
+        status: 'READY'
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.upsertRouteGeometryCache({
+      geometry: null,
+      metrics: null,
+      provider: 'osrm',
+      routePlanId: 'route-plan-id',
+      shapeSignature: 'shape-signature',
+      source: 'SHAPE_MUTATION',
+      stopPoints: []
+    });
+
+    expect(prisma.routePlanStop.updateMany).toHaveBeenCalledTimes(2);
+    const eligibleStopMatcher: unknown = expect.objectContaining({
+      deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } }
+    });
+    for (const [call] of prisma.routePlanStop.updateMany.mock.calls) {
+      expect(call).toEqual(expect.objectContaining({
+        where: eligibleStopMatcher
+      }));
+    }
   });
 
   test('does not replace live driver ETA after route execution starts', async () => {
@@ -965,15 +1062,27 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 
-  test('rejects direct stop replacement after route execution starts', async () => {
+  test.each(['saveRoutePlan', 'updateRoutePlanStops'] as const)('%s reorders a started route without replacing delivery history', async (method) => {
+    const stops = [1, 2, 3].map((number) => routePlanStopRecord({
+      deliveryStopId: `stop-${number}`,
+      distanceFromPreviousMeters: 100,
+      durationFromPreviousSeconds: 60,
+      estimatedArrivalAt: new Date('2026-05-08T13:00:00.000Z'),
+      order: orderRecord({ deliveryDate: '2026-05-08', gid: `gid://shopify/Order/${122 + number}`, id: `order-${number}`, stopId: `stop-${number}` }),
+      sequence: number,
+      serviceMinutes: 5,
+      status: number === 1 ? 'DELIVERED' : number === 2 ? 'ARRIVED' : 'PENDING'
+    }));
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: routePlanRecord({
+        driverId: 'driver-id',
+        routeStops: stops,
         metrics: {
           deliveryAreas: ['Mississauga'],
           deliveryDays: ['Friday'],
           itemFingerprint: 'published-item-fingerprint',
           missingCoordinates: 0,
-          stopsCount: 2
+          stopsCount: 3
         },
         status: 'IN_PROGRESS'
       })
@@ -981,23 +1090,42 @@ describe('PrismaRoutePlanRepository', () => {
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
     );
+    prisma.routePlanStop.updateMany.mockImplementation((args: { data: { sequence?: number }; where: { deliveryStopId?: string } }) => {
+      const stop = stops.find((row) => row.deliveryStopId === args.where.deliveryStopId);
+      if (stop !== undefined && args.data.sequence !== undefined) stop.sequence = args.data.sequence;
+      return { count: 1 };
+    });
 
-    await expect(repository.updateRoutePlanStops({
+    const result = await repository[method]({
       routePlanId: 'route-plan-id',
       shopDomain: 'example.myshopify.com',
       payload: {
         stops: [
-          { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/124', sequence: 1 },
-          { deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 2 }
+          { deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 1 },
+          { shopifyOrderGid: 'gid://shopify/Order/125', sequence: 2 },
+          { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/124', sequence: 3 }
         ]
       }
-    })).rejects.toMatchObject({
-      code: 'ROUTE_STOP_UPDATE_INVALID',
-      message: 'Route stops cannot be changed after route execution starts.'
     });
 
-    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
+    const detail = result !== null && 'detail' in result ? result.detail : result;
+    expect(detail?.routePlan.status).toBe('IN_PROGRESS');
+    expect(detail?.stops.map((stop) => [stop.deliveryStopId, stop.status])).toEqual([
+      ['stop-1', 'DELIVERED'], ['stop-3', 'PENDING'], ['stop-2', 'ARRIVED']
+    ]);
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
+      where: { routePlanId: 'route-plan-id', shopId: 'shop-id', deliveryStopId: { notIn: ['stop-1', 'stop-3', 'stop-2'] } }
+    });
     expect(prisma.routePlanStop.createMany).not.toHaveBeenCalled();
+    expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.update).toHaveBeenCalledWith({ data: { updatedAt: expect.any(Date) as unknown }, where: { id: 'route-plan-id' } });
+    expect(prisma.routePlanStop.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ estimatedArrivalAt: null, etaStatus: 'PENDING' }) as unknown,
+      where: { routePlanId: 'route-plan-id', shopId: 'shop-id', deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } }
+    }));
   });
 
   test('assigns a route driver within the current shop scope', async () => {
@@ -1066,13 +1194,13 @@ describe('PrismaRoutePlanRepository', () => {
     expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'READY')).toBe(true);
   });
 
-  test('rejects the legacy publish endpoint only for cancelled routes', async () => {
+  test.each(['CANCELLED', 'INCOMPLETE'])('rejects the legacy publish endpoint for %s routes', async (status) => {
     const { prisma } = createPrismaHarness();
     prisma.routePlan.findFirst.mockResolvedValueOnce({
       _count: { routeStops: 0 },
       driverId: null,
       id: 'route-plan-id',
-      status: 'CANCELLED'
+      status
     });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
@@ -1363,6 +1491,77 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('admin completion reconciles the delivery-work marker while holding the route row lock', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanStopFindFirst: {
+        deliveryStop: { completionAssistanceCandidateId: null, order: { email: null }, orderId: 'order-1', status: 'ARRIVED' },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce(completionReconciliationRoute('DELIVERED'))
+      .mockResolvedValueOnce(routePlanRecord({ status: 'IN_PROGRESS' }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'complete-last-stop', status: 'COMPLETED' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    const completionUpdate = prisma.routePlan.updateMany.mock.calls.at(-1)?.[0] as unknown as {
+      data: {
+        deliveryWorkCompletedAt: Date;
+        deliveryWorkCompletedGeneration: bigint;
+        deliveryWorkCompletedVersionId: string;
+        driverNavigationUntil: Date;
+      };
+      where: { id: string; shopId: string; status: string };
+    } | undefined;
+    expect(completionUpdate?.data.deliveryWorkCompletedAt).toBeInstanceOf(Date);
+    expect(completionUpdate?.data.deliveryWorkCompletedGeneration).toBe(1n);
+    expect(completionUpdate?.data.deliveryWorkCompletedVersionId).toBe('route-version-id');
+    expect(completionUpdate?.data.driverNavigationUntil).toBeInstanceOf(Date);
+    expect(completionUpdate?.where).toMatchObject({ id: 'route-plan-id', shopId: 'shop-id', status: 'IN_PROGRESS' });
+  });
+
+  test('admin reopen clears a previously valid delivery-work marker under the same route lock', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanStopFindFirst: {
+        deliveryStop: { completionAssistanceCandidateId: null, order: { email: null }, orderId: 'order-1', status: 'DELIVERED' },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce(completionReconciliationRoute('PENDING', true))
+      .mockResolvedValueOnce(routePlanRecord({ status: 'IN_PROGRESS' }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'reopen-last-stop', status: 'READY' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: {
+        deliveryWorkCompletedAt: null,
+        deliveryWorkCompletedGeneration: null,
+        deliveryWorkCompletedVersionId: null,
+        driverNavigationUntil: null
+      },
+      where: { assignmentGeneration: 1n, id: 'route-plan-id', shopId: 'shop-id', status: 'IN_PROGRESS' }
+    });
+  });
+
   test('does not enqueue customer notifications for CLEVER-local CUSTOM orders', async () => {
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: routePlanRecord(),
@@ -1581,9 +1780,263 @@ describe('PrismaRoutePlanRepository', () => {
         etaSource: 'ADMIN_STOP_OVERRIDE',
         etaStatus: 'STALE'
       },
-      where: { routePlanId: 'route-plan-id', shopId: 'shop-id' }
+      where: {
+        routePlanId: 'route-plan-id',
+        shopId: 'shop-id',
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } }
+      }
     });
     expect(prisma.order.upsert).not.toHaveBeenCalled();
+  });
+
+  test('admin stop override preserves geometry and planned ETA when submitted values are unchanged', async () => {
+    const { prisma } = createPrismaHarness({
+      deliveryStopForId: {
+        address1: '100 King St',
+        address2: null,
+        city: 'Toronto',
+        countryCode: 'CA',
+        geocodeStatus: 'RESOLVED',
+        instructions: 'Leave at receiving',
+        latitude: '43.6426000',
+        longitude: '-79.3871000',
+        phone: '416-555-0100',
+        postalCode: 'M5V 1A1',
+        province: 'ON',
+        recipientName: 'Jane Admin',
+        serviceMinutes: 8,
+        timeWindowEnd: new Date('1970-01-01T17:00:00.000Z'),
+        timeWindowStart: new Date('1970-01-01T15:00:00.000Z')
+      },
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: {
+        address1: '100 King St',
+        latitude: 43.6426,
+        longitude: -79.3871,
+        serviceMinutes: 8,
+        timeWindowEnd: '17:00',
+        timeWindowStart: '15:00'
+      },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.geometry.status).toBe('preserved');
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanGeometryCache.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('admin stop override invalidates ETA only for stops without an actual arrival or terminal status', async () => {
+    const { prisma } = createPrismaHarness({
+      deliveryStopForId: {
+        countryCode: 'CA', geocodeStatus: 'RESOLVED', latitude: '43.6426', longitude: '-79.3871', province: 'ON',
+        serviceMinutes: 5
+      },
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: 9 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    const routeStopUpdate = prisma.routePlanStop.updateMany.mock.calls[0]?.[0] as unknown as {
+      data: Record<string, unknown>;
+      where: Record<string, unknown>;
+    } | undefined;
+    expect(routeStopUpdate).toMatchObject({
+      data: { etaStatus: 'STALE' },
+      where: {
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
+        routePlanId: 'route-plan-id',
+        shopId: 'shop-id'
+      }
+    });
+  });
+
+  test('admin stop override saves a time-window change without invalidating route geometry', async () => {
+    const { prisma } = createPrismaHarness({
+      deliveryStopForId: {
+        countryCode: 'CA', geocodeStatus: 'RESOLVED', latitude: '43.6426', longitude: '-79.3871', province: 'ON',
+        serviceMinutes: 5,
+        timeWindowEnd: new Date('1970-01-01T17:00:00.000Z'),
+        timeWindowStart: new Date('1970-01-01T15:00:00.000Z')
+      },
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { timeWindowStart: '16:00' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.geometry.status).toBe('preserved');
+    expect(prisma.deliveryStop.updateMany).toHaveBeenCalledWith({
+      data: { timeWindowStart: new Date('1970-01-01T16:00:00.000Z') },
+      where: { id: 'stop-1', shopId: 'shop-id' }
+    });
+    expect(prisma.routePlanGeometryCache.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('admin stop override compares time windows by clock value instead of stored date', async () => {
+    const { prisma } = createPrismaHarness({
+      deliveryStopForId: {
+        countryCode: 'CA', geocodeStatus: 'RESOLVED', latitude: '43.6426', longitude: '-79.3871', province: 'ON',
+        serviceMinutes: 5,
+        timeWindowStart: new Date('2026-05-08T15:00:00.000Z')
+      },
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { timeWindowStart: '15:00' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.geometry.status).toBe('preserved');
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanGeometryCache.deleteMany).not.toHaveBeenCalled();
+  });
+
+  test('admin stop override preserves every persisted stop ETA after route execution starts', async () => {
+    const { prisma } = createPrismaHarness({
+      deliveryStopForId: {
+        countryCode: 'CA', geocodeStatus: 'RESOLVED', latitude: '43.6426', longitude: '-79.3871', province: 'ON',
+        serviceMinutes: 5
+      },
+      routePlanFindFirst: routePlanRecord({ status: 'IN_PROGRESS' }),
+      routePlanStopFindFirst: { id: 'route-plan-stop-id', routePlan: { status: 'IN_PROGRESS' } }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: 9 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.geometry.status).toBe('stale');
+    expect(prisma.routePlanGeometryCache.deleteMany).toHaveBeenCalledOnce();
+    expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['shop', { shop: null }],
+    ['route stop', { routePlanStopFindFirst: null }]
+  ] as const)('admin stop override returns null when the scoped %s does not exist', async (_scope, harnessInput) => {
+    const { prisma } = createPrismaHarness(harnessInput);
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: 9 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result).toBeNull();
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanGeometryCache.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('admin geometry commit rejects a late result after any route stop input changes', async () => {
+    const routeStop = routePlanStopRecord({
+      deliveryStopId: 'stop-1',
+      distanceFromPreviousMeters: null,
+      durationFromPreviousSeconds: null,
+      estimatedArrivalAt: new Date('2026-05-08T13:00:00.000Z'),
+      order: orderRecord({ id: 'order-1', gid: 'gid://shopify/Order/123', stopId: 'stop-1', deliveryDate: '2026-05-08' }),
+      sequence: 1,
+      serviceMinutes: 5
+    });
+    const capturedRoute = routePlanRecord({ routeStops: [routeStop] });
+    const { prisma } = createPrismaHarness({
+      deliveryStopForId: {
+        countryCode: 'CA', geocodeStatus: 'RESOLVED', latitude: '43.6426', longitude: '-79.3871', province: 'ON',
+        serviceMinutes: 5
+      },
+      routePlanFindFirst: capturedRoute,
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+    const override = await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: 9 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+    expect(override?.refreshGuard).not.toBeNull();
+
+    const newerRoute = routePlanRecord({
+      routeStops: [{
+        ...routeStop,
+        deliveryStop: {
+          ...(routeStop.deliveryStop as Record<string, unknown>),
+          updatedAt: new Date('2026-05-07T12:31:00.000Z')
+        }
+      }]
+    });
+    prisma.routePlan.findFirst.mockResolvedValueOnce(newerRoute);
+    const guard = override?.refreshGuard;
+    if (guard === null || guard === undefined) throw new Error('Expected refresh guard');
+
+    await expect(repository.commitAdminRouteStopGeometryCache({
+      expectedRoutePlanUpdatedAt: guard.expectedRoutePlanUpdatedAt,
+      expectedStopUpdatedAts: guard.expectedStopUpdatedAts,
+      geometry: null,
+      metrics: null,
+      provider: 'osrm',
+      routePlanId: 'route-plan-id',
+      shapeSignature: guard.shapeSignature,
+      shopDomain: 'example.myshopify.com',
+      source: 'SHAPE_MUTATION',
+      stopPoints: []
+    })).resolves.toBe(false);
+
+    expect(prisma.routePlanGeometryCache.upsert).not.toHaveBeenCalled();
   });
 
   test('admin stop override resets service minutes to the database default when null is requested', async () => {
@@ -2042,7 +2495,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('aggregate save rejects stop replacement after route execution starts', async () => {
+  test.each(['saveRoutePlan', 'updateRoutePlanStops'] as const)('%s rejects membership replacement after route execution starts', async (method) => {
     const { prisma } = createPrismaHarness();
     const assignedRoute = routePlanRecord({
       driverId: 'driver-id',
@@ -2063,7 +2516,7 @@ describe('PrismaRoutePlanRepository', () => {
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
     );
 
-    await expect(repository.saveRoutePlan({
+    await expect(repository[method]({
       routePlanId: 'route-plan-id',
       shopDomain: 'example.myshopify.com',
       payload: {
@@ -2075,7 +2528,7 @@ describe('PrismaRoutePlanRepository', () => {
       }
     })).rejects.toMatchObject({
       code: 'ROUTE_STOP_UPDATE_INVALID',
-      message: 'Route stops cannot be changed after route execution starts.'
+      message: 'In-progress routes can only reorder their existing stops.'
     });
 
     expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
@@ -2424,29 +2877,25 @@ describe('PrismaRoutePlanRepository', () => {
     expect(summarySelectBody).not.toContain('stopPoints: true,');
   });
 
-  test('all public route-plan stop replacement paths fail closed for in-progress routes', () => {
-    const source = readFileSync(join(process.cwd(), 'src/modules/route-plans/route-plan.repository.ts'), 'utf8');
-    const saveBody = source.slice(
-      source.indexOf('async saveRoutePlan('),
-      source.indexOf('async commitOrderDataRouteGeometryCache(')
-    );
-    const updateStopsBody = source.slice(
-      source.indexOf('async updateRoutePlanStops('),
-      source.indexOf('private async findShop(')
-    );
-    const guard = "routePlan.status === 'IN_PROGRESS'";
-    const mutation = 'await tx.routePlanStop.deleteMany(';
-
-    expect(saveBody).toContain(guard);
-    expect(updateStopsBody).toContain(guard);
-    expect(saveBody).toContain('FOR UPDATE');
-    expect(updateStopsBody).toContain('FOR UPDATE');
-    expect(saveBody.split(mutation)).toHaveLength(2);
-    expect(updateStopsBody.split(mutation)).toHaveLength(2);
-    expect(saveBody.indexOf(guard)).toBeLessThan(saveBody.indexOf(mutation));
-    expect(updateStopsBody.indexOf(guard)).toBeLessThan(updateStopsBody.indexOf(mutation));
-    expect(saveBody.indexOf('FOR UPDATE')).toBeLessThan(saveBody.indexOf(mutation));
-    expect(updateStopsBody.indexOf('FOR UPDATE')).toBeLessThan(updateStopsBody.indexOf(mutation));
+  describe.each(['saveRoutePlan', 'updateRoutePlanStops'] as const)('%s execution safeguards', (method) => {
+    test.each([
+      { status: 'COMPLETED', driverEvents: [] },
+      { status: 'CANCELLED', driverEvents: [] },
+      { status: 'READY', driverEvents: [{ eventType: 'ROUTE_COMPLETED' }] },
+      { status: 'READY', driverEvents: [{ eventType: 'ROUTE_STARTED' }] }
+    ])('rejects replacement for persisted or recovered execution state $status $driverEvents', async (execution) => {
+      const { prisma } = createPrismaHarness({ routePlanFindFirst: routePlanRecord({ ...execution, driverId: 'driver-id' }) });
+      prisma.driverEvent.findFirst.mockResolvedValue(execution.driverEvents[0] ?? null);
+      const repository = new PrismaRoutePlanRepository(prisma as never);
+      await expect(repository[method]({
+        routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com',
+        payload: { stops: [{ deliveryStopId: 'stop-new', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 1 }] }
+      })).rejects.toBeInstanceOf(RoutePlanStopUpdateInvalidError);
+      expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+      expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
+      expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -2509,6 +2958,7 @@ function createPrismaHarness(input: {
     };
     driverEvent: {
       create: ReturnType<typeof vi.fn>;
+      findFirst: ReturnType<typeof vi.fn>;
     };
     order: {
       findMany: ReturnType<typeof vi.fn>;
@@ -2602,6 +3052,7 @@ function createPrismaHarness(input: {
       findFirst: vi.fn(() => Promise.resolve(input.driverForAssignment === undefined ? { id: 'driver-id' } : input.driverForAssignment))
     },
     driverEvent: {
+      findFirst: vi.fn(() => Promise.resolve(null)),
       create: vi.fn(() => Promise.resolve({
         createdAt: new Date('2026-05-07T12:30:00.100Z'),
         id: 'driver-event-id',
@@ -2768,7 +3219,10 @@ function createPrismaHarness(input: {
     routePlanStop: {
       createMany: routePlanStopCreateMany,
       updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
-      findFirst: vi.fn(() => Promise.resolve(input.routePlanStopFindFirst ?? input.conflictingRoutePlanStop ?? null)),
+      findFirst: vi.fn(() => {
+        const result = input.routePlanStopFindFirst ?? input.conflictingRoutePlanStop ?? null;
+        return Promise.resolve(result === null ? null : { routePlan: { status: 'READY' }, ...result });
+      }),
       findMany: vi.fn(() => Promise.resolve(input.existingRoutePlanStops ?? [])),
       deleteMany: vi.fn(() => Promise.resolve({ count: 2 }))
     },
@@ -2798,8 +3252,13 @@ function expectRoutePlanVersionClaim(
 }
 
 function routePlanRecord(input: {
+  assignmentGeneration?: bigint;
   constraints?: Record<string, unknown>;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
   driverId?: string | null;
+  driverNavigationUntil?: Date | null;
   driverEvents?: Array<{ eventType: string }>;
   driverRouteNotificationAttempts?: Array<{ createdAt: Date }>;
   metrics?: Record<string, unknown>;
@@ -2809,11 +3268,16 @@ function routePlanRecord(input: {
   updatedAt?: Date;
 } = {}): Record<string, unknown> {
   return {
+    assignmentGeneration: input.assignmentGeneration ?? 1n,
     createdAt: new Date('2026-05-07T12:30:00.000Z'),
     constraints: input.constraints ?? {},
+    deliveryWorkCompletedAt: input.deliveryWorkCompletedAt ?? null,
+    deliveryWorkCompletedGeneration: input.deliveryWorkCompletedGeneration ?? null,
+    deliveryWorkCompletedVersionId: input.deliveryWorkCompletedVersionId ?? null,
     depotLatitude: '43.6532',
     depotLongitude: '-79.3832',
     driverId: input.driverId ?? null,
+    driverNavigationUntil: input.driverNavigationUntil ?? null,
     driverEvents: input.driverEvents,
     driverRouteNotificationAttempts: input.driverRouteNotificationAttempts,
     id: 'route-plan-id',
@@ -2825,10 +3289,35 @@ function routePlanRecord(input: {
     },
     name: 'CLEVER route draft',
     planDate: new Date('2026-05-08T00:00:00.000Z'),
-    routeGroupingChildVersions: input.routeGroupingChildVersions,
+    routeGroupingChildVersions: input.routeGroupingChildVersions ?? [],
     routeStops: input.routeStops ?? [],
     status: input.status ?? 'READY',
     updatedAt: input.updatedAt ?? new Date('2026-05-07T12:30:00.000Z')
+  };
+}
+
+function completionReconciliationRoute(stopStatus: string, completed = false): Record<string, unknown> {
+  const completedAt = completed ? new Date('2026-10-01T22:00:00.000Z') : null;
+  return {
+    assignmentGeneration: 1n,
+    deliveryWorkCompletedAt: completedAt,
+    deliveryWorkCompletedGeneration: completed ? 1n : null,
+    deliveryWorkCompletedVersionId: completed ? 'route-version-id' : null,
+    driverNavigationUntil: completed ? new Date('2026-10-02T00:00:00.000Z') : null,
+    id: 'route-plan-id',
+    routeGroupingChildVersions: [{
+      id: 'route-version-id',
+      snapshot: {
+        membershipSchemaVersion: 1,
+        stops: [{ deliveryStopId: 'stop-1', orderId: 'order-1', sequence: 1 }]
+      }
+    }],
+    routeStops: [{
+      deliveryStop: { order: { currentRouteVersionId: 'route-version-id' }, orderId: 'order-1', status: stopStatus },
+      deliveryStopId: 'stop-1',
+      sequence: 1
+    }],
+    status: 'IN_PROGRESS'
   };
 }
 
@@ -2964,6 +3453,7 @@ function routePlanStopRecord(input: {
   order: Record<string, unknown>;
   sequence: number;
   serviceMinutes: number | null;
+  status?: string;
 }): Record<string, unknown> {
   return {
     deliveryStop: {
@@ -2982,7 +3472,8 @@ function routePlanStopRecord(input: {
       province: 'ON',
       recipientName: 'Noah Yoon',
       serviceMinutes: input.serviceMinutes,
-      status: 'PENDING'
+      status: input.status ?? 'PENDING',
+      updatedAt: new Date('2026-05-07T12:30:00.000Z')
     },
     deliveryStopId: input.deliveryStopId,
     distanceFromPreviousMeters: input.distanceFromPreviousMeters,

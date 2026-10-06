@@ -4,7 +4,6 @@ import {
   DsvForbiddenError,
   createDsvAdminPrincipal,
   createDsvCustomerUserPrincipalFromAccount,
-  requireCustomerDeliveryPrincipal,
   requireDsvScopes,
 } from '../src/modules/dsv/dsv-principal.js';
 import type { DsvPrincipal } from '../src/modules/dsv/dsv-principal.js';
@@ -98,16 +97,6 @@ describe('DSV principal authorization', () => {
     });
     expect(() => requireDsvScopes(principal, ['dsv:session:read'])).not.toThrow();
     expect(() => requireDsvScopes(principal, ['dsv:customer-deliveries:read'])).not.toThrow();
-    expect(requireCustomerDeliveryPrincipal({
-      customerId: 'customer-a',
-      destinationId: 'shared-destination',
-      principal,
-    })).toBe(principal);
-    expect(() => requireCustomerDeliveryPrincipal({
-      customerId: 'customer-b',
-      destinationId: 'shared-destination',
-      principal,
-    })).toThrow(DsvForbiddenError);
   });
 
   test('missing, null, inactive, or empty CustomerAccount status cannot grant CUSTOMER_USER scope', () => {
@@ -137,32 +126,6 @@ describe('DSV principal authorization', () => {
         ...baseAccount,
         status: '',
       },
-    })).toThrow(DsvForbiddenError);
-  });
-
-  test('destination ID alone cannot authorize customer reads', () => {
-    const customerPrincipal = createDsvCustomerUserPrincipalFromAccount({
-      account: {
-        customerId: 'customer-a',
-        shopId: '99999999-9999-4999-8999-999999999999',
-        status: 'ACTIVE',
-      },
-    });
-    const adminPrincipal = createDsvAdminPrincipal({ shopId: '99999999-9999-4999-8999-999999999999' });
-
-    expect(requireCustomerDeliveryPrincipal({
-      customerId: 'customer-a',
-      destinationId: 'shared-destination',
-      principal: customerPrincipal,
-    })).toBe(customerPrincipal);
-    expect(() => requireCustomerDeliveryPrincipal({
-      destinationId: 'shared-destination',
-      principal: adminPrincipal,
-    })).toThrow(DsvForbiddenError);
-    expect(() => requireCustomerDeliveryPrincipal({
-      customerId: 'customer-b',
-      destinationId: 'shared-destination',
-      principal: customerPrincipal,
     })).toThrow(DsvForbiddenError);
   });
 });

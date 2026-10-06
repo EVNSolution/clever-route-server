@@ -261,6 +261,30 @@ The server validates that all referenced orders belong to the token shop, share
 the route delivery date, are not already assigned to another route plan, and do
 not contain duplicate `shopifyOrderGid` values.
 
+After delivery starts, this endpoint and the aggregate route save permit manual
+reordering of the exact existing stop set. Stop rows, delivery statuses, driver
+events, the assigned driver, and the route's execution state are retained.
+Unfinished-stop ETAs are invalidated for recalculation; completed-stop timing is
+retained. Adding, removing, or substituting stops through these endpoints remains
+blocked while the route is in progress. Completed and cancelled routes cannot be
+reordered. Grouped routes use the route-group draft save with the same order-only
+policy (the existing append-orders operation remains available).
+
+Saving does not send a driver notification. The operator presses **Dispatch**
+again (`POST /admin/route-plans/:routePlanId/publish`) after saving. A changed
+standalone publication fingerprint or grouped child version produces a new
+`driver_route_changed` notification; the driver's assigned-route read returns
+the saved sequence. Redispatch does not restart the route or reset delivery
+progress.
+
+For active grouped routes, an order-only successor marks its immutable
+predecessor as compatible for in-flight delivery events. The server validates
+the same shop, route, driver, assignment generation, and exact stop/order
+identities along the marked predecessor chain (up to 128 archived versions).
+Pickup/arrival timing uses the same validated lineage. Other stale versions and
+assignment changes remain rejected; route-start and administrative actions do
+not gain this exception.
+
 Common errors:
 
 - `401` with `UNAUTHORIZED`: missing or invalid Shopify session token.
@@ -268,6 +292,8 @@ Common errors:
 - `404` with `NOT_FOUND`: route plan does not exist for the token shop.
 - `409` with `ROUTE_ORDER_ALREADY_PLANNED`: an order is already assigned to a
   different route plan.
+- `400` with `ROUTE_STOP_UPDATE_INVALID`: an in-progress membership change or a
+  stop-order change on a completed/cancelled route.
 
 ## POST `/admin/route-plans/:routePlanId/stops/:deliveryStopId/transition`
 

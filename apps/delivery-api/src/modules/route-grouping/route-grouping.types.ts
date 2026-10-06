@@ -3,7 +3,7 @@ import type { DriverRoutePushResult } from './driver-push.provider.js';
 
 export type RoutePublicationResult = DriverRoutePushResult & { publishedAt: string | null };
 
-export type RouteGroupingDisplayStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+export type RouteGroupingDisplayStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'INCOMPLETE' | 'CANCELLED';
 export type RouteGroupingChildDisplayStatus = RouteGroupingDisplayStatus;
 export type RouteGroupingNotificationStatus = 'NOT_REQUIRED' | 'PENDING' | 'SENT' | 'FAILED';
 
@@ -176,6 +176,7 @@ export type CreateRouteGroupingInput = {
   dateRangeEnd?: string;
   dateRangeStart?: string;
   depot?: RoutePlanDepotInput | undefined;
+  initialRoute?: { requestId: string };
   name: string;
   orderIds: string[];
   planDate?: string;
@@ -190,6 +191,7 @@ export type CopyRouteGroupingInput = {
   expectedUpdatedAt: string;
   groupingId: string;
   mode: RouteGroupingCopyMode;
+  requestId?: string;
   shopDomain: string;
 };
 

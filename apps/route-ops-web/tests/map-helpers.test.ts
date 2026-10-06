@@ -3,9 +3,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getRouteDropoffPoints, getRouteFitPoints, getRouteMapPoints } from '../src/maps/geojson';
-import { auditStyleEndpoints, extractStyleEndpointUrls, mapReadiness, providerStatusLabel } from '../src/maps/provider';
+import { mapReadiness } from '../src/maps/provider';
 import { installPmtilesProtocol } from '../src/maps/pmtiles';
-import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
+import type { CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
 
 describe('route ops map helpers', () => {
   test('builds order GeoJSON with candidate/review pin classification and filters invalid coordinates', () => {
@@ -259,25 +259,6 @@ describe('route ops map helpers', () => {
     ]);
   });
 
-  test('extracts style manifest endpoints and classifies public vs self-hosted hosts', () => {
-    const endpoints = extractStyleEndpointUrls({
-      glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
-      sources: {
-        local: { tiles: ['/admin/ui/app/vendor/tiles/{z}/{x}/{y}.pbf'] },
-        pmtiles: { url: 'pmtiles://https://example.test/world.pmtiles' }
-      },
-      sprite: '/admin/ui/app/vendor/sprites/clever'
-    });
-    expect(endpoints).toContain('https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf');
-    expect(endpoints).toContain('https://example.test/world.pmtiles');
-    expect(auditStyleEndpoints(endpoints, ['tiles.openfreemap.org']).isAllowed).toBe(false);
-    expect(auditStyleEndpoints(endpoints, ['tiles.openfreemap.org', 'example.test'])).toEqual({
-      externalHosts: ['example.test', 'tiles.openfreemap.org'],
-      isAllowed: true,
-      providerMode: 'public_allowlisted'
-    });
-  });
-
   test('does not double-install PMTiles protocol in one browser session', () => {
     const originalWindow = (globalThis as { window?: Window }).window;
     (globalThis as { window?: Partial<Window> }).window = { __cleverRouteOpsPmtilesProtocolInstalled: false };
@@ -290,11 +271,6 @@ describe('route ops map helpers', () => {
     } finally {
       (globalThis as { window?: Window }).window = originalWindow;
     }
-  });
-
-  test('labels configured and fallback provider states', () => {
-    expect(providerStatusLabel(bootstrap({ providerMode: 'public_allowlisted', status: 'configured' }))).toBe('Public map provider allowlisted');
-    expect(providerStatusLabel(bootstrap({ disabledReason: 'public_provider_mode_not_enabled', providerMode: null, status: 'not_configured' }))).toBe('public_provider_mode_not_enabled');
   });
 
   test('keeps configured providers interactive before markers exist', () => {
@@ -361,17 +337,5 @@ function routeDetail(): RoutePlanDetailDto {
       { addressLabel: 'A', coordinates: { latitude: 43.6, longitude: -79.3 }, deliveryArea: 'Toronto', deliveryStopId: 'a', items: [], orderId: 'order-a', orderName: '#1', recipientName: 'A', sequence: 1, sourceOrderId: 'source-a', status: 'PENDING' },
       { addressLabel: 'B', coordinates: { latitude: 43.65, longitude: -79.4 }, deliveryArea: 'Toronto', deliveryStopId: 'b', items: [], orderId: 'order-b', orderName: '#2', recipientName: 'B', sequence: 2, sourceOrderId: 'source-b', status: 'PENDING' }
     ]
-  };
-}
-
-function bootstrap(mapConfig: Partial<BootstrapPayload['mapConfig']>): BootstrapPayload['mapConfig'] {
-  return {
-    allowedHosts: [],
-    attribution: null,
-    providerMode: null,
-    status: 'not_configured',
-    styleAudit: null,
-    styleUrl: null,
-    ...mapConfig
   };
 }

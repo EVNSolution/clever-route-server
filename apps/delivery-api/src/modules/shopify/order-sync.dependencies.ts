@@ -17,6 +17,7 @@ import { PrismaShopTokenRepository } from './shop-token.repository.js';
 import { ShopTokenService } from './shop-token.service.js';
 import { loadShopifyTokenExchangeTimeoutMs, ShopifyTokenExchangeClient } from './token-exchange.client.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from './shopify-api-version.js';
+import { loadShopifyDeliveryCycle, ShopifyDeliverySettingsError } from './order-delivery-settings.js';
 
 export type AdminOrdersRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<
   | 'CLEVER_ORDERS_MAP_PROJECTION'
@@ -29,14 +30,6 @@ export type AdminOrdersRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<
   | 'SHOPIFY_TOKEN_ENCRYPTION_KEY',
   string
 >>;
-
-export function loadAdminOrdersDependencies(input: {
-  adminNotificationService?: AdminNotificationServiceApi | undefined;
-  env: AdminOrdersRuntimeEnv;
-  prisma: PrismaClient;
-}): AdminOrdersDependencies | undefined {
-  return loadAdminOrdersRuntime(input)?.dependencies;
-}
 
 export function loadAdminOrdersRuntime(input: {
   adminNotificationService?: AdminNotificationServiceApi | undefined;
@@ -62,9 +55,27 @@ export function loadAdminOrdersRuntime(input: {
   );
   const paginationSecret = readOptional(input.env.ORDERS_PAGINATION_HMAC_KEY);
   const resourceFlags = resolveAdminOrdersResourceFlags(input.env);
+  const encryptionKey = readOptional(input.env.SHOPIFY_TOKEN_ENCRYPTION_KEY);
+  const shopTokenService = encryptionKey === undefined ? undefined : new ShopTokenService({
+    encryptionKey: loadTokenEncryptionKey(encryptionKey),
+    repository: new PrismaShopTokenRepository(input.prisma),
+    tokenRefreshClient: new ShopifyTokenExchangeClient({
+      appCredentials,
+      timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS)
+    })
+  });
   const orderSyncService = new ShopifyOrderSyncService({
     graphqlClient: {
       request: () => Promise.reject(new Error('Admin GraphQL client is not configured for snapshot sync routes'))
+    },
+    deliveryCycleProvider: async ({ appId, shopDomain }) => {
+      try {
+        const accessToken = await shopTokenService?.getAdminAccessToken({ appId, shopDomain });
+        if (accessToken === undefined || accessToken === null) throw new ShopifyDeliverySettingsError();
+        return await loadShopifyDeliveryCycle(new ShopifyAdminGraphqlClient({ accessToken, apiVersion, shopDomain }));
+      } catch {
+        throw new ShopifyDeliverySettingsError();
+      }
     },
     ...(paginationSecret === undefined ? {} : { queryRepository: new PrismaOrderQueryRepository(input.prisma, paginationSecret) }),
     repository
@@ -77,8 +88,7 @@ export function loadAdminOrdersRuntime(input: {
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
 
-  const encryptionKey = readOptional(input.env.SHOPIFY_TOKEN_ENCRYPTION_KEY);
-  if (encryptionKey === undefined) {
+  if (shopTokenService === undefined) {
     return { dependencies };
   }
 
@@ -88,14 +98,7 @@ export function loadAdminOrdersRuntime(input: {
       new ShopifyAdminGraphqlClient({ accessToken, apiVersion: graphApiVersion, shopDomain }),
     orderRepository: repository,
     repository: new PrismaShopifyOrderReconciliationRepository(input.prisma),
-    shopTokenService: new ShopTokenService({
-      encryptionKey: loadTokenEncryptionKey(encryptionKey),
-      repository: new PrismaShopTokenRepository(input.prisma),
-      tokenRefreshClient: new ShopifyTokenExchangeClient({
-        appCredentials,
-        timeoutMs: loadShopifyTokenExchangeTimeoutMs(input.env.SHOPIFY_TOKEN_EXCHANGE_TIMEOUT_MS)
-      })
-    })
+    shopTokenService
   });
 
   return {

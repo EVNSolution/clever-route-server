@@ -1,7 +1,7 @@
 import type { FastifyBaseLogger } from 'fastify';
 
 export type AdminSessionTokenVerifier = {
-  verify(sessionToken: string, options?: object): { appId?: string | undefined; shopDomain: string; subject: string };
+  verify(sessionToken: string, options?: object): { appId?: string | undefined; issuedAt?: Date; shopDomain: string; subject: string };
 };
 
 type AdminSessionAuthSurface =

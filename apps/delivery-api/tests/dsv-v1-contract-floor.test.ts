@@ -2,13 +2,10 @@ import { describe, expect, test } from 'vitest';
 
 import {
   dsvV1ApiVersion,
-  dsvV1CustomerDeliveryRequiredFields,
   dsvV1EmittedProofStatuses,
   dsvV1ErrorCodes,
   dsvV1EtaStatuses,
   dsvV1ProofStatuses,
-  dsvV1SellerOrderSummaryRequiredFields,
-  dsvV1SessionRequiredFields,
   mapDsvV1CustomerDeliveryInquiryItem,
   mapDsvV1SellerOrderSummary,
   mapDsvV1SessionPrincipal,
@@ -50,7 +47,6 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
   });
 
   test('freezes session, ETA, proof, and emitted proof enum floors', () => {
-    expect(dsvV1SessionRequiredFields).toEqual(['csrfToken', 'principalType', 'shopId', 'scopes']);
     expect(dsvV1EtaStatuses).toEqual(['NOT_REQUIRED', 'PENDING', 'READY', 'FAILED', 'STALE']);
     expect(dsvV1ProofStatuses).toEqual(['NONE', 'AVAILABLE', 'REDACTED', 'EXPIRED']);
     expect(dsvV1EmittedProofStatuses).toEqual(['NONE', 'AVAILABLE', 'EXPIRED']);
@@ -61,9 +57,12 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       shopId: 'shop-1',
     }, 'csrf-1');
 
-    for (const key of dsvV1SessionRequiredFields) {
-      expect(dto).toHaveProperty(key);
-    }
+    expect(dto).toEqual({
+      csrfToken: 'csrf-1',
+      principalType: 'DSV_ADMIN',
+      scopes: ['dsv:session:read'],
+      shopId: 'shop-1',
+    });
   });
 
   test('freezes seller order summary required shape and ETA serialization floor', () => {
@@ -80,19 +79,6 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       sellerOrderKey: 'SO-001',
     });
 
-    expect(dsvV1SellerOrderSummaryRequiredFields).toEqual([
-      'sellerOrderId',
-      'sellerOrderKey',
-      'deliveryStopId',
-      'customerId',
-      'destinationId',
-      'assignmentStatus',
-      'etaStatus',
-      'eventSummary',
-    ]);
-    for (const key of dsvV1SellerOrderSummaryRequiredFields) {
-      expect(dto).toHaveProperty(key);
-    }
     expect(dto).toEqual({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
@@ -127,20 +113,6 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       shippedBoxes: 3,
     });
 
-    expect(dsvV1CustomerDeliveryRequiredFields).toEqual([
-      'sellerOrderId',
-      'sellerOrderKey',
-      'destinationId',
-      'destinationDisplayName',
-      'shippedBoxes',
-      'deliveryStatus',
-      'etaStatus',
-      'eventSummary',
-      'proofStatus',
-    ]);
-    for (const key of dsvV1CustomerDeliveryRequiredFields) {
-      expect(dto).toHaveProperty(key);
-    }
     expect(dto).toEqual({
       deliveryStatus: 'DELIVERED',
       destinationDisplayName: 'Dock A',

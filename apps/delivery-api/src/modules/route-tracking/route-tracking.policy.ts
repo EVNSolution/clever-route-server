@@ -6,6 +6,8 @@ export const ROUTE_TRACKING_V1_POLICY = {
   heartbeatMs: 15_000,
   liveThresholdMs: 60_000,
   geometrySimplificationToleranceMeters: 5,
+  maxMatchAccuracyMeters: 100,
+  maxInterpolationAccuracyMeters: 200,
   minDistanceMeters: 50,
   streamRetryMs: 3_000
 } as const;

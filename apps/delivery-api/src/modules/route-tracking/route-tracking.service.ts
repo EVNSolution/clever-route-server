@@ -5,16 +5,17 @@ import {
   ROUTE_TRACKING_V1_POLICY
 } from './route-tracking.policy.js';
 import {
-  readRouteTrackingGeometryDocument,
   toRouteTrackingPositionEvents,
   toRouteTrackingRecordedPath
 } from './route-tracking.geometry.js';
 import {
-  buildRouteTrackingRoadMatchCacheWrite,
   buildRouteTrackingRoadMatchedPath,
-  shouldRefreshRouteTrackingRoadMatchedPath,
-  type RouteTrackingRoadMatchProvider,
 } from './route-tracking.road-match.js';
+import {
+  loadRouteTrackingEventWindow,
+  occurredAtWithinRouteTrackingEventWindow,
+  type RouteTrackingEventWindow,
+} from './route-tracking.event-window.js';
 import type {
   RouteTrackingPositionEventV1,
   RouteExecutionEvidenceV1,
@@ -82,21 +83,14 @@ type DriverLifecycleEventRow = {
 };
 
 export class PrismaRouteTrackingService implements RouteTrackingService {
-  private readonly roadMatchProvider: RouteTrackingRoadMatchProvider | undefined;
-  private readonly roadMatchRefreshes = new Set<string>();
-
-  constructor(
-    private readonly prisma: RouteTrackingPrismaClient,
-    options: { roadMatchProvider?: RouteTrackingRoadMatchProvider | undefined } = {}
-  ) {
-    this.roadMatchProvider = options.roadMatchProvider;
-  }
+  constructor(private readonly prisma: RouteTrackingPrismaClient) {}
 
   async getRouteTrackingSnapshot(input: {
     now?: Date;
     routePlanId: string;
   }): Promise<RouteTrackingSnapshotV1> {
     const serverTime = input.now ?? new Date();
+    const eventWindow = await loadRouteTrackingEventWindow(this.prisma, input.routePlanId);
     const [recordedGeometry, latestProgressRow, latestDriverStageRow, routeStops, arrivalRows] = await Promise.all([
       this.prisma.routeTrackingGeometry.findUnique({
         where: { routePlanId: input.routePlanId }
@@ -170,7 +164,14 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
         }
       })
     ]);
-    const fallbackRows = recordedGeometry === null
+    const usableRecordedGeometry = recordedGeometry !== null
+      && (eventWindow === null || (
+        occurredAtWithinRouteTrackingEventWindow(eventWindow, recordedGeometry.firstOccurredAt)
+        && occurredAtWithinRouteTrackingEventWindow(eventWindow, recordedGeometry.lastOccurredAt)
+      ))
+      ? recordedGeometry
+      : null;
+    const fallbackRows = usableRecordedGeometry === null
       ? await this.prisma.driverEvent.findMany({
           orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
           select: {
@@ -186,11 +187,17 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
             eventType: 'LOCATION_UPDATED',
             latitude: { not: null },
             longitude: { not: null },
+            ...(eventWindow === null ? {} : {
+              occurredAt: {
+                gte: eventWindow.startInclusive,
+                lt: eventWindow.endExclusive,
+              },
+            }),
             routePlanId: input.routePlanId
           }
         })
       : [];
-    const arrivalLocationRows = recordedGeometry !== null && arrivalRows.some((row) => (
+    const arrivalLocationRows = usableRecordedGeometry !== null && arrivalRows.some((row) => (
       readCoordinate(row.latitude, row.longitude) === null
     ))
       ? await this.prisma.driverEvent.findMany({
@@ -211,6 +218,12 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
             eventType: 'LOCATION_UPDATED',
             latitude: { not: null },
             longitude: { not: null },
+            ...(eventWindow === null ? {} : {
+              occurredAt: {
+                gte: eventWindow.startInclusive,
+                lt: eventWindow.endExclusive,
+              },
+            }),
             OR: arrivalRows
               .filter((row) => readCoordinate(row.latitude, row.longitude) === null)
               .map((row) => ({
@@ -223,27 +236,37 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
           }
         })
       : [];
-    const recentPositions = recordedGeometry === null
+    const recentPositions = usableRecordedGeometry === null
       ? fallbackRows
+          .filter((row) => eventWindow === null
+            || occurredAtWithinRouteTrackingEventWindow(eventWindow, row.occurredAt))
           .map((row) => toPositionEvent(row))
           .filter((position): position is RouteTrackingPositionEventV1 => position !== null)
           .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt))
-      : toRouteTrackingPositionEvents(recordedGeometry);
+      : toRouteTrackingPositionEvents(usableRecordedGeometry);
     const latestPosition = recentPositions.at(-1) ?? null;
     const arrivalPositions = arrivalLocationRows
+      .filter((row) => eventWindow === null
+        || occurredAtWithinRouteTrackingEventWindow(eventWindow, row.occurredAt))
       .map((row) => toPositionEvent(row))
       .filter((position): position is RouteTrackingPositionEventV1 => position !== null);
     const progress = buildProgressSnapshot(latestProgressRow, latestDriverStageRow, routeStops);
-    const executionEvidence = await this.getExecutionEvidence(input.routePlanId, recentPositions);
-    this.refreshRoadMatchedPath(recordedGeometry);
-
+    const executionEvidence = await this.getExecutionEvidence(input.routePlanId, recentPositions, eventWindow);
+    const cachedRoadMatch = buildRouteTrackingRoadMatchedPath(usableRecordedGeometry);
+    const roadMatchedPath = cachedRoadMatch !== null
+      && usableRecordedGeometry !== null
+      && cachedRoadMatch.inputPointCount <= usableRecordedGeometry.sourcePointCount
+      && (eventWindow === null
+        || occurredAtWithinRouteTrackingEventWindow(eventWindow, cachedRoadMatch.lastInputOccurredAt))
+      ? cachedRoadMatch
+      : null;
     return {
       executionEvidence,
       latestPosition,
       policy: ROUTE_TRACKING_V1_POLICY,
       progress,
-      recordedPath: toRouteTrackingRecordedPath(recordedGeometry),
-      roadMatchedPath: buildRouteTrackingRoadMatchedPath(recordedGeometry),
+      recordedPath: toRouteTrackingRecordedPath(usableRecordedGeometry),
+      roadMatchedPath,
       recentPositions,
       routePlanId: input.routePlanId,
       schemaVersion: ROUTE_TRACKING_SCHEMA_VERSION,
@@ -255,7 +278,8 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
 
   private async getExecutionEvidence(
     routePlanId: string,
-    positions: RouteTrackingPositionEventV1[]
+    positions: RouteTrackingPositionEventV1[],
+    eventWindow: RouteTrackingEventWindow | null
   ): Promise<RouteExecutionEvidenceV1> {
     const lifecycleSelect = {
       createdAt: true,
@@ -277,8 +301,16 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
         where: { eventType: 'ROUTE_COMPLETED', routePlanId }
       })
     ]);
-    const start = toLifecycleEvidence(startRow, 'ROUTE_STARTED');
-    const completion = toLifecycleEvidence(completionRow, 'ROUTE_COMPLETED');
+    const start = startRow !== null && (eventWindow === null
+      || occurredAtWithinRouteTrackingEventWindow(eventWindow, startRow.occurredAt))
+      ? toLifecycleEvidence(startRow, 'ROUTE_STARTED')
+      : null;
+    // An earlier completion belongs to a previous execution, even on the same route.
+    const completion = completionRow !== null
+      && (eventWindow === null || occurredAtWithinRouteTrackingEventWindow(eventWindow, completionRow.occurredAt))
+      && (startRow === null || completionRow.occurredAt.getTime() >= startRow.occurredAt.getTime())
+      ? toLifecycleEvidence(completionRow, 'ROUTE_COMPLETED')
+      : null;
     const firstPosition = positions[0] ?? null;
     const lastPosition = positions.at(-1) ?? null;
     if (start === null && completion === null) {
@@ -307,40 +339,6 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
     };
   }
 
-  refreshRoadMatchedPath(recordedGeometry: Parameters<typeof shouldRefreshRouteTrackingRoadMatchedPath>[0]): void {
-    if (
-      this.roadMatchProvider === undefined ||
-      recordedGeometry === null ||
-      recordedGeometry === undefined ||
-      !shouldRefreshRouteTrackingRoadMatchedPath(recordedGeometry) ||
-      this.roadMatchRefreshes.has(recordedGeometry.routePlanId)
-    ) {
-      return;
-    }
-    const routePlanId = recordedGeometry.routePlanId;
-    this.roadMatchRefreshes.add(routePlanId);
-    void (async () => {
-      try {
-        const path = await this.roadMatchProvider!.match(readRouteTrackingGeometryDocument(recordedGeometry));
-        if (path === null) return;
-        await this.prisma.routeTrackingGeometry.updateMany({
-          data: buildRouteTrackingRoadMatchCacheWrite(path),
-          where: {
-            routePlanId,
-            OR: [
-              { roadMatchedSourcePointCount: null },
-              { roadMatchedSourcePointCount: { lte: path.inputPointCount } }
-            ]
-          }
-        });
-      } catch {
-        // Road matching is display-only. Raw tracking snapshot and writes must
-        // remain available when OSRM is slow, unavailable, or returns NoMatch.
-      } finally {
-        this.roadMatchRefreshes.delete(routePlanId);
-      }
-    })();
-  }
 }
 
 function emptyExecutionEvidence(

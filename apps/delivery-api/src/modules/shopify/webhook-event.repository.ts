@@ -293,6 +293,10 @@ export class PrismaShopifyWebhookEventRepository {
   ): Promise<RecordShopifyWebhookEventResult> {
     const appId = normalizeShopifyAppId(input.appId);
     const shopDomain = normalizeShopDomain(input.shopDomain);
+    const isAppUninstalled = input.topic === 'app/uninstalled';
+    if (isAppUninstalled && (input.triggeredAt === null || input.triggeredAt.getTime() > Date.now())) {
+      throw new Error('App uninstall webhook requires a valid non-future triggeredAt');
+    }
     const complianceAction = getComplianceAction(input.payload, input.topic);
     if (complianceAction.type === 'shop_redact') {
       return this.recordShopRedaction({ appId, input, shopDomain });
@@ -303,10 +307,11 @@ export class PrismaShopifyWebhookEventRepository {
 
     const createShop =
       input.apiVersion === null
-        ? { appId, shopDomain }
+        ? { appId, ...(isAppUninstalled && input.triggeredAt !== null ? { installedAt: input.triggeredAt } : {}), shopDomain }
         : {
             apiVersion: input.apiVersion,
             appId,
+            ...(isAppUninstalled && input.triggeredAt !== null ? { installedAt: input.triggeredAt } : {}),
             shopDomain
           };
     try {
@@ -327,12 +332,39 @@ export class PrismaShopifyWebhookEventRepository {
           });
           return { shopId: null, suppressed: true };
         }
+        if (isAppUninstalled && input.triggeredAt !== null) {
+          const currentShop = await write.shop.findUnique({
+            select: { id: true, installedAt: true, uninstalledAt: true },
+            where: appScopedShopWhere({ appId, shopDomain })
+          });
+          if (currentShop !== null) {
+            const existingEvent = await write.shopifyWebhookEvent.findUnique({
+              select: { status: true },
+              where: { shopId_webhookId: { shopId: currentShop.id, webhookId: input.webhookId } }
+            });
+            if (existingEvent !== null) {
+              const stale = isStaleAppUninstall(currentShop, input.triggeredAt);
+              return {
+                duplicate: true,
+                duplicateStatus: stale ? 'IGNORED' : existingEvent.status,
+                shopId: currentShop.id,
+                suppressed: stale
+              };
+            }
+          }
+        }
         const shop = await write.shop.upsert({
           create: createShop,
-          update: input.apiVersion === null ? {} : { apiVersion: input.apiVersion },
+          update: input.apiVersion === null || isAppUninstalled ? {} : { apiVersion: input.apiVersion },
           where: appScopedShopWhere({ appId, shopDomain })
         });
-        const storedPayload = getStoredPayload(input.payload, complianceAction.type, input.topic);
+        const staleAppUninstall = isAppUninstalled
+          && input.triggeredAt !== null
+          && isStaleAppUninstall(shop, input.triggeredAt);
+        const initialStatus = staleAppUninstall ? 'IGNORED' : getInitialStatus(complianceAction.type, input.topic);
+        const storedPayload = staleAppUninstall
+          ? webhookPayloadTombstone('IGNORED')
+          : getStoredPayload(input.payload, complianceAction.type, input.topic);
         await write.shopifyWebhookEvent.create({
           data: {
             apiVersion: input.apiVersion,
@@ -341,16 +373,40 @@ export class PrismaShopifyWebhookEventRepository {
             ...(isStoredPayloadRedacted(complianceAction.type, input.topic) ? { payloadRedactedAt: new Date() } : {}),
             rawBodySha256: createHash('sha256').update(input.rawBody).digest('hex'),
             shopId: shop.id,
-            status: getInitialStatus(complianceAction.type, input.topic),
+            status: initialStatus,
             topic: input.topic,
             triggeredAt: input.triggeredAt,
             webhookId: input.webhookId
           }
         });
-        return { shopId: shop.id, suppressed: false };
+        if (isAppUninstalled && input.triggeredAt !== null && !staleAppUninstall) {
+          await write.shop.updateMany({
+            data: {
+              adminAccessTokenCiphertext: null,
+              adminAccessTokenExpiresAt: null,
+              adminRefreshTokenCiphertext: null,
+              adminRefreshTokenExpiresAt: null,
+              tokenIssuedAt: null,
+              uninstalledAt: input.triggeredAt
+            },
+            where: {
+              appId,
+              installedAt: { lte: input.triggeredAt },
+              OR: [
+                { uninstalledAt: null },
+                { uninstalledAt: { lte: input.triggeredAt } }
+              ],
+              shopDomain
+            }
+          });
+        }
+        return { shopId: shop.id, suppressed: staleAppUninstall };
       });
       if (admitted.suppressed) {
         return { duplicate: true, status: 'IGNORED', webhookId: input.webhookId };
+      }
+      if ('duplicate' in admitted && admitted.duplicate) {
+        return { duplicate: true, status: admitted.duplicateStatus, webhookId: input.webhookId };
       }
     } catch (error) {
       if (isUniqueConstraintError(error)) {
@@ -586,6 +642,14 @@ function shouldSuppressAfterShopRedaction(
   return triggeredAt === null || triggeredAt.getTime() <= tombstone.reinstalledAt.getTime();
 }
 
+function isStaleAppUninstall(
+  shop: { installedAt: Date; uninstalledAt: Date | null },
+  triggeredAt: Date
+): boolean {
+  return shop.installedAt.getTime() > triggeredAt.getTime()
+    || (shop.uninstalledAt !== null && shop.uninstalledAt.getTime() > triggeredAt.getTime());
+}
+
 type ComplianceAction =
   | { type: 'customers_data_request' }
   | { orderLegacyIds: bigint[]; type: 'customers_redact' }
@@ -622,13 +686,15 @@ function getStoredPayload(payload: unknown, type: ComplianceAction['type'], topi
     return sanitizeShopCompliancePayload(payload);
   }
 
+  if (topic === 'app/uninstalled') return webhookPayloadTombstone('PROCESSED');
+
   if (ORDER_TOPICS.includes(topic)) return orderReferencePayloadFromWebhook(payload);
 
   return payload;
 }
 
 function isStoredPayloadRedacted(type: ComplianceAction['type'], topic: string): boolean {
-  return type === 'customers_redact' || ORDER_TOPICS.includes(topic);
+  return type === 'customers_redact' || topic === 'app/uninstalled' || ORDER_TOPICS.includes(topic);
 }
 
 function webhookPayloadTombstone(terminalStatus: 'IGNORED' | 'PROCESSED'): Prisma.InputJsonObject {
@@ -675,7 +741,7 @@ function orderPayloadIdentityFilters(orderLegacyId: bigint): Prisma.ShopifyWebho
 }
 
 function getInitialStatus(type: ComplianceAction['type'], topic: string): 'PROCESSED' | 'QUEUED' | 'RECEIVED' {
-  if (type === 'customers_redact') return 'PROCESSED';
+  if (type === 'customers_redact' || topic === 'app/uninstalled') return 'PROCESSED';
   return ORDER_TOPICS.includes(topic) ? 'QUEUED' : 'RECEIVED';
 }
 

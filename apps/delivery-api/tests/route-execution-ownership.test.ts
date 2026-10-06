@@ -1,65 +1,57 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import {
-  assertRouteExecutionOwnership,
+  assertRouteDispatchOwnership,
   RouteExecutionConflictError
 } from '../src/modules/route-plans/route-execution-ownership.js';
 
 describe('route execution ownership', () => {
-  test('locks unique stop ids in deterministic order before checking active overlap', async () => {
+  test('locks unique stop ids in deterministic order before rejecting an active dispatch overlap', async () => {
     const lockSql: string[] = [];
+    const lockedStopIds: unknown[] = [];
     const tx = {
-      $queryRaw: vi.fn((query: TemplateStringsArray | { strings: readonly string[] }) => {
+      $queryRaw: vi.fn((query: TemplateStringsArray | { strings: readonly string[]; values: readonly unknown[] }) => {
         const strings = 'strings' in query ? query.strings : query;
-        lockSql.push(Array.from(strings).join('?'));
-        return Promise.resolve([{ locked: true }]);
-      }),
-      routePlanStop: {
-        findFirst: vi.fn(() => Promise.resolve({
+        const sql = Array.from(strings).join('?');
+        if (sql.includes('SELECT DISTINCT')) return Promise.resolve([{
           deliveryStopId: 'stop-a',
-          routePlanId: 'other-route'
-        })),
-        findMany: vi.fn(() => Promise.resolve([]))
-      }
+          orderId: 'order-a',
+          orderName: '#1001',
+          routePlanId: 'other-route',
+          routeName: 'Other route'
+        }]);
+        lockSql.push(sql);
+        if ('strings' in query) lockedStopIds.push(query.values[0]);
+        return Promise.resolve([{ locked: true }]);
+      })
     };
 
-    await expect(assertRouteExecutionOwnership(tx, {
+    await expect(assertRouteDispatchOwnership(tx, {
       deliveryStopIds: ['stop-b', 'stop-a', 'stop-b'],
       routePlanId: 'route-current',
       shopId: 'shop-id'
     })).rejects.toBeInstanceOf(RouteExecutionConflictError);
 
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
     expect(lockSql).toEqual([
       'SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(710027, hashtext(?))',
       'SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(710027, hashtext(?))'
     ]);
-    expect(tx.routePlanStop.findFirst).toHaveBeenCalledWith({
-      select: { deliveryStopId: true, routePlanId: true },
-      where: {
-        deliveryStopId: { in: ['stop-a', 'stop-b'] },
-        routePlanId: { not: 'route-current' },
-        routePlan: { shopId: 'shop-id', status: 'IN_PROGRESS' }
-      }
-    });
+    expect(lockedStopIds).toEqual(['stop-a', 'stop-b']);
   });
 
   test('fails closed when the transaction lock cannot be acquired', async () => {
     const lockError = new Error('database lock unavailable');
     const tx = {
-      $queryRaw: vi.fn(() => Promise.reject(lockError)),
-      routePlanStop: {
-        findFirst: vi.fn(() => Promise.resolve(null)),
-        findMany: vi.fn(() => Promise.resolve([]))
-      }
+      $queryRaw: vi.fn(() => Promise.reject(lockError))
     };
 
-    await expect(assertRouteExecutionOwnership(tx, {
+    await expect(assertRouteDispatchOwnership(tx, {
       deliveryStopIds: ['stop-a'],
       routePlanId: 'route-current',
       shopId: 'shop-id'
     })).rejects.toBe(lockError);
 
-    expect(tx.routePlanStop.findFirst).not.toHaveBeenCalled();
+    expect(tx.$queryRaw).toHaveBeenCalledOnce();
   });
 });

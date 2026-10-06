@@ -1,3 +1,4 @@
+import { hasDsvTestExclusions, isVisibleDsvOrder } from './dsv-test-visibility.js';
 import { createHash } from 'node:crypto';
 
 import { Prisma, type PrismaClient } from '@prisma/client';
@@ -626,7 +627,11 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       include: { rows: { orderBy: { rowNumber: 'asc' } } },
       where: { id: input.importId, shopId: shop.id },
     });
-    return record === null ? null : importView(record);
+    if (record === null) return null;
+    if (!hasDsvTestExclusions(shop.id)) return importView(record);
+    const rows = record.rows.filter(row => isVisibleDsvOrder(shop.id, row.sellerOrderId));
+    if (rows.length === 0 && record.rows.length > 0) return null;
+    return importView({ ...record, rows, rowCount: rows.length });
   }
 
   async listConditions(input: { shopDomain: string }): Promise<DsvTransportConditionView[] | null> {
@@ -2014,6 +2019,12 @@ async function invalidateReadyRoutePlansForUpdates(
       where: { routePlanId: { in: routePlanIds } },
     }),
   ]);
+  if (assignedRoutePlanIds.length > 0) {
+    await tx.routePlanStop.updateMany({
+      data: { etaStatus: 'PENDING' },
+      where: { routePlanId: { in: assignedRoutePlanIds }, shopId },
+    });
+  }
   return assignedRoutePlanIds;
 }
 

@@ -21,6 +21,7 @@ RUN npm --prefix apps/delivery-api run prisma:generate \
   && test -f apps/delivery-api/dist/scripts/cleanup-driver-event-attempts.js \
   && test -f apps/delivery-api/dist/scripts/report-driver-route-completion-invariant.js \
   && test -f apps/delivery-api/dist/scripts/backfill-rolling-route-eta.js \
+  && test -f apps/delivery-api/dist/scripts/repair-dsv-route-eta.js \
   && test -f apps/delivery-api/dist/scripts/cleanup-shopify-webhook-events.js \
   && test -f apps/delivery-api/dist/scripts/cleanup-driver-proof-media.js \
   && test -f apps/delivery-api/dist/scripts/reconcile-customer-email.js \
@@ -44,6 +45,22 @@ RUN ln -s ../../node_modules ./apps/delivery-api/node_modules \
 USER clever
 
 FROM base AS runtime
+ARG COMMIT_SHA
+RUN case "$COMMIT_SHA" in *[!0-9a-f]*|'') exit 1 ;; esac \
+  && test "${#COMMIT_SHA}" -eq 40 \
+  && printf '%s\n' "$COMMIT_SHA" > /app/build-revision
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl \
+  && install -d /usr/share/postgresql-common/pgdg \
+  && curl --fail --silent --show-error --location \
+    https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+  && printf 'Types: deb\nURIs: https://apt.postgresql.org/pub/repos/apt\nSuites: bookworm-pgdg\nComponents: main\nSigned-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc\n' \
+    > /etc/apt/sources.list.d/pgdg.sources \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends postgresql-client-17 \
+  && pg_restore --version | grep 'PostgreSQL) 17\.' \
+  && rm -rf /var/lib/apt/lists/*
 LABEL org.clever-route.proof-media-iam-role-capability="1"
 ENV NODE_ENV=production
 ENV ROUTE_OPS_WEB_DIST_PATH=/app/external/route-ops-web/dist

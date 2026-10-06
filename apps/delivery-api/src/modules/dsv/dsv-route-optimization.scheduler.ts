@@ -112,20 +112,9 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
         routePlanId: pending.routePlanId,
         shopDomain: pending.shopDomain,
       });
-      if (
-        detail === null
-        || detail.routePlan.driverId === null
-        || detail.routePlan.driverId === undefined
-        || detail.stops.length === 0
-      ) {
-        return;
-      }
+      if (!isAssignedReadyRoute(detail)) return;
       if (detail.stops.length === 1) {
-        await this.services.routePlanService.refreshRouteGeometryForRoutePlan({
-          routePlanId: pending.routePlanId,
-          shopDomain: pending.shopDomain,
-          source: 'EXPLICIT_REFRESH',
-        });
+        await this.refreshGeometry(pending);
         return;
       }
 
@@ -145,6 +134,13 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
         services: this.services,
         shopDomain: pending.shopDomain,
       });
+      const completedJob = await this.services.routeOptimizationJobService.findLatestJob({
+        routePlanId: pending.routePlanId,
+        shopDomain: pending.shopDomain,
+      });
+      if (completedJob?.id === job.id && (completedJob.status === 'FAILED' || completedJob.status === 'TIMEOUT')) {
+        await this.refreshGeometry(pending);
+      }
     } catch (error) {
       retry = error instanceof RouteOptimizationJobActiveError;
       if (!retry) this.logFailure(pending, error);
@@ -160,6 +156,19 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
     }
   }
 
+  private async refreshGeometry(pending: PendingRouteOptimization): Promise<void> {
+    const latest = await this.services.routePlanService.getRoutePlanDetail({
+      routePlanId: pending.routePlanId,
+      shopDomain: pending.shopDomain,
+    });
+    if (!isAssignedReadyRoute(latest)) return;
+    await this.services.routePlanService.refreshRouteGeometryForRoutePlan({
+      routePlanId: pending.routePlanId,
+      shopDomain: pending.shopDomain,
+      source: 'EXPLICIT_REFRESH',
+    });
+  }
+
   private logFailure(pending: PendingRouteOptimization, error: unknown): void {
     try {
       this.logger.warn({
@@ -172,6 +181,16 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
       // Logging must not change the persisted assignment outcome.
     }
   }
+}
+
+function isAssignedReadyRoute(
+  detail: Awaited<ReturnType<RoutePlanService['getRoutePlanDetail']>>,
+): detail is NonNullable<typeof detail> {
+  return detail !== null
+    && detail.routePlan.status === 'READY'
+    && detail.routePlan.driverId !== null
+    && detail.routePlan.driverId !== undefined
+    && detail.stops.length > 0;
 }
 
 function normalizeDelay(value: number | undefined, fallback: number): number {

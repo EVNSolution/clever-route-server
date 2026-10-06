@@ -232,6 +232,7 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(invalidation).not.toContain('tx.routeGrouping.updateMany');
     expect(invalidation).toContain('tx.routePlanStop.updateMany');
     expect(invalidation).toContain("etaStatus: 'NOT_REQUIRED'");
+    expect(invalidation).toContain("etaStatus: 'PENDING'");
     expect(invalidation).toContain('distanceFromPreviousMeters: null');
     expect(invalidation).toContain('durationFromPreviousSeconds: null');
     expect(invalidation).toContain('tx.routePlanGeometryCache.deleteMany');

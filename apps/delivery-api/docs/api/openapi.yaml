@@ -584,9 +584,13 @@ paths:
           in: query
           required: false
           schema: { type: string, format: date }
+        - name: includeDailyRoute
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
       responses:
         '200':
-          description: Vehicle GPS trail sessions and stale-gap segments from UVIS vehicle GPS telemetry samples only.
+          description: Vehicle GPS trail sessions split at stale gaps and implausible raw jumps, with an optional daily route.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1VehicleGpsTrailHistoryEnvelope' }
@@ -2221,7 +2225,7 @@ paths:
   /shopify/auth/token-exchange:
     post:
       tags: [Shopify Embedded Admin]
-      summary: Exchange a Shopify session token and store Admin API token metadata
+      summary: Ensure a canonical Shopify offline token and return metadata only
       operationId: exchangeShopifySessionToken
       x-source-file: src/routes/shopify-auth.routes.ts
       security:
@@ -2238,7 +2242,7 @@ paths:
                   shopDomain: example.myshopify.com
       responses:
         '200':
-          description: Token material was exchanged and stored without exposing plaintext tokens.
+          description: Canonical token was reused, refreshed or acquired without exposing plaintext tokens.
           content:
             application/json:
               schema:
@@ -2260,6 +2264,57 @@ paths:
                     error:
                       code: SHOPIFY_TOKEN_EXCHANGE_FAILED
                       message: Shopify token exchange failed
+  /shopify/auth/offline-token:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Obtain the canonical offline token for a trusted app server
+      description: |
+        Server-to-server only. HMAC-SHA256 binds the canonical JSON body, timestamp,
+        method and path using the app client secret. Timestamp tolerance is 60 seconds.
+        Browser session tokens alone cannot authorize this endpoint. The response
+        contains an access token and an opaque refresh routing marker; the real
+        Shopify refresh credential never leaves the Delivery API.
+      operationId: obtainShopifyOfflineToken
+      x-source-file: src/routes/shopify-auth.routes.ts
+      security:
+        - ShopifyTokenBrokerHmac: []
+      parameters:
+        - in: header
+          name: x-clever-token-timestamp
+          required: true
+          schema: { type: string, pattern: '^\d{10}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [clientId, shopDomain, operation]
+              properties:
+                clientId: { type: string }
+                shopDomain: { type: string }
+                operation: { type: string, enum: [exchange, refresh] }
+                sessionToken:
+                  type: string
+                  description: Required for exchange; forbidden for refresh.
+      responses:
+        '200':
+          description: Canonical offline access with remaining lifetimes, always Cache-Control no-store.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, scope, refresh_token]
+                properties:
+                  access_token: { type: string }
+                  scope: { type: string }
+                  expires_in: { type: integer, minimum: 0 }
+                  refresh_token: { type: string, enum: [clever-route-managed-v1] }
+                  refresh_token_expires_in: { type: integer, minimum: 0 }
+        '401': { description: Invalid authority proof or merchant reauthorization required. }
+        '429': { description: Source IP exceeded the per-process request limit. }
+        '502': { description: Token authority temporarily unavailable. }
   /shopify/webhooks:
     post:
       tags: [Shopify Webhooks]
@@ -2337,6 +2392,17 @@ paths:
                       message: Invalid order sync payload
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Shopify installation delivery settings or shop timezone are unavailable; no snapshot orders are written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                data: null
+                error:
+                  code: SHOPIFY_DELIVERY_SETTINGS_UNAVAILABLE
+                  message: Shopify delivery settings or shop timezone are unavailable; retry synchronization.
   /admin/orders:
     get:
       tags: [Shopify Embedded Admin]
@@ -2360,6 +2426,12 @@ paths:
           in: query
           schema:
             enum: [SUNDAY, MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY]
+            type: string
+        - name: serviceCategory
+          in: query
+          description: DELIVERY includes day and evening deliveries; PICKUP includes pickups only. Omit for all categories. Combines with other filters using AND.
+          schema:
+            enum: [DELIVERY, PICKUP]
             type: string
         - name: serviceType
           in: query
@@ -5033,7 +5105,7 @@ paths:
           in: query
           required: false
           schema:
-            enum: [pending, active, completed]
+            enum: [pending, active, completed, incomplete]
             type: string
         - name: cursor
           in: query
@@ -5515,6 +5587,11 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
 components:
   securitySchemes:
+    ShopifyTokenBrokerHmac:
+      type: apiKey
+      in: header
+      name: x-clever-token-signature
+      description: App-server HMAC; see shopify-token-authority.md for canonical signing input.
     DsvSessionCookie:
       type: apiKey
       in: cookie
@@ -7370,6 +7447,65 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DsvV1VehicleGpsTrailSession'
+        dailyRoute:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DsvV1VehicleDailyRoute'
+      additionalProperties: false
+    DsvV1VehicleDailyRoute:
+      type: object
+      description: Continuous daily line; bridge edges are unverified and do not prove travel along the connection.
+      required: [type, coordinates, anchors, bridges, sourceSampleCount]
+      properties:
+        type:
+          type: string
+          enum: [LineString]
+        coordinates:
+          type: array
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items: { type: number }
+        anchors:
+          type: array
+          items:
+            type: object
+            required: [observedAt, coordinateIndex]
+            properties:
+              observedAt: { type: string, format: date-time }
+              coordinateIndex: { type: integer, minimum: 0 }
+            additionalProperties: false
+        bridges:
+          type: array
+          items:
+            type: object
+            required: [fromObservedAt, toObservedAt, reason]
+            properties:
+              fromObservedAt: { type: string, format: date-time }
+              toObservedAt: { type: string, format: date-time }
+              reason: { type: string, enum: [GPS_GAP, IMPLAUSIBLE_JUMP, NO_MATCH] }
+              inferredTunnel:
+                type: object
+                description: Dotted-display candidate on one reviewed tunnel corridor after a later observed road witness; not observed GPS or confirmed travel.
+                required: [type, coordinates, corridorId, fromObservedAt, toObservedAt, confirmedByObservedAt, source]
+                properties:
+                  type: { type: string, enum: [LineString] }
+                  coordinates:
+                    type: array
+                    items:
+                      type: array
+                      minItems: 2
+                      maxItems: 2
+                      items: { type: number }
+                  corridorId: { type: string }
+                  fromObservedAt: { type: string, format: date-time }
+                  toObservedAt: { type: string, format: date-time }
+                  confirmedByObservedAt: { type: string, format: date-time }
+                  source: { type: string, enum: [CURATED_OSM_TUNNEL_CORRIDOR] }
+                additionalProperties: false
+            additionalProperties: false
+        sourceSampleCount: { type: integer, minimum: 2 }
       additionalProperties: false
     DsvV1DriverListPage:
       type: object
@@ -7829,6 +7965,20 @@ components:
       type: object
       required: [source, reason, orders]
       properties:
+        deliveryCycle:
+          description: Legacy snapshot hint; the Shopify runtime uses server-resolved installation settings and shop.ianaTimezone.
+          type: object
+          required: [cutoffWeekday, cutoffTime, timeZone]
+          properties:
+            cutoffWeekday:
+              type: string
+              enum: [SUNDAY, MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY]
+            cutoffTime:
+              type: string
+              pattern: '^([01]\d|2[0-3]):[0-5]\d$'
+            timeZone:
+              type: string
+              description: IANA timezone identifier.
         source:
           const: clever-app-orders
         reason:
@@ -7992,6 +8142,21 @@ components:
             - 'null'
         name:
           type: string
+        note:
+          description: Source commerce order note. Empty string represents an explicit source-side clear.
+          type:
+            - string
+            - 'null'
+        customerNote:
+          description: Source customer profile note when supplied by the commerce source. This is distinct from delivery stop instructions.
+          type:
+            - string
+            - 'null'
+        deliveryInstructions:
+          description: Instructions attached to the canonical delivery stop.
+          type:
+            - string
+            - 'null'
         readiness:
           $ref: '#/components/schemas/CanonicalOrderReadiness'
         planningStatus:
@@ -9213,7 +9378,7 @@ components:
           type: string
           description: Valid IANA timezone. Server falls back to UTC rather than device-local time when route config is missing.
         status:
-          enum: [pending, active, completed]
+          enum: [pending, active, completed, incomplete]
           type: string
         stopCount:
           type: integer

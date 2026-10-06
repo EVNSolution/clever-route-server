@@ -1,7 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
-const DRIVER_AUDIENCE = 'clever-delivery-driver';
 const DRIVER_ACCOUNT_AUDIENCE = 'clever-driver-account';
 const DRIVER_ROUTE_AUDIENCE = 'clever-delivery-driver-route';
 const MIN_DRIVER_JWT_SECRET_CHARACTERS = 32;
@@ -22,14 +20,6 @@ export type VerifiedDriverAccountToken = {
   tokenVersion: number;
 };
 
-export type VerifiedDriverToken = {
-  driverId: string;
-  issuedAt: Date;
-  shopDomain: string;
-  subject: string;
-  tokenVersion: number;
-};
-
 export type VerifiedDriverRouteToken = {
   accountId: string;
   issuedAt: Date;
@@ -41,14 +31,6 @@ export type VerifiedDriverRouteToken = {
 export type VerifyDriverTokenOptions = {
   now?: Date;
   secret: string;
-};
-
-export type SignDriverTokenInput = {
-  driverId: string;
-  expiresInSeconds: number;
-  shopDomain: string;
-  subject: string;
-  tokenVersion?: number;
 };
 
 export type SignDriverAccountTokenInput = {
@@ -116,35 +98,6 @@ export function verifyDriverAccountToken(
   };
 }
 
-export function verifyDriverToken(
-  token: string,
-  options: VerifyDriverTokenOptions
-): VerifiedDriverToken {
-  const claims = verifyTokenEnvelope(token, options.secret);
-  const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
-  const audience = requireStringClaim(claims.aud, 'aud');
-  const driverId = requireStringClaim(claims.driverId, 'driverId');
-  const expiresAt = requireNumberClaim(claims.exp, 'exp');
-  const issuedAtSeconds = requireNumberClaim(claims.iat, 'iat');
-  const shopDomain = normalizeDriverCommerceDomain(requireStringClaim(claims.shopDomain, 'shopDomain'));
-  const subject = requireStringClaim(claims.sub, 'sub');
-  const tokenVersion = readTokenVersionClaim(claims.tokenVersion);
-
-  if (audience !== DRIVER_AUDIENCE) {
-    throw new Error('Driver token audience mismatch');
-  }
-
-  verifyTokenTimes(claims, expiresAt, nowSeconds);
-
-  return {
-    driverId,
-    issuedAt: new Date(issuedAtSeconds * 1000),
-    shopDomain,
-    subject,
-    tokenVersion
-  };
-}
-
 export function verifyDriverRouteToken(
   token: string,
   options: VerifyDriverTokenOptions
@@ -180,19 +133,6 @@ export function signDriverAccountToken(
   return signToken({
     accountId: requireStringClaim(input.accountId, 'accountId'),
     aud: DRIVER_ACCOUNT_AUDIENCE,
-    sub: requireStringClaim(input.subject, 'sub'),
-    tokenVersion: readTokenVersionClaim(input.tokenVersion)
-  }, input.expiresInSeconds, options);
-}
-
-export function signDriverToken(
-  input: SignDriverTokenInput,
-  options: VerifyDriverTokenOptions
-): SignDriverTokenResult {
-  return signToken({
-    aud: DRIVER_AUDIENCE,
-    driverId: requireStringClaim(input.driverId, 'driverId'),
-    shopDomain: normalizeDriverCommerceDomain(input.shopDomain),
     sub: requireStringClaim(input.subject, 'sub'),
     tokenVersion: readTokenVersionClaim(input.tokenVersion)
   }, input.expiresInSeconds, options);

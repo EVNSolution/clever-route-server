@@ -42,6 +42,43 @@ describe('route operational state', () => {
     }));
   });
 
+  test('suppresses a cached physical position outside the route service-date window', async () => {
+    const driverEventFindMany = vi.fn().mockResolvedValue([]);
+    const route = routeRecord({
+      id: 'route-outside-window',
+      trackingGeometry: geometry('late-event', '2026-08-27T08:00:00.000Z'),
+    });
+    const state = await new PrismaRouteOperationalStateService(
+      { driverEvent: { findMany: driverEventFindMany }, routePlan: { findMany: vi.fn().mockResolvedValue([route]) } } as never,
+      { getActiveSyncHealthForRoutePlans: vi.fn().mockResolvedValue(new Map()) } as never,
+      { listActiveForRoutePlans: vi.fn().mockResolvedValue(new Map()) } as never,
+      () => new Date('2026-08-27T08:00:00.000Z'),
+    ).get('route-outside-window');
+
+    expect(state?.physicalPosition).toBeNull();
+    expect(driverEventFindMany).not.toHaveBeenCalled();
+  });
+
+  test('anchors the position window to the first route-start event for delayed routes', async () => {
+    const route = routeRecord({
+      driverEvents: [{ eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-08-26T12:00:00.000Z') }],
+      id: 'delayed-route',
+      planDate: new Date('2026-08-24T00:00:00.000Z'),
+      trackingGeometry: geometry('delayed-event', '2026-08-27T08:00:00.000Z'),
+    });
+    const state = await new PrismaRouteOperationalStateService(
+      {
+        driverEvent: { findMany: vi.fn().mockResolvedValue([{ id: 'delayed-event', payload: { accuracyMeters: 10 } }]) },
+        routePlan: { findMany: vi.fn().mockResolvedValue([route]) },
+      } as never,
+      { getActiveSyncHealthForRoutePlans: vi.fn().mockResolvedValue(new Map()) } as never,
+      { listActiveForRoutePlans: vi.fn().mockResolvedValue(new Map()) } as never,
+      () => new Date('2026-08-27T08:00:30.000Z'),
+    ).get('delayed-route');
+
+    expect(state?.physicalPosition?.occurredAt).toBe('2026-08-27T08:00:00.000Z');
+  });
+
   test('projects device progress only from the active lease while sync health carries conflict severity', async () => {
     const now = new Date('2026-08-24T08:00:00.000Z');
     const prisma = { driverEvent: { findMany: vi.fn().mockResolvedValue([]) }, routePlan: { findMany: vi.fn().mockResolvedValue([{
@@ -58,6 +95,32 @@ describe('route operational state', () => {
     ).get('route-id');
     expect(state?.deviceProgress).toMatchObject({ completedStopCount: 10, currentStopSequence: 11 });
     expect(state?.syncHealth).toBe(syncHealth);
+  });
+
+  test('reports immediate server completion and navigation timestamps from a valid persisted marker', async () => {
+    const completedAt = new Date('2026-10-01T22:00:00.000Z');
+    const navigationUntil = new Date('2026-10-02T00:00:00.000Z');
+    const route = routeRecord({
+      assignmentGeneration: 2n,
+      deliveryWorkCompletedAt: completedAt,
+      deliveryWorkCompletedGeneration: 2n,
+      deliveryWorkCompletedVersionId: 'route-version-id',
+      driverNavigationUntil: navigationUntil,
+      id: 'completed-during-grace',
+      status: 'IN_PROGRESS'
+    });
+    const state = await new PrismaRouteOperationalStateService(
+      { driverEvent: { findMany: vi.fn().mockResolvedValue([]) }, routePlan: { findMany: vi.fn().mockResolvedValue([route]) } } as never,
+      { getActiveSyncHealthForRoutePlans: vi.fn().mockResolvedValue(new Map()) } as never,
+      { listActiveForRoutePlans: vi.fn().mockResolvedValue(new Map()) } as never,
+      () => new Date('2026-10-01T22:30:00.000Z')
+    ).get('completed-during-grace');
+
+    expect(state).toMatchObject({
+      deliveryWorkCompletedAt: completedAt.toISOString(),
+      driverNavigationUntil: navigationUntil.toISOString(),
+      routeStatus: 'COMPLETED'
+    });
   });
 
   test('batches Kitchener, unknown evidence, and completed unresolved routes with bounded reads', async () => {
@@ -124,8 +187,9 @@ async function createState(input: { accuracyMeters: number; occurredAt?: string;
   const prisma = {
     driverEvent: { findMany: vi.fn().mockResolvedValue([{ id: 'event-id', payload: { accuracyMeters: input.accuracyMeters } }]) },
     routePlan: { findMany: vi.fn().mockResolvedValue([{
-      constraints: { operationalHealth: { maxGpsAccuracyMeters: 100, proximityThresholdMeters: 75 } },
+      constraints: { operationalHealth: { maxGpsAccuracyMeters: 100, proximityThresholdMeters: 75 }, scheduledStartTimeZone: 'America/Toronto' },
       driverId: 'driver-id', driverRouteSessionLeases: [], id: 'route-id', shopId: 'shop-id', status: 'IN_PROGRESS',
+      planDate: new Date('2026-08-24T00:00:00.000Z'),
       routeStops: [{ deliveryStop: { latitude: 43.4517, longitude: -80.4926, status: 'PENDING', updatedAt: now }, sequence: 11 }],
       trackingGeometry: {
         lastEventId: 'event-id', lastLatitude: 43.4516, lastLongitude: -80.4925,
@@ -139,16 +203,30 @@ async function createState(input: { accuracyMeters: number; occurredAt?: string;
 }
 
 function routeRecord(input: {
+  assignmentGeneration?: bigint;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
+  driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
+  driverNavigationUntil?: Date | null;
   driverRouteSessionLeases?: Array<{ syncSession: { heartbeats: Array<{ completedStopCount: number; currentStopSequence: number; locallyFinished: boolean; totalStopCount: number }> } }>;
   id: string;
+  planDate?: Date;
   routeStops?: ReturnType<typeof stop>[];
   status?: string;
   trackingGeometry?: ReturnType<typeof geometry> | null;
 }) {
   return {
-    constraints: { operationalHealth: { maxGpsAccuracyMeters: 100, proximityThresholdMeters: 75 } },
+    assignmentGeneration: input.assignmentGeneration ?? 1n,
+    constraints: { operationalHealth: { maxGpsAccuracyMeters: 100, proximityThresholdMeters: 75 }, scheduledStartTimeZone: 'America/Toronto' },
+    deliveryWorkCompletedAt: input.deliveryWorkCompletedAt ?? null,
+    deliveryWorkCompletedGeneration: input.deliveryWorkCompletedGeneration ?? null,
+    deliveryWorkCompletedVersionId: input.deliveryWorkCompletedVersionId ?? null,
+    driverEvents: input.driverEvents ?? [],
     driverRouteSessionLeases: input.driverRouteSessionLeases ?? [],
+    driverNavigationUntil: input.driverNavigationUntil ?? null,
     id: input.id,
+    planDate: input.planDate ?? new Date('2026-08-24T00:00:00.000Z'),
     routeStops: input.routeStops ?? [],
     status: input.status ?? 'IN_PROGRESS',
     trackingGeometry: input.trackingGeometry ?? null

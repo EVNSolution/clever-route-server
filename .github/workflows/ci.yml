@@ -101,6 +101,7 @@ jobs:
             scripts/verify-route-completion-alarm.sh \
             scripts/osrm-ontario.sh \
             scripts/monitor-route-ops-production.sh \
+            scripts/route-tracking-preservation-worker.sh \
             apps/delivery-api/scripts/guard-prisma-db-push.sh \
             apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh \
             apps/delivery-api/scripts/dsv-g007-rehearsal.sh; do

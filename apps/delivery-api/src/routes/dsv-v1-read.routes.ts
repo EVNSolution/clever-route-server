@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import {
-  canAccessDsvStoreReviewData,
   DsvForbiddenError,
   requireDsvScopes,
 } from '../modules/dsv/dsv-principal.js';
@@ -47,6 +46,7 @@ import {
   type DsvV1VehicleGpsTrailHistoryResult,
   type DsvV1VehicleTemperatureHistoryInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
+import { filterDistantRoadMatchedAnchors } from '../modules/uvis/uvis-vehicle-trail-materializer.js';
 import {
   DsvTimeConstraintCommandError,
   type DsvClearTimeConstraintInput,
@@ -326,6 +326,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
       }
 
       try {
+        await assertStoreReviewAccessible(dependencies, principal, { proofMediaIds: [mediaId] });
         const access = await dependencies.proofMediaService.createAdminProofMediaReadAccess({
           mediaId,
           shopId: principal.shopId,
@@ -378,9 +379,18 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     requiredScopes: ['dsv:control:read'],
   });
   registerReadRoute(app, dependencies, 'vehicles/:vehicleId/gps-trail-history', {
-    allowedQuery: ['serviceDate'],
-    handler: async (principal, query) =>
-      requireQueryService(dependencies).listVehicleGpsTrailHistory(requireAdminPrincipal(principal), query),
+    allowedQuery: ['includeDailyRoute', 'serviceDate'],
+    handler: async (principal, query) => {
+      const history = await requireQueryService(dependencies).listVehicleGpsTrailHistory(
+        requireAdminPrincipal(principal), query,
+      );
+      return query.includeDailyRoute === true ? history : {
+        serviceDate: history.serviceDate,
+        sessions: history.sessions,
+        timezone: history.timezone,
+        vehicleId: history.vehicleId,
+      };
+    },
     parseQuery: parseVehicleGpsTrailHistoryQuery,
     requiredScopes: ['dsv:control:read'],
   });
@@ -728,7 +738,9 @@ function clipTrailSession(
   start: DsvV1LngLat,
   end: DsvV1LngLat,
 ): DsvV1CustomerTrailDto['segments'] {
-  const roadMatchedLines = segments.flatMap((segment) => segment.roadMatchedGeometry?.coordinates ?? []);
+  const roadMatchedLines = segments.flatMap((segment) =>
+    filterDistantRoadMatchedAnchors(segment.roadMatchedGeometry ?? null, segment.samples)?.coordinates ?? []
+  );
   return clipRoadMatchedTrailLines(roadMatchedLines, start, end);
 }
 
@@ -1235,8 +1247,11 @@ function parseVehicleTemperatureHistoryQuery(request: FastifyRequest): DsvV1Vehi
 function parseVehicleGpsTrailHistoryQuery(request: FastifyRequest): DsvV1VehicleGpsTrailHistoryInput | null {
   const vehicleId = readUuidParam(request, 'vehicleId');
   const serviceDate = readServiceDate(request);
-  if (vehicleId === null || serviceDate === null) return null;
+  const includeDailyRoute = readSingleQueryString(request, 'includeDailyRoute');
+  if (vehicleId === null || serviceDate === null || includeDailyRoute === null) return null;
+  if (includeDailyRoute !== undefined && includeDailyRoute !== 'true' && includeDailyRoute !== 'false') return null;
   return {
+    ...(includeDailyRoute === undefined ? {} : { includeDailyRoute: includeDailyRoute === 'true' }),
     ...(serviceDate === undefined ? {} : { serviceDate }),
     vehicleId,
   };
@@ -1604,9 +1619,6 @@ async function filterAccessibleRoutePlans(
   principal: DsvAdminPrincipal,
   routePlans: readonly RoutePlanSummary[],
 ): Promise<RoutePlanSummary[]> {
-  if (canAccessDsvStoreReviewData(principal)) {
-    return [...routePlans];
-  }
   const accessibility = await Promise.all(routePlans.map(async (routePlan) => {
     try {
       await dependencies.storeReviewAccess.assertAccessible(principal, { routePlanIds: [routePlan.id] });

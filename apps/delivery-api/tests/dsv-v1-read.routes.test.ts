@@ -1,8 +1,11 @@
+import { dsvReviewedTestExclusions as exclusions } from '../src/modules/dsv/dsv-reviewed-test-exclusions.js';
+import { PrismaDsvStoreReviewAccess } from '../src/modules/dsv/dsv-store-review-access.js';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp, type BuildAppOptions } from '../src/app.js';
 import { createAdminWebSession } from '../src/routes/admin-ui-session.js';
 import type {
+  DsvV1AdminProofMediaReadService,
   DsvV1ReadDependencies,
   DsvV1ReadQueryService,
   DsvV1SessionResolver,
@@ -50,6 +53,30 @@ const diagnosticAbortedAttemptId = '44444444-4444-4444-8444-444444444444';
 const proofMediaId = '66666666-6666-4666-8666-666666666666';
 
 describe('DSV v1 read routes', () => {
+  test.each([['operator', dsvOperatorScopes], ['developer', undefined]] as const)(
+    'authenticated %s maps and customer direct reads cannot retrieve excluded data', async (_role, scopes) => {
+      const storeReviewAccess = new PrismaDsvStoreReviewAccess({ routePlan: { findFirst: vi.fn().mockResolvedValue(null) } } as never);
+      const listCustomerMessages = vi.fn<DsvOrderMessageService['listCustomerMessages']>().mockResolvedValue([]);
+      const { app, sessionResolver, routePlanService } = await createHarness({ storeReviewAccess,
+        orderMessageService: { create: vi.fn(), listCustomerMessages, markDriverMessageRead: vi.fn(), updateCustomerNotificationSettings: vi.fn() } });
+      sessionResolver.resolve.mockResolvedValue(createDsvAdminPrincipal({ shopId: exclusions.shopId, shopDomain: exclusions.shopDomain, ...(scopes === undefined ? {} : { scopes }) }));
+      const admin = signedCookie('dsv-shop:tomatonofood.com');
+      routePlanService.listRoutePlans.mockResolvedValue([routePlanSummary(), { ...routePlanSummary(), id: exclusions.routePlanIds[0] }]);
+      routePlanService.getRoutePlanDetail.mockResolvedValue(routePlanDetail({}));
+      try {
+        const map = await app.inject({ headers: { cookie: admin.cookie }, method: 'GET', url: '/api/dsv/v1/control/routes?serviceDate=2026-07-23' });
+        expect(map.statusCode).toBe(200);
+        expect(map.body).not.toContain(exclusions.routePlanIds[0]);
+        expect(routePlanService.getRoutePlanDetail).toHaveBeenCalledTimes(1);
+        sessionResolver.resolve.mockResolvedValue(createDsvCustomerUserPrincipalFromAccount({ account: { customerId, shopId: exclusions.shopId, status: 'ACTIVE' }, shopDomain: exclusions.shopDomain }));
+        const response = await app.inject({ headers: { cookie: admin.cookie }, method: 'GET', url: `/api/dsv/v1/customer/seller-orders/${exclusions.sellerOrderIds[0]}/messages` });
+        expect(response.statusCode).toBe(403);
+        expect(response.body).not.toContain(exclusions.sellerOrderIds[0]);
+        expect(listCustomerMessages).not.toHaveBeenCalled();
+      } finally { await app.close(); }
+    },
+  );
+
   test('returns a private short-lived POD access envelope to the scoped DSV records admin without CSRF', async () => {
     const createAdminProofMediaReadAccess = vi.fn(() => Promise.resolve({
       contentType: 'image/jpeg',
@@ -91,6 +118,38 @@ describe('DSV v1 read routes', () => {
       });
       expect(response.body).not.toContain('storageKey');
       expect(createAdminProofMediaReadAccess).toHaveBeenCalledWith({ mediaId: proofMediaId, shopId });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('blocks review proof media before creating a signed URL', async () => {
+    const createAdminProofMediaReadAccess = vi.fn<DsvV1AdminProofMediaReadService['createAdminProofMediaReadAccess']>();
+    const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
+      if (resources.proofMediaIds?.includes(proofMediaId) === true) {
+        return Promise.reject(new DsvForbiddenError({ principal, requiredScopes: ['dsv:accounts:read'] }));
+      }
+      return Promise.resolve();
+    });
+    const { app } = await createHarness({
+      proofMediaService: { createAdminProofMediaReadAccess },
+      storeReviewAccess,
+    });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/proof-media/${proofMediaId}/access`,
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ error: { code: 'FORBIDDEN' } });
+      expect(storeReviewAccess.assertAccessible).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        { proofMediaIds: [proofMediaId] },
+      );
+      expect(createAdminProofMediaReadAccess).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -747,7 +806,10 @@ describe('DSV v1 read routes', () => {
     }
   });
 
-  test('omits store review route plans from control geometry for operators', async () => {
+  test.each([
+    ['operator', dsvOperatorScopes],
+    ['developer', undefined],
+  ] as const)('omits store review route plans from control geometry for %s', async (_role, adminScopes) => {
     const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
       if (resources.routePlanIds?.includes('22222222-2222-4222-8222-222222222222') === true) {
         return Promise.reject(new DsvForbiddenError({ principal, requiredScopes: ['dsv:accounts:read'] }));
@@ -755,7 +817,7 @@ describe('DSV v1 read routes', () => {
       return Promise.resolve();
     });
     const { app, routePlanService } = await createHarness({
-      adminScopes: dsvOperatorScopes,
+      ...(adminScopes === undefined ? {} : { adminScopes }),
       storeReviewAccess,
     });
     const admin = signedCookie('dsv-shop:tomatonofood.com');
@@ -786,7 +848,10 @@ describe('DSV v1 read routes', () => {
     }
   });
 
-  test('blocks operator writes to store review orders before command services run', async () => {
+  test.each([
+    ['operator', dsvOperatorScopes],
+    ['developer', undefined],
+  ] as const)('blocks %s writes to store review orders before command services run', async (_role, adminScopes) => {
     const protectedOrderId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const storeReviewAccess = createStoreReviewAccess((principal, resources) => {
       if (resources.orderIds?.includes(protectedOrderId) === true) {
@@ -807,7 +872,7 @@ describe('DSV v1 read routes', () => {
       confirm: confirmTimeConstraint,
     };
     const { app } = await createHarness({
-      adminScopes: dsvOperatorScopes,
+      ...(adminScopes === undefined ? {} : { adminScopes }),
       orderMessageService,
       storeReviewAccess,
       timeConstraintCommandService,
@@ -1320,7 +1385,15 @@ describe('DSV v1 read routes', () => {
     const { app, queryService } = await createHarness();
     const admin = signedCookie('dsv-shop:tomatonofood.com');
     const vehicleId = '77777777-7777-4777-8777-777777777777';
+    const dailyRoute = {
+      anchors: [{ coordinateIndex: 0, observedAt: '2026-08-04T01:16:00.000Z' }],
+      bridges: [],
+      coordinates: [[127, 37.5], [127.001, 37.501]] as Array<[number, number]>,
+      sourceSampleCount: 2,
+      type: 'LineString' as const,
+    };
     queryService.listVehicleGpsTrailHistory.mockResolvedValueOnce({
+      dailyRoute,
       serviceDate: '2026-08-04',
       sessions: [{
         completedAt: '2026-08-04T02:00:00.000Z',
@@ -1397,6 +1470,31 @@ describe('DSV v1 read routes', () => {
       expect(queryService.listVehicleGpsTrailHistory).toHaveBeenCalledWith(
         expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
         { serviceDate: '2026-08-04', vehicleId },
+      );
+
+      queryService.listVehicleGpsTrailHistory.mockResolvedValueOnce({
+        dailyRoute,
+        serviceDate: '2026-08-04',
+        sessions: [],
+        timezone: 'Asia/Seoul',
+        vehicleId,
+      });
+      const dailyResponse = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/vehicles/${vehicleId}/gps-trail-history?serviceDate=2026-08-04&includeDailyRoute=true`,
+      });
+      expect(dailyResponse.statusCode).toBe(200);
+      expectDsvV1Envelope(dailyResponse, {
+        dailyRoute,
+        serviceDate: '2026-08-04',
+        sessions: [],
+        timezone: 'Asia/Seoul',
+        vehicleId,
+      });
+      expect(queryService.listVehicleGpsTrailHistory).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        { includeDailyRoute: true, serviceDate: '2026-08-04', vehicleId },
       );
 
       const invalid = await app.inject({
@@ -1519,15 +1617,22 @@ describe('DSV v1 read routes', () => {
         { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-last', vehicleId: 'vehicle-1', vehicleLatitude: 37.5, vehicleLongitude: 126.92 },
       ]);
       queryService.listCustomerGpsTrailHistories.mockResolvedValueOnce([{
+        dailyRoute: null,
         serviceDate: '2026-08-09',
         sessions: [{
           completedAt: null,
           completionEventId: null,
-          endpoint: { endedAt: '2026-08-09T01:02:00.000Z', reason: 'LAST_VALID_SAMPLE' },
+          endpoint: { endedAt: '2026-08-09T01:03:00.000Z', reason: 'LAST_VALID_SAMPLE' },
           restart: null,
           routePlanId: 'route-plan-1',
           segments: [{
             roadMatchedGeometry: {
+              anchors: [
+                { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-09T01:00:00.000Z' },
+                { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-09T01:01:00.000Z' },
+                { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-09T01:02:00.000Z' },
+                { coordinateIndex: 1, lineIndex: 1, observedAt: '2026-08-09T01:03:00.000Z' },
+              ],
               coordinates: [
                 [[126.905, 37.5], [126.915, 37.5]],
                 [[126.918, 37.5], [126.94, 37.5]],
@@ -1538,6 +1643,7 @@ describe('DSV v1 read routes', () => {
               { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z', speedKph: 10 },
               { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:01:00.000Z', speedKph: 10 },
               { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.92, observedAt: '2026-08-09T01:02:00.000Z', speedKph: 10 },
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.94, observedAt: '2026-08-09T01:03:00.000Z', speedKph: 10 },
             ],
             trailMarker: { kind: 'START', latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z' },
           }],
@@ -1589,6 +1695,77 @@ describe('DSV v1 read routes', () => {
         expect.arrayContaining([expect.objectContaining({ routePlanId: 'route-plan-1' })]),
       );
       expect(JSON.stringify(expectDsvV1Metadata(response).data)).not.toContain('route-plan-1');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not publish a road line after its stationary end anchor is rejected', async () => {
+    const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
+    try {
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1' })],
+        page: { hasMore: false },
+        serviceDate: '2026-08-09',
+        timezone: 'Asia/Seoul',
+      });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1', vehicleLatitude: 37.5, vehicleLongitude: 126.91 },
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-last', vehicleId: 'vehicle-1', vehicleLatitude: 37.5, vehicleLongitude: 126.91 },
+      ]);
+      queryService.listCustomerGpsTrailHistories.mockResolvedValueOnce([{
+        dailyRoute: null,
+        serviceDate: '2026-08-09',
+        sessions: [{
+          completedAt: null,
+          completionEventId: null,
+          endpoint: { endedAt: '2026-08-09T01:01:00.000Z', reason: 'LAST_VALID_SAMPLE' },
+          restart: null,
+          routePlanId: 'route-plan-1',
+          segments: [{
+            roadMatchedGeometry: {
+              anchors: [
+                { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-09T01:00:00.000Z' },
+                { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-09T01:01:00.000Z' },
+              ],
+              coordinates: [[[126.91, 37.5], [126.9104, 37.5]]],
+              type: 'MultiLineString',
+            },
+            samples: [
+              { distanceTodayKm: null, ignitionOn: false, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:00:00.000Z', speedKph: 0 },
+              { distanceTodayKm: null, ignitionOn: false, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:01:00.000Z', speedKph: 0 },
+            ],
+          }],
+          sessionIndex: 0,
+          startedAt: '2026-08-09T01:00:00.000Z',
+          startEventId: null,
+          startSource: 'ROUTE_STARTED',
+        }],
+        timezone: 'Asia/Seoul',
+        vehicleId: 'vehicle-1',
+      }]);
+      routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+        routeGeometry: null,
+        routeStopPoints: [
+          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 1, shopifyOrderGid: 'order-customer-first', snappedCoordinates: [126.909, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 2, shopifyOrderGid: 'order-customer-last', snappedCoordinates: [126.911, 37.5] }),
+        ],
+        stops: [
+          routeDetailStop({ deliveryStopId: 'customer-first-stop', orderId: 'order-customer-first', sequence: 1 }),
+          routeDetailStop({ deliveryStopId: 'customer-last-stop', orderId: 'order-customer-last', sequence: 2 }),
+        ],
+      }));
+      routeGeometryProvider.buildRoute.mockRejectedValueOnce(new Error('OSRM unavailable'));
+
+      const response = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?includeGpsTrails=true&serviceDate=2026-08-09',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(expectDsvV1Metadata(response).data).toMatchObject({ trails: [] });
     } finally {
       await app.close();
     }
@@ -2074,7 +2251,7 @@ function createQueryService(): MockQueryService {
       items: [],
       page: { currentPage: 1, hasMore: false, pageSize: 50, totalItems: 0, totalPages: 0 },
     })),
-    listVehicleGpsTrailHistory: vi.fn(() => Promise.resolve({ serviceDate: '2026-07-23', sessions: [], timezone: 'Asia/Seoul', vehicleId: 'vehicle-a' })),
+    listVehicleGpsTrailHistory: vi.fn(() => Promise.resolve({ dailyRoute: null, serviceDate: '2026-07-23', sessions: [], timezone: 'Asia/Seoul', vehicleId: 'vehicle-a' })),
     listVehicleTemperatureHistory: vi.fn(() => Promise.resolve({ samples: [], vehicleId: 'vehicle-a' })),
     listVehicles: vi.fn(() => Promise.resolve(list)),
     resolveTenantDates: vi.fn(() => Promise.resolve({

@@ -18,6 +18,73 @@ const serverReceivedAt = new Date('2026-06-01T06:00:00.000Z');
 type RoutePlanStopFixture = { id: string } | ReturnType<typeof confirmedTimeConstraintRoutePlanStop>;
 
 describe('PrismaDriverEventRepository', () => {
+  test('stamps GPS with the locked server assignment and current route version', async () => {
+    const { prisma } = createPrismaHarness({ driverEventRouteVersionColumnExists: true, routeEtaInputVersionId: 'current-version' });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+    await repository.recordDriverEvent(baseInput({ eventType: 'LOCATION_UPDATED', deliveryStopId: null, routePlanId: 'route-plan-id',
+      assignmentGeneration: '999', expectedRouteVersionId: 'forged-client-version' }));
+    expect(prisma.driverEvent.create.mock.calls[0]?.[0]).toMatchObject({ data: {
+      assignmentGeneration: 1n, expectedRouteVersionId: 'current-version', routeVersionId: 'current-version'
+    } });
+  });
+
+  test('acknowledges an out-of-window GPS event without retaining or projecting its coordinates', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'late-route-gps',
+      deliveryStopId: null,
+      eventType: 'LOCATION_UPDATED',
+      occurredAt: new Date('2026-06-03T00:00:00.000Z'),
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id', trackingPositionAccepted: false });
+
+    expect(prisma.driverEvent.create.mock.calls[0]?.[0]).toMatchObject({ data: {
+      latitude: null,
+      longitude: null,
+      payload: { redacted: true, schema: 'driver_location_service_window_tombstone_v1' }
+    } });
+    expect(prisma.routeTrackingGeometry.upsert).not.toHaveBeenCalled();
+  });
+
+  test('preserves GPS when the route has no authoritative timezone', async () => {
+    const { prisma } = createPrismaHarness({ routePlanConstraints: {} });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'gps-without-route-timezone',
+      deliveryStopId: null,
+      eventType: 'LOCATION_UPDATED',
+      occurredAt: new Date('2026-06-03T00:00:00.000Z'),
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
+
+    const created = prisma.driverEvent.create.mock.calls[0]?.[0] as
+      { data: { latitude: unknown; longitude: unknown } } | undefined;
+    expect(typeof created?.data.latitude).toBe('string');
+    expect(typeof created?.data.longitude).toBe('string');
+    expect(prisma.routeTrackingGeometry.upsert).toHaveBeenCalledOnce();
+  });
+
+  test('uses the actual route start day when it differs from the planned day', async () => {
+    const { prisma } = createPrismaHarness({ routeStartedAt: new Date('2026-06-03T05:00:00.000Z') });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'gps-after-late-start',
+      deliveryStopId: null,
+      eventType: 'LOCATION_UPDATED',
+      occurredAt: new Date('2026-06-04T05:00:00.000Z'),
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
+
+    const created = prisma.driverEvent.create.mock.calls[0]?.[0] as
+      { data: { latitude: unknown; longitude: unknown } } | undefined;
+    expect(typeof created?.data.latitude).toBe('string');
+    expect(typeof created?.data.longitude).toBe('string');
+  });
+
   test('keeps committed receipt recovery non-blocking while surfacing sanitized attempt finalization failure', async () => {
     const failures: Array<{ attemptId: string; errorCode: string }> = [];
     const prisma = {
@@ -64,6 +131,8 @@ describe('PrismaDriverEventRepository', () => {
         longitude: '-79.3832',
         occurredAt,
         payload: { source: 'driver-app' },
+        assignmentGeneration: 1n,
+        expectedRouteVersionId: null,
         routePlanId: 'route-plan-id',
         shopId: 'shop-id'
       }
@@ -177,7 +246,10 @@ describe('PrismaDriverEventRepository', () => {
           }
         },
         shopId: 'shop-id',
-        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'DELIVERED'] }
+        OR: [
+          { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'DELIVERED'] } },
+          { status: { in: ['DELIVERED', 'FAILED'] }, completionAssistanceCandidateId: { not: null } }
+        ]
       }
     });
     expect(prisma.routePlanStop.update).toHaveBeenCalledWith({
@@ -236,7 +308,10 @@ describe('PrismaDriverEventRepository', () => {
           }
         },
         shopId: 'shop-id',
-        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'FAILED'] }
+        OR: [
+          { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'FAILED'] } },
+          { status: { in: ['DELIVERED', 'FAILED'] }, completionAssistanceCandidateId: { not: null } }
+        ]
       }
     });
     expect(result).toMatchObject({
@@ -795,7 +870,7 @@ describe('PrismaDriverEventRepository', () => {
       },
       eventId: 'original-delivery-id'
     });
-    expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
     expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
     expect(prisma.routePlanStop.updateMany).not.toHaveBeenCalled();
   });
@@ -855,7 +930,7 @@ describe('PrismaDriverEventRepository', () => {
       },
       eventId: 'original-failure-id'
     });
-    expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
   });
 
   test('returns duplicate pickup snapshot with missing duration without hydrating geometry cache', async () => {
@@ -1801,6 +1876,8 @@ function createPrismaHarness(input: {
   matchingArrivalEvent?: { createdAt: Date; occurredAt: Date } | null;
   routeGeometryCache?: { stopPoints: unknown } | null;
   routePlan?: { id: string; status?: string } | null;
+  routePlanConstraints?: unknown;
+  routeStartedAt?: Date;
   routeEtaInputVersionId?: string | null;
   routeEtaPersistenceRows?: Array<{ id: string }>;
   routePlanStop?: RoutePlanStopFixture | null;
@@ -1858,7 +1935,7 @@ function createPrismaHarness(input: {
       findFirst: ReturnType<typeof vi.fn>;
       updateMany: ReturnType<typeof vi.fn>;
     };
-    routePlan: { findFirst: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
+    routePlan: { findFirst: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
     routePlanGeometryCache: { findFirst: ReturnType<typeof vi.fn> };
     routePlanStop: {
       deleteMany: ReturnType<typeof vi.fn>;
@@ -1876,6 +1953,9 @@ function createPrismaHarness(input: {
   Object.assign(prisma, {
     $queryRaw: vi.fn((query: unknown) => {
       const text = sqlText(query);
+      if (text.includes('SELECT DISTINCT s.')) {
+        return Promise.resolve(input.conflictingRoutePlanStop === undefined || input.conflictingRoutePlanStop === null ? [] : [{ ...input.conflictingRoutePlanStop, orderId: 'order-id', orderName: '#1001', routeName: 'Other route' }]);
+      }
       if (text.includes('information_schema.columns')) {
         operations.push(text.includes("table_name = 'driver_events'")
           ? 'schema:driver_events'
@@ -1934,6 +2014,9 @@ function createPrismaHarness(input: {
     driverEvent: {
       create: createDriverEvent,
       findFirst: vi.fn((args: { where?: { deliveryStopId?: string; eventType?: unknown } }) => {
+        if (args.where?.eventType === 'ROUTE_STARTED') {
+          return Promise.resolve(input.routeStartedAt === undefined ? null : { occurredAt: input.routeStartedAt });
+        }
         if (args.where?.eventType === 'PICKUP_COMPLETED') {
           if (driverEventCreateAttempted && input.pickupEventAfterCreateError !== undefined) {
             return Promise.resolve(input.pickupEventAfterCreateError);
@@ -1993,6 +2076,13 @@ function createPrismaHarness(input: {
       })
     },
     routePlan: {
+      findUnique: vi.fn(() => Promise.resolve({
+        assignmentGeneration: 1n,
+        constraints: input.routePlanConstraints ?? { timezone: 'UTC' },
+        planDate: new Date('2026-06-01T00:00:00.000Z'),
+        shopId: 'shop-id',
+        shop: { commerceConnections: [] }
+      })),
       findFirst: vi.fn((args: { select?: { routeStops?: unknown } }) => {
         const routePlan = input.routePlan === undefined ? { id: 'route-plan-id', status: 'IN_PROGRESS' } : input.routePlan;
         if (routePlan === null) {

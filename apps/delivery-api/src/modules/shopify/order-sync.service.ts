@@ -1,5 +1,6 @@
 import type { ShopifyAdminGraphqlClient } from './admin-graphql.client.js';
 import type { DeliveryCycleConfig } from './order-delivery-scope.js';
+import { readShopifyDeliveryCycle } from './order-delivery-settings.js';
 import type { CanonicalOrderRow, ShopifyOrderNode, SyncedOrderWithDeliveryStopInput } from './order-sync.mapper.js';
 import { mapShopifyOrderNodeToDeliveryInputs } from './order-sync.mapper.js';
 import { buildOrdersUpdatedSinceQuery } from './order-sync.query.js';
@@ -104,6 +105,7 @@ export class ShopifyOrderSyncService {
   constructor(
     private readonly options: {
       graphqlClient: Pick<ShopifyAdminGraphqlClient, 'request'>;
+      deliveryCycleProvider?: (input: { appId?: string | undefined; shopDomain: string }) => Promise<DeliveryCycleConfig>;
       queryRepository?: PrismaOrderQueryRepository;
       repository: OrderSyncRepository;
     }
@@ -115,12 +117,13 @@ export class ShopifyOrderSyncService {
     const data = await this.options.graphqlClient.request<OrdersUpdatedSinceResponse>(
       buildOrdersUpdatedSinceQuery(input)
     );
+    const deliveryCycle = readShopifyDeliveryCycle(data);
 
     let highWatermark: Date | null = null;
     let ordersSynced = 0;
     const sync = { created: 0, skipped: 0, unchanged: 0, updated: 0 };
     for (const node of data.orders.nodes) {
-      const synced: SyncedOrderWithDeliveryStopInput = mapShopifyOrderNodeToDeliveryInputs(node);
+      const synced: SyncedOrderWithDeliveryStopInput = mapShopifyOrderNodeToDeliveryInputs(node, { deliveryCycle });
       await this.options.repository.upsertOrderWithDeliveryStop({
         appId: input.appId,
         shopDomain: input.shopDomain,
@@ -155,8 +158,13 @@ export class ShopifyOrderSyncService {
       updated: 0
     };
     const orders: CanonicalOrderRow[] = [];
+    // Runtime Shopify snapshots resolve the same installation settings as pull
+    // and webhook ingestion. A stale browser payload cannot override the shop.
+    const deliveryCycle = this.options.deliveryCycleProvider === undefined
+      ? input.deliveryCycle
+      : await this.options.deliveryCycleProvider({ appId: input.appId, shopDomain: input.shopDomain });
     const syncedOrders = input.orders.map((node) => mapShopifyOrderNodeToDeliveryInputs(node, {
-      ...(input.deliveryCycle === undefined ? {} : { deliveryCycle: input.deliveryCycle })
+      ...(deliveryCycle === undefined ? {} : { deliveryCycle })
     }));
 
     if (input.reason === 'manual_refresh' && this.options.repository.assertOrdersSnapshotRefreshable !== undefined) {

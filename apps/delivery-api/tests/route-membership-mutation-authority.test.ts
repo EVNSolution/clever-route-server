@@ -9,6 +9,7 @@ const authorizedMembershipWriters = [
   'modules/driver/rolling-eta-backfill.ts',
   'modules/dsv/dsv-assignment-command.service.ts',
   'modules/dsv/dsv-dispatch-import.service.ts',
+  'modules/dsv/dsv-eta-repair.ts', // Reviewed ETA-only stop update; no membership fields.
   'modules/route-grouping/route-grouping.service.ts',
   'modules/route-plans/route-plan.repository.ts'
 ];
@@ -19,18 +20,19 @@ const reviewedMutationInventory = [
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-dispatch-import.service.ts:routeGroupingChildVersion.updateMany:1',
-  'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:1',
+  'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:2',
+  'modules/dsv/dsv-eta-repair.ts:routePlanStop.updateMany:1',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.create:8',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.update:4',
   'modules/route-grouping/route-grouping.service.ts:routeGroupingChildVersion.updateMany:2',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.create:1',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.createMany:5',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.deleteMany:4',
-  'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:2',
+  'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:4',
   'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.updateMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.createMany:4',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.deleteMany:4',
-  'modules/route-plans/route-plan.repository.ts:routePlanStop.updateMany:2'
+  'modules/route-plans/route-plan.repository.ts:routePlanStop.updateMany:3'
 ];
 
 const reviewedAssignmentPointerInventory = [
@@ -144,20 +146,15 @@ describe('route membership mutation authority', () => {
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot is malformed'])");
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot tuple does not match grouping authority'])");
     expect(assignmentAuthority).toContain("throw new RouteGroupingValidationError(['current route membership snapshot does not match bound route authority'])");
-    expect(assignmentAuthority).toContain('currentRouteBindingAuthorityState(child.id, snapshotOrderIds, group.orders)');
     expect(assignmentAuthority).toContain("return resolveChildSnapshotAssignments(group, child, 'CURRENT')");
     expect(assignmentAuthority).toContain("return resolveChildSnapshotAssignments(group, child, 'CURRENT_READ')");
     expect(assignmentAuthority).not.toContain('.filter((assignment)');
-    const bindingAuthority = source.slice(
-      source.indexOf('export function currentRouteBindingAuthorityState('),
-      source.indexOf('type OptimizedDraftRoute =')
-    );
-    expect(bindingAuthority).toContain('order.currentRouteVersionId === childVersionId');
-    expect(bindingAuthority).toContain('boundOrderIds.length === 0');
-    expect(bindingAuthority).toContain('order.currentRouteVersionId === null');
-    expect(bindingAuthority).toContain("return entirelyUnbound ? 'LEGACY_UNBOUND' : 'MISMATCH'");
     // Draft partition discovery also reads membership; actual child mutations still require CURRENT authority.
-    expect(source.match(/readCurrentChildAssignments\(/gu)).toHaveLength(4);
+    expect(source.match(/readCurrentChildAssignments\(/gu)).toHaveLength(5);
+    const copy = source.slice(source.indexOf('async copyGrouping('), source.indexOf('async copyStandaloneRoutePlan('));
+    expect(copy).toContain("sourceChildren.length > 0 || source.orders.length > 0");
+    expect(copy).toContain('readCurrentChildAssignments(source, child)');
+    expect(copy).toContain('createDraftChildRoutePlan(tx, loadedCopy');
     const partition = source.slice(source.indexOf('function assertDraftOrderPartition('), source.indexOf('function assertDraftRoutePlanEnvelope('));
     expect(partition).toContain('readCurrentChildAssignments(group, child)');
     const childDto = source.slice(source.indexOf('function toChildDto('), source.indexOf('function readChildRouteGeometry('));
@@ -177,7 +174,7 @@ describe('route membership mutation authority', () => {
       source.indexOf('export async function rebindCurrentOrdersToRouteVersion('),
       source.indexOf('export async function replaceCurrentRouteGroupingChildVersion(')
     );
-    expect(rebindAuthority).toContain('if (result.count !== orderIds.length)');
+    expect(rebindAuthority).toContain('if (input.planning !== true && result.count !== orderIds.length)');
     expect(source.match(/await rebindCurrentOrdersToRouteVersion\(/gu)).toHaveLength(6);
     const rebindCallerBodies = [
       source.slice(source.indexOf('export async function replaceCurrentRouteGroupingChildVersion('), source.indexOf('export class PrismaRouteGroupingService')),

@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { describe, expect, test, vi } from 'vitest';
 
-import { loadAdminOrdersDependencies } from '../src/modules/shopify/order-sync.dependencies.js';
+import { loadAdminOrdersRuntime } from '../src/modules/shopify/order-sync.dependencies.js';
 import { loadWooCommerceWebhookDependencies } from '../src/modules/woocommerce/woocommerce.dependencies.js';
 import { loadWordPressPluginDependencies } from '../src/modules/wordpress-plugin/wordpress-plugin.dependencies.js';
 import type { AdminNotificationServiceApi } from '../src/modules/notifications/admin-notification.service.js';
@@ -64,11 +64,11 @@ type WordPressSyncCarrier = {
 describe('admin notification dependency wiring', () => {
   test('threads the shared notification service into admin Shopify order sync', () => {
     const service = notificationService();
-    const dependencies = loadAdminOrdersDependencies({
+    const dependencies = loadAdminOrdersRuntime({
       adminNotificationService: service,
       env: { SHOPIFY_API_KEY: 'api-key', SHOPIFY_API_SECRET: 'api-secret' },
       prisma: prisma(),
-    });
+    })?.dependencies;
 
     const carrier = dependencies?.orderSyncService as unknown as RepositoryCarrier;
     expect(carrier.options.repository.options?.notificationService).toBe(service);

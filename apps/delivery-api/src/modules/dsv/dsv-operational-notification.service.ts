@@ -1,8 +1,9 @@
+import { visibleDsvOrderWhere, visibleDsvRouteWhere } from './dsv-test-visibility.js';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { DsvDriverAccountLinkService } from './dsv-driver-account-link.service.js';
-import { canAccessDsvStoreReviewData, type DsvPrincipal } from './dsv-principal.js';
+import type { DsvPrincipal } from './dsv-principal.js';
 
 export type DsvOperationalNotification = {
   changeRequestId?: string;
@@ -37,7 +38,6 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
       where: appScopedShopWhere({ shopDomain: input.shopDomain.trim().toLowerCase() }),
     });
     if (shop === null) return { items: [] };
-    const canAccessReviewData = canAccessDsvStoreReviewData(input.principal);
     const [requests, attempts, cancelledOrders, driverAccountLinks] = await Promise.all([
       this.prisma.dsvDispatchChangeRequest.findMany({
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
@@ -51,7 +51,7 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
           updatedAt: true,
         },
         take: 50,
-        where: { shopId: shop.id, ...(canAccessReviewData ? {} : { sellerOrder: { isStoreReviewData: false } }) },
+        where: { shopId: shop.id, sellerOrder: { isStoreReviewData: false, ...visibleDsvOrderWhere(shop.id) } },
       }),
       this.prisma.driverRouteNotificationAttempt.findMany({
         orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
@@ -67,10 +67,8 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
           action: 'CHANGED',
           shopId: shop.id,
           status: { in: ['FAILED', 'SKIPPED'] },
-          ...(canAccessReviewData ? {} : {
-            OR: [{ driverId: null }, { driver: { is: { isStoreReviewData: false } } }],
-            routePlan: { isStoreReviewData: false },
-          }),
+          OR: [{ driverId: null }, { driver: { is: { isStoreReviewData: false } } }],
+          routePlan: { isStoreReviewData: false, ...visibleDsvRouteWhere(shop.id) },
         },
       }),
       this.prisma.order.findMany({
@@ -80,11 +78,14 @@ export class PrismaDsvOperationalNotificationService implements DsvOperationalNo
         where: {
           currentRouteVersionId: null,
           deliveryStatus: 'CANCELLED',
+          ...visibleDsvOrderWhere(shop.id),
           shopId: shop.id,
-          ...(canAccessReviewData ? {} : { isStoreReviewData: false }),
+          isStoreReviewData: false,
         },
       }),
-      canAccessReviewData ? this.driverAccountLinks?.listPending(input) ?? Promise.resolve([]) : Promise.resolve([]),
+      input.principal.principalType === 'DSV_ADMIN' && input.principal.scopes.includes('dsv:accounts:read')
+        ? this.driverAccountLinks?.listPending(input) ?? Promise.resolve([])
+        : Promise.resolve([]),
     ]);
 
     const items: DsvOperationalNotification[] = [];

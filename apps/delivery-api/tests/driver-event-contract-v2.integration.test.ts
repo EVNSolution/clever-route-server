@@ -16,7 +16,7 @@ import {
   PrismaDriverEventReceiptRepository
 } from '../src/modules/driver/driver-event-receipt.repository.js';
 import { PrismaRouteGroupingService, replaceCurrentRouteGroupingChildVersion } from '../src/modules/route-grouping/route-grouping.service.js';
-import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import { PrismaDriverRouteCompletionReviewRepository } from '../src/modules/driver/driver-route-completion-review.repository.js';
 

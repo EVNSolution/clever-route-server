@@ -132,6 +132,119 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
   });
 
+  test('suppresses route tracking coordinates after the next local calendar day', async () => {
+    const prisma = prismaMock({
+      order: { findMany: vi.fn(() => Promise.resolve([{
+        currentRouteVersion: {
+          routePlanId: 'route-a',
+          routePlan: {
+            constraints: { scheduledStartTimeZone: 'Asia/Seoul' },
+            planDate: new Date('2026-07-22T00:00:00.000Z'),
+            trackingGeometry: {
+              lastLatitude: '37.5000000',
+              lastLongitude: '127.0000000',
+              lastOccurredAt: new Date('2026-07-24T00:00:00.000Z'),
+            },
+            vehicleId: 'vehicle-a',
+          },
+        },
+        id: 'order-a',
+      }])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-24T00:00:00.000Z'));
+
+    await expect(service.listCustomerRouteScope(customerPrincipal(), '2026-07-22')).resolves.toEqual([{
+      routePlanId: 'route-a',
+      sellerOrderId: 'order-a',
+      vehicleId: 'vehicle-a',
+      vehicleLatitude: null,
+      vehicleLongitude: null,
+    }]);
+  });
+
+  test('suppresses stale cached route coordinates from customer delivery rows', async () => {
+    const row = customerDeliveryOrderRow({
+      currentRouteVersion: {
+        driverId: 'driver-a',
+        routePlan: {
+          constraints: { scheduledStartTimeZone: 'Asia/Seoul' },
+          planDate: new Date('2026-07-22T00:00:00.000Z'),
+          trackingGeometry: {
+            lastLatitude: '37.5000000',
+            lastLongitude: '127.0000000',
+            lastOccurredAt: new Date('2026-07-24T00:00:00.000Z'),
+          },
+          vehicle: { id: 'vehicle-a', label: 'vehicle-a', licensePlate: null },
+          vehicleId: 'vehicle-a',
+        },
+        routePlanId: 'route-a',
+      },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([row])) },
+    }) as never, () => new Date('2026-07-24T00:00:00.000Z'));
+
+    await expect(service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-07-22' }))
+      .resolves.toMatchObject({ items: [{ vehicleLatitude: null, vehicleLongitude: null }] });
+  });
+
+  test('keeps delayed-route coordinates inside the route-start anchored window', async () => {
+    const prisma = prismaMock({
+      order: { findMany: vi.fn(() => Promise.resolve([{
+        currentRouteVersion: {
+          routePlanId: 'route-delayed',
+          routePlan: {
+            constraints: { scheduledStartTimeZone: 'America/Toronto' },
+            driverEvents: [{ eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-07-20T12:00:00.000Z') }],
+            planDate: new Date('2026-07-18T00:00:00.000Z'),
+            trackingGeometry: {
+              lastLatitude: '43.6500000',
+              lastLongitude: '-79.3800000',
+              lastOccurredAt: new Date('2026-07-21T12:00:00.000Z'),
+            },
+            vehicleId: 'vehicle-a',
+          },
+        },
+        id: 'order-a',
+      }])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-21T12:00:00.000Z'));
+
+    await expect(service.listCustomerRouteScope(customerPrincipal(), '2026-07-22')).resolves.toMatchObject([{
+      vehicleLatitude: 43.65,
+      vehicleLongitude: -79.38,
+    }]);
+  });
+
+  test('uses selected ROUTE_STARTED evidence for delayed customer delivery coordinates', async () => {
+    const row = customerDeliveryOrderRow({
+      currentRouteVersion: {
+        driverId: 'driver-a',
+        routePlan: {
+          constraints: { scheduledStartTimeZone: 'America/Toronto' },
+          driverEvents: [{ eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-07-20T12:00:00.000Z') }],
+          planDate: new Date('2026-07-18T00:00:00.000Z'),
+          trackingGeometry: {
+            lastLatitude: '43.6500000',
+            lastLongitude: '-79.3800000',
+            lastOccurredAt: new Date('2026-07-21T12:00:00.000Z'),
+          },
+          vehicle: { id: 'vehicle-a', label: 'vehicle-a', licensePlate: null },
+          vehicleId: 'vehicle-a',
+        },
+        routePlanId: 'route-delayed',
+      },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'America/Toronto' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([row])) },
+    }) as never, () => new Date('2026-07-21T12:00:00.000Z'));
+
+    await expect(service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-07-18' }))
+      .resolves.toMatchObject({ items: [{ vehicleLatitude: 43.65, vehicleLongitude: -79.38 }] });
+  });
+
   test('resolves tenant timezone from the single active commerce connection timezone', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'America/Toronto' }])) },
@@ -1196,20 +1309,30 @@ describe('PrismaDsvV1ReadQueryService', () => {
       routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
       shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:30' } })) },
       uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
-        gpsSample({ observedAt: '2026-08-03T23:29:00.000Z', staleAfter: '2026-08-03T23:31:00.000Z' }),
-        gpsSample({ observedAt: '2026-08-03T23:31:00.000Z', staleAfter: '2026-08-03T23:33:00.000Z' }),
-        gpsSample({ observedAt: '2026-08-03T23:32:00.000Z', staleAfter: '2026-08-03T23:34:00.000Z' }),
-        gpsSample({ observedAt: '2026-08-03T23:35:00.000Z', staleAfter: '2026-08-03T23:37:00.000Z' }),
+        gpsSample({ latitude: '37.6000000', observedAt: '2026-08-03T23:29:00.000Z', staleAfter: '2026-08-03T23:31:00.000Z' }),
+        gpsSample({ latitude: '37.6010000', observedAt: '2026-08-03T23:31:00.000Z', staleAfter: '2026-08-03T23:33:00.000Z' }),
+        gpsSample({ latitude: '37.6020000', observedAt: '2026-08-03T23:32:00.000Z', staleAfter: '2026-08-03T23:34:00.000Z' }),
+        gpsSample({ latitude: '37.6030000', observedAt: '2026-08-03T23:35:00.000Z', staleAfter: '2026-08-03T23:37:00.000Z' }),
       ])) },
       vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-unassigned' })) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
 
     const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      includeDailyRoute: true,
       serviceDate: '2026-08-04',
       vehicleId: 'vehicle-unassigned',
     });
     expect(result.vehicleId).toBe('vehicle-unassigned');
+    expect(result.dailyRoute).toMatchObject({
+      type: 'LineString',
+      coordinates: [[127.1, 37.6], [127.1, 37.601], [127.1, 37.602], [127.1, 37.603]],
+      bridges: [
+        expect.objectContaining({ reason: 'NO_MATCH' }),
+        expect.objectContaining({ reason: 'NO_MATCH' }),
+        expect.objectContaining({ reason: 'GPS_GAP' }),
+      ],
+    });
     expect(result.sessions.flatMap((session) => session.segments.flatMap((segment) =>
       segment.samples.map((sample) => sample.observedAt)
     ))).toEqual([
@@ -1220,7 +1343,190 @@ describe('PrismaDsvV1ReadQueryService', () => {
     ]);
   });
 
-  test('vehicle GPS trail history enriches segments with confident materialized lines and markers without changing samples', async () => {
+  test('vehicle GPS history separates an impossible jump without dropping either raw endpoint', async () => {
+    const sampleTimes = [
+      '2026-08-03T23:29:00.000Z',
+      '2026-08-03T23:30:00.000Z',
+      '2026-08-03T23:31:00.000Z',
+      '2026-08-03T23:32:00.000Z',
+    ] as const;
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:20' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        gpsSample({ observedAt: sampleTimes[0], latitude: '37.2852230', longitude: '126.9492630', staleAfter: sampleTimes[2] }),
+        gpsSample({ observedAt: sampleTimes[1], latitude: '37.2852230', longitude: '126.9492630', staleAfter: sampleTimes[2] }),
+        gpsSample({ observedAt: sampleTimes[2], latitude: '37.2433950', longitude: '126.9506750', staleAfter: sampleTimes[3] }),
+        gpsSample({ observedAt: sampleTimes[3], latitude: '37.2423950', longitude: '126.9506750' }),
+      ])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      includeDailyRoute: true,
+      serviceDate: '2026-08-04',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(result.sessions.flatMap((session) => session.segments.map((segment) =>
+      segment.samples.map((sample) => sample.observedAt)
+    ))).toEqual([sampleTimes.slice(0, 2), sampleTimes.slice(2)]);
+    expect(result.dailyRoute?.bridges).toContainEqual({
+      fromObservedAt: sampleTimes[1],
+      toObservedAt: sampleTimes[2],
+      reason: 'IMPLAUSIBLE_JUMP',
+    });
+    expect(result.dailyRoute?.sourceSampleCount).toBe(4);
+  });
+
+  test('vehicle GPS history passes ignition and invalid frozen speed into the separate tunnel candidate', async () => {
+    const coordinates: Array<[number, number]> = [
+      [126.95278, 37.59617],
+      ...Array.from({ length: 6 }, () => [126.95625, 37.59583] as [number, number]),
+      [126.99562, 37.60977],
+      [127.0065, 37.60675],
+    ];
+    const times = coordinates.map((_, index) =>
+      new Date(Date.parse('2026-09-29T22:37:58.000Z') + index * 60_000).toISOString()
+    );
+    const rows = coordinates.map(([longitude, latitude], index) => gpsSample({
+      ignitionOn: true,
+      latitude: String(latitude),
+      longitude: String(longitude),
+      observedAt: times[index]!,
+      speedKph: index > 1 && index < 7 ? '255' : '40',
+      staleAfter: new Date(Date.parse(times[index]!) + 60_000).toISOString(),
+    }));
+    const anchors = [0, 1, 7, 8].map((index) => ({
+      observedAt: times[index],
+      lineIndex: index < 7 ? 0 : 1,
+      coordinateIndex: index === 0 || index === 7 ? 0 : 1,
+    }));
+    const document = {
+      schemaVersion: 'uvis_vehicle_trail.v1',
+      segments: [{
+        endedAt: times[8],
+        roadMatchedGeometry: {
+          anchors,
+          type: 'MultiLineString',
+          coordinates: [
+            [[126.952756, 37.5961346], [126.9562349, 37.5958118]],
+            [[126.9956786, 37.6097365], [127.0064424, 37.6068035]],
+          ],
+        },
+        samples: rows.map((row) => ({
+          distanceTodayKm: null,
+          ignitionOn: row.ignitionOn,
+          latitude: Number(row.latitude),
+          longitude: Number(row.longitude),
+          observedAt: row.observedAt.toISOString(),
+          speedKph: Number(row.speedKph),
+          staleAfter: row.staleAfter.toISOString(),
+        })),
+        startedAt: times[0],
+        trailMarker: { kind: 'START', latitude: coordinates[0]![1], longitude: coordinates[0]![0], observedAt: times[0] },
+      }],
+    };
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '07:30' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve(rows)) },
+      uvisVehicleTrailMaterialization: { findUnique: vi.fn(() => Promise.resolve({ document })) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-09-30T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      includeDailyRoute: true,
+      serviceDate: '2026-09-30',
+      vehicleId: 'vehicle-a',
+    });
+
+    const bridge = result.dailyRoute?.bridges.find((item) => item.reason === 'IMPLAUSIBLE_JUMP');
+    expect(bridge?.inferredTunnel?.corridorId).toBe('seoul-hongjimun-jeongneung-eastbound');
+  });
+
+  test('current-day GPS history adds the Suam–Suri candidate only after a later matched witness arrives', async () => {
+    const coordinates: Array<[number, number]> = [
+      [126.8718553, 37.3684129],
+      ...Array.from({ length: 4 }, () => [126.88213, 37.3694] as [number, number]),
+      [126.93495, 37.37628],
+      [126.93495, 37.37628],
+      [126.964, 37.38165],
+    ];
+    const times = coordinates.map((_, index) =>
+      new Date(Date.parse('2026-09-30T01:46:54.000Z') + index * 60_000).toISOString()
+    );
+    const rows = coordinates.map(([longitude, latitude], index) => gpsSample({
+      latitude: String(latitude),
+      longitude: String(longitude),
+      observedAt: times[index]!,
+      speedKph: index === 6 || (index >= 2 && index <= 4) ? '255' : '70',
+      staleAfter: new Date(Date.parse(times[index]!) + 60_000).toISOString(),
+    }));
+    let receivedCount = 6;
+    const documentForReceivedCount = () => ({
+      schemaVersion: 'uvis_vehicle_trail.v1',
+      segments: [{
+        endedAt: times[receivedCount - 1],
+        roadMatchedGeometry: {
+          anchors: [0, 1, 5, 6, 7].filter((index) => index < receivedCount).map((index) => ({
+            observedAt: times[index],
+            lineIndex: index < 5 ? 0 : 1,
+            coordinateIndex: index === 0 || index === 5 || index === 6 ? 0 : 1,
+          })),
+          type: 'MultiLineString',
+          coordinates: [
+            [[126.8718553, 37.3684129], [126.8820994, 37.3693881]],
+            [[126.9355957, 37.3763828], [126.964, 37.38165]],
+          ],
+        },
+        samples: rows.slice(0, receivedCount).map((row) => ({
+          distanceTodayKm: null,
+          ignitionOn: row.ignitionOn,
+          latitude: Number(row.latitude),
+          longitude: Number(row.longitude),
+          observedAt: row.observedAt.toISOString(),
+          speedKph: Number(row.speedKph),
+          staleAfter: row.staleAfter.toISOString(),
+        })),
+        startedAt: times[0],
+        trailMarker: { kind: 'START', latitude: coordinates[0]![1], longitude: coordinates[0]![0], observedAt: times[0] },
+      }],
+    });
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '07:30' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve(rows.slice(0, receivedCount))) },
+      uvisVehicleTrailMaterialization: { findUnique: vi.fn(() => Promise.resolve({ document: documentForReceivedCount() })) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-09-30T03:00:00.000Z'));
+    const readBridge = async () => {
+      const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+        includeDailyRoute: true,
+        serviceDate: '2026-09-30',
+        vehicleId: 'vehicle-a',
+      });
+      return result.dailyRoute?.bridges.find((bridge) => bridge.fromObservedAt === times[4]);
+    };
+
+    expect((await readBridge())?.inferredTunnel).toBeUndefined();
+    receivedCount = 7;
+    expect((await readBridge())?.inferredTunnel).toBeUndefined();
+    receivedCount = 8;
+    expect((await readBridge())?.inferredTunnel).toMatchObject({
+      confirmedByObservedAt: times[7],
+      corridorId: 'seoul-suam-suri-eastbound',
+      toObservedAt: times[5],
+    });
+  });
+
+  test('vehicle GPS trail history keeps raw samples while removing anchors distant from their matched line', async () => {
     const materializedDocument = {
       generatedAt: '2026-08-04T01:00:00.000Z',
       retryable: false,
@@ -1283,18 +1589,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
 
     expect(result.sessions[0]?.segments).toEqual([{
-      roadMatchedGeometry: {
-        anchors: [
-          { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-03T23:31:00.000Z' },
-          { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-03T23:32:00.000Z' },
-          { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-03T23:33:00.000Z' },
-        ],
-        coordinates: [
-          [[127.0, 37.5], [127.1, 37.6]],
-          [[127.2, 37.7], [127.3, 37.8]],
-        ],
-        type: 'MultiLineString',
-      },
+      roadMatchedGeometry: null,
       samples: [
         expect.objectContaining({ observedAt: '2026-08-03T23:31:00.000Z' }),
         expect.objectContaining({ observedAt: '2026-08-03T23:32:00.000Z' }),
@@ -1442,7 +1737,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
           ],
           type: 'MultiLineString',
           coordinates: [
-            [[126.9, 37.4], [127.0, 37.5], [127.1, 37.6], [127.2, 37.7]],
+            [[126.9, 37.4], [127.0, 37.5], [127.01, 37.51], [127.02, 37.52]],
             [[127.3, 37.8], [127.4, 37.9]],
           ],
         },
@@ -1467,8 +1762,8 @@ describe('PrismaDsvV1ReadQueryService', () => {
       routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
       shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:30' } })) },
       uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
-        gpsSample({ observedAt: '2026-08-03T23:32:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
-        gpsSample({ observedAt: '2026-08-03T23:33:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
+        gpsSample({ latitude: '37.5000000', longitude: '127.0000000', observedAt: '2026-08-03T23:32:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
+        gpsSample({ latitude: '37.5100000', longitude: '127.0100000', observedAt: '2026-08-03T23:33:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
       ])) },
       uvisVehicleTrailMaterialization: { findUnique: vi.fn(() => Promise.resolve({ document: materializedDocument })) },
       vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-unassigned' })) },
@@ -1486,7 +1781,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
           { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-03T23:32:00.000Z' },
           { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-03T23:33:00.000Z' },
         ],
-        coordinates: [[[127.0, 37.5], [127.1, 37.6]]],
+        coordinates: [[[127.0, 37.5], [127.01, 37.51]]],
         type: 'MultiLineString',
       },
       samples: [
@@ -1497,7 +1792,10 @@ describe('PrismaDsvV1ReadQueryService', () => {
     }]);
   });
 
-  test('filters store-review rows before pagination, counts, and summaries for non-developer principals', async () => {
+  test.each([
+    ['operator', adminPrincipal()],
+    ['developer', developerAdminPrincipal()],
+  ] as const)('filters store-review rows before pagination, counts, and summaries for %s', async (_role, principal) => {
     const customerListPrisma = prismaMock({ $queryRaw: vi.fn(() => Promise.resolve([])) });
     const destinationListPrisma = prismaMock({ $queryRaw: vi.fn(() => Promise.resolve([])) });
     const recordsPrisma = prismaMock({
@@ -1512,13 +1810,13 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
     const driverPrisma = prismaMock({ driver: { findMany: vi.fn(() => Promise.resolve([])) } });
 
-    await new PrismaDsvV1ReadQueryService(dispatchPrisma as never).listDispatches(adminPrincipal(), {
+    await new PrismaDsvV1ReadQueryService(dispatchPrisma as never).listDispatches(principal, {
       serviceDate: '2026-07-22',
     });
-    await new PrismaDsvV1ReadQueryService(recordsPrisma as never).listRecords(adminPrincipal());
-    await new PrismaDsvV1ReadQueryService(driverPrisma as never).listDrivers(adminPrincipal());
-    await new PrismaDsvV1ReadQueryService(customerListPrisma as never).listCustomers(adminPrincipal());
-    await new PrismaDsvV1ReadQueryService(destinationListPrisma as never).listDestinations(adminPrincipal());
+    await new PrismaDsvV1ReadQueryService(recordsPrisma as never).listRecords(principal);
+    await new PrismaDsvV1ReadQueryService(driverPrisma as never).listDrivers(principal);
+    await new PrismaDsvV1ReadQueryService(customerListPrisma as never).listCustomers(principal);
+    await new PrismaDsvV1ReadQueryService(destinationListPrisma as never).listDestinations(principal);
 
     expect(firstMockArg<OrderFindManyQuery>(dispatchPrisma.order.findMany)?.where).toMatchObject({
       isStoreReviewData: false,
@@ -1539,7 +1837,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(destinationSql).toContain('GROUP BY "isStoreReviewData", name_key, address_key');
   });
 
-  test('developer admin retains store-review rows in admin reads and customer-scope adapters', async () => {
+  test('developer admin excludes store-review rows in admin reads and customer-scope adapters', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
@@ -1553,11 +1851,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
     await service.listCustomerRouteScopeForAdmin(developerAdminPrincipal(), 'review-customer', '2026-07-22');
 
     for (const [query] of (prisma.order.findMany as ReturnType<typeof vi.fn>).mock.calls) {
-      expect((query as { where: unknown }).where).not.toHaveProperty('isStoreReviewData');
+      expect((query as { where: unknown }).where).toMatchObject({ isStoreReviewData: false, shopId: 'shop-a' });
     }
   });
 
-  test('developer admin retains review route sessions and review driver assignments', async () => {
+  test('developer admin excludes review route sessions and review driver assignments', async () => {
     const gpsPrisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
       routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
@@ -1584,9 +1882,9 @@ describe('PrismaDsvV1ReadQueryService', () => {
     );
     await new PrismaDsvV1ReadQueryService(vehiclePrisma as never).listVehicles(developerAdminPrincipal());
 
-    expect(firstMockArg<OrderFindManyQuery>(gpsPrisma.routePlan.findMany)?.where).not.toHaveProperty('isStoreReviewData');
+    expect(firstMockArg<OrderFindManyQuery>(gpsPrisma.routePlan.findMany)?.where).toMatchObject({ isStoreReviewData: false });
     expect(firstMockArg<OrderFindManyQuery>(vehiclePrisma.dsvVehicleDriverAssignment.findMany)?.where)
-      .not.toHaveProperty('driver');
+      .toMatchObject({ driver: { isStoreReviewData: false } });
   });
 
   test('customer principals cannot read store-review orders or route scope', async () => {
@@ -1712,7 +2010,10 @@ function customerDeliveryOrderRow(input: {
   currentRouteVersion?: {
     driverId: string | null;
     routePlan: {
-      trackingGeometry: { lastLatitude: unknown; lastLongitude: unknown } | null;
+      constraints?: unknown;
+      driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
+      planDate?: Date;
+      trackingGeometry: { lastLatitude: unknown; lastLongitude: unknown; lastOccurredAt?: Date } | null;
       vehicle: { id: string; label: string; licensePlate: string | null } | null;
       vehicleId: string | null;
     } | null;

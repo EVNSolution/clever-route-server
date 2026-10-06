@@ -2,10 +2,15 @@ import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { safeErrorCode } from '../security/safe-telemetry-redaction.js';
-import { assertRoutePlanExecutionOwnership, RouteExecutionConflictError } from '../route-plans/route-execution-ownership.js';
+import { hasDeliveryNavigationGraceExpired, hasDeliveryWorkCompleted, KFOOD_DELIVERY_SHOP_DOMAIN, reconcileKfoodDeliveryWorkCompletion, type DeliveryWorkCompletionRecord } from '../route-plans/kfood-delivery-completion.js';
+import { assertRouteDispatchOwnership, claimRouteExecutionProjection, RouteExecutionConflictError } from '../route-plans/route-execution-ownership.js';
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
 import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tracking.geometry.js';
+import {
+  loadRouteTrackingEventWindow,
+  occurredAtWithinRouteTrackingEventWindow
+} from '../route-tracking/route-tracking.event-window.js';
 import { persistAutomaticCustomerEmailFacts } from '../customer-email/customer-email-automatic-fact.js';
 import { deriveDsvTimeConstraintState, dsvTimeConstraintAuditEvents } from '../dsv/dsv-time-constraint.js';
 import {
@@ -53,12 +58,12 @@ export type DriverEventAttemptAdmissionInput = {
   appVersion: string | null;
   assignmentGeneration: string | null;
   clientEventId: string | null;
-  driverContractVersion: 2;
+  driverContractVersion: number;
   driverId: string;
   eventType: string | null;
   expectedRouteVersionId: string | null;
   occurredAt: Date | null;
-  requestId: string;
+  requestId: string | null;
   routePlanId: string | null;
   shopId: string;
   versionCode: number | null;
@@ -85,6 +90,7 @@ export type RecordDriverEventResult = {
   etaUpdate?: DriverRouteEtaUpdate;
   eventId: string;
   sequenceDeviation?: DriverStopSequenceDeviation;
+  trackingPositionAccepted?: boolean;
 };
 
 export type CompleteDriverDeliveryDestinationInput = {
@@ -163,8 +169,8 @@ export class DriverEventRouteNotInProgressError extends Error {
 }
 
 export class DriverEventExecutionConflictError extends RouteExecutionConflictError {
-  constructor(conflictingRoutePlanId: string, deliveryStopId: string) {
-    super(conflictingRoutePlanId, deliveryStopId);
+  constructor(conflictingRoutePlanId: string, deliveryStopId: string, message?: string) {
+    super(conflictingRoutePlanId, deliveryStopId, message);
     this.name = 'DriverEventExecutionConflictError';
   }
 }
@@ -325,8 +331,19 @@ export class PrismaDriverEventRepository {
         }
 
         await lockRoutePlanForSerializedEvent(transaction, input);
+        // A simultaneous retry may have waited for the last-stop transaction.
+        // Recheck under its lock before the newly completed-work guard runs.
+        if (input.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
+          && ['STOP_DELIVERED', 'STOP_FAILED', 'ROUTE_COMPLETED'].includes(input.eventType)) {
+          const committed = await findMatchingDriverEvent(transaction, input);
+          if (committed !== null) return {
+            completionInvariant: null, duplicate: true, eventId: committed.id,
+            ...(isEtaSnapshotRecoveryEvent(input.eventType)
+              ? { etaSnapshot: await buildCurrentEtaSnapshotForDuplicate(transaction, input) } : {})
+          };
+        }
         await validateVersionedOrderedContract(transaction, input);
-        await validateDriverEventStateContext(transaction, input, input.shopId);
+        const deferCompletionForNavigation = await validateDriverEventStateContext(transaction, input, input.shopId, this.now());
         const completionInvariant = await evaluateCompletionInvariant(transaction, input, this.completionInvariantMode);
         if (completionInvariant?.decision === 'REJECTED') {
           if (attemptId !== null) {
@@ -351,16 +368,33 @@ export class PrismaDriverEventRepository {
           ? null
           : await loadCurrentRouteVersionIdForDriverEvent(transaction, schemaCapabilities, input.routePlanId, input.shopId);
 
+        // GPS clients do not carry ordered-v2 identity. Stamp the server-owned
+        // assignment under the route lock so later evidence cannot cross a reassignment.
+        const locationAssignment = input.eventType === 'LOCATION_UPDATED' && input.routePlanId !== null
+          ? await transaction.routePlan.findUnique({
+              where: { id: input.routePlanId }, select: { assignmentGeneration: true }
+            })
+          : null;
+        const locationWindow = input.eventType === 'LOCATION_UPDATED' && input.routePlanId !== null
+          ? await loadRouteTrackingEventWindow(transaction, input.routePlanId)
+          : null;
+        const trackingPositionAccepted = locationWindow === null
+          || occurredAtWithinRouteTrackingEventWindow(locationWindow, input.occurredAt);
+
         const event = await transaction.driverEvent.create({
           data: {
             clientEventId: input.clientEventId,
             deliveryStopId: input.deliveryStopId,
             driverId: input.driverId,
-            eventType: input.eventType as never,
-            latitude: input.latitude,
-            longitude: input.longitude,
+            eventType: (deferCompletionForNavigation ? 'NOTE_ADDED' : input.eventType) as never,
+            latitude: trackingPositionAccepted ? input.latitude : null,
+            longitude: trackingPositionAccepted ? input.longitude : null,
             occurredAt: input.occurredAt,
-            payload: persistedDriverEventPayload(input, completionInvariant),
+            payload: deferCompletionForNavigation
+              ? { schema: 'kfood_return_navigation_completion_ack_v1', requestedEventType: 'ROUTE_COMPLETED',
+                  payload: persistedDriverEventPayload(input, completionInvariant) }
+              : trackingPositionAccepted ? persistedDriverEventPayload(input, completionInvariant)
+              : { redacted: true, schema: 'driver_location_service_window_tombstone_v1' },
             routePlanId: input.routePlanId,
             ...(input.driverContractVersion === undefined || input.driverContractVersion === null
               ? {}
@@ -370,6 +404,10 @@ export class PrismaDriverEventRepository {
                   expectedRouteVersionId: requireExpectedRouteVersionId(input)
                 }),
             ...(routeVersionId === undefined ? {} : { routeVersionId }),
+            ...(locationAssignment?.assignmentGeneration === undefined ? {} : {
+              assignmentGeneration: locationAssignment.assignmentGeneration,
+              expectedRouteVersionId: routeVersionId ?? null
+            }),
             shopId: input.shopId
           }
         });
@@ -380,13 +418,15 @@ export class PrismaDriverEventRepository {
           });
         }
 
-        const trackingPosition = toRouteTrackingGeometryPosition(input, event.id, event.createdAt);
+        const trackingPosition = trackingPositionAccepted
+          ? toRouteTrackingGeometryPosition(input, event.id, event.createdAt)
+          : null;
         if (trackingPosition !== null) {
           await persistRouteTrackingGeometryPosition(transaction, trackingPosition);
         }
         await applyDispatchChangeRequestAck(transaction, input, event.id, event.createdAt);
 
-        const etaResult = await applyDriverEventStateTransition(
+        const etaResult = deferCompletionForNavigation ? {} : await applyDriverEventStateTransition(
           transaction,
           schemaCapabilities,
           input,
@@ -395,7 +435,13 @@ export class PrismaDriverEventRepository {
           routeVersionId,
           event.id
         );
-        if (transaction.customerRouteNotificationFact !== undefined && transaction.shop !== undefined) {
+        if (input.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
+          && (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED')) {
+          await reconcileKfoodDeliveryWorkCompletion(transaction, {
+            routePlanId: requireRoutePlanId(input), shopId: input.shopId, now: event.createdAt
+          });
+        }
+        if (!deferCompletionForNavigation && transaction.customerRouteNotificationFact !== undefined && transaction.shop !== undefined) {
           await persistAutomaticCustomerEmailFacts(transaction, {
             deliveryStopId: input.deliveryStopId,
             driverEventId: event.id,
@@ -412,6 +458,7 @@ export class PrismaDriverEventRepository {
           ...(etaResult.etaSnapshot === undefined ? {} : { etaSnapshot: etaResult.etaSnapshot }),
           ...(etaResult.etaUpdate === undefined ? {} : { etaUpdate: etaResult.etaUpdate }),
           eventId: event.id,
+          ...(trackingPositionAccepted ? {} : { trackingPositionAccepted: false }),
           ...(sequenceDeviation === null ? {} : { sequenceDeviation })
         };
       });
@@ -549,7 +596,7 @@ export class PrismaDriverEventRepository {
       eventType: input.eventType,
       expectedRouteVersionId: requireExpectedRouteVersionId(input),
       occurredAt: input.occurredAt,
-      requestId: input.requestId ?? randomUUID(),
+      requestId: input.requestId ?? null,
       routePlanId: requireRoutePlanId(input),
       shopId: input.shopId,
       versionCode: input.versionCode ?? null
@@ -590,6 +637,7 @@ function publicRecordDriverEventResult(result: RecordDriverEventResult): RecordD
     ...(result.etaSnapshot === undefined ? {} : { etaSnapshot: result.etaSnapshot }),
     ...(result.etaUpdate === undefined ? {} : { etaUpdate: result.etaUpdate }),
     eventId: result.eventId,
+    ...(result.trackingPositionAccepted === undefined ? {} : { trackingPositionAccepted: result.trackingPositionAccepted }),
     ...(result.sequenceDeviation === undefined ? {} : { sequenceDeviation: result.sequenceDeviation })
   };
 }
@@ -632,7 +680,10 @@ async function lockRoutePlanForSerializedEvent(
     && input.eventType !== 'PICKUP_COMPLETED'
     && input.eventType !== 'STOP_ARRIVED'
     && input.eventType !== 'STOP_DELIVERED'
+    && input.eventType !== 'STOP_FAILED'
+    && input.eventType !== 'LOCATION_UPDATED'
     && input.eventType !== 'ROUTE_COMPLETED'
+    && input.eventType !== 'ROUTE_PAUSED'
   ) {
     return;
   }
@@ -674,8 +725,84 @@ async function validateVersionedOrderedContract(
     input.shopId
   );
   if (currentRouteVersionId !== requireExpectedRouteVersionId(input)) {
-    throw new DriverEventRouteVersionMismatchError();
+    const acceptsPreviousOrder = ['PICKUP_COMPLETED', 'STOP_ARRIVED', 'STOP_DELIVERED', 'STOP_FAILED', 'ROUTE_PAUSED', 'ROUTE_COMPLETED'].includes(input.eventType)
+      && currentRouteVersionId != null
+      && (await loadCompatibleReorderVersions(prisma, input.driverId, routePlanId, input.shopId, currentRouteVersionId))
+        .includes(requireExpectedRouteVersionId(input));
+    if (!acceptsPreviousOrder) throw new DriverEventRouteVersionMismatchError();
   }
+}
+
+async function loadCompatibleReorderVersions(
+  prisma: Pick<DriverEventPrismaClient, 'routeGroupingChildVersion'>,
+  driverId: string,
+  routePlanId: string,
+  shopId: string,
+  currentRouteVersionId: string | null | undefined
+): Promise<string[]> {
+  if (currentRouteVersionId == null) return [];
+  const current = await prisma.routeGroupingChildVersion.findFirst({
+    select: { groupingId: true, snapshot: true, routePlan: { select: { assignmentGeneration: true } } },
+    where: {
+      id: currentRouteVersionId, driverId, routePlanId, shopId, status: 'CURRENT', supersededAt: null,
+      routePlan: { driverId, status: 'IN_PROGRESS' }
+    }
+  });
+  const snapshot = current?.snapshot;
+  if (snapshot == null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return [];
+  const generation = current?.routePlan?.assignmentGeneration.toString();
+  if (generation === undefined || !isOrderOnlyReorderSnapshot(snapshot, generation)) return [];
+  const membership = reorderSnapshotMembership(snapshot);
+  if (membership === null) return [];
+  // Bound legacy-event recovery while keeping immutable snapshot storage constant per edit.
+  const predecessors = await prisma.routeGroupingChildVersion.findMany({
+    select: { id: true, snapshot: true },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: 128,
+    where: {
+      driverId, routePlanId, shopId, groupingId: current!.groupingId,
+      status: 'ARCHIVED', supersededAt: { not: null }
+    }
+  });
+  const byId = new Map(predecessors.map((row) => [row.id, row.snapshot]));
+  const seen = new Set([currentRouteVersionId]);
+  const ids: string[] = [];
+  let cursor: Prisma.JsonValue = snapshot;
+  while (isOrderOnlyReorderSnapshot(cursor, generation)) {
+    if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return [];
+    const predecessorId = cursor.predecessorChildVersionId;
+    if (typeof predecessorId !== 'string' || seen.has(predecessorId)
+      || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(predecessorId)) return [];
+    const predecessor = byId.get(predecessorId);
+    if (predecessor === undefined || reorderSnapshotMembership(predecessor) !== membership) return [];
+    seen.add(predecessorId);
+    ids.push(predecessorId);
+    cursor = predecessor;
+  }
+  return ids;
+}
+
+function isOrderOnlyReorderSnapshot(snapshot: Prisma.JsonValue, generation: string): boolean {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return false;
+  const marker = snapshot.reorderCompatibility;
+  return marker !== null && typeof marker === 'object' && !Array.isArray(marker)
+    && marker.assignmentGeneration === generation;
+}
+
+function reorderSnapshotMembership(snapshot: Prisma.JsonValue): string | null {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot) || !Array.isArray(snapshot.stops)) return null;
+  const tuples: string[] = [];
+  const stopIds = new Set<string>();
+  const orderIds = new Set<string>();
+  for (const stop of snapshot.stops) {
+    if (stop === null || typeof stop !== 'object' || Array.isArray(stop)
+      || typeof stop.deliveryStopId !== 'string' || typeof stop.orderId !== 'string' || typeof stop.sourceOrderId !== 'string'
+      || stopIds.has(stop.deliveryStopId) || orderIds.has(stop.orderId)) return null;
+    stopIds.add(stop.deliveryStopId);
+    orderIds.add(stop.orderId);
+    tuples.push(JSON.stringify([stop.deliveryStopId, stop.orderId, stop.sourceOrderId]));
+  }
+  return tuples.length === 0 ? null : JSON.stringify(tuples.sort());
 }
 
 function attemptFailureFor(error: unknown): {
@@ -830,6 +957,7 @@ function toRouteTrackingGeometryPosition(
   const longitude = input.longitude === null ? Number.NaN : Number(input.longitude);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
   return {
+    accuracyMeters: readTrackingAccuracyMeters(input.payload),
     driverId: input.driverId,
     eventId,
     latitude,
@@ -838,6 +966,18 @@ function toRouteTrackingGeometryPosition(
     receivedAt: receivedAt.toISOString(),
     routePlanId: input.routePlanId
   };
+}
+
+function readTrackingAccuracyMeters(payload: unknown): number | null {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const nested = record.location !== null && typeof record.location === 'object' && !Array.isArray(record.location)
+    ? (record.location as Record<string, unknown>).accuracyMeters
+    : undefined;
+  const candidate = record.accuracyMeters ?? record.accuracy ?? nested;
+  if (candidate === null || candidate === undefined || candidate === '') return null;
+  const value = Number(candidate);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null;
 }
 
 async function findMatchingDriverEvent(
@@ -908,7 +1048,7 @@ async function findMatchingDriverEvent(
 
   if (
     input.clientEventId === null
-    || (input.eventType !== 'ROUTE_COMPLETED' && input.eventType !== 'ROUTE_PAUSED')
+    || !['ROUTE_COMPLETED', 'ROUTE_PAUSED', 'STOP_DELIVERED', 'STOP_FAILED'].includes(input.eventType)
   ) {
     return null;
   }
@@ -977,13 +1117,21 @@ function driverEventContextMatchesInput(
   input: RecordDriverEventInput
 ): boolean {
   const baseContextMatches = (
-    event.eventType === input.eventType
+    (event.eventType === input.eventType || isReturnNavigationCompletionAck(event, input))
     && event.routePlanId === input.routePlanId
     && event.deliveryStopId === input.deliveryStopId
   );
   if (!baseContextMatches) return false;
   if (input.eventType !== 'DISPATCH_CHANGE_ACKNOWLEDGED') return true;
   return driverEventPayloadChangeRequestId(event.payload) === input.changeRequestId;
+}
+
+function isReturnNavigationCompletionAck(event: ExistingDriverEventContext, input: RecordDriverEventInput): boolean {
+  if (input.shopDomain !== KFOOD_DELIVERY_SHOP_DOMAIN || input.eventType !== 'ROUTE_COMPLETED'
+    || event.eventType !== 'NOTE_ADDED' || event.payload === null || typeof event.payload !== 'object'
+    || Array.isArray(event.payload)) return false;
+  const payload = event.payload as Record<string, unknown>;
+  return payload.schema === 'kfood_return_navigation_completion_ack_v1' && payload.requestedEventType === 'ROUTE_COMPLETED';
 }
 
 function driverEventPayloadChangeRequestId(payload: unknown): string | null {
@@ -1099,20 +1247,30 @@ function readCompletionSnapshotStopIds(snapshot: Prisma.JsonValue): string[] {
 async function validateDriverEventStateContext(
   prisma: DriverEventTransactionClient,
   input: RecordDriverEventInput,
-  shopId: string
-): Promise<void> {
+  shopId: string,
+  now: Date
+): Promise<boolean> {
   if (input.eventType === 'ROUTE_STARTED') {
     const routePlanId = requireRoutePlanId(input);
     await requireStartableOwnedRoutePlan(prisma, {
       driverId: input.driverId,
       routePlanId,
-      shopId
+      shopId,
+      includeDeliveryCompletion: input.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
     });
-    return;
+    return false;
   }
 
   const routePlanId = requireRoutePlanId(input);
-  const routePlan = await requireOwnedRoutePlan(prisma, { driverId: input.driverId, routePlanId, shopId });
+  const routePlan = await requireOwnedRoutePlan(prisma, { driverId: input.driverId, routePlanId, shopId,
+    includeDeliveryCompletion: input.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN });
+  if (hasDeliveryNavigationGraceExpired(routePlan, now)) {
+    throw new DriverEventScopeError('Return navigation access has expired');
+  }
+  if (hasDeliveryWorkCompleted(routePlan)
+    && input.eventType !== 'LOCATION_UPDATED' && input.eventType !== 'ROUTE_COMPLETED' && input.eventType !== 'NOTE_ADDED') {
+    throw new DriverEventRouteNotInProgressError('Delivery work is complete; only return navigation remains available');
+  }
   if (
     routePlan.status !== 'IN_PROGRESS'
     && (
@@ -1152,6 +1310,7 @@ async function validateDriverEventStateContext(
       shopId
     });
   }
+  return input.eventType === 'ROUTE_COMPLETED' && hasDeliveryWorkCompleted(routePlan);
 }
 
 async function applyDriverEventStateTransition(
@@ -1231,7 +1390,12 @@ async function applyDriverEventStateTransition(
           }
         },
         shopId,
-        status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', targetStatus] }
+        OR: [
+          { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', targetStatus] } },
+          // A real button result supersedes a candidate-owned result. The DB
+          // status trigger invalidates that candidate and clears its ownership.
+          { status: { in: ['DELIVERED', 'FAILED'] }, completionAssistanceCandidateId: { not: null } }
+        ]
       }
     });
     if (updated.count !== 1) throw new DriverEventStopTransitionConflictError();
@@ -1274,6 +1438,7 @@ async function applyDriverEventStateTransition(
 
   if (input.eventType === 'ROUTE_STARTED') {
     const routePlanId = requireRoutePlanId(input);
+    await claimRouteExecutionProjection(prisma, { routePlanId, shopId });
     await prisma.routePlan.updateMany({
       data: { status: 'IN_PROGRESS' },
       where: {
@@ -1390,13 +1555,16 @@ async function buildCurrentEtaSnapshotForDuplicate(
 }
 
 async function loadPickupCompletedAt(
-  prisma: Pick<DriverEventPrismaClient, 'driverEvent'>,
+  prisma: Pick<DriverEventPrismaClient, 'driverEvent' | 'routeGroupingChildVersion'>,
   schemaCapabilities: DriverEventSchemaCapabilities,
   driverId: string,
   routePlanId: string,
   shopId: string,
   eventRouteVersionId: string | null | undefined
 ): Promise<Date | null> {
+  const predecessors = schemaCapabilities.driverEventRouteVersionColumnExists
+    ? await loadCompatibleReorderVersions(prisma, driverId, routePlanId, shopId, eventRouteVersionId)
+    : [];
   const event = await prisma.driverEvent.findFirst({
     orderBy: { createdAt: 'asc' },
     select: { createdAt: true, occurredAt: true },
@@ -1406,7 +1574,7 @@ async function loadPickupCompletedAt(
       routePlanId,
       shopId,
       ...(schemaCapabilities.driverEventRouteVersionColumnExists
-        ? { routeVersionId: eventRouteVersionId ?? null }
+        ? { routeVersionId: predecessors.length === 0 ? eventRouteVersionId ?? null : { in: [eventRouteVersionId!, ...predecessors] } }
         : {})
     }
   });
@@ -1414,7 +1582,7 @@ async function loadPickupCompletedAt(
 }
 
 async function loadStopArrivalAt(
-  prisma: Pick<DriverEventPrismaClient, 'driverEvent'>,
+  prisma: Pick<DriverEventPrismaClient, 'driverEvent' | 'routeGroupingChildVersion'>,
   driverId: string,
   routePlanId: string,
   deliveryStopId: string,
@@ -1422,6 +1590,9 @@ async function loadStopArrivalAt(
   schemaCapabilities: DriverEventSchemaCapabilities,
   eventRouteVersionId: string | null | undefined
 ): Promise<Date | null> {
+  const predecessors = schemaCapabilities.driverEventRouteVersionColumnExists
+    ? await loadCompatibleReorderVersions(prisma, driverId, routePlanId, shopId, eventRouteVersionId)
+    : [];
   const event = await prisma.driverEvent.findFirst({
     orderBy: { occurredAt: 'asc' },
     select: { createdAt: true, occurredAt: true },
@@ -1432,7 +1603,7 @@ async function loadStopArrivalAt(
       routePlanId,
       shopId,
       ...(schemaCapabilities.driverEventRouteVersionColumnExists
-        ? { routeVersionId: eventRouteVersionId ?? null }
+        ? { routeVersionId: predecessors.length === 0 ? eventRouteVersionId ?? null : { in: [eventRouteVersionId!, ...predecessors] } }
         : {})
     }
   });
@@ -1440,18 +1611,21 @@ async function loadStopArrivalAt(
 }
 
 async function isCurrentEtaProgressEvent(
-  prisma: Pick<DriverEventPrismaClient, '$queryRaw'>,
+  prisma: Pick<DriverEventPrismaClient, '$queryRaw' | 'routeGroupingChildVersion'>,
   schemaCapabilities: DriverEventSchemaCapabilities,
   input: RecordDriverEventInput,
   eventRouteVersionId: string | null | undefined,
   eventId: string
 ): Promise<boolean> {
   const routePlanId = requireRoutePlanId(input);
+  const predecessors = schemaCapabilities.driverEventRouteVersionColumnExists
+    ? await loadCompatibleReorderVersions(prisma, input.driverId, routePlanId, input.shopId, eventRouteVersionId)
+    : [];
   const routeVersionPredicate = !schemaCapabilities.driverEventRouteVersionColumnExists
     ? Prisma.empty
     : eventRouteVersionId === null || eventRouteVersionId === undefined
       ? Prisma.sql`AND "routeVersionId" IS NULL`
-      : Prisma.sql`AND "routeVersionId" = ${eventRouteVersionId}::uuid`;
+      : Prisma.sql`AND "routeVersionId" IN (${Prisma.join([eventRouteVersionId, ...predecessors].map((id) => Prisma.sql`${id}::uuid`))})`;
   const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT id
     FROM driver_events
@@ -1783,10 +1957,13 @@ function normalizedInteger(value: number | null | undefined): number | null {
 
 async function requireStartableOwnedRoutePlan(
   prisma: DriverEventTransactionClient,
-  input: { driverId: string; routePlanId: string; shopId: string }
+  input: { driverId: string; routePlanId: string; shopId: string; includeDeliveryCompletion?: boolean }
 ): Promise<void> {
   const routePlan = await prisma.routePlan.findFirst({
-    select: { id: true },
+    select: { id: true, ...(input.includeDeliveryCompletion === true ? {
+      status: true, assignmentGeneration: true, deliveryWorkCompletedAt: true, driverNavigationUntil: true,
+      deliveryWorkCompletedGeneration: true, deliveryWorkCompletedVersionId: true
+    } : {}) },
     where: {
       driverId: input.driverId,
       driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
@@ -1798,19 +1975,32 @@ async function requireStartableOwnedRoutePlan(
   if (routePlan === null) {
     throw new DriverEventScopeError('Completed or unavailable routes cannot be started');
   }
-  await assertRoutePlanExecutionOwnership(prisma, {
-    createConflictError: (conflict) => new DriverEventExecutionConflictError(conflict.routePlanId, conflict.deliveryStopId),
-    routePlanId: input.routePlanId,
-    shopId: input.shopId
-  });
+  if (routePlan.status !== undefined && hasDeliveryWorkCompleted({ ...routePlan, status: routePlan.status })) {
+    throw new DriverEventScopeError('Completed delivery work cannot be restarted');
+  }
+  const stops = await prisma.routePlanStop.findMany({ select: { deliveryStopId: true }, where: { routePlanId: input.routePlanId } });
+  try {
+    await assertRouteDispatchOwnership(prisma, {
+      deliveryStopIds: stops.map((stop) => stop.deliveryStopId),
+      routePlanId: input.routePlanId, shopId: input.shopId
+    });
+  } catch (error) {
+    if (error instanceof RouteExecutionConflictError) {
+      throw new DriverEventExecutionConflictError(error.conflictingRoutePlanId, error.deliveryStopId, error.message);
+    }
+    throw error;
+  }
 }
 
 async function requireOwnedRoutePlan(
   prisma: DriverEventTransactionClient,
-  input: { driverId: string; routePlanId: string; shopId: string }
-): Promise<{ status: string }> {
+  input: { driverId: string; routePlanId: string; shopId: string; includeDeliveryCompletion?: boolean }
+): Promise<DeliveryWorkCompletionRecord> {
   const routePlan = await prisma.routePlan.findFirst({
-    select: { id: true, status: true },
+    select: { id: true, status: true, ...(input.includeDeliveryCompletion === true ? {
+      assignmentGeneration: true, deliveryWorkCompletedAt: true, driverNavigationUntil: true,
+      deliveryWorkCompletedGeneration: true, deliveryWorkCompletedVersionId: true
+    } : {}) },
     where: {
       driverId: input.driverId,
       driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
@@ -1823,7 +2013,7 @@ async function requireOwnedRoutePlan(
     throw new DriverEventScopeError('Driver route context is outside the authenticated driver scope');
   }
 
-  return { status: routePlan.status };
+  return routePlan;
 }
 
 async function requireOwnedRoutePlanStop(

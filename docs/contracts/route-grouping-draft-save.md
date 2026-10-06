@@ -32,6 +32,24 @@ server deployment. No new field or coordinated client release is required.
 To move an already routed order into Unassigned rather than remove it from the
 group, a separate explicit contract is required; omission is not that operation.
 
+## Manual additions and duplicate planning
+
+`updateGroupingOrders` permits the same real order in separate saved groups,
+including an order already planned or executing elsewhere. Adding it to a Ready,
+unpublished, unreserved child preserves the source route and its current order
+projection. Adding it to the group first and then to a child uses the same policy.
+Repeating an addition to the same child does not duplicate membership or stops.
+
+Within one group, an order remains assigned to at most one current child. A
+published, dispatch-reserved, or in-progress target checks execution ownership
+before appending and claims the current order projection in the same transaction.
+An overlapping execution returns `ROUTE_EXECUTION_CONFLICT` (HTTP 409) and rolls
+back the addition. Cancellation, terminal-stop, coordinate, tenant, and completed
+target guards remain in force. Stored order dates and source outcomes do not change.
+
+Shopify Add Order candidate and action validation must follow this policy; a
+global route pointer alone is not a reason to disable a planning candidate.
+
 ## Cancelled orders and filter-wide selection
 
 Group creation, standalone-to-group creation, and addition of new group members

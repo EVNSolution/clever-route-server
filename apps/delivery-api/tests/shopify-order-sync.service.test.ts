@@ -18,6 +18,8 @@ describe('ShopifyOrderSyncService', () => {
       request: <TData>(request: ShopifyAdminGraphqlRequest): Promise<TData> => {
         graphqlRequests.push(request);
         return Promise.resolve({
+          shop: { ianaTimezone: 'America/Toronto' },
+          currentAppInstallation: { metafield: null, legacyMetafield: null },
           orders: {
             nodes: [
               {

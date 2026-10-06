@@ -12,6 +12,29 @@ const nextRoutePlanId = '22222222-2222-4222-8222-222222222222';
 const anyStringMatcher: unknown = expect.any(String);
 
 describe('PrismaDriverSelfServiceRepository', () => {
+  test('keeps incomplete routes inspectable as terminal driver history', async () => {
+    const { prisma } = createPrismaHarness({ routePlans: [routePlanRecord({
+      driverEvents: [{ eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-05-19T08:00:00.000Z') }],
+      status: 'INCOMPLETE'
+    })] });
+    const repository = new PrismaDriverSelfServiceRepository(prisma as never);
+
+    const result = await repository.listDriverRoutes({
+      cursor: null,
+      driverId: 'driver-id',
+      from: null,
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
+      status: 'incomplete',
+      to: null
+    });
+
+    expect(result.routes).toEqual([expect.objectContaining({ routePlanId, status: 'incomplete' })]);
+    expect(prisma.routePlan.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: routePlanWhereMatcher({ status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] } })
+    }));
+  });
+
   test('lists route history only for the token driver and shop with date/status filters', async () => {
     const { prisma } = createPrismaHarness({ routePlans: [routePlanRecord()] });
     const repository = new PrismaDriverSelfServiceRepository(prisma as never);
@@ -61,6 +84,36 @@ describe('PrismaDriverSelfServiceRepository', () => {
       }
     ]);
     expect(result.pageInfo).toEqual({ endCursor: anyStringMatcher, hasNextPage: false });
+  });
+
+  test('uses the matching persisted completion time when no synthetic route-completed event exists', async () => {
+    const completedAt = new Date('2026-10-01T22:00:00.000Z');
+    const { prisma } = createPrismaHarness({ routePlans: [routePlanRecord({
+      assignmentGeneration: 7n,
+      deliveryWorkCompletedAt: completedAt,
+      deliveryWorkCompletedGeneration: 7n,
+      deliveryWorkCompletedVersionId: 'route-version-id',
+      driverEvents: [{ eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-10-01T20:00:00.000Z') }],
+      driverNavigationUntil: new Date('2026-10-02T00:00:00.000Z'),
+      status: 'IN_PROGRESS'
+    })] });
+    const repository = new PrismaDriverSelfServiceRepository(prisma as never);
+
+    const result = await repository.listDriverRoutes({
+      cursor: null,
+      driverId: 'driver-id',
+      from: null,
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
+      status: 'completed',
+      to: null
+    });
+
+    expect(result.routes).toEqual([expect.objectContaining({
+      completedAt: completedAt.toISOString(),
+      routePlanId,
+      status: 'completed'
+    })]);
   });
 
 
@@ -531,15 +584,25 @@ function routeHistoryIncludeMatcher(driverId: string): unknown {
 }
 
 function routePlanRecord(input: {
+  assignmentGeneration?: bigint;
   constraints?: unknown;
+  deliveryWorkCompletedAt?: Date | null;
+  deliveryWorkCompletedGeneration?: bigint | null;
+  deliveryWorkCompletedVersionId?: string | null;
   driverEvents?: { eventType: string; occurredAt: Date }[];
+  driverNavigationUntil?: Date | null;
   id?: string;
   routeStops?: { deliveryStop: { status: string } }[];
   status?: string;
 } = {}) {
   return {
+    assignmentGeneration: input.assignmentGeneration ?? 1n,
     constraints: input.constraints ?? { companyDisplayName: 'Tomatono Toronto', timezone: 'America/Toronto' },
+    deliveryWorkCompletedAt: input.deliveryWorkCompletedAt ?? null,
+    deliveryWorkCompletedGeneration: input.deliveryWorkCompletedGeneration ?? null,
+    deliveryWorkCompletedVersionId: input.deliveryWorkCompletedVersionId ?? null,
     driverEvents: input.driverEvents ?? [{ eventType: 'ROUTE_COMPLETED', occurredAt: new Date('2026-05-19T08:30:00.000Z') }],
+    driverNavigationUntil: input.driverNavigationUntil ?? null,
     id: input.id ?? routePlanId,
     name: 'Tuesday AM Route',
     planDate: new Date('2026-05-19T00:00:00.000Z'),

@@ -23,19 +23,6 @@ export type DriverPushProvider = {
   sendRouteNotification(message: DriverRoutePushMessage): Promise<DriverRoutePushResult>;
 };
 
-export class FakeDriverPushProvider implements DriverPushProvider {
-  readonly providerName = 'fake';
-  readonly sentMessages: DriverRoutePushMessage[] = [];
-
-  sendRouteNotification(message: DriverRoutePushMessage): Promise<DriverRoutePushResult> {
-    this.sentMessages.push(message);
-    return Promise.resolve({
-      providerMessageId: `fake:${message.routeGroupingId ?? 'standalone'}:${message.childVersion ?? message.publicationVersion ?? 'current'}:${message.routePlanId}`,
-      status: 'SENT'
-    });
-  }
-}
-
 export class DisabledDriverPushProvider implements DriverPushProvider {
   readonly providerName = 'disabled';
 

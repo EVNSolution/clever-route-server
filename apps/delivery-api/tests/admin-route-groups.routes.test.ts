@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { RouteExecutionConflictError } from '../src/modules/route-plans/route-execution-ownership.js';
 import { CustomOrderReferenceCopyNotAllowedError, RouteGroupingBranchLockConflictError, RouteGroupingCopyLockedError, RouteGroupingDeleteBlockedError } from '../src/modules/route-grouping/route-grouping.types.js';
 import type { AdminRouteGroupDependencies } from '../src/routes/admin-route-groups.routes.js';
 
@@ -41,6 +42,45 @@ const standaloneRoutePlanCopy = {
 };
 
 describe('Admin route group routes', () => {
+  test('Copy forwards an optional logical UUID and rejects malformed keys before invoking the service', async () => {
+    const { copyGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    try {
+      const payload = { expectedUpdatedAt: routeGroup.updatedAt, mode: 'REFERENCE', requestId };
+      const valid = await app.inject({ method: 'POST', url: '/admin/route-groups/source/copies', headers: { authorization: 'Bearer fixture' }, payload });
+      expect(valid.statusCode).toBe(201);
+      expect(copyGrouping).toHaveBeenCalledWith(expect.objectContaining({ requestId, mode: 'REFERENCE' }));
+      copyGrouping.mockClear();
+      for (const bad of ['', 'not-a-uuid', null, 123]) {
+        const invalid = await app.inject({ method: 'POST', url: '/admin/route-groups/source/copies', headers: { authorization: 'Bearer fixture' }, payload: { ...payload, requestId: bad } });
+        expect(invalid.statusCode).toBe(400);
+      }
+      expect(copyGrouping).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  test('forwards the optional atomic initial-route request and rejects malformed keys', async () => {
+    const { createGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    const payload = { name: 'Friday v2', orderIds: ['order-1'], planDate: '2026-09-11', initialRoute: { requestId } };
+    try {
+      const response = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload, url: '/admin/route-groups' });
+      expect(response.statusCode).toBe(201);
+      expect(createGrouping).toHaveBeenCalledWith(expect.objectContaining(payload));
+      createGrouping.mockClear();
+      for (const initialRoute of [true, {}, { requestId: 'not-a-uuid' }]) {
+        const invalid = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { ...payload, initialRoute }, url: '/admin/route-groups' });
+        expect(invalid.statusCode).toBe(400);
+      }
+      expect(createGrouping).not.toHaveBeenCalled();
+      const legacy = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { name: 'legacy', orderIds: ['order-1'] }, url: '/admin/route-groups' });
+      expect(legacy.statusCode).toBe(201);
+      expect(createGrouping.mock.calls[0]?.[0].initialRoute).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
   test('copies a standalone route through the route-plan resource', async () => {
     const { copyStandaloneRoutePlan, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -743,6 +783,25 @@ describe('Admin route group routes', () => {
         shopDomain: 'example.myshopify.com'
       });
       expect(generateChildRoutes).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns an execution conflict in the existing draft Save error envelope', async () => {
+    const { dependencies, saveDraft } = createDependencyHarness();
+    const message = '이미 배차되었거나 배송 중인 주문: #fixture (경로: Fixture route).';
+    saveDraft.mockRejectedValueOnce(new RouteExecutionConflictError('fixture-route', 'fixture-stop', message));
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'PATCH',
+        payload: { mode: 'MANUAL_ORDER', routes: [{ orderIds: ['order-1'], routePlanId: 'route-plan-1' }] },
+        url: '/admin/route-groups/route-group-id/draft'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ data: null, error: { code: 'ROUTE_EXECUTION_CONFLICT', message } });
+      expect(saveDraft).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }

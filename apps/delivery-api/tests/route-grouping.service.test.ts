@@ -1,15 +1,17 @@
 import { describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
-import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 import { computeRouteShapeSignatureFromParts } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import {
   assertDraftSchedulePlanDates,
-  currentRouteBindingAuthorityState,
+  assertLockedRoutePlanSuccessorPolicy,
+  deriveGroupingDisplayStatus,
   PrismaRouteGroupingService,
   newChildRouteName,
   rebindCurrentOrdersToRouteVersion,
   replaceCurrentRouteGroupingChildVersion,
+  resetReorderedActiveRouteEta,
   resolveNewChildRouteIdx,
   resolveNextGlobalRouteIdx,
   syncRoutePlanStopsPreservingRows
@@ -26,6 +28,44 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 describe('route grouping contracts', () => {
+  test('keeps a group operational while Ready children remain beside terminal children', () => {
+    const group = (statuses: string[]) => ({
+      childVersions: statuses.map((status) => ({
+        routePlan: { driverEvents: [], status },
+        status: 'CURRENT',
+        supersededAt: null
+      })),
+      status: 'READY'
+    });
+
+    expect(deriveGroupingDisplayStatus(group(['INCOMPLETE']))).toBe('INCOMPLETE');
+    expect(deriveGroupingDisplayStatus(group(['INCOMPLETE', 'COMPLETED']))).toBe('INCOMPLETE');
+    expect(deriveGroupingDisplayStatus(group(['INCOMPLETE', 'READY']))).toBe('IN_PROGRESS');
+    expect(deriveGroupingDisplayStatus(group(['COMPLETED', 'READY']))).toBe('IN_PROGRESS');
+  });
+
+  test('projects a current child complete from a matching delivery-work marker during navigation grace', () => {
+    const completedAt = new Date('2026-10-01T22:00:00.000Z');
+    const group = {
+      childVersions: [{
+        routePlan: {
+          assignmentGeneration: 4n,
+          deliveryWorkCompletedAt: completedAt,
+          deliveryWorkCompletedGeneration: 4n,
+          deliveryWorkCompletedVersionId: 'route-version-id',
+          driverEvents: [{ eventType: 'ROUTE_STARTED' }],
+          driverNavigationUntil: new Date('2026-10-02T00:00:00.000Z'),
+          status: 'IN_PROGRESS'
+        },
+        status: 'CURRENT',
+        supersededAt: null
+      }],
+      status: 'READY'
+    };
+
+    expect(deriveGroupingDisplayStatus(group)).toBe('COMPLETED');
+  });
+
   test('requires a scheduled departure to fall on the route plan date in its local timezone', () => {
     const route = {
       branchId: null,
@@ -292,10 +332,10 @@ describe('route grouping contracts', () => {
     });
     expect(tx.order.create).not.toHaveBeenCalled();
     expect(tx.routeGroupingVersion.create).toHaveBeenCalledOnce();
-    expect(tx.routePlan.create).not.toHaveBeenCalled();
+    expect(tx.routePlan.create).toHaveBeenCalledOnce();
   });
 
-  test('REFERENCE copy rejects CUSTOM membership and started route locks before creating a group', async () => {
+  test('REFERENCE copy rejects CUSTOM membership but permits planning from started routes before creating a group', async () => {
     const customSource = copySourceFixture('CUSTOM');
     const customTx = copyTransactionHarness(customSource);
     const customService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof customTx) => unknown) => operation(customTx)) } as never, new FakeDriverPushProvider());
@@ -307,9 +347,28 @@ describe('route grouping contracts', () => {
     const lockedTx = copyTransactionHarness(lockedSource);
     lockedTx.routePlanStop.findMany.mockResolvedValue([{ deliveryStopId: 'stop-source', routePlan: { driverEvents: [], status: 'IN_PROGRESS' } }]);
     const lockedService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof lockedTx) => unknown) => operation(lockedTx)) } as never, new FakeDriverPushProvider());
+    vi.spyOn(lockedService, 'getGrouping').mockResolvedValue({ id: 'group-copy' } as never);
     await expect(lockedService.copyGrouping({ actor: 'admin', expectedUpdatedAt: lockedSource.updatedAt.toISOString(), groupingId: lockedSource.id, mode: 'REFERENCE', shopDomain: 'tenant.example' }))
-      .rejects.toMatchObject({ code: 'ROUTE_GROUPING_COPY_LOCKED', orderIds: ['order-source'] });
-    expect(lockedTx.routeGrouping.create).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ id: 'group-copy' });
+    expect(lockedTx.routeGrouping.create).toHaveBeenCalledOnce();
+  });
+
+  test.each(['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED', 'EN_ROUTE'] as const)('Virtual and standalone Copy preserve terminal outcomes but reset active execution (%s)', async (status) => {
+    const source = copySourceFixture('SHOPIFY');
+    source.orders[0]!.deliveryStop.status = status;
+    const tx = copyTransactionHarness(source);
+    tx.order.create.mockResolvedValue({ deliveryStops: [{ id: 'stop-virtual' }], id: 'order-virtual' });
+    const service = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof tx) => unknown) => operation(tx)) } as never, new FakeDriverPushProvider());
+    vi.spyOn(service, 'getGrouping').mockResolvedValue({ id: 'group-copy' } as never);
+    await service.copyGrouping({ actor: 'admin', expectedUpdatedAt: source.updatedAt.toISOString(), groupingId: source.id, mode: 'VIRTUAL', shopDomain: 'tenant.example' });
+    const expected = status === 'EN_ROUTE' ? 'PENDING' : status;
+    expect(tx.order.create.mock.calls[0]?.[0]).toMatchObject({ data: { deliveryStops: { create: { status: expected } } } });
+    expect(source.orders[0]!.deliveryStop.status).toBe(status);
+
+    const standaloneTx = standaloneCopyTransactionHarness({}, status);
+    const standaloneService = new PrismaRouteGroupingService({ $transaction: vi.fn((operation: (client: typeof standaloneTx) => unknown) => operation(standaloneTx)) } as never, new FakeDriverPushProvider());
+    await standaloneService.copyStandaloneRoutePlan({ actor: 'admin', expectedRoutePlanUpdatedAt: '2026-09-09T12:00:00.000Z', routePlanId: 'route-source', shopDomain: 'tenant.example' });
+    expect(standaloneTx.order.create.mock.calls[0]?.[0]).toMatchObject({ data: { deliveryStops: { create: { status: expected } } } });
   });
 
   test('VIRTUAL copy creates independent CUSTOM ids with normalized navigation fields only', async () => {
@@ -828,6 +887,73 @@ describe('route grouping contracts', () => {
     expect(tx.routePlanStop.create).not.toHaveBeenCalled();
   });
 
+  test('allows only exact-membership reorders or tail appends for an in-progress grouped route', () => {
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2', 'order-3'],
+      nextOrderIds: ['order-3', 'order-1', 'order-2'],
+      routeDetailsChanged: false,
+      status: 'IN_PROGRESS'
+    })).not.toThrow();
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2'],
+      nextOrderIds: ['order-1', 'order-2', 'order-3'],
+      routeDetailsChanged: false,
+      status: 'IN_PROGRESS'
+    })).not.toThrow();
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2'],
+      nextOrderIds: ['order-2'],
+      routeDetailsChanged: false,
+      status: 'IN_PROGRESS'
+    })).toThrow('in-progress route drafts may only reorder existing orders or append orders');
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2'],
+      nextOrderIds: ['order-2', 'order-1'],
+      routeDetailsChanged: true,
+      status: 'IN_PROGRESS'
+    })).toThrow(RouteGroupingValidationError);
+    expect(() => assertLockedRoutePlanSuccessorPolicy({
+      currentOrderIds: ['order-1', 'order-2'],
+      nextOrderIds: ['order-2', 'order-1'],
+      routeDetailsChanged: false,
+      status: 'COMPLETED'
+    })).toThrow('route membership cannot change after route completion');
+  });
+
+  test('invalidates ETA only for unfinished stops against the reordered successor version', async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+
+    await resetReorderedActiveRouteEta({ routePlanStop: { updateMany } } as never, 'shop-1', 'route-1', 'child-next');
+
+    expect(updateMany).toHaveBeenNthCalledWith(1, {
+      data: { etaInputRouteVersionId: 'child-next' },
+      where: {
+        routePlanId: 'route-1',
+        shopId: 'shop-1',
+        deliveryStop: { status: { in: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }
+      }
+    });
+    expect(updateMany).toHaveBeenNthCalledWith(2, {
+      data: {
+        distanceFromPreviousMeters: null,
+        durationFromPreviousSeconds: null,
+        estimatedArrivalAt: null,
+        etaCalculatedAt: null,
+        etaFailureCode: null,
+        etaFailureMessage: null,
+        etaInputRouteVersionId: 'child-next',
+        etaSource: null,
+        etaStatus: 'PENDING'
+      },
+      where: {
+        routePlanId: 'route-1',
+        shopId: 'shop-1',
+        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } }
+      }
+    });
+    expect(updateMany).toHaveBeenCalledTimes(2);
+  });
+
   test('creates route plans and groups immediately in Ready state', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
     const routePlanModel = /model RoutePlan \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
@@ -937,7 +1063,7 @@ describe('route grouping contracts', () => {
     const validatorBody = source.slice(source.indexOf('function validateCreateFacts'), source.indexOf('async function recomputeAssignments'));
 
     expect(source).toContain('const blockers = validateCreateFacts({ dateRange, facts, orderIds });');
-    expect(source).toContain('const blockers = validateCreateFacts({ dateRange: loadedGroupDateRange(group), facts, orderIds: newOrderIds });');
+    expect(source).toContain('const blockers = validateManualAdditionFacts({ facts, orderIds: newOrderIds });');
     expect(validatorBody).not.toContain('pickup orders cannot be grouped into driver delivery routes');
     expect(validatorBody).not.toContain('isPickupService');
   });
@@ -1009,39 +1135,6 @@ describe('route grouping contracts', () => {
     })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
   });
 
-  test('classifies exact, legacy-unbound, and mismatched route binding authority', () => {
-    const assignments = (bindings: Array<string | null>) => bindings.map((currentRouteVersionId, index) => ({
-      order: { currentRouteVersionId },
-      orderId: `order-${index + 1}`
-    }));
-
-    expect(currentRouteBindingAuthorityState(
-      'child-current',
-      ['order-1', 'order-2'],
-      assignments([null, null])
-    )).toBe('LEGACY_UNBOUND');
-    expect(currentRouteBindingAuthorityState(
-      'child-current',
-      ['order-1', 'order-2'],
-      assignments(['child-current', 'child-current'])
-    )).toBe('EXACT');
-    expect(currentRouteBindingAuthorityState(
-      'child-current',
-      ['order-1', 'order-2'],
-      assignments(['child-current', null])
-    )).toBe('MISMATCH');
-    expect(currentRouteBindingAuthorityState(
-      'child-current',
-      ['order-1', 'order-2'],
-      assignments(['child-foreign', null])
-    )).toBe('MISMATCH');
-    expect(currentRouteBindingAuthorityState(
-      'child-current',
-      ['order-1', 'order-2'],
-      [...assignments([null, null]), { order: { currentRouteVersionId: 'child-current' }, orderId: 'order-extra' }]
-    )).toBe('MISMATCH');
-  });
-
   test('rebinds current order ownership across every child-version replacement path', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const calls = source.match(/await replaceCurrentRouteGroupingChildVersion\(tx,/gu) ?? [];
@@ -1056,6 +1149,13 @@ describe('route grouping contracts', () => {
     const nextSnapshot = { stops: [{ orderId: 'order-old' }, { orderId: 'order-new' }] };
     const prisma = {
       order: { updateMany: vi.fn(() => { calls.push('rebind'); return Promise.resolve({ count: 2 }); }) },
+      routePlan: {
+        updateMany: vi.fn((...args: [unknown]) => {
+          void args;
+          calls.push('clear-completion');
+          return Promise.resolve({ count: 1 });
+        })
+      },
       routeGroupingChildVersion: {
         create: vi.fn((...args: [unknown]) => { void args; calls.push('create'); return Promise.resolve({ id: 'child-next' }); }),
         updateMany: vi.fn((...args: [unknown]) => { void args; calls.push('archive'); return Promise.resolve({ count: 1 }); })
@@ -1068,7 +1168,7 @@ describe('route grouping contracts', () => {
       routePlanId: 'route-id', shopId: 'shop-id', snapshot: nextSnapshot, version: 7
     })).resolves.toBe('child-next');
 
-    expect(calls).toEqual(['archive', 'create', 'rebind']);
+    expect(calls).toEqual(['archive', 'create', 'clear-completion', 'rebind']);
     expect(oldSnapshot).toEqual({ stops: [{ orderId: 'order-old' }] });
     const archiveCall: unknown = prisma.routeGroupingChildVersion.updateMany.mock.calls[0]?.[0];
     const createCall: unknown = prisma.routeGroupingChildVersion.create.mock.calls[0]?.[0];
@@ -1077,6 +1177,19 @@ describe('route grouping contracts', () => {
       where: { id: 'child-old', status: 'CURRENT', supersededAt: null }
     });
     expect(createCall).toMatchObject({ data: { snapshot: nextSnapshot, status: 'CURRENT', supersededAt: null } });
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: {
+        deliveryWorkCompletedAt: null,
+        deliveryWorkCompletedGeneration: null,
+        deliveryWorkCompletedVersionId: null,
+        driverNavigationUntil: null
+      },
+      where: {
+        deliveryWorkCompletedVersionId: 'child-old',
+        id: 'route-id',
+        shopId: 'shop-id'
+      }
+    });
   });
 
   test('allows draft saves to persist a validated vehicle on child route plans', () => {
@@ -1244,16 +1357,18 @@ describe('route grouping contracts', () => {
     expect(nextRouteIdxBody).not.toContain('routeGroupingChildVersion.aggregate');
   });
 
-  test('keeps a new route group childless until the first route is explicitly added', () => {
+  test('keeps legacy creation separate from the opt-in atomic initial route', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const start = source.indexOf('async createGrouping(');
-    const end = source.indexOf('async getGrouping(', start);
+    const end = source.indexOf('async copyGrouping(', start);
     const createGroupingBody = source.slice(start, end);
 
     expect(createGroupingBody).not.toContain('const routeIdx = await nextGlobalRouteIdx');
     expect(createGroupingBody).not.toContain('createDraftChildRoutePlan');
     expect(createGroupingBody).toContain('routeGroupingVersion.create');
     expect(createGroupingBody).toContain('createRouteGroupingInventory');
+    expect(createGroupingBody).toContain('if (input.initialRoute !== undefined)');
+    expect(createGroupingBody).toContain('this.saveDraftInTransaction(tx, {');
   });
 
   test('allows an order to participate in more than one route group', () => {
@@ -1328,6 +1443,7 @@ describe('route grouping contracts', () => {
 
     expect(body).toContain('input.targetRoutePlanId');
     expect(body).toContain('await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds)');
+    expect(body).not.toContain('requireCompleteOwnershipRebind');
     expect(body).toContain('await recomputeAssignments(tx, group.id)');
     expect(body.indexOf('await appendGroupingOrdersToChildRoute'))
       .toBeLessThan(body.indexOf('await recomputeAssignments'));
@@ -1341,6 +1457,9 @@ describe('route grouping contracts', () => {
     );
     expect(appendBody).toContain('await replaceCurrentRouteGroupingChildVersion(tx, {');
     expect(appendBody).toContain('currentChildId: targetChild.id');
+    expect(appendBody).toContain('planning: true');
+    expect(appendBody).toContain('await assertRouteDispatchOwnership(tx, {');
+    expect(appendBody).toContain('await claimRouteExecutionProjection(tx, {');
     expect(appendBody).not.toContain('data: {\n      snapshot: createChildSnapshot');
   });
 
@@ -1449,7 +1568,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
   });
 
-  test('publishes an ordinary route once, ignores Start-only lifecycle changes, then sends one changed refresh', async () => {
+  test('publishes an ordinary route once, ignores Start-only lifecycle changes, then sends a reordered refresh', async () => {
     const provider = new FakeDriverPushProvider();
     const routePlan = {
       assignmentGeneration: 3n,
@@ -1459,7 +1578,10 @@ describe('route grouping contracts', () => {
       driver: { accountId: 'account-1' },
       driverId: 'driver-1',
       name: 'Route 1',
-      routeStops: [],
+      routeStops: [
+        { deliveryStopId: 'stop-1', sequence: 1 },
+        { deliveryStopId: 'stop-2', sequence: 2 }
+      ],
       shop: { id: 'shop-1', shopDomain: 'tenant.example' },
       status: 'READY',
     };
@@ -1504,11 +1626,15 @@ describe('route grouping contracts', () => {
     await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
     expect(provider.sentMessages).toHaveLength(1);
 
-    routePlan.constraints = { scheduledStartAt: '2026-09-09T13:00:00.000Z' };
+    routePlan.routeStops = [
+      { deliveryStopId: 'stop-2', sequence: 1 },
+      { deliveryStopId: 'stop-1', sequence: 2 }
+    ];
     await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
     await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
     expect(provider.sentMessages).toHaveLength(2);
     expect(provider.sentMessages[1]).toMatchObject({ action: 'changed', routePlanId: 'route-1' });
+    expect(provider.sentMessages[1]?.publicationVersion).not.toBe(provider.sentMessages[0]?.publicationVersion);
     expect(prisma.driverRouteNotificationAttempt.upsert).toHaveBeenCalledTimes(2);
     expect('driverEvent' in prisma).toBe(false);
   });
@@ -2205,18 +2331,22 @@ function copyTransactionHarness(source: ReturnType<typeof copySourceFixture>) {
     },
     order: {
       create: vi.fn().mockResolvedValue({ deliveryStops: [{ id: 'stop-virtual' }], id: 'order-virtual' }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       findMany: vi.fn((input: { where: { id: { in: string[] } } }) => Promise.resolve(
         input.where.id.in.map((id) => ({ id, orderItems: [] }))
       ))
     },
     routeGrouping: {
       create: vi.fn().mockResolvedValue({ id: 'group-copy' }),
-      findFirst: vi.fn().mockResolvedValue(source)
+      findFirst: vi.fn().mockResolvedValue(source),
+      findUnique: vi.fn().mockResolvedValue({ ...source, id: 'group-copy' })
     },
-    routeGroupingOrder: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    routeGroupingOrder: { createMany: vi.fn().mockResolvedValue({ count: 1 }), findMany: vi.fn().mockResolvedValue(source.orders), update: vi.fn().mockResolvedValue({}) },
+    routeGroupingPolygon: { findMany: vi.fn().mockResolvedValue([]) },
+    routeGroupingChildVersion: { create: vi.fn().mockResolvedValue({ id: 'child-copy' }) },
     routeGroupingVersion: { create: vi.fn().mockResolvedValue({ id: 'version-copy' }) },
-    routePlan: { create: vi.fn() },
-    routePlanStop: { findMany: vi.fn().mockResolvedValue([]) },
+    routePlan: { create: vi.fn().mockResolvedValue({ id: 'route-copy', name: 'Source Group Copy' }) },
+    routePlanStop: { createMany: vi.fn().mockResolvedValue({ count: 1 }), findMany: vi.fn().mockResolvedValue([]) },
     shop: { findUnique: vi.fn().mockResolvedValue({ id: 'shop-1' }) }
   };
 }
@@ -2225,7 +2355,7 @@ function standaloneCopyTransactionHarness(lockedOverrides: Partial<{
   currentRouteVersionId: string | null;
   status: string;
   updatedAt: Date;
-}> = {}) {
+}> = {}, sourceStopStatus = 'PENDING') {
   const source = {
     constraints: {
       departureTime: '08:30',
@@ -2306,6 +2436,7 @@ function standaloneCopyTransactionHarness(lockedOverrides: Partial<{
         province: 'ON',
         recipientName: 'Receiving',
         serviceMinutes: 12,
+        status: sourceStopStatus,
         timeWindowEnd: new Date('2026-09-09T16:00:00.000Z'),
         timeWindowStart: new Date('2026-09-09T14:00:00.000Z')
       },

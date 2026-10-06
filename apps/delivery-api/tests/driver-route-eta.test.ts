@@ -248,6 +248,24 @@ describe('driver route ETA', () => {
     expect(snapshot.remainingRouteEta?.distanceMeters).toBeNull();
   });
 
+  test('keeps a completed route READY without inventing ETA values when no stops remain', () => {
+    expect(buildDriverRouteEtaSnapshot({
+      pickupCompletedAt: new Date('2026-07-20T11:00:00.000Z'),
+      stops: [
+        { ...stops[0]!, durationFromPreviousSeconds: null, estimatedArrivalAt: null, status: 'DELIVERED' },
+        { ...stops[1]!, durationFromPreviousSeconds: null, estimatedArrivalAt: null, status: 'FAILED' }
+      ]
+    })).toEqual({
+      calculatedAt: null,
+      failureCode: null,
+      failureMessage: null,
+      nextStopEta: null,
+      pickupCompletedAt: '2026-07-20T11:00:00.000Z',
+      remainingRouteEta: null,
+      status: 'READY'
+    });
+  });
+
   test('derives exact pre-pickup and failed snapshot null semantics', () => {
     expect(buildDriverRouteEtaSnapshot({ pickupCompletedAt: null, stops })).toEqual({
       calculatedAt: null,

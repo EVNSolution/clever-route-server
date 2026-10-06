@@ -6,7 +6,7 @@ import {
 } from '../src/modules/dsv/dsv-driver-account-link.service.js';
 
 describe('PrismaDsvDriverAccountLinkService', () => {
-  test.each([[true, false], [false, true]])('rejects review driver=%s account=%s even for a developer approval', async (driverReview, accountReview) => {
+  test.each([[true, false], [false, true], [true, true]])('rejects review driver=%s account=%s even for a developer approval', async (driverReview, accountReview) => {
     const updateMany = vi.fn();
     const transaction = {
       driver: { findFirst: vi.fn().mockResolvedValue({ id: 'driver', displayName: 'Review', phone: '01011112222', isStoreReviewData: driverReview }), updateMany },
@@ -19,25 +19,33 @@ describe('PrismaDsvDriverAccountLinkService', () => {
     await expect(service.approve({ accountId: 'account', actorId: 'developer', driverId: 'driver', requestId: 'request', shopDomain: 'dsv.example' }))
       .rejects.toBeInstanceOf(DsvDriverAccountLinkCandidateError);
     expect(updateMany).not.toHaveBeenCalled();
+    expect(transaction.driver.findFirst.mock.calls[0]?.[0]).toMatchObject({ where: { isStoreReviewData: false } });
+    expect(transaction.driverAccount.findFirst.mock.calls[0]?.[0]).toMatchObject({ where: { isStoreReviewAccount: false } });
   });
 
   test('lists only partial identity matches and masks both phone numbers', async () => {
     const prisma = {
       driver: {
-        findMany: vi.fn(() => Promise.resolve([
+        findMany: vi.fn((query: unknown) => {
+          expect(query).toMatchObject({ where: { isStoreReviewData: false } });
+          return Promise.resolve([
           { createdAt: new Date('2026-08-26T01:00:00.000Z'), displayName: '정재연', id: 'driver-name-match', phone: '010-1111-2222' },
           { createdAt: new Date('2026-08-26T01:00:00.000Z'), displayName: '연락처 미등록', id: 'driver-no-phone', phone: null },
           { createdAt: new Date('2026-08-26T01:00:00.000Z'), displayName: '다른 배송원', id: 'driver-phone-match', phone: '010-9999-8888' },
           { createdAt: new Date('2026-08-26T01:00:00.000Z'), displayName: '무관 배송원', id: 'driver-unrelated', phone: '010-0000-0000' },
-        ])),
+          ]);
+        }),
       },
       driverAccount: {
-        findMany: vi.fn(() => Promise.resolve([
+        findMany: vi.fn((query: unknown) => {
+          expect(query).toMatchObject({ where: { isStoreReviewAccount: false } });
+          return Promise.resolve([
           { createdAt: new Date('2026-08-26T02:00:00.000Z'), id: 'account-name-match', name: '정재연', phone: '01033334444' },
           { createdAt: new Date('2026-08-26T02:00:00.000Z'), id: 'account-no-driver-phone', name: '연락처 미등록', phone: '01055556666' },
           { createdAt: new Date('2026-08-26T02:00:00.000Z'), id: 'account-phone-match', name: '계정 이름', phone: '01099998888' },
           { createdAt: new Date('2026-08-26T02:00:00.000Z'), id: 'account-unrelated', name: '무관 계정', phone: '01077776666' },
-        ])),
+          ]);
+        }),
       },
       shop: { findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' })) },
     };
@@ -121,7 +129,7 @@ describe('PrismaDsvDriverAccountLinkService', () => {
         inviteCodeExpiresAt: null,
         phone: '01033334444',
       },
-      where: { accountId: null, id: 'driver-id', shopId: 'shop-id', status: 'ACTIVE' },
+      where: { accountId: null, id: 'driver-id', isStoreReviewData: false, shopId: 'shop-id', status: 'ACTIVE' },
     });
     expect(transaction.dsvDriverProfile.update).toHaveBeenCalledWith({
       data: { lookupName: '정재연' },
