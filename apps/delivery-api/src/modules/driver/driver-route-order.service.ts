@@ -5,6 +5,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import type { DsvAssignmentTransactionClient, DsvAssignmentTransactionPort } from '../dsv/dsv-assignment-transaction-port.js';
 import {
   replaceCurrentRouteGroupingChildVersion,
+  syncPublishedRouteGroupingChildExecution,
   syncRoutePlanStopsPreservingRows
 } from '../route-grouping/route-grouping.service.js';
 import { hasDeliveryWorkCompleted } from '../route-plans/kfood-delivery-completion.js';
@@ -178,6 +179,12 @@ export class PrismaDriverRouteOrderService implements DriverRouteOrderServiceCon
         where: { id: receipt.id, payloadHash, shopId: input.shopId, status: 'STARTED' }
       });
       if (completed.count !== 1) throw new DriverRouteOrderError('VERSION_CONFLICT');
+      await syncPublishedRouteGroupingChildExecution(tx, {
+        childId: nextVersionId,
+        publishedAt: currentChild.publishedAt,
+        routePlanId: input.routePlanId,
+        shopId: input.shopId
+      });
       return result;
     }, transactionOptions);
   }

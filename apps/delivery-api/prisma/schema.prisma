@@ -3335,3 +3335,227 @@ model DriverRuntimeDiagnosticSnapshot {
   @@index([expiresAt])
   @@map("driver_runtime_diagnostic_snapshots")
 }
+
+// DSV operational execution identity. These models do not replace legacy route/event fences.
+model DsvExecutionContext {
+  id                  String    @id @default(uuid()) @db.Uuid
+  shopId              String    @db.Uuid
+  serviceDate         DateTime  @db.Date
+  routePlanId         String    @db.Uuid
+  routeVersion        Int       @default(1)
+  assignmentEpoch     BigInt    @default(1)
+  driverId            String?   @db.Uuid
+  recipientAccountId  String?   @db.Uuid
+  vehicleId           String?   @db.Uuid
+  status              String    @default("ACTIVE") @db.Text
+  contentFingerprint  String    @db.Text
+  contentSnapshot     Json
+  effectiveAt         DateTime  @db.Timestamptz(6)
+  startedAt           DateTime? @db.Timestamptz(6)
+  closedAt            DateTime? @db.Timestamptz(6)
+  monitorStartAt      DateTime? @db.Timestamptz(6)
+  monitorEndAt        DateTime? @db.Timestamptz(6)
+  notificationMode    String    @default("OFF") @db.Text
+  liveEligibleAt      DateTime? @db.Timestamptz(6)
+  policy              Json?
+  warehouseNotifiedAt DateTime? @db.Timestamptz(6)
+  departureObservedAt DateTime? @db.Timestamptz(6)
+  reminderDueAt       DateTime? @db.Timestamptz(6)
+  reminderOrdinal     Int       @default(0)
+  reminderIncidentId  String?   @db.Uuid
+  reminderStatus      String    @default("AWAITING_DEPARTURE") @db.Text
+  createdAt           DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@unique([id, shopId])
+  @@index([shopId, vehicleId, status])
+  @@index([shopId, routePlanId, status])
+  @@index([reminderStatus, reminderDueAt])
+  @@map("dsv_execution_contexts")
+}
+
+model DsvExecutionRouteMapping {
+  id                 String    @id @default(uuid()) @db.Uuid
+  shopId             String    @db.Uuid
+  executionContextId String    @db.Uuid
+  routePlanId        String    @db.Uuid
+  validFrom          DateTime  @db.Timestamptz(6)
+  validUntil         DateTime? @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([shopId, routePlanId, validUntil])
+  @@map("dsv_execution_route_mappings")
+}
+
+model DsvExecutionSelection {
+  id                 String   @id @default(uuid()) @db.Uuid
+  shopId             String   @db.Uuid
+  vehicleId          String   @db.Uuid
+  executionContextId String   @db.Uuid
+  validFrom          DateTime @db.Timestamptz(6)
+  validUntil         DateTime @db.Timestamptz(6)
+
+  @@index([shopId, vehicleId, validFrom, validUntil])
+  @@map("dsv_execution_selections")
+}
+
+model DsvExecutionCommand {
+  id          String   @id @default(uuid()) @db.Uuid
+  shopId      String   @db.Uuid
+  commandName String   @db.Text
+  commandId   String   @db.Text
+  payloadHash String   @db.Text
+  result      Json
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([shopId, commandName, commandId])
+  @@map("dsv_execution_commands")
+}
+
+model DsvOperationalNotification {
+  id                 String    @id @default(uuid()) @db.Uuid
+  shopId             String    @db.Uuid
+  executionContextId String    @db.Uuid
+  routeVersion       Int
+  assignmentEpoch    BigInt
+  recipientAccountId String?   @db.Uuid
+  audience           String    @default("DRIVER") @db.Text
+  kind               String    @db.Text
+  logicalKey         String    @unique @db.Text
+  targetStopId       String?   @db.Uuid
+  eventId            String?   @db.Uuid
+  ordinal            Int       @default(0)
+  businessStatus     String    @default("OPEN") @db.Text
+  dueAt              DateTime  @db.Timestamptz(6)
+  expiresAt          DateTime  @db.Timestamptz(6)
+  resolvedAt         DateTime? @db.Timestamptz(6)
+  resolutionReason   String?   @db.Text
+  payload            Json
+  createdAt          DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, shopId])
+  @@index([shopId, recipientAccountId, createdAt])
+  @@index([shopId, executionContextId, businessStatus])
+  @@index([shopId, targetStopId, kind, businessStatus], map: "dsv_operational_notifications_stop_status_idx")
+  @@map("dsv_operational_notifications")
+}
+
+model DsvOperationalNotificationAck {
+  id             String   @id @default(uuid()) @db.Uuid
+  shopId         String   @db.Uuid
+  notificationId String   @db.Uuid
+  accountId      String   @db.Uuid
+  ackKind        String   @db.Text
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([notificationId, accountId, ackKind])
+  @@map("dsv_operational_notification_acks")
+}
+
+model DsvNotificationCapability {
+  id             String   @id @default(uuid()) @db.Uuid
+  shopId         String   @db.Uuid
+  accountId      String   @db.Uuid
+  tokenId        String   @unique @db.Uuid
+  tokenHash      String   @db.Text
+  tokenUpdatedAt DateTime @db.Timestamptz(6)
+  installationId String   @db.Text
+  schemaVersion  Int
+  kinds          String[]
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("dsv_notification_capabilities")
+}
+
+model DsvOperationalNotificationAttempt {
+  id                String    @id @default(uuid()) @db.Uuid
+  shopId            String    @db.Uuid
+  notificationId    String    @db.Uuid
+  tokenId           String    @db.Uuid
+  capabilityId      String    @db.Uuid
+  status            String    @default("PENDING") @db.Text
+  leaseToken        String?   @db.Uuid
+  leaseExpiresAt    DateTime? @db.Timestamptz(6)
+  nextAttemptAt     DateTime  @default(now()) @db.Timestamptz(6)
+  attemptCount      Int       @default(0)
+  providerMessageId String?   @db.Text
+  errorCode         String?   @db.Text
+  completedAt       DateTime? @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([notificationId, tokenId, capabilityId])
+  @@index([status, nextAttemptAt, leaseExpiresAt])
+  @@map("dsv_operational_notification_attempts")
+}
+
+model DsvGeofenceJob {
+  id             String    @id @default(uuid()) @db.Uuid
+  shopId         String    @db.Uuid
+  sampleId       String    @unique @db.Uuid
+  vehicleId      String    @db.Uuid
+  status         String    @default("PENDING") @db.Text
+  leaseToken     String?   @db.Uuid
+  leaseExpiresAt DateTime? @db.Timestamptz(6)
+  nextAttemptAt  DateTime  @default(now()) @db.Timestamptz(6)
+  attemptCount   Int       @default(0)
+  resultReason   String?   @db.Text
+  processedAt    DateTime? @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([status, nextAttemptAt, leaseExpiresAt])
+  @@map("dsv_geofence_jobs")
+}
+
+model DsvGeofenceState {
+  id                 String   @id @default(uuid()) @db.Uuid
+  shopId             String   @db.Uuid
+  executionContextId String   @db.Uuid
+  assignmentEpoch    BigInt
+  targetKey          String   @db.Text
+  policyVersion      String   @db.Text
+  state              Json
+  updatedAt          DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([executionContextId, assignmentEpoch, targetKey])
+  @@map("dsv_geofence_states")
+}
+
+model DsvDeliveryException {
+  id                 String    @id @default(uuid()) @db.Uuid
+  shopId             String    @db.Uuid
+  executionContextId String    @db.Uuid
+  routeVersion       Int
+  assignmentEpoch    BigInt
+  driverId           String    @db.Uuid
+  recipientAccountId String    @db.Uuid
+  targetStopId       String    @db.Uuid
+  reasonCode         String    @db.Text
+  explanation        String?   @db.Text
+  status             String    @default("OPEN") @db.Text
+  createdAt          DateTime  @default(now()) @db.Timestamptz(6)
+  acknowledgedAt     DateTime? @db.Timestamptz(6)
+  resolvedAt         DateTime? @db.Timestamptz(6)
+
+  @@index([shopId, status, createdAt])
+  @@map("dsv_delivery_exceptions")
+}
+
+model DsvGeofenceEvent {
+  id                  String   @id @default(uuid()) @db.Uuid
+  shopId              String   @db.Uuid
+  executionContextId  String   @db.Uuid
+  routeVersion        Int
+  assignmentEpoch     BigInt
+  targetKey           String   @db.Text
+  transition          String   @db.Text
+  visitOrdinal        Int
+  sourceSampleId      String   @db.Uuid
+  firstObservedAt     DateTime @db.Timestamptz(6)
+  confirmedObservedAt DateTime @db.Timestamptz(6)
+  confirmedAt         DateTime @db.Timestamptz(6)
+  policyVersion       String   @db.Text
+  logicalKey          String   @unique @db.Text
+
+  @@index([shopId, executionContextId, confirmedObservedAt], map: "dsv_geofence_events_context_observed_idx")
+  @@map("dsv_geofence_events")
+}

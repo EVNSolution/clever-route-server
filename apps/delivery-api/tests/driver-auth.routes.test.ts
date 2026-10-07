@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { DsvDriverAttributionConflictError } from '../src/modules/dsv/dsv-driver-attribution-lock.js';
 import {
   signDriverAccountToken,
   signDriverRouteToken,
@@ -576,6 +577,27 @@ describe('Driver auth routes', () => {
 
       expect(response.statusCode).toBe(400);
       expect(verifyInvite).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns invite attribution topology exhaustion as 409', async () => {
+    const verifyInvite = vi.fn(() => Promise.reject(new DsvDriverAttributionConflictError()));
+    const app = await buildApp({
+      driverAuth: { driverAuthRepository: { verifyInvite } as never, jwtSecret: 'test-secret' }
+    });
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { phone: '+14165550123', inviteCode: 'ABC123', pin: '012345' },
+        url: '/driver/auth/verify-invite'
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ATTRIBUTION_CHANGED', message: 'Driver attribution changed. Retry the request.' }
+      });
     } finally {
       await app.close();
     }

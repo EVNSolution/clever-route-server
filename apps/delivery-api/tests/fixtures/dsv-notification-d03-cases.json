@@ -1,0 +1,3946 @@
+{
+  "fixtureFormatVersion": 1,
+  "contractVersion": "D03-PROPOSAL-1",
+  "date": "2026-10-06",
+  "timezone": "Asia/Seoul",
+  "purpose": "P0 synthetic transition specification; not production command payloads and not an implemented state machine",
+  "idNotation": "Synthetic symbolic IDs; routeVersion is proposed context-scoped integer; assignmentEpoch uses decimal-string notation. These are not approved HTTP/schema types.",
+  "sourceBaselines": {
+    "serverMain": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+    "webMain": "4f261b67cfb22669cb26a093eb1f3f59ab9c7606",
+    "driverDev": "4009a9f522372a9cf23272ba723bfbbb76d96253",
+    "driverPr61Candidate": "a7959e5a84393d7dc57e2caa654ea2f8edad202c"
+  },
+  "currentMissingFields": [
+    "executionContextId",
+    "assignmentEpoch",
+    "logical content routeVersion"
+  ],
+  "proposalStatus": "DOCUMENTED_FOR_REVIEW_NOT_IMPLEMENTED_OR_PRODUCT_APPROVED",
+  "policy": {
+    "firstReminderDelaySeconds": 300,
+    "minimumReminderIntervalSeconds": 300,
+    "timingStatus": "USER_CONFIRMED",
+    "maxReminderCount": null,
+    "maxReminderCountStatus": "UNDECIDED_D01",
+    "exampleSixIsApproved": false,
+    "clockBasis": "last valid observation completing warehouse exit evidence",
+    "lateRecovery": "at most one current intent, next >= actual prior intent creation + 300 seconds"
+  },
+  "governance": {
+    "targetIssue": null,
+    "changeControlIssue": null,
+    "newCreationRequired": true,
+    "creationPerformed": false,
+    "lookupDate": "2026-10-06 Asia/Seoul",
+    "lookupCoverage": {
+      "serverIssuesAllStates": 73,
+      "driverIssuesAllStates": 5,
+      "webIssuesAllStates": 2,
+      "changeControlIssuesAllStates": 288
+    },
+    "excludedChangeControls": {
+      "240": "DSV repository bootstrap only",
+      "242": "CLEVER Routes/Shopify notification scope",
+      "258": "CLEVER Routes scope",
+      "289": "CLEVER Routes scope",
+      "292": "CLEVER Routes redispatch scope",
+      "297": "GPS road matching durable jobs"
+    },
+    "driverSecurityBlocker": {
+      "issue": "https://github.com/EVNSolution/clever-driver-app/issues/62",
+      "state": "OPEN",
+      "blocks": [
+        "PR61 integration",
+        "Android candidate release",
+        "P4 integration using PR61",
+        "P6 app release evidence"
+      ],
+      "doesNotBlock": [
+        "server P0 analysis",
+        "server contract preparation"
+      ]
+    }
+  },
+  "evidence": {
+    "E01": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 358,
+      "lineEnd": 506,
+      "basis": "apply: canonical writes, grouping, publication in one transaction",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L358"
+    },
+    "E02": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 582,
+      "lineEnd": 620,
+      "basis": "Successful command receipt replay; payload mismatch and in-progress guards",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L582"
+    },
+    "E03": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 1193,
+      "lineEnd": 1229,
+      "basis": "NO_OP canonical links and existing owned-order grouping preservation",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L1193"
+    },
+    "E04": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-preview-diff.ts",
+      "lineStart": 533,
+      "lineEnd": 619,
+      "basis": "Canonical content diff and active/terminal/non-PENDING conflict guards; driver/vehicle not diff fields",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-preview-diff.ts#L533"
+    },
+    "E05": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 1089,
+      "lineEnd": 1168,
+      "basis": "PENDING canonical order/stop content updated in place",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L1089"
+    },
+    "E06": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 1760,
+      "lineEnd": 1874,
+      "basis": "Mutable READY import route exception does not inspect publishedAt",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L1760"
+    },
+    "E07": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 1969,
+      "lineEnd": 2028,
+      "basis": "READY geometry/ETA invalidation; child content identity not bumped",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L1969"
+    },
+    "E08": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 1924,
+      "lineEnd": 1966,
+      "basis": "Only CURRENT unpublished assigned READY children without completion event; silent atomic publication",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L1924"
+    },
+    "E09": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 1888,
+      "lineEnd": 1909,
+      "basis": "Within one import, group assigned routes by driverId:vehicleId",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L1888"
+    },
+    "E10": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts",
+      "lineStart": 2031,
+      "lineEnd": 2067,
+      "basis": "Grouping scope is dsv-import:<importId>, not an execution identity",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-dispatch-import.service.ts#L2031"
+    },
+    "E11": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/prisma/schema.prisma",
+      "lineStart": 1427,
+      "lineEnd": 1451,
+      "basis": "RoutePlan assignmentGeneration defaults to 1; vehicleId separate",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/prisma/schema.prisma#L1427"
+    },
+    "E12": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/prisma/schema.prisma",
+      "lineStart": 2083,
+      "lineEnd": 2134,
+      "basis": "Grouping version integer, child UUID and child.version are different identities",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/prisma/schema.prisma#L2083"
+    },
+    "E13": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts",
+      "lineStart": 282,
+      "lineEnd": 344,
+      "basis": "Archive child, create successor UUID, carry supplied version and predecessor; rebind orders",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts#L282"
+    },
+    "E14": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts",
+      "lineStart": 1790,
+      "lineEnd": 1876,
+      "basis": "Draft content/detail changes; generation increment only for driver changes; vehicle-only replacement keeps generation",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts#L1790"
+    },
+    "E15": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts",
+      "lineStart": 2891,
+      "lineEnd": 2910,
+      "basis": "READY mutable; IN_PROGRESS reorder/append-only; completed membership mutation rejected",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts#L2891"
+    },
+    "E16": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts",
+      "lineStart": 4509,
+      "lineEnd": 4516,
+      "basis": "Manual add rejects completed route",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts#L4509"
+    },
+    "E17": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/driver/driver-route-order.service.ts",
+      "lineStart": 54,
+      "lineEnd": 180,
+      "basis": "Reorder receipt, exact stop set, completion guard, UUID successor, unchanged numeric version",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/driver/driver-route-order.service.ts#L54"
+    },
+    "E18": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/driver/driver-event.repository.ts",
+      "lineStart": 316,
+      "lineEnd": 460,
+      "basis": "Event transaction and duplicate replay, state transition and completion evidence",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/driver/driver-event.repository.ts#L316"
+    },
+    "E19": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/driver/driver-event.repository.ts",
+      "lineStart": 707,
+      "lineEnd": 738,
+      "basis": "Ordered-v2 assignment generation and expected child identity guard; selected predecessor reorder compatibility",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/driver/driver-event.repository.ts#L707"
+    },
+    "E20": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/driver/driver-event.repository.ts",
+      "lineStart": 1165,
+      "lineEnd": 1205,
+      "basis": "ROUTE_COMPLETED evaluates current snapshot stop statuses",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/driver/driver-event.repository.ts#L1165"
+    },
+    "E21": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/driver/driver-event.repository.ts",
+      "lineStart": 1439,
+      "lineEnd": 1502,
+      "basis": "ROUTE_STARTED and PICKUP_COMPLETED independent; ROUTE_COMPLETED sets IN_PROGRESS to COMPLETED",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/driver/driver-event.repository.ts#L1439"
+    },
+    "E22": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/driver/driver-route-completion-invariant.ts",
+      "lineStart": 1,
+      "lineEnd": 60,
+      "basis": "Default OBSERVE; GUARDED v2 and FULL reject incomplete stops; runtime mode not inspected",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/driver/driver-route-completion-invariant.ts#L1"
+    },
+    "E23": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-plans/route-plan.repository.ts",
+      "lineStart": 692,
+      "lineEnd": 744,
+      "basis": "Manual publish reserves execution; rejects terminal routes; no durable publish command receipt",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-plans/route-plan.repository.ts#L692"
+    },
+    "E24": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts",
+      "lineStart": 2446,
+      "lineEnd": 2484,
+      "basis": "Common publish overwrites publishedAt then separately records legacy notification",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts#L2446"
+    },
+    "E25": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts",
+      "lineStart": 5703,
+      "lineEnd": 5722,
+      "basis": "Standalone publicationVersion hash mixes content and generation; excludes vehicleId",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts#L5703"
+    },
+    "E26": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-assignment-command.service.ts",
+      "lineStart": 691,
+      "lineEnd": 864,
+      "basis": "Seller-order reassign is membership move; transactional receipt/notification patterns",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-assignment-command.service.ts#L691"
+    },
+    "E27": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-assignment-command.service.ts",
+      "lineStart": 907,
+      "lineEnd": 941,
+      "basis": "Assignment command success receipt replay",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-assignment-command.service.ts#L907"
+    },
+    "E28": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-assignment-command.service.ts",
+      "lineStart": 1171,
+      "lineEnd": 1188,
+      "basis": "Explicit targetRoutePlanId or first compatible READY target driver route",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-assignment-command.service.ts#L1171"
+    },
+    "E29": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-resource.service.ts",
+      "lineStart": 252,
+      "lineEnd": 300,
+      "basis": "Vehicle default driver association create/delete does not change route attribution",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-resource.service.ts#L252"
+    },
+    "E30": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/routes/dsv-control.routes.ts",
+      "lineStart": 2303,
+      "lineEnd": 2312,
+      "basis": "Apply accepts commandId and expectedSourceHash only; no trip intent/context/epoch",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/routes/dsv-control.routes.ts#L2303"
+    },
+    "E31": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/tests/dsv-dispatch-import-g003-integration.test.ts",
+      "lineStart": 459,
+      "lineEnd": 644,
+      "basis": "Existing DB tests: silent publication, successful receipt replay, new NO_OP first-publication, rollback",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/tests/dsv-dispatch-import-g003-integration.test.ts#L459"
+    },
+    "E32": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/tests/dsv-dispatch-import-g003-integration.test.ts",
+      "lineStart": 858,
+      "lineEnd": 992,
+      "basis": "Existing DB tests: READY update candidate invalidates projections in place",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/tests/dsv-dispatch-import-g003-integration.test.ts#L858"
+    },
+    "E33": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/tests/driver-route-order.service.test.ts",
+      "lineStart": 28,
+      "lineEnd": 80,
+      "basis": "Existing unit cases: immutable version successor, response replay and input mismatch",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/tests/driver-route-order.service.test.ts#L28"
+    },
+    "E34": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts",
+      "lineStart": 1424,
+      "lineEnd": 1682,
+      "basis": "Generic saveDraft preserves publication and sends best-effort released legacy push after commit",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts#L1424"
+    },
+    "E35": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts",
+      "lineStart": 4870,
+      "lineEnd": 4901,
+      "basis": "A newly created RoutePlan is READY; grouping child separately created",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts#L4870"
+    },
+    "E36": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/modules/dsv/dsv-assignment-command.service.ts",
+      "lineStart": 1351,
+      "lineEnd": 1358,
+      "basis": "Assignment source READY and target READY/IN_PROGRESS guard",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/modules/dsv/dsv-assignment-command.service.ts#L1351"
+    },
+    "E37": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/routes/driver-events.routes.ts",
+      "lineStart": 540,
+      "lineEnd": 580,
+      "basis": "Existing PATCH /driver/routes/:routePlanId/order with commandId/expectedVersion/orderedStopIds",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/routes/driver-events.routes.ts#L540"
+    },
+    "E38": {
+      "repository": "clever-route-server",
+      "sha": "9c517aa2f483bdfdccf730889df61da346d1d22d",
+      "path": "apps/delivery-api/src/routes/driver-events.routes.ts",
+      "lineStart": 1406,
+      "lineEnd": 1505,
+      "basis": "Existing POST /driver/events remains event-based, not atomic DSV start",
+      "url": "https://github.com/EVNSolution/clever-route-server/blob/9c517aa2f483bdfdccf730889df61da346d1d22d/apps/delivery-api/src/routes/driver-events.routes.ts#L1406"
+    },
+    "A01_DEV": {
+      "repository": "clever-driver-app",
+      "sha": "4009a9f522372a9cf23272ba723bfbbb76d96253",
+      "path": "src/domain/notifications/driverPushNotification.ts",
+      "lineStart": 1,
+      "lineEnd": 46,
+      "basis": "Parser discards routePlanId from normalized route_changed output",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/4009a9f522372a9cf23272ba723bfbbb76d96253/src/domain/notifications/driverPushNotification.ts#L1"
+    },
+    "A02_DEV": {
+      "repository": "clever-driver-app",
+      "sha": "4009a9f522372a9cf23272ba723bfbbb76d96253",
+      "path": "src/platform/expo/notifications/expoDriverNotificationService.ts",
+      "lineStart": 59,
+      "lineEnd": 100,
+      "basis": "Receive/click listeners and last response; single global handled-response key",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/4009a9f522372a9cf23272ba723bfbbb76d96253/src/platform/expo/notifications/expoDriverNotificationService.ts#L59"
+    },
+    "A03_DEV": {
+      "repository": "clever-driver-app",
+      "sha": "4009a9f522372a9cf23272ba723bfbbb76d96253",
+      "path": "src/api/dsvDriverEvents.ts",
+      "lineStart": 14,
+      "lineEnd": 92,
+      "basis": "Lifecycle Date.now client ID; start is sequential ROUTE_STARTED then PICKUP_COMPLETED",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/4009a9f522372a9cf23272ba723bfbbb76d96253/src/api/dsvDriverEvents.ts#L14"
+    },
+    "A04_DEV": {
+      "repository": "clever-driver-app",
+      "sha": "4009a9f522372a9cf23272ba723bfbbb76d96253",
+      "path": "src/ui/driver/DriverWorkspace.tsx",
+      "lineStart": 229,
+      "lineEnd": 238,
+      "basis": "Workspace read can reconcile with a ROUTE_COMPLETED POST",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/4009a9f522372a9cf23272ba723bfbbb76d96253/src/ui/driver/DriverWorkspace.tsx#L229"
+    },
+    "A01_PR61": {
+      "repository": "clever-driver-app",
+      "sha": "a7959e5a84393d7dc57e2caa654ea2f8edad202c",
+      "path": "src/domain/notifications/driverPushNotification.ts",
+      "lineStart": 1,
+      "lineEnd": 46,
+      "basis": "Parser discards routePlanId from normalized route_changed output",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/a7959e5a84393d7dc57e2caa654ea2f8edad202c/src/domain/notifications/driverPushNotification.ts#L1"
+    },
+    "A02_PR61": {
+      "repository": "clever-driver-app",
+      "sha": "a7959e5a84393d7dc57e2caa654ea2f8edad202c",
+      "path": "src/platform/expo/notifications/expoDriverNotificationService.ts",
+      "lineStart": 59,
+      "lineEnd": 100,
+      "basis": "Receive/click listeners and last response; single global handled-response key",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/a7959e5a84393d7dc57e2caa654ea2f8edad202c/src/platform/expo/notifications/expoDriverNotificationService.ts#L59"
+    },
+    "A03_PR61": {
+      "repository": "clever-driver-app",
+      "sha": "a7959e5a84393d7dc57e2caa654ea2f8edad202c",
+      "path": "src/api/dsvDriverEvents.ts",
+      "lineStart": 14,
+      "lineEnd": 92,
+      "basis": "Lifecycle Date.now client ID; start is sequential ROUTE_STARTED then PICKUP_COMPLETED",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/a7959e5a84393d7dc57e2caa654ea2f8edad202c/src/api/dsvDriverEvents.ts#L14"
+    },
+    "A04_PR61": {
+      "repository": "clever-driver-app",
+      "sha": "a7959e5a84393d7dc57e2caa654ea2f8edad202c",
+      "path": "src/ui/driver/DriverWorkspace.tsx",
+      "lineStart": 229,
+      "lineEnd": 238,
+      "basis": "Workspace read can reconcile with a ROUTE_COMPLETED POST",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/a7959e5a84393d7dc57e2caa654ea2f8edad202c/src/ui/driver/DriverWorkspace.tsx#L229"
+    },
+    "A05_DEV": {
+      "repository": "clever-driver-app",
+      "sha": "4009a9f522372a9cf23272ba723bfbbb76d96253",
+      "path": "src/app/AppRoot.tsx",
+      "lineStart": 170,
+      "lineEnd": 177,
+      "basis": "Receive and click update refresh key only",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/4009a9f522372a9cf23272ba723bfbbb76d96253/src/app/AppRoot.tsx#L170"
+    },
+    "A05_PR61": {
+      "repository": "clever-driver-app",
+      "sha": "a7959e5a84393d7dc57e2caa654ea2f8edad202c",
+      "path": "src/app/AppRoot.tsx",
+      "lineStart": 196,
+      "lineEnd": 203,
+      "basis": "Candidate receive and click also update refresh key only",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/a7959e5a84393d7dc57e2caa654ea2f8edad202c/src/app/AppRoot.tsx#L196"
+    },
+    "A06_PR61": {
+      "repository": "clever-driver-app",
+      "sha": "a7959e5a84393d7dc57e2caa654ea2f8edad202c",
+      "path": "src/ui/driver/DeliveryExecutionActions.tsx",
+      "lineStart": 193,
+      "lineEnd": 225,
+      "basis": "Candidate preserves successful completion time across proof retry; absent from dev baseline",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/a7959e5a84393d7dc57e2caa654ea2f8edad202c/src/ui/driver/DeliveryExecutionActions.tsx#L193"
+    },
+    "A07_DEV": {
+      "repository": "clever-driver-app",
+      "sha": "4009a9f522372a9cf23272ba723bfbbb76d96253",
+      "path": "src/api/dsvDriverRoute.ts",
+      "lineStart": 209,
+      "lineEnd": 329,
+      "basis": "routeContext is route-access context; child version used for order PATCH, not logical trip ID",
+      "url": "https://github.com/EVNSolution/clever-driver-app/blob/4009a9f522372a9cf23272ba723bfbbb76d96253/src/api/dsvDriverRoute.ts#L209"
+    },
+    "W01": {
+      "repository": "clever-dsv-web",
+      "sha": "4f261b67cfb22669cb26a093eb1f3f59ab9c7606",
+      "path": "src/services/dispatch.ts",
+      "lineStart": 221,
+      "lineEnd": 268,
+      "basis": "Reassign expectedVersion and optional targetRoutePlanId; no context/epoch/new-trip input",
+      "url": "https://github.com/EVNSolution/clever-dsv-web/blob/4f261b67cfb22669cb26a093eb1f3f59ab9c7606/src/services/dispatch.ts#L221"
+    },
+    "W02": {
+      "repository": "clever-dsv-web",
+      "sha": "4f261b67cfb22669cb26a093eb1f3f59ab9c7606",
+      "path": "src/services/dispatch.ts",
+      "lineStart": 489,
+      "lineEnd": 523,
+      "basis": "Strict dispatch parser rejects unknown fields",
+      "url": "https://github.com/EVNSolution/clever-dsv-web/blob/4f261b67cfb22669cb26a093eb1f3f59ab9c7606/src/services/dispatch.ts#L489"
+    },
+    "W03": {
+      "repository": "clever-dsv-web",
+      "sha": "4f261b67cfb22669cb26a093eb1f3f59ab9c7606",
+      "path": "src/services/notifications.ts",
+      "lineStart": 24,
+      "lineEnd": 61,
+      "basis": "Strict notification parser and global localStorage read state",
+      "url": "https://github.com/EVNSolution/clever-dsv-web/blob/4f261b67cfb22669cb26a093eb1f3f59ab9c7606/src/services/notifications.ts#L24"
+    }
+  },
+  "cases": [
+    {
+      "id": "D03-01",
+      "title": "최초 유효 공개",
+      "covers": [
+        "최초 공개"
+      ],
+      "evidenceRefs": [
+        "E01",
+        "E08",
+        "E11",
+        "E31"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "DSV import apply + publishAppliedDispatchRoutes",
+          "implemented": true
+        },
+        "before": null,
+        "expected": {
+          "outcome": "APPLIED_AND_PUBLISHED",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "새 canonical/grouping/READY route/child와 공개를 원자 저장한다. assignmentGeneration 기본값 1. DSV apply는 무알림이다."
+        },
+        "input": {
+          "stimulus": "DSV import apply + publishAppliedDispatchRoutes",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-1"
+          },
+          "body": {
+            "commandId": "fixture-apply-1",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [
+            {
+              "sellerOrderKey": "order-A",
+              "diffKind": "NEW",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            }
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "FIRST_VALID_PUBLICATION",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": null,
+          "routeVersion": null,
+          "assignmentEpoch": null,
+          "contextStatus": "ABSENT",
+          "routePlanId": null,
+          "driverId": null,
+          "vehicleId": null,
+          "timer": {
+            "status": "ABSENT",
+            "departureObservedAt": null,
+            "dueAt": null,
+            "ordinal": 0,
+            "incidentId": null
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-01",
+          "tripIntent": "INITIAL_EXECUTION",
+          "effectiveAt": "2026-10-05T07:05:00Z"
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "AWAITING_DEPARTURE",
+              "departureObservedAt": null,
+              "dueAt": null,
+              "ordinal": 0,
+              "incidentId": null
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "CREATE",
+            "routeVersion": "CREATE_1",
+            "assignmentEpoch": "CREATE_1"
+          },
+          "oldNotifications": {
+            "action": "NONE",
+            "scope": "없음"
+          },
+          "timerAction": "AWAIT_NEW_DEPARTURE",
+          "newIntents": [
+            {
+              "kind": "N01",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            }
+          ]
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-02",
+      "title": "동일 성공 command 재시도",
+      "covers": [
+        "동일 command 재시도"
+      ],
+      "evidenceRefs": [
+        "E02",
+        "E27",
+        "E17",
+        "E31"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "apply/reassign/reorder receipt replay (same commandId and same payload)",
+          "implemented": true
+        },
+        "before": {
+          "routePlanId": "route-am",
+          "currentRouteVersionId": "child-am-1",
+          "childVersion": 1,
+          "assignmentGeneration": "1",
+          "publishedAt": "2026-10-05T07:05:00Z",
+          "routeStatus": "READY",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1"
+        },
+        "expected": {
+          "outcome": "REPLAY_SUCCEEDED",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "receipt 응답을 재생한다. grouping/공개/writer를 다시 실행하지 않는다. 수동 공통 publish에는 같은 command receipt 계약이 없다."
+        },
+        "input": {
+          "stimulus": "apply/reassign/reorder receipt replay (same commandId and same payload)",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-2"
+          },
+          "body": {
+            "commandId": "previously-succeeded-apply",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [],
+          "samePayload": true,
+          "retryCount": 3
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "RETRY_IDENTICAL_COMMAND",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-02",
+          "sameCommandIdAsCommitted": true,
+          "samePayload": true,
+          "retryCount": 3
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "현재 업무 알림"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": []
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-03",
+      "title": "새 NO_OP 업로드: 이미 공개",
+      "covers": [
+        "새 NO_OP 업로드"
+      ],
+      "evidenceRefs": [
+        "E03",
+        "E08",
+        "E31"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "new import apply, canonical NO_OP and already published child",
+          "implemented": true
+        },
+        "before": {
+          "routePlanId": "route-am",
+          "currentRouteVersionId": "child-am-1",
+          "childVersion": 1,
+          "assignmentGeneration": "1",
+          "publishedAt": "2026-10-05T07:05:00Z",
+          "routeStatus": "READY",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1"
+        },
+        "expected": {
+          "outcome": "APPLIED_NO_OP",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "새 import/receipt는 생기지만 기존 canonical/child/publication은 유지된다. apply 알림 없음."
+        },
+        "input": {
+          "stimulus": "new import apply, canonical NO_OP and already published child",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-3"
+          },
+          "body": {
+            "commandId": "fixture-apply-3",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [
+            {
+              "sellerOrderKey": "order-A",
+              "diffKind": "NO_OP"
+            }
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "APPLY_NO_OP_ALREADY_PUBLISHED",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-03",
+          "canonicalDiff": [],
+          "sameAssignment": true,
+          "alreadyPublished": true
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "현재 업무 알림"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": []
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-04",
+      "title": "새 NO_OP 업로드: 미공개 child 최초 공개",
+      "covers": [
+        "NO_OP 최초 공개"
+      ],
+      "evidenceRefs": [
+        "E03",
+        "E08",
+        "E31"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "new import apply, canonical NO_OP and unpublished eligible child",
+          "implemented": true
+        },
+        "before": {
+          "routePlanId": "route-am",
+          "currentRouteVersionId": "child-am-1",
+          "childVersion": 1,
+          "assignmentGeneration": "1",
+          "publishedAt": null,
+          "routeStatus": "READY",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1"
+        },
+        "expected": {
+          "outcome": "APPLIED_AND_FIRST_PUBLISHED",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "NO_OP라도 CURRENT·READY·assigned 미공개 child는 공개된다. 동일 성공 command 재시도와 다르다. child UUID/version/gen 유지; apply 알림 없음."
+        },
+        "input": {
+          "stimulus": "new import apply, canonical NO_OP and unpublished eligible child",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-4"
+          },
+          "body": {
+            "commandId": "fixture-apply-4",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [
+            {
+              "sellerOrderKey": "order-A",
+              "diffKind": "NO_OP"
+            }
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "NO_OP_FIRST_VALID_PUBLICATION",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": null,
+          "routeVersion": null,
+          "assignmentEpoch": null,
+          "contextStatus": "ABSENT",
+          "routePlanId": null,
+          "driverId": null,
+          "vehicleId": null,
+          "timer": {
+            "status": "ABSENT",
+            "departureObservedAt": null,
+            "dueAt": null,
+            "ordinal": 0,
+            "incidentId": null
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-04",
+          "canonicalDiff": [],
+          "alreadyPublished": false,
+          "tripIntent": "INITIAL_EXECUTION"
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "AWAITING_DEPARTURE",
+              "departureObservedAt": null,
+              "dueAt": null,
+              "ordinal": 0,
+              "incidentId": null
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "CREATE",
+            "routeVersion": "CREATE_1",
+            "assignmentEpoch": "CREATE_1"
+          },
+          "oldNotifications": {
+            "action": "NONE",
+            "scope": "없음"
+          },
+          "timerAction": "AWAIT_NEW_DEPARTURE",
+          "newIntents": [
+            {
+              "kind": "N01",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            }
+          ]
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-05",
+      "title": "수량 수정: mutable READY import route",
+      "covers": [
+        "수량 수정"
+      ],
+      "evidenceRefs": [
+        "E04",
+        "E05",
+        "E06",
+        "E07",
+        "E03",
+        "E32"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "new import apply, UPDATE_CANDIDATE shippedBoxes 3 -> 7",
+          "implemented": true
+        },
+        "before": {
+          "route": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "shippedBoxes": 3,
+          "eligibility": {
+            "routeType": "DSV_DISPATCH",
+            "routeScopeKey": "dsv-import:import-am",
+            "routeStatus": "READY",
+            "orderStatus": "PENDING",
+            "stopStatus": "PENDING",
+            "assignedGroupingOrderCount": 0,
+            "activeDeliveryOwnershipCount": 0,
+            "publishedAtMayBeNonNull": true
+          }
+        },
+        "expected": {
+          "outcome": "APPLIED_UPDATE_IN_PLACE",
+          "after": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "shippedBoxes": 7,
+            "etaStatus": "PENDING",
+            "geometryCacheInvalidated": true
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "mutable READY import 조건에서는 공개 여부와 무관하게 canonical/stop 수정 가능. 기존 owned child UUID/숫자 version/gen은 그대로이며 READY ETA/geometry만 무효화한다."
+        },
+        "input": {
+          "stimulus": "new import apply, UPDATE_CANDIDATE shippedBoxes 3 -> 7",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-5"
+          },
+          "body": {
+            "commandId": "fixture-apply-5",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [
+            {
+              "sellerOrderKey": "order-A",
+              "diffKind": "UPDATE_CANDIDATE",
+              "shippedBoxes": 7
+            }
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "EDIT_EXECUTION_CONTENT",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-05",
+          "changes": {
+            "shippedBoxes": {
+              "from": 3,
+              "to": 7
+            }
+          },
+          "effectiveAt": "2026-10-05T22:37:00Z",
+          "semanticDiff": true
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 2,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "INCREMENT_1",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "SUPERSEDE_CONTENT_LINKS",
+            "scope": "이전 content 안내; N05 사건·횟수는 유지"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": [
+            {
+              "kind": "N02",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            }
+          ]
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-06",
+      "title": "배송지·좌표 수정: mutable READY import route",
+      "covers": [
+        "배송지 수정"
+      ],
+      "evidenceRefs": [
+        "E04",
+        "E05",
+        "E06",
+        "E07",
+        "E32"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "new import apply, UPDATE_CANDIDATE destination/address/coordinates",
+          "implemented": true
+        },
+        "before": {
+          "route": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "destinationId": "destination-A",
+          "eligibility": {
+            "routeType": "DSV_DISPATCH",
+            "routeScopeKey": "dsv-import:import-am",
+            "routeStatus": "READY",
+            "orderStatus": "PENDING",
+            "stopStatus": "PENDING",
+            "assignedGroupingOrderCount": 0,
+            "activeDeliveryOwnershipCount": 0,
+            "publishedAtMayBeNonNull": true
+          }
+        },
+        "expected": {
+          "outcome": "APPLIED_UPDATE_IN_PLACE",
+          "after": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "destinationId": "destination-B",
+            "coordinatesChanged": true,
+            "etaStatus": "PENDING"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "PENDING canonical/stop을 변경한다. 기존 child 신원이 좌표 revision이 되지 않는다. active ownership 또는 non-PENDING이면 별도 충돌 사례를 적용한다."
+        },
+        "input": {
+          "stimulus": "new import apply, UPDATE_CANDIDATE destination/address/coordinates",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-6"
+          },
+          "body": {
+            "commandId": "fixture-apply-6",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [
+            {
+              "sellerOrderKey": "order-A",
+              "diffKind": "UPDATE_CANDIDATE",
+              "destinationName": "Destination B",
+              "address": "Synthetic changed address",
+              "latitude": 37.6,
+              "longitude": 127.1
+            }
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "EDIT_EXECUTION_CONTENT",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-06",
+          "changes": {
+            "destinationId": {
+              "from": "destination-A",
+              "to": "destination-B"
+            }
+          },
+          "coordinateSnapshotEffectiveAt": "2026-10-05T22:37:00Z",
+          "semanticDiff": true
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 2,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "INCREMENT_1",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "CANCEL_AFFECTED_VISIT_LINKS",
+            "scope": "변경 배송지의 이전 후보·좌표 근거; 회차 N05는 유지"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": [
+            {
+              "kind": "N02",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            }
+          ],
+          "oldCoordinateEvidenceReapplied": false,
+          "visitRequiresFreshEvidence": true
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-07",
+      "title": "같은 배송지 집합의 순서 수정",
+      "covers": [
+        "순서 수정"
+      ],
+      "evidenceRefs": [
+        "E17",
+        "E13",
+        "E19",
+        "E33",
+        "E37"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "PATCH /driver/routes/:routePlanId/order, expectedVersion + commandId + exact orderedStopIds",
+          "implemented": true
+        },
+        "before": {
+          "route": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "stopOrder": [
+            "stop-A",
+            "stop-B"
+          ]
+        },
+        "expected": {
+          "outcome": "REORDERED",
+          "after": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-2",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "stopOrder": [
+              "stop-B",
+              "stop-A"
+            ],
+            "etaStatus": "PENDING"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "READY와 IN_PROGRESS의 exact-set 순서 수정을 허용하고 완료 상태는 거부한다. child UUID만 교체하고 숫자 version/generation은 유지한다. 이 사례는 시작 미승인 READY다."
+        },
+        "input": {
+          "surface": "PATCH /driver/routes/:routePlanId/order",
+          "routeParams": {
+            "routePlanId": "route-am"
+          },
+          "body": {
+            "commandId": "fixture-reorder-7",
+            "expectedVersion": "child-am-1",
+            "orderedStopIds": [
+              "stop-B",
+              "stop-A"
+            ]
+          },
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "REORDER_EXECUTION_CONTENT",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-07",
+          "orderedStopIds": [
+            "stop-B",
+            "stop-A"
+          ],
+          "expectedRouteVersion": 1,
+          "semanticDiff": true
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 2,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "INCREMENT_1",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "SUPERSEDE_CONTENT_LINKS",
+            "scope": "순서 안내; 동일 배송지 방문 사건과 N05는 유지"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": [
+            {
+              "kind": "N02",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            }
+          ]
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-08",
+      "title": "같은 회차 기사 교체 A → B",
+      "covers": [
+        "기사 교체"
+      ],
+      "evidenceRefs": [
+        "E14",
+        "E13",
+        "E34",
+        "E29",
+        "E04"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "READY grouping draft driverId A -> B; existing routePlan retained",
+          "implemented": true
+        },
+        "before": {
+          "routePlanId": "route-am",
+          "currentRouteVersionId": "child-am-1",
+          "childVersion": 1,
+          "assignmentGeneration": "1",
+          "publishedAt": "2026-10-05T07:05:00Z",
+          "routeStatus": "READY",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1"
+        },
+        "expected": {
+          "outcome": "DRAFT_UPDATED",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-2",
+            "childVersion": 1,
+            "assignmentGeneration": "2",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-B",
+            "vehicleId": "vehicle-V1"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "driver 변경이면 generation +1, child UUID 교체. generic saveDraft의 이전 기사 released push는 best-effort. upload 문자열 또는 차량 기본 기사 변경과는 다른 writer다."
+        },
+        "input": {
+          "stimulus": "READY grouping draft driverId A -> B; existing routePlan retained",
+          "synthetic": true,
+          "surface": "internal grouping draft writer",
+          "routePlanId": "route-am",
+          "driverId": "driver-B",
+          "vehicleId": "vehicle-V1"
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "REPLACE_EXECUTION_ASSIGNMENT",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-08",
+          "newDriverId": "driver-B",
+          "newVehicleId": "vehicle-V1",
+          "effectiveAt": "2026-10-05T22:37:00Z",
+          "deliveryContentChanged": false
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "2",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-B",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "AWAITING_FRESH_DEPARTURE",
+              "departureObservedAt": null,
+              "dueAt": null,
+              "ordinal": 0,
+              "incidentId": null
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "INCREMENT_1"
+          },
+          "oldNotifications": {
+            "action": "END_PREVIOUS_EPOCH",
+            "scope": "이전 기사 모든 OPEN/PENDING 경고; N03는 해제 사실만"
+          },
+          "timerAction": "STOP_OLD_AWAIT_FRESH",
+          "newIntents": [
+            {
+              "kind": "N03",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            },
+            {
+              "kind": "N01",
+              "recipient": "driver-B",
+              "logicalCount": 1
+            }
+          ],
+          "historicalOrdinalRetained": 1,
+          "retroactiveGpsAttribution": false
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-09",
+      "title": "같은 기사, 차량만 V1 → V2",
+      "covers": [
+        "차량만 교체"
+      ],
+      "evidenceRefs": [
+        "E14",
+        "E13",
+        "E11",
+        "E29"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "READY grouping draft vehicleId V1 -> V2, same driver",
+          "implemented": true
+        },
+        "before": {
+          "routePlanId": "route-am",
+          "currentRouteVersionId": "child-am-1",
+          "childVersion": 1,
+          "assignmentGeneration": "1",
+          "publishedAt": "2026-10-05T07:05:00Z",
+          "routeStatus": "READY",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1"
+        },
+        "expected": {
+          "outcome": "DRAFT_UPDATED",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-2",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V2"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "차량만 변경해도 child UUID는 교체된다. assignmentGeneration은 1 그대로다. 자원 기본 연결 API는 RoutePlan을 바꾸지 않는다."
+        },
+        "input": {
+          "stimulus": "READY grouping draft vehicleId V1 -> V2, same driver",
+          "synthetic": true,
+          "surface": "internal grouping draft writer",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V2"
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "REPLACE_EXECUTION_ASSIGNMENT",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-09",
+          "newDriverId": "driver-A",
+          "newVehicleId": "vehicle-V2",
+          "effectiveAt": "2026-10-05T22:37:00Z",
+          "deliveryContentChanged": false
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "2",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V2",
+            "timer": {
+              "status": "AWAITING_FRESH_DEPARTURE",
+              "departureObservedAt": null,
+              "dueAt": null,
+              "ordinal": 0,
+              "incidentId": null
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "INCREMENT_1"
+          },
+          "oldNotifications": {
+            "action": "END_PREVIOUS_EPOCH",
+            "scope": "이전 차량 근거의 모든 OPEN/PENDING 경고; 같은 기사 해제 N03 불필요"
+          },
+          "timerAction": "STOP_OLD_AWAIT_FRESH",
+          "newIntents": [
+            {
+              "kind": "N02",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            }
+          ],
+          "historicalOrdinalRetained": 1,
+          "retroactiveGpsAttribution": false
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-10",
+      "title": "완료 route에 주문 추가 요청",
+      "covers": [
+        "완료 후 주문 추가"
+      ],
+      "evidenceRefs": [
+        "E15",
+        "E16",
+        "E17",
+        "E21"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "grouping draft append to same completed route",
+          "implemented": true
+        },
+        "before": {
+          "route": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "COMPLETED",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "orders": [
+            "order-A"
+          ]
+        },
+        "expected": {
+          "outcome": "REJECT_COMPLETED_ROUTE",
+          "after": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "COMPLETED",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "orders": [
+              "order-A"
+            ]
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "완료 route membership 변경을 거부한다. 기존 완료 event/state를 되돌리지 않는다."
+        },
+        "input": {
+          "stimulus": "grouping draft append to same completed route",
+          "synthetic": true,
+          "surface": "internal grouping draft writer",
+          "routePlanId": "route-am",
+          "orderIds": [
+            "order-A",
+            "order-B"
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "APPEND_TO_CLOSED_EXECUTION",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "COMPLETED",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "ENDED",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": null,
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": true
+        },
+        "input": {
+          "commandId": "fixture-command-10",
+          "orderId": "order-B",
+          "explicitNewExecution": false
+        },
+        "expected": {
+          "outcome": "REJECT_CLOSED_CONTEXT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "COMPLETED",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "ENDED",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": null,
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": true
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "KEEP_TERMINAL",
+            "scope": "종료된 이력"
+          },
+          "timerAction": "KEEP_ENDED",
+          "newIntents": []
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-11",
+      "title": "완료 후 NEW 주문을 새 import로 적용, 회차 의도 없음",
+      "covers": [
+        "완료 후 NEW 업로드"
+      ],
+      "evidenceRefs": [
+        "E09",
+        "E10",
+        "E15",
+        "E30"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "new-key import apply without explicit trip intent",
+          "implemented": true
+        },
+        "before": {
+          "oldRoute": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "COMPLETED",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          }
+        },
+        "expected": {
+          "outcome": "NEW_GROUPING_AND_ROUTE",
+          "after": {
+            "oldRoute": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "COMPLETED",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "newRoute": {
+              "routePlanId": "route-new",
+              "currentRouteVersionId": "child-new-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            }
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "같은 차량이어도 import 단위 새 grouping/route를 만들어 공개할 수 있다. 완료 route에 append하지 않는다. 업무상 새 회차라는 명시적 근거는 없다."
+        },
+        "input": {
+          "stimulus": "new-key import apply without explicit trip intent",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-11"
+          },
+          "body": {
+            "commandId": "fixture-apply-11",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [
+            {
+              "sellerOrderKey": "order-new",
+              "diffKind": "NEW",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            }
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "MAP_NEW_PUBLICATION_AFTER_CLOSED_EXECUTION",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "COMPLETED",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "ENDED",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": null,
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": true
+        },
+        "input": {
+          "commandId": "fixture-command-11",
+          "routePlanId": "route-new",
+          "tripIntent": null
+        },
+        "expected": {
+          "outcome": "MAPPING_REQUIRED",
+          "after": {
+            "oldContext": {
+              "executionContextId": "ctx-am",
+              "routeVersion": 1,
+              "assignmentEpoch": "1",
+              "contextStatus": "COMPLETED",
+              "routePlanId": "route-am",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1",
+              "timer": {
+                "status": "ENDED",
+                "departureObservedAt": "2026-10-05T22:30:00Z",
+                "dueAt": null,
+                "ordinal": 1,
+                "incidentId": "incident-am"
+              },
+              "startApproved": true
+            },
+            "newExecutionContext": null,
+            "unmappedRoutePlanId": "route-new"
+          },
+          "identityTransition": {
+            "executionContextId": "NO_CREATE_WITHOUT_INTENT",
+            "routeVersion": "NONE",
+            "assignmentEpoch": "NONE"
+          },
+          "oldNotifications": {
+            "action": "KEEP_TERMINAL",
+            "scope": "완료된 오전 회차"
+          },
+          "timerAction": "NO_NEW_TIMER",
+          "newIntents": [],
+          "legacyPublicationMayRemain": true,
+          "mappingReason": "EXPLICIT_NEW_EXECUTION_REQUIRED"
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-12",
+      "title": "명시적 오후 새 회차 생성·공개",
+      "covers": [
+        "명시적인 오후 새 회차"
+      ],
+      "evidenceRefs": [
+        "E30",
+        "E10",
+        "E09",
+        "E11"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "NONE",
+          "implemented": false
+        },
+        "before": {
+          "oldRoute": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "COMPLETED",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          }
+        },
+        "expected": {
+          "outcome": "NO_EXPLICIT_EXECUTION_COMMAND",
+          "after": {
+            "oldRoute": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "COMPLETED",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            }
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "오후 회차 또는 NEW_EXECUTION 의도를 받는 현행 command/필드는 없다. 새 import 생성은 이를 대신하지 않는다."
+        },
+        "input": {
+          "stimulus": "NONE",
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "CREATE_AND_PUBLISH_NEW_EXECUTION",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "COMPLETED",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "ENDED",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": null,
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": true
+        },
+        "input": {
+          "commandId": "fixture-command-12",
+          "tripIntent": "NEW_EXECUTION",
+          "previousContextId": "ctx-am",
+          "routePlanId": "route-pm",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "serviceDate": "2026-10-06",
+          "effectiveAt": "2026-10-06T04:00:00Z"
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "oldContext": {
+              "executionContextId": "ctx-am",
+              "routeVersion": 1,
+              "assignmentEpoch": "1",
+              "contextStatus": "COMPLETED",
+              "routePlanId": "route-am",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1",
+              "timer": {
+                "status": "ENDED",
+                "departureObservedAt": "2026-10-05T22:30:00Z",
+                "dueAt": null,
+                "ordinal": 1,
+                "incidentId": "incident-am"
+              },
+              "startApproved": true
+            },
+            "newContext": {
+              "executionContextId": "ctx-pm",
+              "routeVersion": 1,
+              "assignmentEpoch": "1",
+              "contextStatus": "ACTIVE",
+              "routePlanId": "route-pm",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1",
+              "timer": {
+                "status": "AWAITING_DEPARTURE",
+                "departureObservedAt": null,
+                "dueAt": null,
+                "ordinal": 0,
+                "incidentId": null
+              },
+              "startApproved": false
+            }
+          },
+          "identityTransition": {
+            "executionContextId": "CREATE_NEW",
+            "routeVersion": "CREATE_1",
+            "assignmentEpoch": "CREATE_1"
+          },
+          "oldNotifications": {
+            "action": "KEEP_TERMINAL",
+            "scope": "오전 이력; 오후에 재사용 금지"
+          },
+          "timerAction": "NEW_AWAIT_DEPARTURE",
+          "newIntents": [
+            {
+              "kind": "N01",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            }
+          ],
+          "noMorningTimerReuse": true,
+          "distinctContextFromPrevious": true
+        },
+        "missingCurrentCapabilities": [
+          "explicit NEW_EXECUTION command and durable receipt",
+          "context/version/epoch writer",
+          "context activation/monitor window",
+          "notification writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-13",
+      "title": "같은 차량에 복수 eligible 회차, 선택 없음",
+      "covers": [
+        "같은 차량 복수 회차"
+      ],
+      "evidenceRefs": [
+        "E09",
+        "E10",
+        "E28",
+        "E30"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "NONE",
+          "implemented": false
+        },
+        "before": {
+          "routes": [
+            {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            {
+              "routePlanId": "route-pm",
+              "currentRouteVersionId": "child-pm-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            }
+          ]
+        },
+        "expected": {
+          "outcome": "NO_GPS_EXECUTION_SELECTOR",
+          "after": {
+            "routes": [
+              {
+                "routePlanId": "route-am",
+                "currentRouteVersionId": "child-am-1",
+                "childVersion": 1,
+                "assignmentGeneration": "1",
+                "publishedAt": "2026-10-05T07:05:00Z",
+                "routeStatus": "READY",
+                "driverId": "driver-A",
+                "vehicleId": "vehicle-V1"
+              },
+              {
+                "routePlanId": "route-pm",
+                "currentRouteVersionId": "child-pm-1",
+                "childVersion": 1,
+                "assignmentGeneration": "1",
+                "publishedAt": "2026-10-05T07:05:00Z",
+                "routeStatus": "READY",
+                "driverId": "driver-A",
+                "vehicleId": "vehicle-V1"
+              }
+            ]
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "같은 차량 여러 route가 존재할 수 있다. 재배정의 첫 READY route 선택은 GPS 회차 선택 계약이 아니다."
+        },
+        "input": {
+          "stimulus": "NONE",
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "ATTRIBUTE_VEHICLE_GPS_SAMPLE",
+          "implemented": false
+        },
+        "before": {
+          "contexts": [
+            {
+              "executionContextId": "ctx-am",
+              "routeVersion": 1,
+              "assignmentEpoch": "1",
+              "contextStatus": "ACTIVE",
+              "routePlanId": "route-am",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1",
+              "timer": {
+                "status": "RUNNING",
+                "departureObservedAt": "2026-10-05T22:30:00Z",
+                "dueAt": "2026-10-05T22:40:00Z",
+                "ordinal": 1,
+                "incidentId": "incident-am"
+              },
+              "startApproved": false
+            },
+            {
+              "executionContextId": "ctx-pm",
+              "routeVersion": 1,
+              "assignmentEpoch": "1",
+              "contextStatus": "ACTIVE",
+              "routePlanId": "route-pm",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1",
+              "timer": {
+                "status": "AWAITING_DEPARTURE",
+                "departureObservedAt": null,
+                "dueAt": null,
+                "ordinal": 0,
+                "incidentId": null
+              },
+              "startApproved": false
+            }
+          ],
+          "activeExecutionContextId": null
+        },
+        "input": {
+          "commandId": "fixture-command-13",
+          "sampleId": "gps-ambiguous",
+          "vehicleId": "vehicle-V1",
+          "recordedAt": "2026-10-05T22:39:00Z",
+          "eligibleContextIds": [
+            "ctx-am",
+            "ctx-pm"
+          ],
+          "explicitContextId": null
+        },
+        "expected": {
+          "outcome": "DEFER_AMBIGUOUS_ATTRIBUTION",
+          "after": {
+            "contexts": [
+              {
+                "executionContextId": "ctx-am",
+                "routeVersion": 1,
+                "assignmentEpoch": "1",
+                "contextStatus": "ACTIVE",
+                "routePlanId": "route-am",
+                "driverId": "driver-A",
+                "vehicleId": "vehicle-V1",
+                "timer": {
+                  "status": "RUNNING",
+                  "departureObservedAt": "2026-10-05T22:30:00Z",
+                  "dueAt": "2026-10-05T22:40:00Z",
+                  "ordinal": 1,
+                  "incidentId": "incident-am"
+                },
+                "startApproved": false
+              },
+              {
+                "executionContextId": "ctx-pm",
+                "routeVersion": 1,
+                "assignmentEpoch": "1",
+                "contextStatus": "ACTIVE",
+                "routePlanId": "route-pm",
+                "driverId": "driver-A",
+                "vehicleId": "vehicle-V1",
+                "timer": {
+                  "status": "AWAITING_DEPARTURE",
+                  "departureObservedAt": null,
+                  "dueAt": null,
+                  "ordinal": 0,
+                  "incidentId": null
+                },
+                "startApproved": false
+              }
+            ],
+            "activeExecutionContextId": null
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP_ALL",
+            "routeVersion": "KEEP_ALL",
+            "assignmentEpoch": "KEEP_ALL"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "기존 업무 상태; 새 위치 안내만 보류"
+          },
+          "timerAction": "KEEP_EXISTING_NO_NEW",
+          "newIntents": [],
+          "attributedContextIds": [],
+          "departureEventsCreated": 0,
+          "newReminderTimers": 0,
+          "reason": "AMBIGUOUS_EXECUTION_CONTEXT"
+        },
+        "missingCurrentCapabilities": [
+          "unique eligible or explicit active execution selector",
+          "DSV geofence state writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-14",
+      "title": "같은 차량 복수 회차에 명시적 활성 회차 지정",
+      "covers": [
+        "복수 회차의 명시적 선택"
+      ],
+      "evidenceRefs": [
+        "E28",
+        "E30"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "NONE",
+          "implemented": false
+        },
+        "before": {
+          "routes": [
+            {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            {
+              "routePlanId": "route-pm",
+              "currentRouteVersionId": "child-pm-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            }
+          ]
+        },
+        "expected": {
+          "outcome": "NO_ACTIVE_EXECUTION_COMMAND",
+          "after": {
+            "routes": [
+              {
+                "routePlanId": "route-am",
+                "currentRouteVersionId": "child-am-1",
+                "childVersion": 1,
+                "assignmentGeneration": "1",
+                "publishedAt": "2026-10-05T07:05:00Z",
+                "routeStatus": "READY",
+                "driverId": "driver-A",
+                "vehicleId": "vehicle-V1"
+              },
+              {
+                "routePlanId": "route-pm",
+                "currentRouteVersionId": "child-pm-1",
+                "childVersion": 1,
+                "assignmentGeneration": "1",
+                "publishedAt": "2026-10-05T07:05:00Z",
+                "routeStatus": "READY",
+                "driverId": "driver-A",
+                "vehicleId": "vehicle-V1"
+              }
+            ]
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "현재 targetRoutePlanId는 주문 이동 목적지일 뿐 차량의 GPS 활성 회차 지정이 아니다."
+        },
+        "input": {
+          "stimulus": "NONE",
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "SELECT_ACTIVE_EXECUTION_CONTEXT",
+          "implemented": false
+        },
+        "before": {
+          "contexts": [
+            {
+              "executionContextId": "ctx-am",
+              "routeVersion": 1,
+              "assignmentEpoch": "1",
+              "contextStatus": "ACTIVE",
+              "routePlanId": "route-am",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1",
+              "timer": {
+                "status": "RUNNING",
+                "departureObservedAt": "2026-10-05T22:30:00Z",
+                "dueAt": "2026-10-05T22:40:00Z",
+                "ordinal": 1,
+                "incidentId": "incident-am"
+              },
+              "startApproved": false
+            },
+            {
+              "executionContextId": "ctx-pm",
+              "routeVersion": 1,
+              "assignmentEpoch": "1",
+              "contextStatus": "ACTIVE",
+              "routePlanId": "route-pm",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1",
+              "timer": {
+                "status": "AWAITING_DEPARTURE",
+                "departureObservedAt": null,
+                "dueAt": null,
+                "ordinal": 0,
+                "incidentId": null
+              },
+              "startApproved": false
+            }
+          ],
+          "activeExecutionContextId": null
+        },
+        "input": {
+          "commandId": "fixture-command-14",
+          "vehicleId": "vehicle-V1",
+          "executionContextId": "ctx-am",
+          "effectiveAt": "2026-10-05T22:39:00Z",
+          "recordNewDeparture": false
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "contexts": [
+              {
+                "executionContextId": "ctx-am",
+                "routeVersion": 1,
+                "assignmentEpoch": "1",
+                "contextStatus": "ACTIVE",
+                "routePlanId": "route-am",
+                "driverId": "driver-A",
+                "vehicleId": "vehicle-V1",
+                "timer": {
+                  "status": "RUNNING",
+                  "departureObservedAt": "2026-10-05T22:30:00Z",
+                  "dueAt": "2026-10-05T22:40:00Z",
+                  "ordinal": 1,
+                  "incidentId": "incident-am"
+                },
+                "startApproved": false
+              },
+              {
+                "executionContextId": "ctx-pm",
+                "routeVersion": 1,
+                "assignmentEpoch": "1",
+                "contextStatus": "ACTIVE",
+                "routePlanId": "route-pm",
+                "driverId": "driver-A",
+                "vehicleId": "vehicle-V1",
+                "timer": {
+                  "status": "AWAITING_DEPARTURE",
+                  "departureObservedAt": null,
+                  "dueAt": null,
+                  "ordinal": 0,
+                  "incidentId": null
+                },
+                "startApproved": false
+              }
+            ],
+            "activeExecutionContextId": "ctx-am"
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP_ALL",
+            "routeVersion": "KEEP_ALL",
+            "assignmentEpoch": "KEEP_ALL"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "현재 경고; 선택 자체는 업무 시작이 아님"
+          },
+          "timerAction": "KEEP_EXISTING_NO_NEW",
+          "newIntents": [],
+          "gpsEligibleContextIdsAfterEffectiveAt": [
+            "ctx-am"
+          ],
+          "pastSamplesReapplied": false,
+          "departureEventsCreated": 0
+        },
+        "missingCurrentCapabilities": [
+          "authenticated active execution selection command and validity window"
+        ]
+      }
+    },
+    {
+      "id": "D03-15",
+      "title": "route 교체를 같은 회차로 명시적 매핑",
+      "covers": [
+        "같은 회차 route 교체"
+      ],
+      "evidenceRefs": [
+        "E10",
+        "E11",
+        "E13",
+        "E35"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "NONE",
+          "implemented": false
+        },
+        "before": {
+          "oldRoute": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          }
+        },
+        "expected": {
+          "outcome": "NO_SAME_EXECUTION_MAPPING_COMMAND",
+          "after": {
+            "oldRoute": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            }
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "새 RoutePlan은 generation 기본값 1이다. child predecessor는 child 계보이며 업무 회차 동일성/route 교체 명령이 아니다."
+        },
+        "input": {
+          "stimulus": "NONE",
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "REPLACE_ROUTE_IN_SAME_EXECUTION",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-15",
+          "tripIntent": "SAME_EXECUTION",
+          "executionContextId": "ctx-am",
+          "oldRoutePlanId": "route-am",
+          "newRoutePlanId": "route-am-replacement",
+          "sameContentDigest": true,
+          "sameDriverAndVehicle": true
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am-replacement",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "REBIND_CONTENT_TARGET",
+            "scope": "같은 현재 업무로 resolver 재연결; 오래된 물리 route 직접 실행 금지"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": [],
+          "newRegistrationIntent": 0,
+          "copyGenerationAsEpoch": false
+        },
+        "missingCurrentCapabilities": [
+          "explicit same-execution mapping command and receipt",
+          "immutable mapping history and ownership validity interval"
+        ]
+      }
+    },
+    {
+      "id": "D03-16",
+      "title": "완료 명령 승인",
+      "covers": [
+        "완료 명령"
+      ],
+      "evidenceRefs": [
+        "E18",
+        "E20",
+        "E21",
+        "E22",
+        "E38"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "POST /driver/events ROUTE_COMPLETED with all stops terminal",
+          "implemented": true
+        },
+        "before": {
+          "route": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "IN_PROGRESS",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "allStopsTerminal": true
+        },
+        "expected": {
+          "outcome": "ROUTE_COMPLETED",
+          "after": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "COMPLETED",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "allStopsTerminal": true
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "current snapshot을 확인하고 상태를 IN_PROGRESS→COMPLETED로 변경한다. 기본 OBSERVE는 미완료 stop을 항상 거부하지 않으므로 fixture는 terminal 전제를 둔다. 운영 mode는 미확인."
+        },
+        "input": {
+          "surface": "POST /driver/events",
+          "body": {
+            "routePlanId": "route-am",
+            "eventType": "ROUTE_COMPLETED",
+            "occurredAt": "2026-10-06T02:30:00Z",
+            "clientEventId": "completion-fixture-16",
+            "payload": {}
+          },
+          "allSnapshotStopsTerminal": true,
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "COMPLETE_EXECUTION",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RESOLVED_START",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": null,
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": true
+        },
+        "input": {
+          "commandId": "fixture-command-16",
+          "allStopsTerminal": true,
+          "completionAccepted": true
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "COMPLETED",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "ENDED",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": null,
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": true
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "RESOLVE_ALL",
+            "scope": "회차의 모든 OPEN 경고; 이력 보존"
+          },
+          "timerAction": "STOP_END",
+          "newIntents": [],
+          "contextTerminal": true,
+          "newDepartureAllowed": false
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-17",
+      "title": "동일 command ID에 다른 본문",
+      "covers": [
+        "동일 command 충돌"
+      ],
+      "evidenceRefs": [
+        "E02",
+        "E17",
+        "E27"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "reuse successful commandId with different payload",
+          "implemented": true
+        },
+        "before": {
+          "routePlanId": "route-am",
+          "currentRouteVersionId": "child-am-1",
+          "childVersion": 1,
+          "assignmentGeneration": "1",
+          "publishedAt": "2026-10-05T07:05:00Z",
+          "routeStatus": "READY",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1"
+        },
+        "expected": {
+          "outcome": "REJECT_PAYLOAD_MISMATCH",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "동일 command key의 다른 payload는 충돌한다. 원본 성공 receipt 결과를 덮지 않는다."
+        },
+        "input": {
+          "stimulus": "reuse successful commandId with different payload",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-17"
+          },
+          "body": {
+            "commandId": "fixture-apply-17",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [],
+          "sameCommandIdAsCommitted": true,
+          "samePayload": false
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "RETRY_DIFFERENT_PAYLOAD",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-17",
+          "sameCommandIdAsCommitted": true,
+          "samePayload": false
+        },
+        "expected": {
+          "outcome": "REJECT_COMMAND_CONFLICT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "현재 상태"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": []
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-18",
+      "title": "활성 배차·non-PENDING 주문의 업로드 내용 수정",
+      "covers": [
+        "활성 업로드 수정 차단"
+      ],
+      "evidenceRefs": [
+        "E04",
+        "E06"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "import diff on active ownership/non-PENDING canonical order",
+          "implemented": true
+        },
+        "before": {
+          "route": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "IN_PROGRESS",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "activeDeliveryOwnershipCount": 1,
+          "shippedBoxes": 3
+        },
+        "expected": {
+          "outcome": "CONFLICT_NO_APPLY",
+          "after": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "IN_PROGRESS",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "activeDeliveryOwnershipCount": 1,
+            "shippedBoxes": 3
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "active ownership >0 + canonical diff, terminal order 또는 non-PENDING 수정은 CONFLICT. READY mutable 예외와 구분한다."
+        },
+        "input": {
+          "stimulus": "import diff on active ownership/non-PENDING canonical order",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-18"
+          },
+          "body": {
+            "commandId": "fixture-apply-18",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [
+            {
+              "sellerOrderKey": "order-A",
+              "diffKind": "UPDATE_CANDIDATE",
+              "shippedBoxes": 7
+            }
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "IMPORT_CONFLICT_DO_NOT_MUTATE_EXECUTION",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RESOLVED_START",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": null,
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": true
+        },
+        "input": {
+          "commandId": "fixture-command-18",
+          "activeDeliveryOwnershipCount": 1,
+          "orderStatus": "EN_ROUTE",
+          "shippedBoxes": 7
+        },
+        "expected": {
+          "outcome": "REJECT_IMPORT_CONFLICT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RESOLVED_START",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": null,
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": true
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "현재 상태"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": []
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-19",
+      "title": "같은 회차 내부 메타데이터만 변경",
+      "covers": [
+        "내부 메모·단순 버전 변경"
+      ],
+      "evidenceRefs": [
+        "E14",
+        "E13"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "READY grouping draft planning color only",
+          "implemented": true
+        },
+        "before": {
+          "routePlanId": "route-am",
+          "currentRouteVersionId": "child-am-1",
+          "childVersion": 1,
+          "assignmentGeneration": "1",
+          "publishedAt": "2026-10-05T07:05:00Z",
+          "routeStatus": "READY",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1"
+        },
+        "expected": {
+          "outcome": "DRAFT_UPDATED_CHILD_REPLACED",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-2",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "color/label/sortOrder 등도 child UUID 교체를 유발할 수 있다. UUID 교체만으로 기사에게 보이는 content 변경을 판정할 수 없다."
+        },
+        "input": {
+          "stimulus": "READY grouping draft planning color only",
+          "synthetic": true,
+          "surface": "internal grouping draft writer",
+          "routePlanId": "route-am",
+          "planningColor": "green"
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "EDIT_INTERNAL_METADATA",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-19",
+          "field": "planningColor",
+          "from": "blue",
+          "to": "green",
+          "driverVisibleContentDigestChanged": false
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "현재 경고"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": []
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-20",
+      "title": "업로드 기사·차량 문자열만 변경",
+      "covers": [
+        "배정 writer 구분"
+      ],
+      "evidenceRefs": [
+        "E04",
+        "E03",
+        "E29"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "same canonical upload with changed driverName/vehiclePlate",
+          "implemented": true
+        },
+        "before": {
+          "routePlanId": "route-am",
+          "currentRouteVersionId": "child-am-1",
+          "childVersion": 1,
+          "assignmentGeneration": "1",
+          "publishedAt": "2026-10-05T07:05:00Z",
+          "routeStatus": "READY",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1"
+        },
+        "expected": {
+          "outcome": "NO_EXECUTION_REASSIGNMENT",
+          "after": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "기사·차량 문자열은 canonical diff가 아니며 기존 owned order의 route 배정을 바꾸지 않는다. 전체 회차 교대는 정식 route assignment writer를 사용해야 한다."
+        },
+        "input": {
+          "stimulus": "same canonical upload with changed driverName/vehiclePlate OR resource default driver link",
+          "synthetic": true,
+          "surface": "POST /api/dsv/dispatch-imports/:importId/apply",
+          "routeParams": {
+            "importId": "import-fixture-20"
+          },
+          "body": {
+            "commandId": "fixture-apply-20",
+            "expectedSourceHash": "synthetic-source-hash"
+          },
+          "stagedRows": [
+            {
+              "sellerOrderKey": "order-A",
+              "diffKind": "NO_OP",
+              "driverName": "Driver B",
+              "vehiclePlate": "V2"
+            }
+          ]
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "UPLOAD_ASSIGNMENT_TEXT_IS_NOT_HANDOVER",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-20",
+          "canonicalDiff": [],
+          "driverName": "Driver B",
+          "vehiclePlate": "V2",
+          "explicitRouteAssignmentChange": false
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "현재 회차 배정"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": []
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-21",
+      "title": "한 주문만 다른 기사 회차로 재배정",
+      "covers": [
+        "주문 이동과 기사 교체 구분"
+      ],
+      "evidenceRefs": [
+        "E26",
+        "E27",
+        "E28",
+        "E36",
+        "E14",
+        "E13"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "seller-order assignment reassign with explicit targetRoutePlanId",
+          "implemented": true
+        },
+        "before": {
+          "source": {
+            "routePlanId": "route-source",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "target": {
+            "routePlanId": "route-target",
+            "currentRouteVersionId": "child-target-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-B",
+            "vehicleId": "vehicle-V2"
+          },
+          "sourceOrderIds": [
+            "order-A",
+            "order-B"
+          ],
+          "targetOrderIds": [
+            "order-C"
+          ]
+        },
+        "expected": {
+          "outcome": "MEMBERSHIP_MOVED",
+          "after": {
+            "source": {
+              "routePlanId": "route-source",
+              "currentRouteVersionId": "child-source-2",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "target": {
+              "routePlanId": "route-target",
+              "currentRouteVersionId": "child-target-2",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-B",
+              "vehicleId": "vehicle-V2"
+            },
+            "sourceOrderIds": [
+              "order-A"
+            ],
+            "targetOrderIds": [
+              "order-C",
+              "order-B"
+            ]
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "source READY/target READY·IN_PROGRESS guard. source/target의 driverId가 그대로면 generation은 유지되고 child membership UUID가 교체된다. 전체 회차 기사 교대가 아니다."
+        },
+        "input": {
+          "surface": "DSV seller-order assignment reassign",
+          "commandId": "fixture-reassign-21",
+          "sellerOrderId": "order-B",
+          "expectedVersion": "child-am-1",
+          "targetRoutePlanId": "route-target",
+          "targetDriverId": "driver-B",
+          "targetVehicleId": "vehicle-V2",
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "MOVE_ORDER_BETWEEN_EXECUTIONS",
+          "implemented": false
+        },
+        "before": {
+          "source": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-source",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "target": {
+            "executionContextId": "ctx-target",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-target",
+            "driverId": "driver-B",
+            "vehicleId": "vehicle-V2",
+            "timer": {
+              "status": "AWAITING_DEPARTURE",
+              "departureObservedAt": null,
+              "dueAt": null,
+              "ordinal": 0,
+              "incidentId": null
+            },
+            "startApproved": false
+          }
+        },
+        "input": {
+          "commandId": "fixture-command-21",
+          "orderId": "order-B",
+          "sourceContextId": "ctx-am",
+          "targetContextId": "ctx-target",
+          "explicitTargetRoutePlanId": "route-target",
+          "sourceRemainingOrderCount": 1,
+          "routeDriversAndVehiclesUnchanged": true
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "source": {
+              "executionContextId": "ctx-am",
+              "routeVersion": 2,
+              "assignmentEpoch": "1",
+              "contextStatus": "ACTIVE",
+              "routePlanId": "route-source",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1",
+              "timer": {
+                "status": "RUNNING",
+                "departureObservedAt": "2026-10-05T22:30:00Z",
+                "dueAt": "2026-10-05T22:40:00Z",
+                "ordinal": 1,
+                "incidentId": "incident-am"
+              },
+              "startApproved": false
+            },
+            "target": {
+              "executionContextId": "ctx-target",
+              "routeVersion": 2,
+              "assignmentEpoch": "1",
+              "contextStatus": "ACTIVE",
+              "routePlanId": "route-target",
+              "driverId": "driver-B",
+              "vehicleId": "vehicle-V2",
+              "timer": {
+                "status": "AWAITING_DEPARTURE",
+                "departureObservedAt": null,
+                "dueAt": null,
+                "ordinal": 0,
+                "incidentId": null
+              },
+              "startApproved": false
+            }
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP_ALL",
+            "routeVersion": "INCREMENT_EACH_1",
+            "assignmentEpoch": "KEEP_ALL"
+          },
+          "oldNotifications": {
+            "action": "CANCEL_MOVED_STOP_LINKS",
+            "scope": "이동 주문의 이전 기사 상세·방문 안내; 두 회차 N05는 유지"
+          },
+          "timerAction": "KEEP_EACH_EXACT",
+          "newIntents": [
+            {
+              "kind": "N02",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            },
+            {
+              "kind": "N02",
+              "recipient": "driver-B",
+              "logicalCount": 1
+            }
+          ],
+          "newRegistrationIntent": 0,
+          "sourceContextRemainsNonEmpty": true
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-22",
+      "title": "차량 기본 기사 연결만 변경",
+      "covers": [
+        "차량 기본 연결과 회차 배정 구분"
+      ],
+      "evidenceRefs": [
+        "E29",
+        "E11"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "resource default vehicle driver association create/delete",
+          "implemented": true
+        },
+        "before": {
+          "route": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "READY",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "defaultDriverId": "driver-A"
+        },
+        "expected": {
+          "outcome": "RESOURCE_LINK_ONLY",
+          "after": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "defaultDriverId": "driver-B"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "기존 assignmentId로 기본 연결을 해제한 뒤 새 연결을 생성한다. 두 명령의 성공을 전제하며 원자 교체가 아니다. 기존 RoutePlan의 기사/차량/generation 및 child는 유지한다.",
+          "intermediateState": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-1",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "READY",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "defaultDriverId": null
+          }
+        },
+        "input": {
+          "surface": "DSV vehicle resource unassignDriver then assignDriver",
+          "steps": [
+            {
+              "operation": "unassignDriver",
+              "vehicleId": "vehicle-V1",
+              "assignmentId": "default-assignment-A"
+            },
+            {
+              "operation": "assignDriver",
+              "vehicleId": "vehicle-V1",
+              "driverId": "driver-B"
+            }
+          ],
+          "preconditions": [
+            "The first deletion succeeds",
+            "After deletion vehicle-V1 and driver-B have no conflicting default assignments",
+            "The second creation succeeds"
+          ],
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "UPDATE_DEFAULT_RESOURCE_LINK_ONLY",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RUNNING",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": "2026-10-05T22:40:00Z",
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": false
+        },
+        "input": {
+          "commandId": "fixture-command-22",
+          "routeAssignmentChangeRequested": false,
+          "newDefaultDriverId": "driver-B"
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 1,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RUNNING",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": "2026-10-05T22:40:00Z",
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": false
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "KEEP",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "KEEP",
+            "scope": "현재 회차 배정"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": []
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    },
+    {
+      "id": "D03-23",
+      "title": "시작 승인 후 IN_PROGRESS 순서 수정",
+      "covers": [
+        "시작 승인 후 타이머 재생성 금지"
+      ],
+      "evidenceRefs": [
+        "E17",
+        "E13",
+        "E19",
+        "E33",
+        "E37"
+      ],
+      "current": {
+        "basis": "STATIC_SOURCE_TRACE_NOT_EXECUTED",
+        "command": {
+          "operation": "PATCH /driver/routes/:routePlanId/order, expectedVersion + commandId + exact orderedStopIds",
+          "implemented": true
+        },
+        "before": {
+          "route": {
+            "routePlanId": "route-am",
+            "currentRouteVersionId": "child-am-1",
+            "childVersion": 1,
+            "assignmentGeneration": "1",
+            "publishedAt": "2026-10-05T07:05:00Z",
+            "routeStatus": "IN_PROGRESS",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1"
+          },
+          "stopOrder": [
+            "stop-A",
+            "stop-B"
+          ]
+        },
+        "expected": {
+          "outcome": "REORDERED",
+          "after": {
+            "route": {
+              "routePlanId": "route-am",
+              "currentRouteVersionId": "child-am-2",
+              "childVersion": 1,
+              "assignmentGeneration": "1",
+              "publishedAt": "2026-10-05T07:05:00Z",
+              "routeStatus": "IN_PROGRESS",
+              "driverId": "driver-A",
+              "vehicleId": "vehicle-V1"
+            },
+            "stopOrder": [
+              "stop-B",
+              "stop-A"
+            ],
+            "etaStatus": "PENDING"
+          },
+          "newOperationalIntentCount": 0,
+          "newReminderTimer": null,
+          "explanation": "IN_PROGRESS exact-set reorder는 허용된다. 이미 승인된 ROUTE_STARTED를 되돌리지 않고 child UUID successor를 만든다."
+        },
+        "input": {
+          "surface": "PATCH /driver/routes/:routePlanId/order",
+          "routeParams": {
+            "routePlanId": "route-am"
+          },
+          "body": {
+            "commandId": "fixture-reorder-23",
+            "expectedVersion": "child-am-1",
+            "orderedStopIds": [
+              "stop-B",
+              "stop-A"
+            ]
+          },
+          "synthetic": true
+        }
+      },
+      "proposal": {
+        "status": "PROPOSED_NOT_IMPLEMENTED",
+        "command": {
+          "semanticName": "REORDER_EXECUTION_CONTENT",
+          "implemented": false
+        },
+        "before": {
+          "executionContextId": "ctx-am",
+          "routeVersion": 1,
+          "assignmentEpoch": "1",
+          "contextStatus": "ACTIVE",
+          "routePlanId": "route-am",
+          "driverId": "driver-A",
+          "vehicleId": "vehicle-V1",
+          "timer": {
+            "status": "RESOLVED_START",
+            "departureObservedAt": "2026-10-05T22:30:00Z",
+            "dueAt": null,
+            "ordinal": 1,
+            "incidentId": "incident-am"
+          },
+          "startApproved": true
+        },
+        "input": {
+          "commandId": "fixture-command-23",
+          "orderedStopIds": [
+            "stop-B",
+            "stop-A"
+          ],
+          "expectedRouteVersion": 1,
+          "semanticDiff": true
+        },
+        "expected": {
+          "outcome": "ACCEPT",
+          "after": {
+            "executionContextId": "ctx-am",
+            "routeVersion": 2,
+            "assignmentEpoch": "1",
+            "contextStatus": "ACTIVE",
+            "routePlanId": "route-am",
+            "driverId": "driver-A",
+            "vehicleId": "vehicle-V1",
+            "timer": {
+              "status": "RESOLVED_START",
+              "departureObservedAt": "2026-10-05T22:30:00Z",
+              "dueAt": null,
+              "ordinal": 1,
+              "incidentId": "incident-am"
+            },
+            "startApproved": true
+          },
+          "identityTransition": {
+            "executionContextId": "KEEP",
+            "routeVersion": "INCREMENT_1",
+            "assignmentEpoch": "KEEP"
+          },
+          "oldNotifications": {
+            "action": "SUPERSEDE_CONTENT_LINKS",
+            "scope": "변경 전 content 안내; 이미 해결된 N05와 시작 승인 유지"
+          },
+          "timerAction": "KEEP_EXACT",
+          "newIntents": [
+            {
+              "kind": "N02",
+              "recipient": "driver-A",
+              "logicalCount": 1
+            }
+          ]
+        },
+        "missingCurrentCapabilities": [
+          "executionContextId",
+          "content routeVersion",
+          "assignmentEpoch",
+          "operational intent and reminder timer writer"
+        ]
+      }
+    }
+  ],
+  "validationScope": {
+    "jsonSyntax": true,
+    "sourceLocationAndShaChecksRequired": true,
+    "markdownFixtureConsistencyRequired": true,
+    "productBehaviorTestsExecuted": false,
+    "databaseTestsExecuted": false,
+    "gpsFieldAccuracyVerified": false,
+    "actualNotificationCalls": 0
+  },
+  "caseCount": 23,
+  "simulationAssumptions": {
+    "idsAndCoordinates": "synthetic; not directly sendable HTTP requests",
+    "currentLayer": "static code-derived expectations, not test execution results",
+    "proposalLayer": "logical transition model only; hypothetical eligibility and supported receiver where new intents are expected",
+    "liveProviderEnabled": false,
+    "logicalIntentsAreNotActualMessages": true
+  }
+}

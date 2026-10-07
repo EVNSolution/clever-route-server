@@ -1,3 +1,4 @@
+import { syncDsvExecutionHook } from './dsv-execution-hooks.js';
 import { hasDsvTestExclusions, isVisibleDsvOrder } from './dsv-test-visibility.js';
 import { createHash } from 'node:crypto';
 
@@ -491,7 +492,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           lockedImport.isStoreReviewData,
         );
 
-        await publishAppliedDispatchRoutes(tx, shop.id, resultRows.map((row) => row.sellerOrderId));
+        await publishAppliedDispatchRoutes(tx, shop.id, resultRows.map((row) => row.sellerOrderId), input.commandId);
 
         const result: DsvDispatchImportApplyResult = {
           commandId: input.commandId,
@@ -1921,7 +1922,7 @@ function dispatchGroupingRoutes(rows: DispatchGroupingRow[]): RouteGroupingDraft
   return routes;
 }
 
-async function publishAppliedDispatchRoutes(tx: Tx, shopId: string, orderIds: string[]): Promise<void> {
+async function publishAppliedDispatchRoutes(tx: Tx, shopId: string, orderIds: string[], commandId: string): Promise<void> {
   const where = {
     currentOrders: { some: { id: { in: orderIds }, shopId } },
     driverId: { not: null },
@@ -1963,6 +1964,22 @@ async function publishAppliedDispatchRoutes(tx: Tx, shopId: string, orderIds: st
       },
     });
     if (published.count !== 1) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+  }
+  if (!('dsvExecutionContext' in tx)) return;
+  // Include already-published children so quantity/address updates bump content revision atomically.
+  // Existing success receipt replay returns before this transaction and never creates another intent.
+  const related = await tx.routeGroupingChildVersion.findMany({
+    where: { currentOrders: { some: { id: { in: orderIds }, shopId } }, shopId,
+      grouping: { serviceType: 'DSV_DISPATCH', routeScopeKey: { startsWith: 'dsv-import:' } },
+      status: 'CURRENT', supersededAt: null, publishedAt: { not: null }, routePlanId: { not: null } },
+    select: { id: true, routePlanId: true, publishedAt: true },
+  });
+  const firstPublicationIds = new Set(children.map((child) => child.id));
+  for (const child of related) {
+    if (child.routePlanId === null) continue;
+    await syncDsvExecutionHook(tx, { shopId, routePlanId: child.routePlanId,
+      commandId: `import-publication:${commandId}:${child.id}`, firstPublication: firstPublicationIds.has(child.id),
+      previousPublishedAt: firstPublicationIds.has(child.id) ? null : child.publishedAt });
   }
 }
 

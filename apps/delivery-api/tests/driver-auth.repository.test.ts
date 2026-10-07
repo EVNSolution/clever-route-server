@@ -58,7 +58,7 @@ describe('PrismaDriverAuthRepository', () => {
       },
       where: { id: 'driver-id' }
     });
-    expect(prisma.driverAccountSession.create).toHaveBeenCalledWith({
+    expect(transaction.driverAccountSession.create).toHaveBeenCalledWith({
       data: {
         accountId: 'account-id',
         expiresAt: anyDateMatcher,

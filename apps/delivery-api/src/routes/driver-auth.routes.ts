@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { DsvDriverAttributionConflictError } from '../modules/dsv/dsv-driver-attribution-lock.js';
 import {
   signDriverAccountToken,
   verifyDriverAccountToken
@@ -221,6 +222,12 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
       });
       return reply.code(200).send(buildAuthSessionResponse(sessionInfo, dependencies.jwtSecret));
     } catch (error) {
+      if (error instanceof DsvDriverAttributionConflictError) {
+        return reply.code(409).send({
+          data: null,
+          error: { code: error.code, message: error.message }
+        });
+      }
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: (error as Error).message } });
     }
   });

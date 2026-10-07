@@ -5,6 +5,8 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, test, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
+import { DsvResourceInUseError } from "../src/modules/dsv/dsv-resource-deletion-guard.js";
+import { DsvDriverAttributionConflictError } from "../src/modules/dsv/dsv-driver-attribution-lock.js";
 import type { AdminCommerceActor } from "../src/modules/commerce/admin-commerce-auth.js";
 import { loadAdminCommerceConnectionsUiDependencies } from "../src/modules/commerce/admin-commerce-connections.dependencies.js";
 import type { SafeWooCommerceConnection } from "../src/modules/commerce/commerce-connection.service.js";
@@ -4896,6 +4898,34 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("returns Route Ops driver attribution topology exhaustion as 409", async () => {
+    const createPendingDriver = vi.fn(() => Promise.reject(new DsvDriverAttributionConflictError()));
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver,
+        deleteDriver: vi.fn(),
+        listDrivers: vi.fn(() => Promise.resolve([])),
+        regenerateInviteCode: vi.fn(),
+      },
+      orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([])) },
+    });
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/drivers?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, { displayName: "Alex Driver", phone: "+14165550123" }, csrfToken),
+      });
+      expect(response.statusCode).toBe(409);
+      expect(readApiError(response)).toEqual({
+        code: "ATTRIBUTION_CHANGED",
+        message: "Driver attribution changed. Retry the request.",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test("regenerates a Route Ops driver invite code behind CSRF without exposing raw auth subject", async () => {
     const regeneratedDriver = {
       ...driverRow(),
@@ -5048,6 +5078,35 @@ describe("Admin WooCommerce connection UI routes", () => {
         ...authenticatedJsonRequest(cookie, {}),
       });
       expect(blocked.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns conflict when a DSV execution protects a Route Ops driver", async () => {
+    const deleteDriver = vi.fn<
+      NonNullable<AdminCommerceConnectionsUiDependencies["driverService"]>["deleteDriver"]
+    >(() => Promise.reject(new DsvResourceInUseError('driver')));
+    const listDrivers = vi.fn<
+      NonNullable<AdminCommerceConnectionsUiDependencies["driverService"]>["listDrivers"]
+    >(() => Promise.resolve([driverRow()]));
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver: vi.fn(), deleteDriver, listDrivers, regenerateInviteCode: vi.fn(),
+      },
+      orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([])) },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "DELETE",
+        url: "/admin/ui/app/api/drivers/driver-id?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(readApiError(response)).toEqual(expect.objectContaining({ code: 'RESOURCE_IN_USE' }));
     } finally {
       await app.close();
     }

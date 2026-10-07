@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-const { replaceVersion, syncStops } = vi.hoisted(() => ({
+const { replaceVersion, syncExecution, syncStops } = vi.hoisted(() => ({
   replaceVersion: vi.fn(() => Promise.resolve('version-new')),
+  syncExecution: vi.fn(() => Promise.resolve()),
   syncStops: vi.fn(() => Promise.resolve())
 }));
 vi.mock('../src/modules/route-grouping/route-grouping.service.js', () => ({
   replaceCurrentRouteGroupingChildVersion: replaceVersion,
+  syncPublishedRouteGroupingChildExecution: syncExecution,
   syncRoutePlanStopsPreservingRows: syncStops
 }));
 
@@ -40,6 +42,13 @@ describe('PrismaDriverRouteOrderService', () => {
     expect(replay).toEqual(first);
     expect(syncStops).toHaveBeenCalledWith(prisma, 'shop-1', 'route-1', [routeStops[1], routeStops[0]]);
     expect(replaceVersion).toHaveBeenCalledTimes(1);
+    expect(syncExecution).toHaveBeenCalledWith(prisma, {
+      childId: 'version-new', publishedAt: null, routePlanId: 'route-1', shopId: 'shop-1'
+    });
+    expect(prisma.dsvCommandReceipt.updateMany.mock.invocationCallOrder[0])
+      .toBeLessThan(syncExecution.mock.invocationCallOrder[0]!);
+    expect(prisma.routePlanStop.updateMany.mock.invocationCallOrder[0])
+      .toBeLessThan(syncExecution.mock.invocationCallOrder[0]!);
     expect(prisma.routePlanGeometryCache.deleteMany).toHaveBeenCalledWith({ where: { routePlanId: 'route-1' } });
     const etaUpdate = prisma.routePlanStop.updateMany.mock.calls[0]?.[0];
     if (etaUpdate === undefined) throw new Error('Expected ETA invalidation');

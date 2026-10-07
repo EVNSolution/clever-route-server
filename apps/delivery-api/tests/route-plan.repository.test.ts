@@ -1242,6 +1242,41 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlan.update).not.toHaveBeenCalled();
   });
 
+  test.each(['assignRoutePlanDriver', 'saveRoutePlan'] as const)('%s replaces grouped child authority when the route driver changes', async (method) => {
+    const { prisma } = createPrismaHarness({ routeGroupingChildVersionCount: 1 });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+    await expect(repository[method]({
+      routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com', payload: { driverId: 'driver-id' }
+    })).resolves.not.toBeNull();
+    expect(prisma.routePlan.update).toHaveBeenCalledWith({
+      data: { assignmentGeneration: { increment: 1 }, driverId: 'driver-id' },
+      where: { id: 'route-plan-id' }
+    });
+    expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith({
+      data: { status: 'ARCHIVED', supersededAt: expect.any(Date) as unknown },
+      where: { id: 'child-version-1', status: 'CURRENT', supersededAt: null }
+    });
+    expect(prisma.routeGroupingChildVersion.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        driverId: 'driver-id',
+        publishedAt: null,
+        routePlanId: 'route-plan-id',
+        snapshot: expect.objectContaining({
+          assignmentGeneration: '2', driverId: 'driver-id', predecessorChildVersionId: 'child-version-1'
+        }) as unknown,
+        status: 'CURRENT'
+      }) as unknown,
+      select: { id: true }
+    }));
+    expect(prisma.order.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { currentRouteVersionId: 'deletion-tombstone-id' }
+    }));
+    expect(prisma.routeGroupingChildVersion.update).not.toHaveBeenCalled();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+  });
+
   test('rejects duplicate stop update payload orders before changing route stops', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaRoutePlanRepository(
@@ -3061,10 +3096,12 @@ function createPrismaHarness(input: {
     },
     shopifyShopRedactionTombstone: { findUnique: vi.fn(() => Promise.resolve(null)) },
     order: {
-      findMany: vi.fn(() => Promise.resolve(input.orders ?? [
+      findMany: vi.fn((args?: { where?: { currentRouteVersionId?: string } }) => args?.where?.currentRouteVersionId === undefined
+        ? Promise.resolve(input.orders ?? [
         orderRecord({ id: 'order-1', gid: 'gid://shopify/Order/123', stopId: 'stop-1', deliveryDate: input.orderDeliveryDate ?? '2026-05-08' }),
         orderRecord({ id: 'order-2', gid: 'gid://shopify/Order/124', stopId: 'stop-2', deliveryDate: input.orderDeliveryDate ?? '2026-05-08' })
-      ])),
+        ])
+        : Promise.resolve([{ id: 'order-1' }])),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
       upsert: vi
         .fn()
@@ -3148,6 +3185,7 @@ function createPrismaHarness(input: {
             ? Promise.resolve(null)
             : Promise.resolve({ ...input.routePlanToDelete, routeGroupingChildVersions: [] })
           : Promise.resolve({
+              assignmentGeneration: 1n,
               createdAt: new Date('2026-05-07T12:30:00.000Z'),
               depotLatitude: '43.6532',
               depotLongitude: '-79.3832',

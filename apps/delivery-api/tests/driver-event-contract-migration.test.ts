@@ -25,7 +25,9 @@ describe('driver event contract v2 migration', () => {
     const routePlanRepository = await readFile(new URL('../src/modules/route-plans/route-plan.repository.ts', import.meta.url), 'utf8');
     const groupingService = await readFile(new URL('../src/modules/route-grouping/route-grouping.service.ts', import.meta.url), 'utf8');
     expect(routePlanRepository.match(/FOR UPDATE/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);
-    expect(routePlanRepository.match(/assignmentGeneration: \{ increment: 1 \}/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    // Both public assignment methods use one shared, transaction-owned mutation writer.
+    expect(routePlanRepository.match(/assignmentGeneration: \{ increment: 1 \}/gu)?.length ?? 0).toBe(1);
+    expect(routePlanRepository.match(/await updateRouteDriverWithGroupingAuthority\(/gu)?.length ?? 0).toBe(2);
     expect(groupingService.match(/lockRoutePlanMembership\(/gu)?.length ?? 0).toBeGreaterThanOrEqual(6);
     expect(groupingService.match(/lockReadyRoutePlanMembership\(/gu)?.length ?? 0).toBeGreaterThanOrEqual(5);
     expect(groupingService.match(/assignmentGeneration: \{ increment: 1 \}/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);

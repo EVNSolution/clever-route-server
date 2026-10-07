@@ -1,3 +1,4 @@
+import { loadDsvOperationalSendPolicy, type DsvOperationalSendPolicyEnv } from '../dsv/dsv-operational-send-policy.js';
 import type { PrismaClient } from '@prisma/client';
 
 import type { AdminRouteGroupDependencies } from '../../routes/admin-route-groups.routes.js';
@@ -22,7 +23,7 @@ import {
 } from './route-grouping.service.js';
 import type { RouteGroupingService } from './route-grouping.types.js';
 
-export type AdminRouteGroupRuntimeEnv = ShopifyAppCredentialsEnv & GeocodingRuntimeEnv & Partial<Record<
+export type AdminRouteGroupRuntimeEnv = ShopifyAppCredentialsEnv & GeocodingRuntimeEnv & DsvOperationalSendPolicyEnv & Partial<Record<
   | 'FIREBASE_PROJECT_ID'
   | 'GOOGLE_APPLICATION_CREDENTIALS'
   | 'OSRM_BASE_URL'
@@ -68,7 +69,7 @@ export function createRouteGroupingService(input: {
     routeGeometryRefresher,
     readRouteOptimizationService(input.env),
     routeGeometryProvider,
-    { maxChildRouteStopDistanceFromDepotMeters: readOptionalNumber(input.env.ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS) ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS }
+    { operationalNotificationPolicy: () => loadDsvOperationalSendPolicy(input.env), maxChildRouteStopDistanceFromDepotMeters: readOptionalNumber(input.env.ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS) ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS }
   );
 }
 

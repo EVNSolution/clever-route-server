@@ -8,6 +8,7 @@ import {
   type DsvDriverAuthRepository,
 } from '../src/modules/dsv/dsv-driver-auth.repository.js';
 import type { DsvDriverPasswordResetService } from '../src/modules/dsv/dsv-driver-password-reset.service.js';
+import { DsvDriverAttributionConflictError } from '../src/modules/dsv/dsv-driver-attribution-lock.js';
 import { verifyDriverAccountToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const session = {
@@ -628,6 +629,25 @@ describe('DSV Driver app auth routes', () => {
       expect(invalidLogin.json()).toEqual({
         data: null,
         error: { code: 'INVALID_CREDENTIALS', message: 'Invalid login ID or password' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    ['register', '/api/dsv/driver/auth/register', { loginId: 'driver.one', name: 'QA 배송원 01', password: 'test-password-01', phone: '01090000001' }],
+    ['login', '/api/dsv/driver/auth/login', { loginId: 'driver.one', password: 'test-password-01' }],
+    ['refresh', '/api/dsv/driver/auth/refresh', { refreshToken: 'refresh-token' }],
+  ] as const)('returns attribution topology exhaustion from %s as 409', async (method, url, payload) => {
+    const repository = { [method]: vi.fn(() => Promise.reject(new DsvDriverAttributionConflictError())) };
+    const app = await buildApp({ dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: repository as never } });
+    try {
+      const response = await app.inject({ method: 'POST', payload, url });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ATTRIBUTION_CHANGED', message: 'Driver attribution changed. Retry the request.' },
       });
     } finally {
       await app.close();

@@ -14,6 +14,7 @@ if [[ "${1:-}" == "--plan" ]]; then
     'G006: 127.0.0.1:55490 / clever_g006' \
     'Driver password reset: 127.0.0.1:55494 / driver_password_reset' \
     'Completion Assistance: 127.0.0.1:55495 / cc295_disposable' \
+    'DSV operational P1-P3: 127.0.0.1:55496 / dsv_operational' \
     'Deletion lifecycle populated upgrade: 127.0.0.1:55492 / clever_deletion_upgrade'
   exit 0
 fi
@@ -374,3 +375,7 @@ DATABASE_URL="$completion_assistance_url" \
 KFOOD_COMPLETION_DATABASE_URL="$completion_assistance_url" \
 KFOOD_COMPLETION_DATABASE_TARGET_CLASS='safe-local-kfood-completion-disposable' \
 npm test -- kfood-delivery-completion.integration.test.ts
+
+DSV_OPERATIONAL_DATABASE_TARGET_CLASS='safe-local-dsv-operational-disposable' \
+DSV_OPERATIONAL_INCLUDE_G003='0' \
+bash scripts/test-dsv-operational-disposable.sh

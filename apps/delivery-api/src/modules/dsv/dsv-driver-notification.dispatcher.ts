@@ -1,3 +1,5 @@
+import { legacyDsvNotificationTokens } from './dsv-notification-channel-routing.js';
+import { disabledDsvOperationalNotificationSendPolicy, type DsvOperationalNotificationSendPolicySource } from './dsv-operational-driver-notification.service.js';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { hashPushToken } from '../route-grouping/driver-push-token.service.js';
@@ -39,7 +41,8 @@ export class PrismaDsvDriverNotificationDispatcher {
   constructor(
     private readonly prisma: DsvDriverNotificationPrismaClient,
     private readonly pushProvider: DriverPushProvider,
-    private readonly logger?: LoggerLike
+    private readonly logger?: LoggerLike,
+    private readonly operationalPolicy: DsvOperationalNotificationSendPolicySource = disabledDsvOperationalNotificationSendPolicy
   ) {}
 
   async dispatchByIdempotencyKey(idempotencyKey: string, now = new Date()): Promise<DsvDriverNotificationDispatchResult> {
@@ -139,9 +142,12 @@ export class PrismaDsvDriverNotificationDispatcher {
         status: 'SKIPPED'
       };
     }
-    const tokens = await this.prisma.driverPushToken.findMany({
+    const candidates = await this.prisma.driverPushToken.findMany({
       orderBy: { lastSeenAt: 'desc' },
       where: { accountId, appId: CLEVER_DRIVER_ANDROID_APP_ID, status: 'ACTIVE' }
+    });
+    const tokens = await legacyDsvNotificationTokens(this.prisma, this.operationalPolicy, {
+      accountId, action: attempt.action.toLowerCase(), routePlanId: attempt.routePlanId, tokens: candidates
     });
     if (tokens.length === 0) {
       return {
