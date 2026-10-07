@@ -163,7 +163,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(113);
+    expect(migrations).toHaveLength(114);
+    expect(migrations).toContain('20261008010000_add_driver_event_completion_owner');
     expect(migrations).toContain('20261002140000_kfood_delivery_navigation_grace');
     expect(migrations).toContain('20261002120000_driver_runtime_diagnostics');
     expect(migrations).toContain('20260929120000_add_incomplete_route_plan_status');
@@ -417,10 +418,25 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')).toBeLessThan(
       migrations.indexOf('20260929120000_add_incomplete_route_plan_status')
     );
-    expect(migrations.at(-1)).toBe('20261006060000_dsv_operational_server');
+    expect(migrations.at(-1)).toBe('20261008010000_add_driver_event_completion_owner');
+    expect(migrations.indexOf('20261008010000_add_driver_event_completion_owner')).toBeGreaterThan(
+      migrations.indexOf('20261006060000_dsv_operational_server')
+    );
     expect(migrations.indexOf('20261006060000_dsv_operational_server')).toBeGreaterThan(
       migrations.indexOf('20261002140000_kfood_delivery_navigation_grace')
     );
+  });
+
+  test('adds immutable destination completion ownership without a payload backfill or mutable account link', async () => {
+    const migration = await readFile(new URL(
+      '20261008010000_add_driver_event_completion_owner/migration.sql',
+      migrationsDir
+    ), 'utf8');
+    expect(migration).toContain('ADD COLUMN "completionOwnerAccountId" UUID');
+    expect(migration).toContain('driver_events_completion_owner_route_client_idx');
+    expect(migration).not.toContain('UPDATE');
+    expect(migration).not.toContain('FOREIGN KEY');
+    expect(migration).not.toContain('REFERENCES');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {

@@ -334,7 +334,10 @@ describe('driver completion receipt precedence', () => {
       expectedRouteVersionId: 'version-id', routePlanId: 'route-plan-id', routeStatus: 'COMPLETED', status: 'APPLIED' as const
     }));
     const dependencies = routeDependencies(vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'event-id' })));
-    dependencies.driverEventReceiptService = { lookup };
+    dependencies.driverEventReceiptService = {
+      lookup,
+      lookupDestinationCompletion: vi.fn(() => Promise.resolve({ status: 'UNKNOWN' as const }))
+    };
     const app = await buildApp({ driverApi: dependencies });
     const accountToken = signDriverAccountToken({
       accountId: 'account-id', expiresInSeconds: 60, subject: 'driver-account:account-id'

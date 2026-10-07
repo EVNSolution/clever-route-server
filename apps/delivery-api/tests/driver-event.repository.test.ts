@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { describe, expect, test, vi } from 'vitest';
 
 import {
+  DriverDestinationCompletionCollisionError,
   DriverEventContextError,
   DriverEventEtaStaleConflictError,
   DriverEventExecutionConflictError,
@@ -9,12 +10,22 @@ import {
   DriverEventSellerOrderAssignmentChangedError,
   DriverEventScopeError,
   DriverEventStopTransitionConflictError,
+  isDriverDestinationCompletionNotAppliedError,
   PrismaDriverEventRepository
 } from '../src/modules/driver/driver-event.repository.js';
 import { dsvCanonicalNoteHash } from '../src/modules/dsv/dsv-time-constraint.js';
 
 const occurredAt = new Date('2026-06-01T05:54:16.000Z');
 const serverReceivedAt = new Date('2026-06-01T06:00:00.000Z');
+const completionOwnerAccountId = '00000000-0000-4000-8000-000000000001';
+const destinationCompletionPayload = {
+  clientEventId: 'destination-completion-id',
+  completionOwnerAccountId,
+  deliveryStopIds: ['stop-id', 'stop-2'],
+  destinationId: 'destination-id',
+  occurredAt: occurredAt.toISOString(),
+  routePlanId: 'route-plan-id'
+};
 type RoutePlanStopFixture = { id: string } | ReturnType<typeof confirmedTimeConstraintRoutePlanStop>;
 
 describe('PrismaDriverEventRepository', () => {
@@ -262,6 +273,96 @@ describe('PrismaDriverEventRepository', () => {
       }
     });
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('does not derive the completion owner column from a generic STOP_DELIVERED payload', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await repository.recordDriverEvent(baseInput({
+      deliveryStopId: 'stop-id',
+      eventType: 'STOP_DELIVERED',
+      payload: { completionOwnerAccountId: '00000000-0000-4000-8000-000000000001' },
+      routePlanId: 'route-plan-id'
+    }));
+
+    const create = prisma.driverEvent.create.mock.calls[0]?.[0] as { data: Record<string, unknown> } | undefined;
+    expect(create?.data).not.toHaveProperty('completionOwnerAccountId');
+  });
+
+  test('does not promote a duplicate legacy event to a completion owner', async () => {
+    const { prisma } = createPrismaHarness({
+      existingEvent: {
+        deliveryStopId: 'stop-id',
+        eventType: 'STOP_DELIVERED',
+        id: 'legacy-event-id',
+        payload: { completionOwnerAccountId: '00000000-0000-4000-8000-000000000001' },
+        routePlanId: 'route-plan-id'
+      }
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    const error = await repository.recordDriverEvent(baseInput({
+      completionOwnerAccountId: '00000000-0000-4000-8000-000000000001',
+      deliveryStopId: 'stop-id',
+      eventType: 'STOP_DELIVERED',
+      routePlanId: 'route-plan-id'
+    })).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(DriverDestinationCompletionCollisionError);
+    expect(isDriverDestinationCompletionNotAppliedError(error)).toBe(false);
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+  });
+
+  test('accepts an exact server-owned destination completion duplicate', async () => {
+    const { prisma } = createPrismaHarness({
+      existingEvent: destinationCompletionEvent()
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(destinationCompletionEventInput())).resolves.toMatchObject({
+      duplicate: true,
+      eventId: 'destination-completion-event-id'
+    });
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['owner', { completionOwnerAccountId: '00000000-0000-4000-8000-000000000002' }],
+    ['time', { occurredAt: new Date('2026-06-01T05:54:17.000Z') }],
+    ['destination', { payload: { ...destinationCompletionPayload, destinationId: 'other-destination' } }],
+    ['stops', { payload: { ...destinationCompletionPayload, deliveryStopIds: ['stop-id'] } }],
+    ['base client event', { payload: { ...destinationCompletionPayload, clientEventId: 'other-completion-id' } }],
+  ])('rejects a destination completion duplicate with a conflicting %s fingerprint', async (_label, patch) => {
+    const { prisma } = createPrismaHarness({
+      existingEvent: { ...destinationCompletionEvent(), ...patch }
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    const error = await repository.recordDriverEvent(destinationCompletionEventInput())
+      .catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(DriverDestinationCompletionCollisionError);
+    expect(isDriverDestinationCompletionNotAppliedError(error)).toBe(false);
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+  });
+
+  test('rejects a conflicting destination completion duplicate after a unique-constraint race', async () => {
+    const { prisma } = createPrismaHarness({
+      driverEventCreateError: new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        clientVersion: 'test',
+        code: 'P2002'
+      }),
+      existingEventAfterCreateError: {
+        ...destinationCompletionEvent(),
+        payload: { ...destinationCompletionPayload, destinationId: 'other-destination' }
+      }
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    const error = await repository.recordDriverEvent(destinationCompletionEventInput())
+      .catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(DriverDestinationCompletionCollisionError);
+    expect(isDriverDestinationCompletionNotAppliedError(error)).toBe(false);
   });
 
   test('updates the matching stop and future ETA when STOP_FAILED is recorded', async () => {
@@ -1038,7 +1139,7 @@ describe('PrismaDriverEventRepository', () => {
     });
 
     expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
-      select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
+      select: { completionOwnerAccountId: true, createdAt: true, deliveryStopId: true, eventType: true, id: true, occurredAt: true, payload: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: 'second-pickup-client-id',
@@ -1564,7 +1665,7 @@ describe('PrismaDriverEventRepository', () => {
     }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-ack-id' });
 
     expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
-      select: { deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
+      select: { completionOwnerAccountId: true, deliveryStopId: true, eventType: true, id: true, occurredAt: true, payload: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: 'ack-stop-id-v1',
@@ -1820,7 +1921,7 @@ describe('PrismaDriverEventRepository', () => {
     }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-completion-id' });
 
     expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
-      select: { deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
+      select: { completionOwnerAccountId: true, deliveryStopId: true, eventType: true, id: true, occurredAt: true, payload: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: 'route-completed-client-id',
@@ -1832,6 +1933,30 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.routePlan.findFirst).not.toHaveBeenCalled();
   });
 });
+
+function destinationCompletionEvent() {
+  return {
+    completionOwnerAccountId,
+    deliveryStopId: 'stop-id',
+    eventType: 'STOP_DELIVERED',
+    id: 'destination-completion-event-id',
+    occurredAt,
+    payload: destinationCompletionPayload,
+    routePlanId: 'route-plan-id'
+  };
+}
+
+function destinationCompletionEventInput() {
+  return baseInput({
+    clientEventId: 'destination-completion-id:stop-id',
+    completionOwnerAccountId,
+    deliveryStopId: 'stop-id',
+    eventType: 'STOP_DELIVERED',
+    occurredAt,
+    payload: destinationCompletionPayload,
+    routePlanId: 'route-plan-id'
+  });
+}
 
 function baseInput(overrides: Partial<Parameters<PrismaDriverEventRepository['recordDriverEvent']>[0]> = {}) {
   return {
@@ -1867,7 +1992,8 @@ function createPrismaHarness(input: {
   deliveryStopUpdateCount?: number;
   driverEventRouteVersionColumnExists?: boolean;
   etaOwnershipColumnsExist?: boolean;
-  existingEvent?: { deliveryStopId: string | null; eventType: string; id: string; payload?: unknown; routePlanId: string | null } | null;
+  existingEvent?: { completionOwnerAccountId?: string | null; deliveryStopId: string | null; eventType: string; id: string; occurredAt?: Date; payload?: unknown; routePlanId: string | null } | null;
+  existingEventAfterCreateError?: { completionOwnerAccountId?: string | null; deliveryStopId: string | null; eventType: string; id: string; occurredAt?: Date; payload?: unknown; routePlanId: string | null } | null;
   orderAssignmentVersionId?: string | null;
   otherOrdersOnStop?: number;
   pickupEvent?: { createdAt: Date; id: string; occurredAt?: Date } | null;
@@ -2028,7 +2154,11 @@ function createPrismaHarness(input: {
         }
         return Promise.resolve(input.completionEvent ?? (createdEventType === 'ROUTE_COMPLETED' ? { id: 'driver-event-id' } : null));
       }),
-      findUnique: vi.fn(() => Promise.resolve(input.existingEvent ?? null))
+      findUnique: vi.fn(() => Promise.resolve(
+        driverEventCreateAttempted && input.existingEventAfterCreateError !== undefined
+          ? input.existingEventAfterCreateError
+          : input.existingEvent ?? null
+      ))
     },
     driverEventAttempt: {
       create: vi.fn(() => Promise.resolve({ attemptNumber: 1, id: 'attempt-id' })),

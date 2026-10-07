@@ -82,6 +82,7 @@ import {
   DriverEventAdmissionUnavailableError,
   DriverEventAssignmentChangedError,
   DriverEventContextError,
+  DriverDestinationCompletionCollisionError,
   DriverEventEtaStaleConflictError,
   DriverEventStopTransitionConflictError,
   DriverEventExecutionConflictError,
@@ -90,6 +91,7 @@ import {
   DriverRouteCompletionIncompleteError,
   DriverEventSellerOrderAssignmentChangedError,
   DriverEventScopeError,
+  isDriverDestinationCompletionNotAppliedError,
   type DriverEventAttemptAdmissionInput,
   type DriverEventAttemptFinalization,
   type RecordDriverEventResult
@@ -128,6 +130,7 @@ export type DriverApiDependencies = {
     admitDriverEventAttempt(input: DriverEventAttemptAdmissionInput): Promise<{ attemptId: string; attemptNumber: number }>;
     completeDeliveryDestination?(input: {
       clientEventId: string;
+      completionOwnerAccountId: string;
       deliveryStopIds: string[];
       destinationId: string;
       driverId: string;
@@ -381,6 +384,45 @@ export function registerDriverEventRoutes(
 
   const driverEventReceiptService = dependencies.driverEventReceiptService;
   if (driverEventReceiptService !== undefined) {
+    app.post<{ Body: DriverDestinationCompletionRequestBody }>(
+      '/driver/destinations/complete/result',
+      async (request, reply) => {
+        const token = extractBearerToken(request.headers.authorization);
+        if (token === null) {
+          return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Missing driver account bearer token'));
+        }
+        let accountId: string;
+        try {
+          const now = dependencies.now?.();
+          const account = verifyDriverAccountToken(
+            token,
+            now === undefined ? { secret: dependencies.jwtSecret } : { now, secret: dependencies.jwtSecret }
+          );
+          const tokenAccessRepository = dependencies.driverTokenAccessRepository;
+          if (
+            tokenAccessRepository === undefined
+            || !(await tokenAccessRepository.isDriverAccountAccessTokenActive({
+              accountId: account.accountId,
+              tokenVersion: account.tokenVersion
+            }))
+          ) return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+          accountId = account.accountId;
+        } catch {
+          return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+        }
+
+        let input: ReturnType<typeof readDriverDestinationCompletionBody>;
+        try {
+          input = readDriverDestinationCompletionBody(request.body);
+        } catch {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination completion result payload'));
+        }
+        const result = await driverEventReceiptService.lookupDestinationCompletion({ accountId, ...input });
+        reply.header('Cache-Control', 'private, no-store');
+        return reply.code(200).send({ data: result, error: null });
+      }
+    );
+
     app.get<{ Params: DriverEventReceiptParams }>(
       '/driver/event-receipts/:routePlanId/:clientEventId',
       async (request, reply) => {
@@ -1328,11 +1370,14 @@ export function registerDriverEventRoutes(
     async (request, reply) => {
       const authentication = await authenticateDriverRequest(request, dependencies);
       if (authentication.status !== 'authenticated') {
-        return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
+        return reply.code(401).send(completionNotAppliedErrorResponse(
+          authentication.status === 'missing' ? 'UNAUTHORIZED' : 'DRIVER_ACCESS_TOKEN_INVALID',
+          driverAuthenticationMessage(authentication.status)
+        ));
       }
       const driverEventService = dependencies.driverEventService;
       if (driverEventService.completeDeliveryDestination === undefined) {
-        return reply.code(503).send(errorResponse(
+        return reply.code(503).send(completionNotAppliedErrorResponse(
           'DESTINATION_COMPLETION_UNAVAILABLE',
           'Destination completion is temporarily unavailable'
         ));
@@ -1342,20 +1387,34 @@ export function registerDriverEventRoutes(
       try {
         input = readDriverDestinationCompletionBody(request.body);
       } catch {
-        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination completion payload'));
+        return reply.code(400).send(completionNotAppliedErrorResponse(
+          'BAD_REQUEST',
+          'Invalid destination completion payload'
+        ));
       }
       const driverContext = authentication.context;
       if (input.routePlanId !== driverContext.routePlanId) {
         return reply
           .code(403)
-          .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
+          .send(completionNotAppliedErrorResponse(
+            'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH',
+            'Driver route assignment rejected'
+          ));
       }
 
       try {
         const results = await driverEventService.completeDeliveryDestination({
           ...input,
+          completionOwnerAccountId: driverContext.accountId,
           driverId: driverContext.driverId,
-          payload: request.body,
+          payload: {
+            clientEventId: input.clientEventId,
+            completionOwnerAccountId: driverContext.accountId,
+            deliveryStopIds: input.deliveryStopIds,
+            destinationId: input.destinationId,
+            occurredAt: input.occurredAt.toISOString(),
+            routePlanId: input.routePlanId
+          },
           routePlanId: driverContext.routePlanId,
           shopDomain: driverContext.shopDomain,
           shopId: driverContext.shopId
@@ -1383,20 +1442,41 @@ export function registerDriverEventRoutes(
           error: null
         });
       } catch (error) {
+        if (error instanceof DriverDestinationCompletionCollisionError) {
+          return reply.code(409).send(errorResponse(
+            'DESTINATION_COMPLETION_COLLISION',
+            'Destination completion conflicts with existing evidence'
+          ));
+        }
         if (error instanceof DriverEventContextError) {
-          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination or stop context'));
+          return reply.code(400).send(destinationCompletionErrorResponse(
+            error, 'BAD_REQUEST', 'Invalid destination or stop context'
+          ));
         }
         if (error instanceof DriverEventRouteNotInProgressError) {
-          return reply.code(409).send(errorResponse('ROUTE_NOT_IN_PROGRESS', 'Route is not in progress'));
+          return reply.code(409).send(destinationCompletionErrorResponse(
+            error, 'ROUTE_NOT_IN_PROGRESS', 'Route is not in progress'
+          ));
         }
         if (error instanceof DriverEventExecutionConflictError) {
-          return reply.code(409).send(errorResponse('ROUTE_EXECUTION_CONFLICT', 'An overlapping route is already in progress'));
+          return reply.code(409).send(destinationCompletionErrorResponse(
+            error, 'ROUTE_EXECUTION_CONFLICT', 'An overlapping route is already in progress'
+          ));
         }
         if (error instanceof DriverEventEtaStaleConflictError) {
-          return reply.code(409).send(errorResponse('ETA_STALE_CONFLICT', 'ETA update is stale'));
+          return reply.code(409).send(destinationCompletionErrorResponse(
+            error, 'ETA_STALE_CONFLICT', 'ETA update is stale'
+          ));
+        }
+        if (error instanceof DriverEventStopTransitionConflictError) {
+          return reply.code(409).send(destinationCompletionErrorResponse(
+            error, 'STOP_STATE_CONFLICT', 'Delivery stop state conflicts with destination completion'
+          ));
         }
         if (error instanceof DriverEventScopeError) {
-          return reply.code(403).send(errorResponse('FORBIDDEN', 'Destination completion scope rejected'));
+          return reply.code(403).send(destinationCompletionErrorResponse(
+            error, 'FORBIDDEN', 'Destination completion scope rejected'
+          ));
         }
         throw error;
       }
@@ -2713,6 +2793,26 @@ function errorResponse(code: string, message: string): { data: null; error: { co
     data: null,
     error: { code, message }
   };
+}
+
+function completionNotAppliedErrorResponse(
+  code: string,
+  message: string
+): { data: null; error: { code: string; completionOutcome: 'NOT_APPLIED'; message: string } } {
+  return {
+    data: null,
+    error: { code, completionOutcome: 'NOT_APPLIED', message }
+  };
+}
+
+function destinationCompletionErrorResponse(
+  error: Error,
+  code: string,
+  message: string
+): ReturnType<typeof errorResponse> | ReturnType<typeof completionNotAppliedErrorResponse> {
+  return isDriverDestinationCompletionNotAppliedError(error)
+    ? completionNotAppliedErrorResponse(code, message)
+    : errorResponse(code, message);
 }
 
 function logDriverEventContractFailure(

@@ -3017,6 +3017,7 @@ model DriverEvent {
   deliveryStopId                String?                    @db.Uuid
   deliveryStop                  DeliveryStop?              @relation(fields: [deliveryStopId], references: [id], onDelete: SetNull)
   clientEventId                 String?                    @db.Text
+  completionOwnerAccountId      String?                    @db.Uuid
   expectedRouteVersionId        String?                    @db.Uuid
   assignmentGeneration          BigInt?
   driverContractVersion         Int?
@@ -3030,6 +3031,7 @@ model DriverEvent {
   routeCompletionReview         DriverRouteCompletionReview?
 
   @@unique([driverId, clientEventId])
+  @@index([completionOwnerAccountId, routePlanId, clientEventId], map: "driver_events_completion_owner_route_client_idx")
   @@index([shopId, routePlanId, occurredAt])
   @@index([shopId, routeVersionId, occurredAt])
   @@index([shopId, deliveryStopId, occurredAt])
