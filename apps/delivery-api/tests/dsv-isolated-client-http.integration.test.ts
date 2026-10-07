@@ -4,6 +4,9 @@ import { pathToFileURL } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
+import { PrismaDsvDriverAuthRepository } from '../src/modules/dsv/dsv-driver-auth.repository.js';
+import { PrismaDsvExecutionContextService } from '../src/modules/dsv/dsv-execution-context.service.js';
+
 import {
   createDsvIsolatedHttpHarness,
   type DsvIsolatedFixture,
@@ -387,6 +390,47 @@ clientSuite('DSV Driver client queue against isolated HTTP server', () => {
     await expect(harness.prisma.dsvExecutionCommand.count({
       where: { commandName: 'REPORT_DELIVERY_EXCEPTION', shopId: fixture.shopId },
     })).resolves.toBe(1);
+  });
+
+  test('keeps the actual mobile route visible after a same-shop reassignment links the new account', async () => {
+    process.env.EXPO_PUBLIC_DSV_API_BASE_URL = baseUrl;
+    const unique = randomUUID();
+    const name = `Synthetic reassigned ${unique.slice(0, 8)}`;
+    const phone = `010${unique.replaceAll('-', '').replace(/\D/gu, '').padEnd(8, '0').slice(0, 8)}`;
+    const credentials = { loginId: `isolated.reassigned.${unique.slice(0, 8)}`, password: `Isolated-${unique}-Pass!` };
+    const driver = await harness.prisma.driver.create({
+      data: {
+        displayName: name,
+        dsvProfile: { create: { lookupName: name } },
+        phone,
+        shopId: fixture.shopId,
+        status: 'ACTIVE',
+      },
+    });
+    const session = await new PrismaDsvDriverAuthRepository(harness.prisma).register({ ...credentials, name, phone });
+    await expect(harness.prisma.driver.findUniqueOrThrow({ where: { id: driver.id } })).resolves.toMatchObject({
+      accountId: session.accountId,
+      authSubject: `driver-${driver.id}`,
+    });
+    const sync = await harness.prisma.$transaction(async (transaction) => {
+      await transaction.routePlan.update({ data: { driverId: driver.id }, where: { id: fixture.routePlanId } });
+      await transaction.routeGroupingChildVersion.update({ data: { driverId: driver.id }, where: { id: fixture.childVersionId } });
+      return new PrismaDsvExecutionContextService(transaction).syncForRoute({
+        commandId: randomUUID(),
+        routePlanId: fixture.routePlanId,
+        shopId: fixture.shopId,
+      });
+    });
+    expect(sync.notificationKinds).toEqual(expect.arrayContaining(['N01', 'N03']));
+
+    const login = await requestJson(baseUrl, '/api/dsv/driver/auth/login', { body: credentials, method: 'POST' });
+    expect(login.status).toBe(200);
+    const routeModuleUrl = pathToFileURL(`${driverSource!}/src/api/dsvDriverRoute.ts`).href;
+    const routeApi = await import(/* @vite-ignore */ routeModuleUrl) as {
+      loadDriverDeliveryRoute(token: string, routePlanId: string): Promise<{ orders: Array<{ id: string }> }>;
+    };
+    const route = await routeApi.loadDriverDeliveryRoute(String(login.body.data.accessToken), fixture.routePlanId);
+    expect(route.orders.map(({ id }) => id)).toEqual(expect.arrayContaining([fixture.nextStopId, fixture.stopId]));
   });
 });
 
