@@ -16,6 +16,11 @@ import { PrismaDsvAdminAccountRepository } from '../../src/modules/dsv/dsv-admin
 import { createDsvAdminSessionSubject, parseDsvAdminSessionSubject } from '../../src/modules/dsv/dsv-admin-session-subject.js';
 import { PrismaDsvDriverAuthRepository } from '../../src/modules/dsv/dsv-driver-auth.repository.js';
 import { PrismaDsvOperationalDriverNotificationService } from '../../src/modules/dsv/dsv-operational-driver-notification.service.js';
+import { PrismaDsvGeofenceService } from '../../src/modules/dsv/dsv-geofence.service.js';
+import type { DsvGeofencePolicy } from '../../src/modules/dsv/dsv-geofence-policy.js';
+import { PrismaDsvExecutionContextService } from '../../src/modules/dsv/dsv-execution-context.service.js';
+import { PrismaUvisTelemetryRepository } from '../../src/modules/uvis/uvis-telemetry.repository.js';
+import { PrismaRouteGroupingService } from '../../src/modules/route-grouping/route-grouping.service.js';
 import type {
   DsvOperationalPushMessage,
   DsvOperationalPushProvider,
@@ -24,12 +29,13 @@ import type {
 import { createDsvAdminPrincipal, type DsvAdminPrincipal } from '../../src/modules/dsv/dsv-principal.js';
 import { createAdminWebSession, verifyAdminWebSessionFromRequest } from '../../src/routes/admin-ui-session.js';
 import { PrismaDsvDriverExecutionPrincipalResolver } from '../../src/routes/dsv-execution.routes.js';
+import { FakeDriverPushProvider } from './fake-driver-push-provider.js';
 
 export const DSV_ISOLATED_DATABASE_URL =
   'postgresql://dsv_operational:dsv_operational@127.0.0.1:55496/dsv_operational?schema=public';
 export const DSV_ISOLATED_TARGET_CLASS = 'safe-local-dsv-operational-disposable';
 export const DSV_ISOLATED_PORT = 4908;
-export const DSV_ISOLATED_SERVICE_DATE = '2026-10-06';
+export const DSV_ISOLATED_SERVICE_DATE = '2026-10-07';
 
 const driverJwtSecret = 'test-dsv-isolated-driver-jwt-secret-2026';
 const sessionSecret = 'dsv-isolated-admin-session-secret-2026';
@@ -40,10 +46,12 @@ export type DsvIsolatedFixture = {
   admin: { accountId: string; activeSessionId: string; actorId: string; csrfToken: string; cookie: string };
   childVersionId: string;
   contextId: string;
+  deviceId: string;
   driverId: string;
   driverToken: string;
   foreign: { accountId: string; contextId: string; driverToken: string; shopId: string };
   n06NotificationId: string;
+  nextStopId: string;
   orderId: string;
   routePlanId: string;
   serviceDate: string;
@@ -51,6 +59,7 @@ export type DsvIsolatedFixture = {
   shopId: string;
   stopId: string;
   vehicleId: string;
+  vehiclePlate: string;
   warningNotificationId: string;
 };
 
@@ -59,6 +68,27 @@ type FixtureRecord = DsvIsolatedFixture & {
   adminAccountIds: string[];
   driverCredentials: { loginId: string; password: string };
   shopIds: string[];
+  traces: Array<Record<string, unknown>>;
+};
+
+const geofencePolicy: DsvGeofencePolicy = {
+  arrivalDwellSeconds: 10,
+  arrivalMinSamples: 2,
+  destinationExitRadiusMeters: 80,
+  destinationRadiusMeters: 60,
+  exitDwellSeconds: 10,
+  exitMinSamples: 2,
+  futureToleranceSeconds: 5,
+  maxGapSeconds: 120,
+  maxObservationDelaySeconds: 120,
+  maxReminderCount: 3,
+  maxSpeedKph: 160,
+  mode: 'LIVE',
+  notificationTtlSeconds: 3_600,
+  policyVersion: 'isolated-android-v1',
+  reminderIntervalSeconds: 300,
+  warehouseExitRadiusMeters: 100,
+  warehouseRadiusMeters: 80,
 };
 
 class FakeOperationalPushProvider implements DsvOperationalPushProvider {
@@ -103,6 +133,8 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
     prisma,
   });
   let current: FixtureRecord | null = null;
+  let flowLocked = false;
+  let fixtureMutation: Promise<unknown> = Promise.resolve();
 
   const app = await buildApp({
     corsOrigin: false,
@@ -140,6 +172,25 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
     logger: false,
   });
 
+  app.addHook('onResponse', (request, reply, done) => {
+    if (current !== null && isTraceablePath(request.url)) {
+      const body = objectValue(request.body);
+      current.traces.push({
+        at: new Date().toISOString(),
+        commandId: typeof body?.commandId === 'string' ? body.commandId : null,
+        contextId: executionContextId(request.url),
+        explanation: typeof body?.explanation === 'string' ? body.explanation : null,
+        method: request.method,
+        path: request.url.split('?')[0],
+        reasonCode: typeof body?.reasonCode === 'string' ? body.reasonCode : null,
+        status: reply.statusCode,
+        targetStopId: typeof body?.targetStopId === 'string' ? body.targetStopId : null,
+      });
+      if (current.traces.length > 100) current.traces.splice(0, current.traces.length - 100);
+    }
+    done();
+  });
+
   app.get('/api/dsv/__fixture/health', async (request, reply) => {
     requireLoopback(request);
     return reply.send({ data: { database: 'postgresql', serverSha: process.env.DSV_SERVER_SHA ?? 'working-tree' } });
@@ -159,12 +210,29 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
   app.get('/api/dsv/__fixture/state', async (request, reply) => {
     requireLoopback(request);
     const fixture = requireFixture(current);
-    const [report, route, order, stop, warning] = await Promise.all([
+    const [report, reportCount, route, order, stop, warning, context, notifications, events, commands] = await Promise.all([
       prisma.dsvDeliveryException.findFirst({ orderBy: { createdAt: 'desc' }, where: { shopId: fixture.shopId } }),
+      prisma.dsvDeliveryException.count({ where: { shopId: fixture.shopId } }),
       prisma.routePlan.findUniqueOrThrow({ where: { id: fixture.routePlanId } }),
       prisma.order.findUniqueOrThrow({ where: { id: fixture.orderId } }),
       prisma.deliveryStop.findUniqueOrThrow({ where: { id: fixture.stopId } }),
-      prisma.dsvOperationalNotification.findUniqueOrThrow({ where: { id: fixture.warningNotificationId } }),
+      prisma.dsvOperationalNotification.findUnique({ where: { id: fixture.warningNotificationId } }),
+      prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }),
+      prisma.dsvOperationalNotification.findMany({
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        select: { businessStatus: true, createdAt: true, id: true, kind: true, logicalKey: true, resolutionReason: true },
+        where: { executionContextId: fixture.contextId },
+      }),
+      prisma.dsvGeofenceEvent.findMany({
+        orderBy: [{ confirmedObservedAt: 'asc' }, { id: 'asc' }],
+        select: { confirmedObservedAt: true, targetKey: true, transition: true },
+        where: { executionContextId: fixture.contextId },
+      }),
+      prisma.dsvExecutionCommand.findMany({
+        orderBy: { createdAt: 'asc' },
+        select: { commandId: true, commandName: true },
+        where: { shopId: fixture.shopId },
+      }),
     ]);
     return reply.send({
       contextId: fixture.contextId,
@@ -172,16 +240,33 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
       expectedChildVersionId: fixture.childVersionId,
       orderCurrentRouteVersionId: order.currentRouteVersionId,
       reportStatus: report?.status ?? null,
+      reportId: report?.id ?? null,
+      reportCount,
+      reportReasonCode: report?.reasonCode ?? null,
+      reportExplanation: report?.explanation ?? null,
+      reportTargetStopId: report?.targetStopId ?? null,
       routeStatus: route.status,
       serviceDate: fixture.serviceDate,
       stopId: fixture.stopId,
       stopStatus: stop.status,
-      warningStatus: warning.businessStatus,
+      commands,
+      commandReceiptCount: commands.length,
+      startedAt: context.startedAt,
+      reminderDueAt: context.reminderDueAt,
+      lastWarningAt: notifications.filter(({ kind }) => kind === 'N05').at(-1)?.createdAt ?? null,
+      geofenceEvents: events,
+      notifications,
+      traces: fixture.traces,
+      warningStatus: warning?.businessStatus ?? null,
     });
   });
   app.post('/api/dsv/__fixture/reset', async (request, reply) => {
     requireLoopback(request);
-    const fixture = await createFixture();
+    const fixture = await serializedFixtureMutation(async () => {
+      if (flowLocked) return null;
+      return createFixture();
+    });
+    if (fixture === null) return reply.code(409).send({ error: { code: 'FIXTURE_FLOW_LOCKED' } });
     reply.header('set-cookie', `${fixture.admin.cookie}; Path=/api/dsv/; HttpOnly; SameSite=Strict`);
     return reply.send({
       contextId: fixture.contextId,
@@ -189,6 +274,92 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
       serviceDate: fixture.serviceDate,
       stopId: fixture.stopId,
     });
+  });
+  app.post('/api/dsv/__fixture/actions/begin', async (request, reply) => {
+    requireLoopback(request);
+    await serializedFixtureMutation(async () => {
+      const fixture = requireFixture(current);
+      requireFixtureAdmin(request, fixture);
+      flowLocked = true;
+    });
+    return reply.send({ data: { locked: true } });
+  });
+  app.post('/api/dsv/__fixture/actions/end', async (request, reply) => {
+    requireLoopback(request);
+    await serializedFixtureMutation(async () => {
+      const fixture = requireFixture(current);
+      requireFixtureAdmin(request, fixture);
+      flowLocked = false;
+    });
+    return reply.send({ data: { locked: false } });
+  });
+  app.post('/api/dsv/__fixture/actions/geofence/warehouse-cycle', async (request, reply) => {
+    requireLoopback(request);
+    const fixture = requireFixture(current);
+    requireFixtureAdmin(request, fixture);
+    const result = await serializedFixtureMutation(() => runWarehouseCycle(prisma, fixture));
+    return reply.send({ data: result });
+  });
+  app.post('/api/dsv/__fixture/actions/geofence/destination-arrival', async (request, reply) => {
+    requireLoopback(request);
+    const fixture = requireFixture(current);
+    requireFixtureAdmin(request, fixture);
+    const result = await serializedFixtureMutation(() => runDestinationArrival(prisma, fixture));
+    return reply.send({ data: result });
+  });
+  app.post('/api/dsv/__fixture/actions/geofence/reminder-repeat', async (request, reply) => {
+    requireLoopback(request);
+    const fixture = requireFixture(current);
+    requireFixtureAdmin(request, fixture);
+    const result = await serializedFixtureMutation(() => runReminderRepeat(prisma, fixture));
+    return reply.send({ data: result });
+  });
+  app.post('/api/dsv/__fixture/actions/geofence/start-stop', async (request, reply) => {
+    requireLoopback(request);
+    const fixture = requireFixture(current);
+    requireFixtureAdmin(request, fixture);
+    const response = await app.inject({
+      headers: { authorization: `Bearer ${fixture.driverToken}` },
+      method: 'POST',
+      payload: {
+        assignmentEpoch: '1', assignmentGeneration: '1', commandId: randomUUID(),
+        expectedRouteVersionId: fixture.childVersionId,
+        occurredAt: new Date().toISOString(), routeVersion: 1,
+      },
+      url: `/api/dsv/driver/executions/${fixture.contextId}/start`,
+    });
+    if (response.statusCode >= 400) return reply.code(response.statusCode).send(response.json());
+    const afterStart = await new PrismaDsvGeofenceService(prisma, { policy: geofencePolicy })
+      .tickReminders(new Date(Date.now() + 3_600_000));
+    const context = await prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } });
+    return reply.send({ data: { afterStart, reminderStatus: context.reminderStatus, startedAt: context.startedAt } });
+  });
+  app.post('/api/dsv/__fixture/actions/publication/change', async (request, reply) => {
+    requireLoopback(request);
+    const fixture = requireFixture(current);
+    requireFixtureAdmin(request, fixture);
+    const result = await serializedFixtureMutation(async () => {
+      await prisma.order.update({
+        data: { rawPayload: { dsv: { normalized: { shippedBoxes: 4 } } } },
+        where: { id: fixture.orderId },
+      });
+      return prisma.$transaction((transaction) => new PrismaDsvExecutionContextService(transaction).syncForRoute({
+        commandId: randomUUID(),
+        routePlanId: fixture.routePlanId,
+        shopId: fixture.shopId,
+      }));
+    });
+    return reply.send({ data: result });
+  });
+  app.post('/api/dsv/__fixture/actions/auth/expire', async (request, reply) => {
+    requireLoopback(request);
+    const fixture = requireFixture(current);
+    requireFixtureAdmin(request, fixture);
+    await serializedFixtureMutation(() => prisma.driverAccount.update({
+      data: { tokenVersion: { increment: 1 } },
+      where: { id: fixture.accountId },
+    }));
+    return reply.send({ data: { expired: true } });
   });
   app.post('/api/dsv/__fixture/actions/report', async (request, reply) => {
     requireLoopback(request);
@@ -261,6 +432,12 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
     current = await seedFixture(prisma);
     return publicFixture(current);
   };
+
+  function serializedFixtureMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = fixtureMutation.then(operation, operation);
+    fixtureMutation = result.then(() => undefined, () => undefined);
+    return result;
+  }
   await app.ready();
 
   return {
@@ -291,6 +468,24 @@ function assertSafeEnvironment(): void {
 function requireLoopback(request: FastifyRequest): void {
   const address = request.ip.replace(/^::ffff:/u, '');
   if (address !== '127.0.0.1' && address !== '::1') throw new Error('Fixture endpoint is loopback-only');
+}
+
+function isTraceablePath(url: string): boolean {
+  const path = url.split('?')[0] ?? '';
+  return path.startsWith('/api/dsv/driver/executions/')
+    || path === '/api/dsv/driver/auth/login'
+    || path === '/driver/route-access/lookup'
+    || path === '/driver/assigned-route';
+}
+
+function executionContextId(url: string): string | null {
+  return /^\/api\/dsv\/driver\/executions\/([^/?]+)/u.exec(url)?.[1] ?? null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function requireFixtureAdmin(request: FastifyRequest, fixture: FixtureRecord): void {
@@ -395,6 +590,7 @@ async function seedFixture(prisma: PrismaClient): Promise<FixtureRecord> {
     n06NotificationId: n06.id,
     adminAccountIds: [adminAccount.id],
     shopIds: [primary.shopId, foreign.shopId],
+    traces: [],
     warningNotificationId: warning.id,
   };
 }
@@ -421,13 +617,35 @@ async function seedTenant(prisma: PrismaClient, label: string) {
     phone: driverPhone,
   });
   const account = await prisma.driverAccount.findUniqueOrThrow({ where: { id: authSession.accountId } });
+  await prisma.driver.update({ data: { accountId: account.id }, where: { id: driver.id } });
   const vehicle = await prisma.vehicle.create({
     data: { label: `Synthetic Vehicle ${label}`, licensePlate: unique.slice(0, 30), shopId: shop.id, status: 'ACTIVE' },
+  });
+  const device = await prisma.dsvVehicleTelematicsDevice.create({
+    data: {
+      capabilities: ['VEHICLE_GPS'],
+      installedAt: new Date(`${DSV_ISOLATED_SERVICE_DATE}T00:00:00.000Z`),
+      serialNumber: `UVIS-${unique}`,
+      shopId: shop.id,
+      vehicleId: vehicle.id,
+    },
   });
   const order = await prisma.order.create({
     data: {
       name: `#isolated-${label}`,
-      rawPayload: { dsv: { normalized: { shippedBoxes: 1 } } },
+      rawPayload: {
+        dsv: {
+          normalized: {
+            conditionCode: 'STANDARD',
+            destinationId: `DEST-${label.toUpperCase()}-${unique.slice(0, 8)}`,
+            sellerOrderKey: `SO-${unique}`,
+            shippedBoxes: 3,
+          },
+        },
+        deliverySession: 'MORNING',
+        normalizedPaymentStatus: 'PAID',
+        serviceType: 'DELIVERY',
+      },
       sellerOrderKey: `SO-${unique}`,
       sellerOrderSourceKind: 'DSV_DISPATCH',
       serviceDate: new Date(`${DSV_ISOLATED_SERVICE_DATE}T00:00:00.000Z`),
@@ -445,6 +663,31 @@ async function seedTenant(prisma: PrismaClient, label: string) {
       longitude: label === 'primary' ? '127.0000000' : '129.0000000',
       orderId: order.id,
       recipientName: `Synthetic ${label} recipient`,
+      shopId: shop.id,
+      status: 'PENDING',
+    },
+  });
+  const nextOrder = await prisma.order.create({
+    data: {
+      name: `#isolated-${label}-next`,
+      rawPayload: { dsv: { normalized: { destinationId: `DEST-${label.toUpperCase()}-NEXT-${unique.slice(0, 8)}`, shippedBoxes: 1 } } },
+      sellerOrderKey: `SO-NEXT-${unique}`,
+      sellerOrderSourceKind: 'DSV_DISPATCH',
+      serviceDate: new Date(`${DSV_ISOLATED_SERVICE_DATE}T00:00:00.000Z`),
+      shopId: shop.id,
+      shopifyOrderGid: `gid://synthetic/Order/next-${unique}`,
+      sourceOrderId: `next-${unique}`,
+      sourcePlatform: 'SHOPIFY',
+    },
+  });
+  const nextStop = await prisma.deliveryStop.create({
+    data: {
+      address1: `Synthetic ${label} next destination`,
+      countryCode: 'KR',
+      latitude: label === 'primary' ? '37.4950000' : '35.0950000',
+      longitude: label === 'primary' ? '127.0050000' : '129.0050000',
+      orderId: nextOrder.id,
+      recipientName: `Synthetic ${label} next recipient`,
       shopId: shop.id,
       status: 'PENDING',
     },
@@ -476,55 +719,36 @@ async function seedTenant(prisma: PrismaClient, label: string) {
       driverId: driver.id,
       groupingId: grouping.id,
       groupingVersionId: groupingVersion.id,
-      publishedAt: new Date(`${DSV_ISOLATED_SERVICE_DATE}T00:00:00.000Z`),
+      publishedAt: null,
       routePlanId: route.id,
       shopId: shop.id,
-      snapshot: { assignmentGeneration: '1', stops: [{ deliveryStopId: stop.id, orderId: order.id, sequence: 1 }] },
+      snapshot: { assignmentGeneration: '1', stops: [
+        { deliveryStopId: nextStop.id, orderId: nextOrder.id, sequence: 1 },
+        { deliveryStopId: stop.id, orderId: order.id, sequence: 2 },
+      ] },
       status: 'CURRENT',
       version: 1,
     },
   });
   await Promise.all([
     prisma.routePlanStop.create({
-      data: { deliveryStopId: stop.id, etaInputRouteVersionId: child.id, routePlanId: route.id, sequence: 1, shopId: shop.id },
+      data: { deliveryStopId: nextStop.id, etaInputRouteVersionId: child.id, routePlanId: route.id, sequence: 1, shopId: shop.id },
+    }),
+    prisma.routePlanStop.create({
+      data: { deliveryStopId: stop.id, etaInputRouteVersionId: child.id, routePlanId: route.id, sequence: 2, shopId: shop.id },
     }),
     prisma.order.update({ data: { currentRouteVersionId: child.id }, where: { id: order.id } }),
+    prisma.order.update({ data: { currentRouteVersionId: child.id }, where: { id: nextOrder.id } }),
   ]);
-  const context = await prisma.dsvExecutionContext.create({
-    data: {
-      assignmentEpoch: 1n,
-      contentFingerprint: `fingerprint-${unique}`,
-      contentSnapshot: {
-        depot: { latitude: 37.49, longitude: 127.01 },
-        stops: [{ id: stop.id, orderId: order.id, quantity: 1, sequence: 1, status: 'PENDING' }],
-      },
-      driverId: driver.id,
-      effectiveAt: new Date(`${DSV_ISOLATED_SERVICE_DATE}T00:00:00.000Z`),
-      notificationMode: 'OFF',
-      recipientAccountId: account.id,
-      reminderDueAt: new Date('2026-10-06T00:30:00.000Z'),
-      reminderIncidentId: randomUUID(),
-      reminderStatus: 'REMINDER_ACTIVE',
-      routePlanId: route.id,
-      routeVersion: 1,
-      serviceDate: new Date(`${DSV_ISOLATED_SERVICE_DATE}T00:00:00.000Z`),
-      shopId: shop.id,
-      status: 'ACTIVE',
-      vehicleId: vehicle.id,
-    },
-  });
-  await prisma.dsvExecutionRouteMapping.create({
-    data: {
-      executionContextId: context.id,
-      routePlanId: route.id,
-      shopId: shop.id,
-      validFrom: new Date(`${DSV_ISOLATED_SERVICE_DATE}T00:00:00.000Z`),
-    },
-  });
+  const publication = await new PrismaRouteGroupingService(prisma, new FakeDriverPushProvider())
+    .recordChildRoutePublished({ routePlanId: route.id, shopDomain });
+  if (publication.publishedAt === null) throw new Error(`Synthetic route publication failed: ${publication.status}`);
+  const context = await prisma.dsvExecutionContext.findFirstOrThrow({ where: { routePlanId: route.id, shopId: shop.id } });
   return {
     accountId: account.id,
     childVersionId: child.id,
     contextId: context.id,
+    deviceId: device.id,
     driverId: driver.id,
     driverCredentials,
     driverToken: signDriverAccountToken({
@@ -534,13 +758,127 @@ async function seedTenant(prisma: PrismaClient, label: string) {
       tokenVersion: account.tokenVersion,
     }, { secret: driverJwtSecret }).token,
     orderId: order.id,
+    nextStopId: nextStop.id,
     routePlanId: route.id,
     serviceDate: DSV_ISOLATED_SERVICE_DATE,
     shopDomain,
     shopId: shop.id,
     stopId: stop.id,
     vehicleId: vehicle.id,
+    vehiclePlate: vehicle.licensePlate!,
   };
+}
+
+async function runWarehouseCycle(prisma: PrismaClient, fixture: FixtureRecord) {
+  const base = new Date(Date.now() + 5_000);
+  await prepareLiveGeofence(prisma, fixture, base);
+  const service = new PrismaDsvGeofenceService(prisma, { policy: geofencePolicy });
+  await processGpsObservations(prisma, fixture, service, [
+    { at: base, coordinates: ['37.4900000', '127.0100000'] as const },
+    { at: new Date(base.getTime() + 10_000), coordinates: ['37.4900000', '127.0100000'] as const },
+    { at: new Date(base.getTime() + 60_000), coordinates: ['37.5200000', '127.0300000'] as const },
+    { at: new Date(base.getTime() + 70_000), coordinates: ['37.5200000', '127.0300000'] as const },
+  ]);
+  const dueAt = new Date(base.getTime() + 370_000);
+  const beforeDue = await service.tickReminders(new Date(dueAt.getTime() - 1));
+  const atDue = await service.tickReminders(dueAt);
+  return {
+    atDue,
+    beforeDue,
+    dueAt: dueAt.toISOString(),
+    notificationKinds: await notificationKinds(prisma, fixture.contextId),
+  };
+}
+
+async function runReminderRepeat(prisma: PrismaClient, fixture: FixtureRecord) {
+  const before = await prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } });
+  if (before.reminderDueAt === null) throw new Error('Fixture reminder is not active');
+  const service = new PrismaDsvGeofenceService(prisma, { policy: geofencePolicy });
+  const beforeDue = await service.tickReminders(new Date(before.reminderDueAt.getTime() - 1));
+  const atDue = await service.tickReminders(before.reminderDueAt);
+  const after = await prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } });
+  return {
+    atDue,
+    beforeDue,
+    nextDueAt: after.reminderDueAt,
+    reminderOrdinal: after.reminderOrdinal,
+  };
+}
+
+async function runDestinationArrival(prisma: PrismaClient, fixture: FixtureRecord) {
+  const base = new Date(Date.now() + 900_000);
+  const service = new PrismaDsvGeofenceService(prisma, { policy: geofencePolicy });
+  await processGpsObservations(prisma, fixture, service, [
+    { at: base, coordinates: ['37.5000000', '127.0000000'] as const },
+    { at: new Date(base.getTime() + 10_000), coordinates: ['37.5000000', '127.0000000'] as const },
+  ]);
+  const notification = await prisma.dsvOperationalNotification.findFirstOrThrow({
+    orderBy: { createdAt: 'desc' },
+    where: {
+      businessStatus: 'OPEN',
+      executionContextId: fixture.contextId,
+      kind: 'N06',
+      targetStopId: fixture.stopId,
+    },
+  });
+  return { notificationId: notification.id, targetStopId: notification.targetStopId };
+}
+
+async function prepareLiveGeofence(prisma: PrismaClient, fixture: FixtureRecord, now: Date): Promise<void> {
+  await prisma.dsvOperationalNotification.deleteMany({
+    where: { executionContextId: fixture.contextId, kind: { in: ['N05', 'N06'] } },
+  });
+  await prisma.dsvExecutionContext.update({
+    data: {
+      departureObservedAt: null,
+      liveEligibleAt: now,
+      monitorEndAt: new Date(now.getTime() + 3_600_000),
+      monitorStartAt: now,
+      notificationMode: 'LIVE',
+      policy: geofencePolicy,
+      reminderDueAt: null,
+      reminderIncidentId: null,
+      reminderOrdinal: 0,
+      reminderStatus: 'NOT_STARTED',
+      warehouseNotifiedAt: null,
+    },
+    where: { id: fixture.contextId },
+  });
+}
+
+async function processGpsObservations(
+  prisma: PrismaClient,
+  fixture: FixtureRecord,
+  service: PrismaDsvGeofenceService,
+  observations: Array<{ at: Date; coordinates: readonly [string, string] }>,
+): Promise<void> {
+  const telemetry = new PrismaUvisTelemetryRepository(prisma);
+  for (const observation of observations) {
+    const stored = await telemetry.recordSample({
+      deviceId: fixture.deviceId,
+      ignitionOn: true,
+      latitude: observation.coordinates[0],
+      longitude: observation.coordinates[1],
+      observedAt: observation.at,
+      receivedAt: observation.at,
+      sourceDeviceIdentifier: 'isolated-uvis-device',
+      sourceKind: 'VEHICLE_GPS',
+      sourcePlate: fixture.vehiclePlate,
+      speedKph: '10',
+      staleAfter: new Date(observation.at.getTime() + 300_000),
+    });
+    const job = await prisma.dsvGeofenceJob.findUniqueOrThrow({ where: { sampleId: stored.sampleId } });
+    await prisma.dsvGeofenceJob.update({ data: { nextAttemptAt: observation.at }, where: { id: job.id } });
+    await service.process(job.id, new Date(observation.at.getTime() + 1_000));
+  }
+}
+
+async function notificationKinds(prisma: PrismaClient, executionContextId: string): Promise<string[]> {
+  return (await prisma.dsvOperationalNotification.findMany({
+    orderBy: { createdAt: 'asc' },
+    select: { kind: true },
+    where: { businessStatus: 'OPEN', executionContextId },
+  })).map(({ kind }) => kind);
 }
 
 async function cleanupFixture(prisma: PrismaClient, fixture: FixtureRecord): Promise<void> {

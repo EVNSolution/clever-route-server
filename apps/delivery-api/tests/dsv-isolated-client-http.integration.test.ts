@@ -115,6 +115,96 @@ serverSuite('DSV isolated real PostgreSQL HTTP integration', () => {
     expect(notification).toMatchObject({ businessStatus: 'RESOLVED', resolutionReason: 'OPERATIONS_RESOLVED' });
   });
 
+  test('projects the synthetic dispatch into the actual mobile route and drives notifications through GPS workers', async () => {
+    const credentialResponse = await requestJson(baseUrl, '/api/dsv/__fixture/credentials/driver', {
+      headers: adminHeaders(fixture),
+    });
+    const login = await requestJson(baseUrl, '/api/dsv/driver/auth/login', {
+      body: credentialResponse.body.data,
+      method: 'POST',
+    });
+    expect(login.status).toBe(200);
+    const accessToken = String(login.body.data.accessToken);
+    const lookup = await requestJson(baseUrl, '/driver/route-access/lookup', {
+      headers: { authorization: `Bearer ${accessToken}` },
+      body: { routeContext: null },
+      method: 'POST',
+    });
+    expect(lookup.status).toBe(200);
+    const routeChoice = lookup.body.data.routes.find((route: any) => route.routeAccess.routePlanId === fixture.routePlanId);
+    expect(routeChoice).toBeDefined();
+    const assigned = await requestJson(baseUrl, `/driver/assigned-route?routeContext=${fixture.routePlanId}`, {
+      headers: { authorization: `Bearer ${String(routeChoice.driverAccess.accessToken)}` },
+    });
+    expect(assigned.status).toBe(200);
+    expect(assigned.body.data).toMatchObject({
+      route: {
+        deliveryDate: fixture.serviceDate,
+        id: fixture.routePlanId,
+        routeVersionId: fixture.childVersionId,
+        stops: expect.arrayContaining([expect.objectContaining({
+          deliveryStopId: fixture.stopId,
+          destinationId: expect.stringMatching(/^DEST-PRIMARY-/u),
+          shippedBoxes: 3,
+        })]),
+      },
+      status: 'ASSIGNED_ROUTE',
+    });
+    expect(fixture.nextStopId).not.toBe(fixture.stopId);
+
+    const warehouse = await requestJson(baseUrl, '/api/dsv/__fixture/actions/geofence/warehouse-cycle', {
+      body: {}, headers: adminHeaders(fixture), method: 'POST',
+    });
+    expect(warehouse.status, JSON.stringify(warehouse.body)).toBe(200);
+    expect(warehouse.body.data).toMatchObject({ atDue: 1, beforeDue: 0 });
+    expect(warehouse.body.data.notificationKinds).toEqual(expect.arrayContaining(['N04', 'N05']));
+    const destination = await requestJson(baseUrl, '/api/dsv/__fixture/actions/geofence/destination-arrival', {
+      body: {}, headers: adminHeaders(fixture), method: 'POST',
+    });
+    expect(destination.status).toBe(200);
+    expect(destination.body.data.targetStopId).toBe(fixture.stopId);
+    expect(destination.body.data.targetStopId).not.toBe(fixture.nextStopId);
+    const repeated = await requestJson(baseUrl, '/api/dsv/__fixture/actions/geofence/reminder-repeat', {
+      body: {}, headers: adminHeaders(fixture), method: 'POST',
+    });
+    expect(repeated.body.data).toMatchObject({ atDue: 1, beforeDue: 0, reminderOrdinal: 2 });
+    const started = await requestJson(baseUrl, '/api/dsv/__fixture/actions/geofence/start-stop', {
+      body: {}, headers: adminHeaders(fixture), method: 'POST',
+    });
+    expect(started.body.data).toMatchObject({ afterStart: 0, reminderStatus: 'RESOLVED_START' });
+    const changed = await requestJson(baseUrl, '/api/dsv/__fixture/actions/publication/change', {
+      body: {}, headers: adminHeaders(fixture), method: 'POST',
+    });
+    expect(changed.body.data.notificationKinds).toContain('N02');
+    const state = await requestJson(baseUrl, '/api/dsv/__fixture/state');
+    expect(state.body.geofenceEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ targetKey: 'DEPOT', transition: 'ARRIVED' }),
+      expect.objectContaining({ targetKey: 'DEPOT', transition: 'DEPARTED' }),
+      expect.objectContaining({ targetKey: `STOP:${fixture.stopId}`, transition: 'ARRIVED' }),
+    ]));
+    expect(state.body.traces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: 'POST', path: '/api/dsv/driver/auth/login', status: 200 }),
+      expect.objectContaining({ method: 'POST', path: '/driver/route-access/lookup', status: 200 }),
+      expect.objectContaining({ method: 'GET', path: '/driver/assigned-route', status: 200 }),
+    ]));
+  });
+
+  test('serializes the Android flow lock and rejects resets while it is active', async () => {
+    const begin = await requestJson(baseUrl, '/api/dsv/__fixture/actions/begin', {
+      body: {}, headers: adminHeaders(fixture), method: 'POST',
+    });
+    expect(begin.body.data.locked).toBe(true);
+    const resets = await Promise.all([
+      requestJson(baseUrl, '/api/dsv/__fixture/reset', { body: {}, method: 'POST' }),
+      requestJson(baseUrl, '/api/dsv/__fixture/reset', { body: {}, method: 'POST' }),
+    ]);
+    expect(resets.map(({ status }) => status)).toEqual([409, 409]);
+    const end = await requestJson(baseUrl, '/api/dsv/__fixture/actions/end', {
+      body: {}, headers: adminHeaders(fixture), method: 'POST',
+    });
+    expect(end.body.data.locked).toBe(false);
+  });
+
   test('rejects authentication loss, reassignment, foreign tenant identifiers, and missing CSRF', async () => {
     const before = await Promise.all([
       harness.prisma.dsvDeliveryException.count({ where: { shopId: fixture.shopId } }),

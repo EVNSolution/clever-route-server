@@ -12,6 +12,7 @@ process.stdout.write(`${JSON.stringify({
   contextId: fixture.contextId,
   serviceDate: fixture.serviceDate,
   shopDomain: fixture.shopDomain,
+  nextStopId: fixture.nextStopId,
   stopId: fixture.stopId,
 })}\n`);
 
