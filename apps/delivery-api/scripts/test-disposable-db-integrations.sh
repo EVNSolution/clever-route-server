@@ -374,3 +374,6 @@ DATABASE_URL="$completion_assistance_url" \
 KFOOD_COMPLETION_DATABASE_URL="$completion_assistance_url" \
 KFOOD_COMPLETION_DATABASE_TARGET_CLASS='safe-local-kfood-completion-disposable' \
 npm test -- kfood-delivery-completion.integration.test.ts
+
+# Independent synthetic KFood live-change database and notification provider.
+bash scripts/test-live-route-change-db.sh

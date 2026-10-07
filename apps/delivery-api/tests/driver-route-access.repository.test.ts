@@ -38,6 +38,9 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         driverNavigationUntil: true,
         isStoreReviewData: true,
+        liveChangeState: {
+          select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+        },
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
@@ -130,6 +133,9 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         driverNavigationUntil: true,
         isStoreReviewData: true,
+        liveChangeState: {
+          select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+        },
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
@@ -610,6 +616,9 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         driverNavigationUntil: true,
         isStoreReviewData: true,
+        liveChangeState: {
+          select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+        },
         name: true,
         planDate: true,
         routeGroupingChildVersions: {

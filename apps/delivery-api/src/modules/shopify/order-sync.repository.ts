@@ -502,6 +502,11 @@ export class PrismaOrderSyncRepository {
           } satisfies OrderWriteWithNotificationIntents;
         }
       }
+      await lockRouteMembershipsForOrderSync(tx, {
+        shopId: shop.id,
+        sourceIdentity,
+        shopifyOrderGid: input.synced.order.shopifyOrderGid,
+      });
       const existing = await findExistingOrderForSync(tx, {
         shopId: shop.id,
         sourceIdentity,
@@ -591,6 +596,7 @@ export class PrismaOrderSyncRepository {
       try {
         return await this.prisma.$transaction(operation, {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          timeout: 15_000,
         });
       } catch (error) {
         if (!isRetryableTransactionConflict(error) || attempt === 2) throw error;
@@ -1609,6 +1615,33 @@ type OrderWriteWithNotificationIntents = {
   result: UpsertOrderWithDeliveryStopResult;
 };
 
+async function lockRouteMembershipsForOrderSync(tx: OrderSyncWriteClient, input: {
+  shopId: string;
+  shopifyOrderGid: string;
+  sourceIdentity: ReturnType<typeof readSourceIdentity>;
+}): Promise<void> {
+  // Legacy unit-test adapters omit raw SQL. Real Prisma transactions always provide it.
+  if (typeof tx.$queryRaw !== 'function') return;
+  const source = input.sourceIdentity.sourceOrderId === null ? Prisma.empty : Prisma.sql`
+    OR (source_order."sourceOrderId" = ${input.sourceIdentity.sourceOrderId}
+      AND source_order."sourcePlatform"::text = ${input.sourceIdentity.sourcePlatform}
+      AND source_order."sourceSiteUrl" IS NOT DISTINCT FROM ${input.sourceIdentity.sourceSiteUrl}::text)`;
+  // Acquire all owning route locks in the same order before reading or writing stops/facts.
+  // Dispatch touches the route row, so a stale Serializable snapshot fails and retries.
+  await tx.$queryRaw(Prisma.sql`
+    SELECT route_plan.id FROM route_plans route_plan
+    WHERE route_plan."shopId" = ${input.shopId}::uuid
+      AND route_plan.id IN (
+        SELECT membership."routePlanId" FROM route_plan_stops membership
+        JOIN delivery_stops stop ON stop.id = membership."deliveryStopId" AND stop."shopId" = membership."shopId"
+        JOIN orders source_order ON source_order.id = stop."orderId" AND source_order."shopId" = stop."shopId"
+        WHERE membership."shopId" = ${input.shopId}::uuid
+          AND (source_order."shopifyOrderGid" = ${input.shopifyOrderGid} ${source})
+      )
+    ORDER BY route_plan.id FOR UPDATE OF route_plan
+  `);
+}
+
 async function findExistingOrderForSync(
   tx: OrderSyncWriteClient,
   input: {
@@ -1664,7 +1697,11 @@ function sameStringArray(left: string[], right: string[]): boolean {
 }
 
 function isRetryableTransactionConflict(error: unknown): boolean {
-  return objectOrNull(error)?.code === "P2034";
+  const details = objectOrNull(error);
+  if (details?.code === "P2034") return true;
+  // Prisma exposes conflicts from raw route locks as P2010 with PostgreSQL SQLSTATE.
+  const sqlState = objectOrNull(details?.meta)?.code;
+  return details?.code === "P2010" && (sqlState === "40001" || sqlState === "40P01");
 }
 
 function isExistingNewerThanSnapshot(

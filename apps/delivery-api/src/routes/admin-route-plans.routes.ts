@@ -53,8 +53,16 @@ import type {
 } from '../modules/route-tracking/route-tracking.stream.js';
 import type { PrismaRouteOperationalStateService, RouteOperationalStateV1 } from '../modules/route-tracking/route-operational-state.service.js';
 import { OriginalObservationsError, type OriginalObservationsService } from '../modules/route-tracking/original-observations.service.js';
+import {
+  LiveRouteChangeError,
+  readLiveRouteChangeDispatchPayload,
+  readLiveRouteChangeRouteId,
+  readSaveLiveRouteChangePayload,
+  type PrismaLiveRouteChangeService
+} from '../modules/route-plans/live-route-change.service.js';
 
 export type AdminRoutePlanDependencies = {
+  liveRouteChangeService?: Pick<PrismaLiveRouteChangeService, 'getAdminDraft' | 'saveAdminDraft' | 'dispatchAdminDraft'>;
   originalObservationsService?: OriginalObservationsService;
   operationalStateService?: Pick<PrismaRouteOperationalStateService, 'get' | 'getMany'>;
   routeGroupingService?: Pick<RouteGroupingService, 'recordChildRoutePublished'>;
@@ -68,6 +76,67 @@ export function registerAdminRoutePlanRoutes(
   app: FastifyInstance,
   dependencies: AdminRoutePlanDependencies
 ): void {
+  app.get<{ Params: { routePlanId: string } }>('/admin/route-plans/:routePlanId/live-change', async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    const auth = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log, surface: 'admin_route_plans'
+    });
+    if (auth.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', auth.message));
+    if (dependencies.liveRouteChangeService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Live route changes are unavailable'));
+    let routePlanId: string;
+    try { routePlanId = readLiveRouteChangeRouteId(request.params.routePlanId); }
+    catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route ID')); }
+    try {
+      const data = await dependencies.liveRouteChangeService.getAdminDraft({ appId: auth.appId, shopDomain: auth.shopDomain, routePlanId });
+      return reply.code(200).send({ data, error: null });
+    } catch (error) {
+      if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+      throw error;
+    }
+  });
+
+  app.patch<{ Body: unknown; Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/live-change', { bodyLimit: 256_000 }, async (request, reply) => {
+      reply.header('Cache-Control', 'private, no-store');
+      const auth = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log, surface: 'admin_route_plans'
+      });
+      if (auth.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', auth.message));
+      if (dependencies.liveRouteChangeService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Live route changes are unavailable'));
+      let command;
+      try { command = { routePlanId: readLiveRouteChangeRouteId(request.params.routePlanId), ...readSaveLiveRouteChangePayload(request.body) }; }
+      catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid live route change payload')); }
+      try {
+        const data = await dependencies.liveRouteChangeService.saveAdminDraft({ appId: auth.appId, shopDomain: auth.shopDomain, ...command });
+        return reply.code(200).send({ data, error: null });
+      } catch (error) {
+        if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+        throw error;
+      }
+    }
+  );
+
+  app.post<{ Body: unknown; Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/live-change/dispatch', { bodyLimit: 4_096 }, async (request, reply) => {
+      reply.header('Cache-Control', 'private, no-store');
+      const auth = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log, surface: 'admin_route_plans'
+      });
+      if (auth.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', auth.message));
+      if (dependencies.liveRouteChangeService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Live route changes are unavailable'));
+      let command;
+      try { command = { routePlanId: readLiveRouteChangeRouteId(request.params.routePlanId), ...readLiveRouteChangeDispatchPayload(request.body) }; }
+      catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid live route Dispatch payload')); }
+      try {
+        const data = await dependencies.liveRouteChangeService.dispatchAdminDraft({ appId: auth.appId, shopDomain: auth.shopDomain, ...command });
+        return reply.code(200).send({ data, error: null });
+      } catch (error) {
+        if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+        throw error;
+      }
+    }
+  );
+
   app.get<{ Params: { routePlanId: string }; Querystring: unknown }>(
     '/admin/route-plans/:routePlanId/tracking/original-observations',
     async (request, reply) => {

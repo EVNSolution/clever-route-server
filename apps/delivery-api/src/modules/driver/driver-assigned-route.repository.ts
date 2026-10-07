@@ -1,4 +1,5 @@
 import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
+import type { LiveRouteSnapshot } from '../route-plans/live-route-change.js';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import {
@@ -42,6 +43,20 @@ import {
 type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'deliveryCustomerProfile' | 'routePlan' | 'routePlanGeometryCache'>;
 
 type AssignedRoutePlanRecord = {
+  assignmentGeneration?: bigint;
+  liveChangeState?: {
+    assignmentGeneration: bigint;
+    baselineRouteVersionId: string;
+    driverId: string;
+    latestPublicationId: string;
+    latestSequence: number;
+  } | null;
+  liveChangePublications?: Array<{
+    id: string;
+    assignmentGeneration: bigint;
+    driverId: string;
+    snapshot: Prisma.JsonValue;
+  }>;
   createdAt: Date;
   constraints: unknown;
   depotLatitude: unknown;
@@ -154,6 +169,14 @@ type AssignedRoutePlanStopRecord = {
 };
 
 const assignedRouteInclude = {
+  liveChangeState: {
+    select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+  },
+  liveChangePublications: {
+    orderBy: [{ assignmentGeneration: 'desc' as const }, { sequence: 'desc' as const }],
+    take: 1,
+    select: { id: true, assignmentGeneration: true, driverId: true, snapshot: true }
+  },
   routeGroupingChildVersions: {
     select: { id: true, driverId: true, routePlanId: true, status: true, supersededAt: true },
     where: { status: 'CURRENT', supersededAt: null },
@@ -247,6 +270,7 @@ export class PrismaDriverAssignedRouteRepository {
     if (routePlan === null) {
       return { status: 'NO_ASSIGNED_ROUTE' };
     }
+    const publishedRoute = projectPublishedLiveRoute(routePlan);
 
     const profiles = await this.prisma.deliveryCustomerProfile.findMany({
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -254,8 +278,8 @@ export class PrismaDriverAssignedRouteRepository {
       where: { mergedIntoProfileId: null, shopId: input.shopId }
     }) as CanonicalDestinationProfileRecord[];
     return toAssignedRouteResult(
-      routePlan,
-      await this.readCachedRouteResult(routePlan),
+      publishedRoute,
+      await this.readCachedRouteResult(publishedRoute),
       buildCanonicalDestinationProjection(profiles)
     );
   }
@@ -263,6 +287,35 @@ export class PrismaDriverAssignedRouteRepository {
   private readCachedRouteResult(routePlan: AssignedRoutePlanRecord): Promise<RoutePlanRouteResult> {
     return readCachedRouteResult(this.prisma, routePlan);
   }
+}
+
+function projectPublishedLiveRoute(route: AssignedRoutePlanRecord): AssignedRoutePlanRecord {
+  const state = route.liveChangeState;
+  if (state == null || state.latestSequence === 0 || state.driverId !== route.driverId
+    || state.assignmentGeneration !== route.assignmentGeneration
+    || state.baselineRouteVersionId !== (route.routeGroupingChildVersions?.[0]?.id ?? route.id)) return route;
+  const publication = route.liveChangePublications?.find((row) => row.id === state.latestPublicationId);
+  if (publication === undefined || publication.driverId !== state.driverId
+    || publication.assignmentGeneration !== state.assignmentGeneration) throw new DriverAssignedRouteVersionError();
+  const value = publication.snapshot;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+    || value.schemaVersion !== 1 || !Array.isArray(value.stops)) throw new DriverAssignedRouteVersionError();
+  const snapshot = value as unknown as LiveRouteSnapshot;
+  const byId = new Map(snapshot.stops.map((stop) => [stop.deliveryStopId, stop]));
+  if (byId.size !== route.routeStops.length) throw new DriverAssignedRouteVersionError();
+  return { ...route, routeStops: route.routeStops.map((row) => {
+    const stop = byId.get(row.deliveryStop.id);
+    if (stop === undefined) throw new DriverAssignedRouteVersionError();
+    return { ...row, sequence: stop.sequence, deliveryStop: {
+      ...row.deliveryStop,
+      address1: stop.address1, address2: stop.address2, city: stop.city, province: stop.province,
+      postalCode: stop.postalCode, countryCode: stop.countryCode,
+      recipientName: stop.recipientName, phone: stop.phone, instructions: stop.instructions,
+      latitude: stop.latitude, longitude: stop.longitude, serviceMinutes: stop.serviceMinutes,
+      timeWindowStart: stop.timeWindowStart === null ? null : new Date(stop.timeWindowStart),
+      timeWindowEnd: stop.timeWindowEnd === null ? null : new Date(stop.timeWindowEnd)
+    } };
+  }) };
 }
 
 export class DriverAssignedRouteVersionError extends Error {
@@ -387,6 +440,12 @@ function toAssignedRouteResult(
 }
 
 function resolveRouteVersionId(routePlan: AssignedRoutePlanRecord): string | null {
+  const state = routePlan.liveChangeState;
+  if (state != null && state.latestSequence > 0 && state.driverId === routePlan.driverId
+    && state.assignmentGeneration === routePlan.assignmentGeneration
+    && state.baselineRouteVersionId === (routePlan.routeGroupingChildVersions?.[0]?.id ?? routePlan.id)) {
+    return state.latestPublicationId;
+  }
   if (routePlan.routeGroupingChildVersions !== undefined) {
     const children = routePlan.routeGroupingChildVersions;
     if (children.length === 0) return null;

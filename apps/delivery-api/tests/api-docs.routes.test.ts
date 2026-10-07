@@ -138,6 +138,32 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('OpenAPI keeps live route changes scoped, idempotent and limited to future addresses and order', async () => {
+    const document = await readFile(new URL('../docs/api/openapi.yaml', import.meta.url), 'utf8');
+    execFileSync('ruby', [
+      '-e',
+      [
+        'require "date"',
+        'require "yaml"',
+        'doc = YAML.safe_load(STDIN.read, permitted_classes: [Date])',
+        'paths = doc.fetch("paths")',
+        'admin = "/admin/route-plans/{routePlanId}/live-change"',
+        'driver = "/driver/routes/{routePlanId}/live-change"',
+        '[[admin, "get", "ShopifySessionToken"], [admin, "patch", "ShopifySessionToken"], [admin + "/dispatch", "post", "ShopifySessionToken"], [driver, "get", "DriverAccessToken"], [driver + "/applied", "post", "DriverAccessToken"]].each { |path, method, scheme| operation = paths.fetch(path).fetch(method); raise "live change security missing" unless operation.fetch("security") == [{scheme => []}]; raise "live change conflict missing" unless operation.fetch("responses").key?("409") }',
+        'schemas = doc.dig("components", "schemas")',
+        '%w[LiveRouteChangeSaveRequest LiveRouteChangeDispatchRequest].each { |name| schema = schemas.fetch(name); raise "live command guards missing" unless %w[commandId expectedAssignmentGeneration expectedRouteVersionId expectedRevision].all? { |field| schema.fetch("required").include?(field) }; raise "unknown command fields accepted" unless schema.fetch("additionalProperties") == false }',
+        'override = schemas.fetch("LiveRouteChangeStopOverride")',
+        'raise "live change write scope expanded" unless override.fetch("properties").keys.sort == %w[deliveryStopId address1 address2 city province postalCode countryCode latitude longitude].sort',
+        'raise "coordinate pairing missing" unless override.fetch("dependentRequired") == {"latitude" => ["longitude"], "longitude" => ["latitude"]}',
+        'snapshot = schemas.fetch("LiveRouteChangeSnapshot")',
+        'raise "snapshot schema version missing" unless snapshot.dig("properties", "schemaVersion", "const") == 1',
+        'raise "snapshot fingerprint fields removed" unless %w[instructions recipientName phone serviceMinutes timeWindowStart timeWindowEnd].all? { |field| schemas.fetch("LiveRouteChangeSnapshotStop").fetch("required").include?(field) }',
+        'raise "exact apply version missing" unless schemas.fetch("LiveRouteChangeApplyRequest").fetch("required").sort == %w[publicationVersionId assignmentGeneration].sort',
+        'raise "unenrolled query null missing" unless schemas.fetch("LiveRouteChangePublicationEnvelope").dig("properties", "data", "oneOf").any? { |branch| branch["type"] == "null" }'
+      ].join('; ')
+    ], { input: document });
+  });
+
   test('GET /docs/openapi.yaml documents route stop location diagnostics and strict override coordinates', async () => {
     const app = await buildApp();
 
@@ -696,6 +722,9 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/send' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/departure-time' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/driver' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/live-change' },
+    { method: 'patch', path: '/admin/route-plans/:routePlanId/live-change' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/live-change/dispatch' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/operational-state' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/options' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/publish' },

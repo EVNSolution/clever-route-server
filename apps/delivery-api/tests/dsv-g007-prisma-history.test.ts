@@ -163,7 +163,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(112);
+    expect(migrations).toHaveLength(113);
+    expect(migrations).toContain('20261007120000_kfood_live_route_changes');
     expect(migrations).toContain('20261002140000_kfood_delivery_navigation_grace');
     expect(migrations).toContain('20261002120000_driver_runtime_diagnostics');
     expect(migrations).toContain('20260929120000_add_incomplete_route_plan_status');
@@ -417,7 +418,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')).toBeLessThan(
       migrations.indexOf('20260929120000_add_incomplete_route_plan_status')
     );
-    expect(migrations.at(-1)).toBe('20261002140000_kfood_delivery_navigation_grace');
+    expect(migrations.indexOf('20261002140000_kfood_delivery_navigation_grace')).toBeLessThan(
+      migrations.indexOf('20261007120000_kfood_live_route_changes')
+    );
+    expect(migrations.at(-1)).toBe('20261007120000_kfood_live_route_changes');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {
@@ -597,7 +601,7 @@ describe('G007 DSV Prisma migration history', () => {
     const schema = await readFile(schemaPath, 'utf8');
 
     expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(65);
-    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(26);
+    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(27);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });
 });

@@ -30,6 +30,13 @@ type DriverRouteAccessPrismaClient = Pick<
 >;
 
 type DriverRoutePlanRecord = {
+  liveChangeState?: {
+    assignmentGeneration: bigint;
+    baselineRouteVersionId: string;
+    driverId: string;
+    latestPublicationId: string;
+    latestSequence: number;
+  } | null;
   assignmentGeneration?: bigint;
   constraints: unknown;
   driver: {
@@ -62,6 +69,9 @@ type DriverRoutePlanRecord = {
 };
 
 const routePlanSelect = {
+  liveChangeState: {
+    select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+  },
   assignmentGeneration: true,
   constraints: true,
   deliveryWorkCompletedAt: true,
@@ -405,13 +415,23 @@ function mapRoutePlan(
     routeAccess: {
       assignmentGeneration: routePlan.assignmentGeneration.toString(),
       driverContractVersion: 2,
-      expectedRouteVersionId: currentRouteVersion.id,
+      expectedRouteVersionId: currentLivePublicationId(routePlan) ?? currentRouteVersion.id,
       nextState: 'consent_required',
       routeContext: input.routeContext,
       routePlanId: routePlan.id
     },
     companyGuidance: buildCompanyGuidance(routePlan)
   };
+}
+
+function currentLivePublicationId(route: DriverRoutePlanRecord): string | null {
+  const state = route.liveChangeState;
+  return state != null
+    && state.latestSequence > 0
+    && state.driverId === route.driver?.id
+    && state.assignmentGeneration === route.assignmentGeneration
+    && state.baselineRouteVersionId === route.routeGroupingChildVersions?.[0]?.id
+    ? state.latestPublicationId : null;
 }
 
 function isDriverVisibleRoutePlan(routePlan: DriverRoutePlanRecord): boolean {

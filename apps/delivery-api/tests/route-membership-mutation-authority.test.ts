@@ -11,6 +11,8 @@ const authorizedMembershipWriters = [
   'modules/dsv/dsv-dispatch-import.service.ts',
   'modules/dsv/dsv-eta-repair.ts', // Reviewed ETA-only stop update; no membership fields.
   'modules/route-grouping/route-grouping.service.ts',
+  'modules/route-plans/live-route-change.service.ts', // Reviewed future-only geometry/ETA under publication and route locks.
+  'modules/route-plans/live-route-change.ts', // Reviewed future reorder under route/stop locks; immutable publication, same child members.
   'modules/route-plans/route-plan.repository.ts'
 ];
 
@@ -29,6 +31,9 @@ const reviewedMutationInventory = [
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.createMany:5',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.deleteMany:4',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:4',
+  'modules/route-plans/live-route-change.service.ts:routePlanStop.updateMany:1',
+  'modules/route-plans/live-route-change.ts:routePlanStop.update:2',
+  'modules/route-plans/live-route-change.ts:routePlanStop.updateMany:1',
   'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.updateMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.createMany:4',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.deleteMany:4',
