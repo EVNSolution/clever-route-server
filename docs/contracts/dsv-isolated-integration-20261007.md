@@ -135,10 +135,10 @@ provider attempt는 0건이며 non-fake provider message도 0건이다.
 실기기 runtime health SHA는 `55a8979d476df4e07e3c3ac0b2dd1ca0094e4217`이었다.
 후속 fixture 보완 SHA `0d800475d0b504ad4eb69b3ffdf265964c6c1f23`은
 두 배송지 metadata와 실제 Driver parser 회귀를 추가했다.
-최종 SHA `3de7a884a8592fe6442e33abe7d543b051e1f41f`은
+109건 전체 DB 실행 입력 SHA `3de7a884a8592fe6442e33abe7d543b051e1f41f`은
 재배정 계정 연결과 production Driver route-access 회귀를 추가했다.
 두 후속 SHA는 최종 새 PostgreSQL 109건으로 검증했다.
-실기기 runtime SHA와 최종 테스트 SHA를 같은 실행으로 표현하지 않는다.
+실기기 runtime SHA와 109건 실행 입력 SHA를 같은 실행으로 표현하지 않는다.
 
 ## 코드 검사와 독립 검토
 
@@ -146,7 +146,7 @@ provider attempt는 0건이며 non-fake provider message도 0건이다.
 독립 검토에서 W1, 실제 DB HTTP harness, native 격리 설정의 코드 결함은 남지 않았다.
 전체 타입 인지 ESLint는 4GiB 명령 한도에서 600초 timeout으로 종료됐다.
 OOM이나 lint 오류는 출력되지 않았다. 메모리 압력 아래에서 로컬 전체 검사를 반복하지 않았다.
-서버 소스 `96317ac35ffda99a1699b5b3ad19d3a2e0e33363`의
+초기 전체 검증 서버 소스 `96317ac35ffda99a1699b5b3ad19d3a2e0e33363`의
 [CI 37570355537](https://github.com/EVNSolution/clever-route-server/actions/runs/37570355537)는 통과했다.
 전체 lint·typecheck·단위 검사 3,267건·build·compose 검사가 통과했다.
 단위 단계의 guarded/optional skip 312건은 통과로 계산하지 않았다.
@@ -186,15 +186,21 @@ workspace 320/320, lint, Android/iOS export를 통과했다. audit 단계는 기
 Expo 정합성·whitespace 후속 단계는 CI에서 skip이었다. 해당 로컬 검사 결과는 Driver 기록에 남긴다.
 공식 advisory와 지원되는 Expo 의존성 조합에서 수정 버전을 확인하지 못했다. Issue62 차단을 유지한다.
 
-격리 arm64 APK는 생성됐다. 첫 실행은 1,200초 timeout이었다. 오류·OOM은 없고 마지막 lint 단계까지 진행했다.
+초기 격리 arm64 APK 후보는 생성됐다. 첫 실행은 1,200초 timeout이었다. 오류·OOM은 없고 마지막 lint 단계까지 진행했다.
 유효한 Gradle/NDK 산출물을 재사용한 한 번의 제한된 후속 실행은 57.31초에 성공했다.
 첫 APK는 일반 cleartext 옵션이 release manifest에 반영되지 않아 격리 HTTP 접근을 차단했다.
 격리 모드 전용 Android manifest plugin으로 수정했다. 기본 업무용 설정은 유지했다.
-최종 재빌드는 30.1초에 성공했다. APK는 45,577,823 bytes다.
-최종 SHA256은 `9fff45386f9384f0207ca496dbf0147a10ba956c78f1113290fc03ec8d3825f5`다.
-별도 package를 SM-N981N에 설치했다. 실제 테스트 DB의 합성 기사 로그인·홈 화면과 재실행 로그인 복구를 확인했다.
+이 초기 후보의 재빌드는 30.1초에 성공했다. APK는 45,577,823 bytes다.
+초기 후보 SHA256은 `9fff45386f9384f0207ca496dbf0147a10ba956c78f1113290fc03ec8d3825f5`다.
+별도 package를 SM-N981N에 설치했다. 이 초기 후보에서는 합성 기사 로그인·홈 화면과 재실행 로그인 복구까지 확인했다.
 업무용 package는 0.1.15/26을 유지했다. 실제 FCM 수신은 미검증이다.
-세 후보의 최종 SHA와 기기 화면·로그 경로는 PR의 최종 검증 갱신 기록에 남긴다.
+현재 실제 기기 업무 흐름 완료 근거는
+[Driver 운영 알림 검증](https://github.com/EVNSolution/clever-driver-app/blob/6e2db49e0415786c018762a26a6b136bcef5b743/docs/driver-operational-verification.md)의
+`Android 실기기 업무 흐름 보완 — 2026-10-07` 절과 canonical 기록
+`.omx/plans/dsv-android-device-flow-20261007.md`다.
+해당 완료 기록의 최종 APK SHA256은
+`2c78ef20bc8522dd46d8c57965ca664727f397aaa5f8557709c2334dd98d09d7`다.
+세 후보의 최종 SHA와 기기 화면·로그 경로는 PR의 최종 검증 갱신 기록에도 남긴다.
 
 ## 남은 범위
 
