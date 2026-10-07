@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { buildApp } from '../../src/app.js';
@@ -253,6 +253,7 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
       commandReceiptCount: commands.length,
       startedAt: context.startedAt,
       reminderDueAt: context.reminderDueAt,
+      reminderStatus: context.reminderStatus,
       lastWarningAt: notifications.filter(({ kind }) => kind === 'N05').at(-1)?.createdAt ?? null,
       geofenceEvents: events,
       notifications,
@@ -339,8 +340,17 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
     const fixture = requireFixture(current);
     requireFixtureAdmin(request, fixture);
     const result = await serializedFixtureMutation(async () => {
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: fixture.orderId } });
+      const rawPayload = objectValue(order.rawPayload) ?? {};
+      const dsv = objectValue(rawPayload.dsv) ?? {};
+      const normalized = objectValue(dsv.normalized) ?? {};
       await prisma.order.update({
-        data: { rawPayload: { dsv: { normalized: { shippedBoxes: 4 } } } },
+        data: {
+          rawPayload: {
+            ...rawPayload,
+            dsv: { ...dsv, normalized: { ...normalized, shippedBoxes: 4 } },
+          } as Prisma.InputJsonValue,
+        },
         where: { id: fixture.orderId },
       });
       return prisma.$transaction((transaction) => new PrismaDsvExecutionContextService(transaction).syncForRoute({
@@ -670,7 +680,19 @@ async function seedTenant(prisma: PrismaClient, label: string) {
   const nextOrder = await prisma.order.create({
     data: {
       name: `#isolated-${label}-next`,
-      rawPayload: { dsv: { normalized: { destinationId: `DEST-${label.toUpperCase()}-NEXT-${unique.slice(0, 8)}`, shippedBoxes: 1 } } },
+      rawPayload: {
+        dsv: {
+          normalized: {
+            conditionCode: 'STANDARD',
+            destinationId: `DEST-${label.toUpperCase()}-NEXT-${unique.slice(0, 8)}`,
+            sellerOrderKey: `SO-NEXT-${unique}`,
+            shippedBoxes: 1,
+          },
+        },
+        deliverySession: 'MORNING',
+        normalizedPaymentStatus: 'PAID',
+        serviceType: 'DELIVERY',
+      },
       sellerOrderKey: `SO-NEXT-${unique}`,
       sellerOrderSourceKind: 'DSV_DISPATCH',
       serviceDate: new Date(`${DSV_ISOLATED_SERVICE_DATE}T00:00:00.000Z`),

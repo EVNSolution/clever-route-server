@@ -299,6 +299,7 @@ clientSuite('DSV Driver client queue against isolated HTTP server', () => {
     process.env.EXPO_PUBLIC_DSV_API_BASE_URL = baseUrl;
     const queueModuleUrl = pathToFileURL(`${driverSource!}/src/domain/delivery/driverCommandQueue.ts`).href;
     const apiModuleUrl = pathToFileURL(`${driverSource!}/src/api/dsvDriverOperational.ts`).href;
+    const routeModuleUrl = pathToFileURL(`${driverSource!}/src/api/dsvDriverRoute.ts`).href;
     const driverModule = await import(/* @vite-ignore */ queueModuleUrl) as {
       DriverCommandQueue: new (options: Record<string, unknown>) => {
         enqueueDeliveryException(context: Record<string, unknown>, details: Record<string, unknown>): Promise<{ status: string }>;
@@ -316,6 +317,18 @@ clientSuite('DSV Driver client queue against isolated HTTP server', () => {
         token: string, notificationId: string,
       ): Promise<{ destination: { targetStopId?: string }; notificationId: string }>;
     };
+    const driverRouteApi = await import(/* @vite-ignore */ routeModuleUrl) as {
+      loadDriverDeliveryRoute(token: string, routePlanId: string): Promise<{
+        orders: Array<{ conditionCode: string; id: string; sellerOrderKey: string; shippedBoxes: number }>;
+      }>;
+    };
+    const deliveryRoute = await driverRouteApi.loadDriverDeliveryRoute(fixture.driverToken, fixture.routePlanId);
+    expect(deliveryRoute.orders).toHaveLength(2);
+    expect(deliveryRoute.orders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ conditionCode: 'STANDARD', id: fixture.stopId, shippedBoxes: 3 }),
+      expect.objectContaining({ conditionCode: 'STANDARD', id: fixture.nextStopId, shippedBoxes: 1 }),
+    ]));
+    expect(deliveryRoute.orders.every(({ sellerOrderKey }) => sellerOrderKey.length > 0)).toBe(true);
     const inbox = await driverApi.loadDriverOperationalInbox(fixture.driverToken);
     expect(inbox.items).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: fixture.n06NotificationId, kind: 'N06' }),
