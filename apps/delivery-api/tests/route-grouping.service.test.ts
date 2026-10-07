@@ -1143,6 +1143,69 @@ describe('route grouping contracts', () => {
     expect(source).not.toMatch(/routeGroupingChildVersion\.update\(\{\s*data:\s*\{\s*(?:driverId|snapshot):/u);
   });
 
+  test('rejects duplicate current children before archiving a predecessor', async () => {
+    const prisma = {
+      order: { updateMany: vi.fn() },
+      routePlan: { updateMany: vi.fn() },
+      routeGroupingChildVersion: {
+        create: vi.fn(),
+        findMany: vi.fn(() => Promise.resolve([{ id: 'child-old' }, { id: 'child-duplicate' }])),
+        updateMany: vi.fn()
+      }
+    };
+    await expect(replaceCurrentRouteGroupingChildVersion(prisma as never, {
+      currentChildId: 'child-old', driverId: 'driver-id', groupingId: 'group-id', groupingVersionId: 'group-version-id',
+      notificationStatus: 'SENT', orderIds: ['order-old'], publishedAt: new Date('2026-08-25T00:00:00Z'),
+      routePlanId: 'route-id', shopId: 'shop-id', snapshot: { stops: [] }, version: 7
+    })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+    expect(prisma.routeGroupingChildVersion.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routeGroupingChildVersion.create).not.toHaveBeenCalled();
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('rejects an enrolled same-assignment successor without a prepared live transition', async () => {
+    const prisma = {
+      order: { updateMany: vi.fn() },
+      routePlan: {
+        findFirst: vi.fn(() => Promise.resolve({ assignmentGeneration: 1n, driverId: 'driver-id' })),
+        updateMany: vi.fn()
+      },
+      routeLiveChangeState: { findFirst: vi.fn(() => Promise.resolve({
+        assignmentGeneration: 1n, baselineRouteVersionId: 'child-old', driverId: 'driver-id', latestPublicationId: 'publication-id', revision: 1
+      })) },
+      routeGroupingChildVersion: { create: vi.fn(), updateMany: vi.fn() }
+    };
+    await expect(replaceCurrentRouteGroupingChildVersion(prisma as never, {
+      currentChildId: 'child-old', driverId: 'driver-id', groupingId: 'group-id', groupingVersionId: 'group-version-id',
+      notificationStatus: 'SENT', orderIds: ['order-old'], publishedAt: new Date('2026-08-25T00:00:00Z'),
+      routePlanId: 'route-id', shopId: 'shop-id', snapshot: { stops: [] }, version: 7
+    })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    expect(prisma.routeGroupingChildVersion.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routeGroupingChildVersion.create).not.toHaveBeenCalled();
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('rejects a live owner change without a new assignment generation before child replacement', async () => {
+    const prisma = {
+      order: { updateMany: vi.fn() },
+      routePlan: {
+        findFirst: vi.fn(() => Promise.resolve({ assignmentGeneration: 1n, driverId: 'new-driver' })),
+        updateMany: vi.fn()
+      },
+      routeLiveChangeState: { findFirst: vi.fn(() => Promise.resolve({
+        assignmentGeneration: 1n, baselineRouteVersionId: 'child-old', driverId: 'previous-driver', latestPublicationId: 'publication-id', revision: 1
+      })) },
+      routeGroupingChildVersion: { create: vi.fn(), updateMany: vi.fn() }
+    };
+    await expect(replaceCurrentRouteGroupingChildVersion(prisma as never, {
+      currentChildId: 'child-old', driverId: 'new-driver', groupingId: 'group-id', groupingVersionId: 'group-version-id',
+      notificationStatus: 'SENT', orderIds: ['order-old'], publishedAt: new Date('2026-08-25T00:00:00Z'),
+      routePlanId: 'route-id', shopId: 'shop-id', snapshot: { stops: [] }, version: 7
+    })).rejects.toMatchObject({ code: 'ASSIGNMENT_CHANGED' });
+    expect(prisma.routeGroupingChildVersion.updateMany).not.toHaveBeenCalled();
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+  });
+
   test('archives the prior child snapshot before creating and rebinding its immutable successor', async () => {
     const calls: string[] = [];
     const oldSnapshot = { stops: [{ orderId: 'order-old' }] };

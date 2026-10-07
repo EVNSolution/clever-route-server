@@ -4,6 +4,25 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrismaDriverTokenAccessRepository } from '../src/modules/driver/driver-token-access.repository.js';
 
 describe('PrismaDriverTokenAccessRepository', () => {
+  test('rejects route token access when two current child versions are projected', async () => {
+    const { prisma } = createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan: {
+        driver: { accountId: 'account-id', authSubject: 'driver-auth', id: 'driver-id', status: 'ACTIVE' },
+        id: 'route-plan-id',
+        routeGroupingChildVersions: [
+          { publishedAt: new Date('2026-05-11T12:00:00Z') },
+          { publishedAt: new Date('2026-05-11T12:00:00Z') }
+        ],
+        shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' },
+        status: 'IN_PROGRESS'
+      }
+    });
+    await expect(new PrismaDriverTokenAccessRepository(prisma as never).resolveDriverRouteAccess({
+      accountId: 'account-id', routePlanId: 'route-plan-id', tokenVersion: 2
+    })).resolves.toBeNull();
+  });
+
   test('preserves review account access to its own active route', async () => {
     const { prisma } = createPrismaHarness({
       account: { status: 'ACTIVE', tokenVersion: 2 },
@@ -72,8 +91,8 @@ describe('PrismaDriverTokenAccessRepository', () => {
         isStoreReviewData: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { publishedAt: true },
-          take: 1,
+          select: { driverId: true, routePlanId: true, publishedAt: true },
+          take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
         shop: { select: { appId: true, id: true, shopDomain: true } },
@@ -329,7 +348,7 @@ function createPrismaHarness(input: {
     id: string;
     driverNavigationUntil?: Date | null;
     isStoreReviewData?: boolean;
-    routeGroupingChildVersions?: Array<{ publishedAt: Date | null }>;
+    routeGroupingChildVersions?: Array<{ driverId?: string | null; routePlanId?: string | null; publishedAt: Date | null }>;
     shop: { appId?: string; id: string; shopDomain: string };
     status?: string;
   } | null;
@@ -359,7 +378,14 @@ function createPrismaHarness(input: {
         findUnique: vi.fn(() => Promise.resolve(input.account ?? null))
       },
       routePlan: {
-        findFirst: vi.fn(() => Promise.resolve(input.routePlan ?? null))
+        findFirst: vi.fn(() => Promise.resolve(input.routePlan == null ? null : {
+          ...input.routePlan,
+          routeGroupingChildVersions: (input.routePlan.routeGroupingChildVersions ?? []).map((child) => ({
+            driverId: input.routePlan?.driver?.id ?? null,
+            routePlanId: input.routePlan?.id ?? null,
+            ...child
+          }))
+        }))
       }
     }
   };

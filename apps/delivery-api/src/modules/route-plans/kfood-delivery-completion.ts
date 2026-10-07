@@ -128,7 +128,7 @@ function completionMembershipSnapshot(route: {
   liveChangePublications?: Array<{ id: string; driverId: string; assignmentGeneration: bigint; snapshot: unknown }>;
 }, version: { id: string; snapshot: unknown }): unknown {
   const state = route.liveChangeState;
-  if (state == null) return version.snapshot;
+  if (state == null || state.assignmentGeneration < route.assignmentGeneration) return version.snapshot;
   const publication = route.liveChangePublications?.find(row => row.id === state.latestPublicationId);
   if (state.baselineRouteVersionId !== version.id || state.driverId !== route.driverId
     || state.assignmentGeneration !== route.assignmentGeneration || publication === undefined

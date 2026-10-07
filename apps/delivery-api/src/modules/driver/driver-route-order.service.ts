@@ -8,6 +8,12 @@ import {
   syncRoutePlanStopsPreservingRows
 } from '../route-grouping/route-grouping.service.js';
 import { hasDeliveryWorkCompleted } from '../route-plans/kfood-delivery-completion.js';
+import {
+  completeLiveRouteChildReplacement,
+  LiveRouteChangeError,
+  prepareLiveRouteChildReplacement,
+  type LiveRouteChildReplacementContext
+} from '../route-plans/live-route-change.js';
 
 type DriverRouteOrderPrisma = DsvAssignmentTransactionPort & Pick<PrismaClient, 'dsvCommandReceipt'>;
 
@@ -32,6 +38,7 @@ export type DriverRouteOrderServiceContract = {
 
 export type DriverRouteOrderErrorCode =
   | 'COMMAND_IN_PROGRESS'
+  | 'DRAFT_CONFLICT'
   | 'IDEMPOTENCY_PAYLOAD_MISMATCH'
   | 'INVALID_STOP_SET'
   | 'ROUTE_COMPLETED'
@@ -106,7 +113,6 @@ export class PrismaDriverRouteOrderService implements DriverRouteOrderServiceCon
       const currentChild = await tx.routeGroupingChildVersion.findFirst({
         where: {
           driverId: input.driverId,
-          id: input.expectedVersion,
           routePlanId: input.routePlanId,
           shopId: input.shopId,
           status: 'CURRENT',
@@ -114,6 +120,16 @@ export class PrismaDriverRouteOrderService implements DriverRouteOrderServiceCon
         }
       });
       if (currentChild === null) throw new DriverRouteOrderError('VERSION_CONFLICT');
+      if (tx.routeGroupingChildVersion.findMany !== undefined) {
+        const currentChildren = await tx.routeGroupingChildVersion.findMany({
+          select: { id: true },
+          take: 2,
+          where: { routePlanId: input.routePlanId, shopId: input.shopId, status: 'CURRENT', supersededAt: null }
+        });
+        if (currentChildren.length !== 1 || currentChildren[0]?.id !== currentChild.id) {
+          throw new DriverRouteOrderError('VERSION_CONFLICT');
+        }
+      }
 
       const currentStopIds = routePlan.routeStops.map((stop) => stop.deliveryStopId);
       if (!isExactSet(input.orderedStopIds, currentStopIds)) throw new DriverRouteOrderError('INVALID_STOP_SET');
@@ -127,10 +143,27 @@ export class PrismaDriverRouteOrderService implements DriverRouteOrderServiceCon
         if (stop === undefined) throw new DriverRouteOrderError('INVALID_STOP_SET');
         return stop;
       });
+      let liveReplacementContext: LiveRouteChildReplacementContext | null = null;
+      if (tx.routeLiveChangeState !== undefined && tx.routeLiveChangePublication !== undefined) {
+        try {
+          liveReplacementContext = await prepareLiveRouteChildReplacement(tx, {
+            shopId: input.shopId, routePlanId: input.routePlanId, currentChildVersionId: currentChild.id
+          });
+        } catch (error) {
+          if (error instanceof LiveRouteChangeError) {
+            throw new DriverRouteOrderError(error.code === 'DRAFT_CONFLICT' ? 'DRAFT_CONFLICT' : 'VERSION_CONFLICT', error.message);
+          }
+          throw error;
+        }
+      }
+      if (input.expectedVersion !== currentChild.id && input.expectedVersion !== liveReplacementContext?.current.id) {
+        throw new DriverRouteOrderError('VERSION_CONFLICT');
+      }
       await syncRoutePlanStopsPreservingRows(tx, input.shopId, input.routePlanId, orderedStops);
       await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: input.routePlanId } });
       const nextVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
         currentChildId: currentChild.id,
+        liveReplacementContext,
         driverId: input.driverId,
         groupingId: currentChild.groupingId,
         groupingVersionId: currentChild.groupingVersionId,
@@ -142,6 +175,14 @@ export class PrismaDriverRouteOrderService implements DriverRouteOrderServiceCon
         snapshot: reorderedSnapshot(currentChild.snapshot, orderedStops),
         version: currentChild.version
       });
+      if (liveReplacementContext !== null) {
+        try {
+          await completeLiveRouteChildReplacement(tx, { context: liveReplacementContext, nextChildVersionId: nextVersionId });
+        } catch (error) {
+          if (error instanceof LiveRouteChangeError) throw new DriverRouteOrderError('VERSION_CONFLICT', error.message);
+          throw error;
+        }
+      }
       await tx.routePlanStop.updateMany({
         data: {
           distanceFromPreviousMeters: null,

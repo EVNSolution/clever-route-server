@@ -1902,9 +1902,11 @@ async function loadCurrentRouteVersionId(
     WHERE "routePlanId" = ${routePlanId}::uuid
       AND "shopId" = ${shopId}::uuid
       AND status = 'CURRENT'
+      AND "supersededAt" IS NULL
     ORDER BY "createdAt" DESC
-    LIMIT 1
+    LIMIT 2
   `);
+  if (routeVersions.length > 1) throw new DriverEventRouteVersionMismatchError();
   return routeVersions[0]?.id ?? null;
 }
 

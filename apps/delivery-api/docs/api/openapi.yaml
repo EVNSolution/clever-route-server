@@ -5677,7 +5677,7 @@ paths:
         - ShopifySessionToken: []
       description: >-
         Uses the authenticated app and shop. The initial revision is 0. Returns
-        the assignment and underlying route version required by Save and Dispatch.
+        the assignment and underlying route version required by Save, Dispatch and Discard.
         Reading does not publish a change or acknowledge driver application.
       responses:
         '200':
@@ -5702,7 +5702,9 @@ paths:
         Changes only future PENDING or ASSIGNED stops. Save preserves live driver
         content and execution records until Dispatch. Shopify source records are
         immutable. Retry the same commandId with the exact original body to recover
-        its original response. An assignment, route version or revision conflict
+        its original response. A known receipt may retain its original baseline
+        after an authorized same-assignment child replacement. Fresh commands must
+        use the current baseline. An assignment, route version or revision conflict
         requires a new GET and an explicit rebase. The body limit is 256000 bytes.
       requestBody:
         required: true
@@ -5737,7 +5739,9 @@ paths:
         locations need verified routeable coordinates. Unchanged content reuses
         the publication. The same commandId returns the original publication even
         after a newer command; GET current state after a delayed retry. Geometry and
-        notification results describe this attempt. Failed or expired notification
+        notification results describe this attempt. A historical baseline is
+        accepted only for an existing receipt in the current assignment. Fresh commands
+        require the current baseline. Failed or expired notification
         leases retry the same logical notification; SENT is provider acceptance
         and never marks the publication applied. Provider failure does not undo
         publication. The body limit is 4096 bytes.
@@ -5757,6 +5761,43 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/LiveRouteChangeConflict' }
         '501': { $ref: '#/components/responses/LiveRouteChangeUnavailable' }
+  /admin/route-plans/{routePlanId}/live-change/discard:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Discard private future-stop edits and restore the latest publication as the draft
+      operationId: discardAdminLiveRouteChange
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      x-side-effect: write-clever-db
+      security:
+        - ShopifySessionToken: []
+      description: >-
+        Explicit recovery when an edited future stop has become current. Restores
+        the draft from the latest publication without modifying any public stop,
+        execution record, assignment, geometry or notification. A dirty draft
+        increments revision once; a clean draft preserves revision. The route lock,
+        assignment, underlying version and expectedRevision must match. Retry the
+        same commandId and exact body to return the original receipt after later
+        edits or an authorized same-assignment child replacement. A historical
+        baseline is accepted only for that receipt; fresh commands require the
+        current baseline. GET never discards automatically. The body limit is 4096 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LiveRouteChangeDiscardRequest' }
+      responses:
+        '200':
+          description: Restored draft or original discard receipt. Cache-Control is private, no-store.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRouteChangeDraftEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/LiveRouteChangeConflict' }
+        '501': { $ref: '#/components/responses/LiveRouteChangeUnavailable' }
   /driver/routes/{routePlanId}/live-change:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -5769,9 +5810,12 @@ paths:
         - DriverAccessToken: []
       description: >-
         The route bearer token must cover the path. The server rechecks account,
-        driver, tenant and current assignment. A route without enrollment returns
+        driver, tenant and current assignment. A route without enrollment for the current assignment returns
         data null. Push receipt and GET do not acknowledge application. Use this
         query after restart, duplicate push, push loss or an application retry.
+        An authorized same-assignment legacy child replacement publishes its new
+        child UUID through this query without a new physical push. Query periodically
+        during active delivery. Unknown same-assignment version or content drift is a conflict.
       responses:
         '200':
           description: Latest immutable publication and applied state, or null. Cache-Control is private, no-store.
@@ -6036,7 +6080,7 @@ components:
     LiveRouteChangeConflict:
       description: >-
         REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, ASSIGNMENT_CHANGED, VERSION_CONFLICT,
-        STOP_NOT_FUTURE, ROUTE_NOT_IN_PROGRESS, DRAFT_NOT_FOUND or
+        STOP_NOT_FUTURE, ROUTE_NOT_IN_PROGRESS, DRAFT_NOT_FOUND, DRAFT_CONFLICT or
         STOP_LOCATION_NOT_ROUTEABLE. Preserve the original command or event.
         GET authoritative state before rebasing a new command.
       content:
@@ -6173,6 +6217,18 @@ components:
         - properties:
             stopOverrides: { minItems: 1 }
         - required: [futureStopOrder]
+    LiveRouteChangeDiscardRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedAssignmentGeneration, expectedRouteVersionId, expectedRevision]
+      properties:
+        commandId: { type: string, format: uuid }
+        expectedAssignmentGeneration: { $ref: '#/components/schemas/LiveRouteChangeAssignmentGeneration' }
+        expectedRouteVersionId:
+          type: string
+          format: uuid
+          description: Underlying route version returned by the admin draft GET.
+        expectedRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
     LiveRouteChangeStopOverride:
       type: object
       additionalProperties: false
@@ -6245,6 +6301,10 @@ components:
       required: [schemaVersion, stops]
       properties:
         schemaVersion: { type: integer, const: 1 }
+        initialRouteVersionId:
+          type: string
+          format: uuid
+          description: Original enrollment version, retained across authorized legacy child replacements. Optional on older stored snapshots.
         stops:
           type: array
           items: { $ref: '#/components/schemas/LiveRouteChangeSnapshotStop' }
@@ -9659,7 +9719,10 @@ components:
       required: [commandId, expectedVersion, orderedStopIds]
       properties:
         commandId: { type: string, minLength: 1, maxLength: 120 }
-        expectedVersion: { type: string, format: uuid }
+        expectedVersion:
+          type: string
+          format: uuid
+          description: Current child UUID or latest live publication UUID for this assignment; older publications are rejected.
         orderedStopIds:
           description: Exact duplicate-free full deliveryStopId set from assigned-route, including completed stops.
           type: array

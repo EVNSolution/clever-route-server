@@ -289,11 +289,23 @@ export class PrismaDriverAssignedRouteRepository {
   }
 }
 
-function projectPublishedLiveRoute(route: AssignedRoutePlanRecord): AssignedRoutePlanRecord {
+function currentLiveRouteState(route: AssignedRoutePlanRecord): AssignedRoutePlanRecord['liveChangeState'] {
+  const children = route.routeGroupingChildVersions;
+  if (children !== undefined && (children.length > 1 || children.some((child) => (
+    child.driverId !== route.driverId || child.routePlanId !== route.id
+    || child.status !== 'CURRENT' || child.supersededAt !== null
+  )))) throw new DriverAssignedRouteVersionError();
   const state = route.liveChangeState;
-  if (state == null || state.latestSequence === 0 || state.driverId !== route.driverId
-    || state.assignmentGeneration !== route.assignmentGeneration
-    || state.baselineRouteVersionId !== (route.routeGroupingChildVersions?.[0]?.id ?? route.id)) return route;
+  if (state == null) return null;
+  if (route.assignmentGeneration !== undefined && state.assignmentGeneration < route.assignmentGeneration) return null;
+  if (state.driverId !== route.driverId || state.assignmentGeneration !== route.assignmentGeneration) throw new DriverAssignedRouteVersionError();
+  if (state.baselineRouteVersionId !== (children?.[0]?.id ?? route.id)) throw new DriverAssignedRouteVersionError();
+  return state;
+}
+
+function projectPublishedLiveRoute(route: AssignedRoutePlanRecord): AssignedRoutePlanRecord {
+  const state = currentLiveRouteState(route);
+  if (state == null || state.latestSequence === 0) return route;
   const publication = route.liveChangePublications?.find((row) => row.id === state.latestPublicationId);
   if (publication === undefined || publication.driverId !== state.driverId
     || publication.assignmentGeneration !== state.assignmentGeneration) throw new DriverAssignedRouteVersionError();
@@ -440,10 +452,8 @@ function toAssignedRouteResult(
 }
 
 function resolveRouteVersionId(routePlan: AssignedRoutePlanRecord): string | null {
-  const state = routePlan.liveChangeState;
-  if (state != null && state.latestSequence > 0 && state.driverId === routePlan.driverId
-    && state.assignmentGeneration === routePlan.assignmentGeneration
-    && state.baselineRouteVersionId === (routePlan.routeGroupingChildVersions?.[0]?.id ?? routePlan.id)) {
+  const state = currentLiveRouteState(routePlan);
+  if (state != null && state.latestSequence > 0) {
     return state.latestPublicationId;
   }
   if (routePlan.routeGroupingChildVersions !== undefined) {

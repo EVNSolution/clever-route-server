@@ -2,9 +2,9 @@
 
 This is an opt-in server contract for an already started KFood route. Shopify and
 the Routes app must adopt this contract in separate releases. PR293 is independent.
-The existing admin edit APIs retain their existing behavior. Do not mix those
-APIs with a pending live-change draft. This contract detects external content or
-assignment changes and rejects the draft instead of overwriting them.
+The existing edit APIs keep their current-stop policies. Same-member legacy
+child replacements participate in this contract when the private draft is clean.
+Other edits in the same assignment return a conflict instead of overwriting a draft.
 
 ## Boundaries
 
@@ -16,6 +16,8 @@ assignment changes and rejects the draft instead of overwriting them.
 3. **Apply** is a driver action. The app fetches a publication, applies that exact
    snapshot locally, and acknowledges that publication. Reading or receiving push
    does not acknowledge the publication.
+4. **Discard** explicitly restores the private draft from the latest publication.
+   It does not modify public stop content, execution history, geometry or notifications.
 
 The current stop and the completed prefix remain fixed. Only future PENDING or
 ASSIGNED stops can be changed. This restriction applies to the new API. It does
@@ -29,10 +31,11 @@ existing admin APIs. Those policies remain a separate decision (D06).
 | `assignmentGeneration` | Existing canonical decimal string. Changes when the driver assignment changes. |
 | `revision` / `expectedRevision` | Optimistic revision of the saved draft. Starts at 0. |
 | `commandId` | Client-generated UUID retained unchanged on command retry. |
-| `expectedAssignmentGeneration` | Assignment from the admin draft GET. Required for Save and Dispatch. |
+| `expectedAssignmentGeneration` | Assignment from the admin draft GET. Required for Save, Dispatch and Discard. |
 | `publicationVersionId` | UUID of one immutable Dispatch publication. |
 | Driver `routeVersionId` / `expectedRouteVersionId` | Latest public UUID returned through existing assigned-route/access APIs after changed Dispatch. |
-| Admin `expectedRouteVersionId` | Underlying child UUID returned by draft GET. It stays fixed across these publications. |
+| Admin `expectedRouteVersionId` | Current underlying child UUID returned by draft GET. Live Dispatch preserves it; a legacy child replacement changes it. |
+| Snapshot `initialRouteVersionId` | Optional original enrollment version. It remains fixed across authorized child replacements. Older snapshots remain readable. |
 | Applied publication | Exact publication the current driver acknowledged. |
 
 Content identity includes stop and order IDs, operational address, coordinates,
@@ -49,6 +52,7 @@ comes from authentication. A client cannot select another tenant in the body.
 - `GET /admin/route-plans/:routePlanId/live-change`: read the draft and revision.
 - `PATCH /admin/route-plans/:routePlanId/live-change`: save the draft.
 - `POST /admin/route-plans/:routePlanId/live-change/dispatch`: publish the draft.
+- `POST /admin/route-plans/:routePlanId/live-change/discard`: discard private changes.
 
 Save example (IDs must be the route's actual UUIDs):
 
@@ -93,11 +97,11 @@ Dispatch body:
 }
 ```
 
-Save and Dispatch persist a command receipt in the same transaction. A response
+Save, Dispatch and Discard persist a command receipt in the same transaction. A response
 lost after commit can be retried with the same body and `commandId`. The original
 result is returned, including its revision and publication identity. A reused
 command ID with different content returns `IDEMPOTENCY_CONFLICT`.
-Use a new command ID for a new edit or Dispatch. Unchanged content still reuses
+Use a new command ID for a new edit, Dispatch or Discard. Unchanged content still reuses
 the publication even when the Dispatch command ID differs.
 The receipt preserves the original publication and applied-state result.
 After a delayed retry, GET the current driver publication to discover newer
@@ -105,8 +109,30 @@ changes. The Dispatch response also returns `revision`, `changed`, `geometry`,
 and `notification`. Geometry and notification results reflect that retry attempt.
 A revision conflict requires a fresh GET and
 an explicit rebase of the office edit. Do not blindly substitute a newer revision.
-The assignment and underlying version must also match the GET result. A GET
-before reassignment cannot authorize a first Save for the new assignment.
+Fresh commands must match the assignment and underlying version from GET.
+A GET before reassignment cannot authorize a first Save for the new assignment.
+An exact receipt retry after an authorized same-assignment child replacement can
+retain its original underlying version. Only an existing matching receipt permits
+that historical guard; a new command with the old baseline is rejected. Replays
+still require current authorization, assignment and a unique current child.
+
+## Private draft recovery
+
+A future stop can become current before Dispatch. Dispatch then returns
+`STOP_NOT_FUTURE`. The private edit remains visible in GET. A later edit to another
+future stop does not remove that blocked edit. GET does not change the draft.
+
+To abandon the private edits, POST `/live-change/discard` with the same four guard
+fields as Dispatch and a new `commandId`. Use the current draft GET result.
+Discard checks the route lock, assignment, underlying version, revision and live
+content. A dirty draft resets `draft` and its content hash to the latest publication
+and increments `revision` once. A clean draft keeps its revision. The response has
+the same fields as draft GET. No current-stop edit occurs.
+
+After Discard succeeds, Save a new future-stop edit using the returned revision,
+assignment and underlying version. Dispatch that edit. A lost Discard response
+can be retried with its original command and returns the original result, even
+after later edits. GET current state before starting another command after that retry.
 
 ## Driver requests
 
@@ -133,7 +159,8 @@ the previous driver to write or acknowledge changes.
 Driver response fields are `routePlanId`, `publicationVersionId`,
 `assignmentGeneration`, `sequence`, `publishedAt`, `appliedVersionId`, `pending`,
 and `snapshot`. `snapshot.schemaVersion` is 1. `snapshot.stops` contains the
-ordered operational stop content. A route without enrollment returns `data: null`.
+ordered operational stop content. A route without enrollment for its current
+assignment returns `data: null`, including after reassignment before an admin Save.
 The baseline publication has sequence 0 and no pending change. Saving a first
 draft does not change the existing assigned-route/access event version.
 
@@ -147,7 +174,8 @@ draft does not change the existing assigned-route/access event version.
 | 409 `IDEMPOTENCY_CONFLICT` | Keep the original command immutable. Use a new ID for a different command. |
 | 409 `ASSIGNMENT_CHANGED` / `VERSION_CONFLICT` | Refresh assignment. Preserve offline event identity for reconciliation. |
 | 409 `STOP_NOT_FUTURE` / `ROUTE_NOT_IN_PROGRESS` | Stop the edit. The target is outside this new workflow. |
-| 409 `DRAFT_NOT_FOUND` | Save a valid draft before Dispatch. |
+| 409 `DRAFT_NOT_FOUND` | Save a valid draft before Dispatch. Discard requires an existing draft. |
+| 409 `DRAFT_CONFLICT` on legacy reorder | GET the draft, explicitly Discard private edits, then retry the intended reorder with current guards. |
 | 409 `STOP_LOCATION_NOT_ROUTEABLE` | Supply verified coordinates before Dispatch. |
 | 409 `ROUTE_VERSION_MISMATCH` / `ROUTE_ASSIGNMENT_CHANGED` on events | Reconcile the original event. Do not relabel it with a newer version. |
 
@@ -175,6 +203,49 @@ or another assignment. Route-level events require the latest publication.
 The original pre-enrollment child UUID is recognized as the baseline identity.
 Existing child-version foreign keys remain the execution lineage; the new public
 identity is stored in the submitted `expectedRouteVersionId` field.
+
+After a valid reassignment, the server first validates the authenticated current
+driver and generation. The previous assignment's live state then has no authority
+over the new driver's events. The new driver can use the current child identity
+without an office Save. Previous-driver events, previous-generation events and
+unrelated versions remain rejected. The previous state also cannot authorize an
+acknowledgement or appear as the new driver's pending publication.
+Only a lower state generation identifies a previous assignment. A driver change
+without a generation increase, or a state generation ahead of the route, is rejected.
+
+## Existing child replacement
+
+The existing same-member replacement paths are admin
+`PATCH /admin/route-groups/:routeGroupId/draft` and driver
+`PATCH /driver/routes/:routePlanId/order`. Their existing execution guards still apply.
+The driver reorder `expectedVersion` accepts the current child UUID or the latest
+publication UUID issued by assigned-route/access. An older publication is rejected.
+For an enrolled route in the same assignment, the private draft must be clean.
+After delivery work completes, child replacement returns `ROUTE_NOT_IN_PROGRESS`.
+The completion marker and two-hour return-navigation grace remain intact.
+A dirty draft returns `DRAFT_CONFLICT` before child or stop mutation. Use explicit
+Discard and retry the intended reorder. Discard keeps enrollment; it does not
+authorize append, removal or another membership change.
+
+An authorized replacement atomically advances the underlying baseline to the new
+child UUID. It records an immutable publication with that UUID, increments public
+sequence and draft revision once, and retains the applied cursor. The new version
+is pending until the driver explicitly applies it. The snapshot retains the original
+`initialRouteVersionId` when available. Each replacement UUID is a known public
+identity. Old stop events still require an unchanged target through every version.
+
+The transition records notification status `SKIPPED` with
+`LEGACY_CHILD_REPLACEMENT`. It does not send another physical push. Existing legacy
+notification paths retain their behavior. Driver GET is authoritative; the app
+must also query periodically during active delivery to discover an unannounced
+replacement. Assigned-route and access identities match the version accepted by
+event submission.
+
+Unexpected same-assignment child or operational content drift returns
+`VERSION_CONFLICT`. It is never ignored as previous-assignment state. Duplicate
+CURRENT children cannot issue an access identity or accept an event or mutation.
+Append/removal remains outside this compatibility transition and returns a conflict
+for an enrolled route. No current-stop policy is added here.
 
 The current Routes app compares queued version equality before sending events.
 App work must distinguish publication changes from assignment changes. Otherwise
@@ -218,16 +289,17 @@ Source sync takes the route lock before reading effective stop and correction
 data. A concurrent publication forces a bounded transaction retry. It cannot
 overwrite the public correction with a stale source snapshot.
 
-The new owner can start at revision 0 after an existing valid reassignment has
-updated both route and child ownership. Previous publications and receipts remain
-immutable and cannot authorize the previous driver. External edits in the same
-assignment return `VERSION_CONFLICT`; do not mix legacy editing with this workflow.
+The new owner can start a new draft at revision 0 after an existing valid reassignment
+has updated both route and child ownership. This Save is optional for normal
+event submission. Previous publications and receipts remain immutable and cannot
+authorize the previous driver. External edits outside the authorized same-member
+replacement return `VERSION_CONFLICT`.
 
 ## Release order and remaining checks
 
 1. Review this server PR and rehearse the additive migration. Apply the migration
    before starting this server binary. It reads the new tables even before enrollment.
-2. Update Shopify to use draft GET/PATCH and live-change Dispatch.
+2. Update Shopify to use draft GET/PATCH, explicit Discard and live-change Dispatch.
 3. Update the Routes app for persistent pending state, exact apply acknowledgement,
    input preservation, and safe queued-event replay.
 4. Verify the combined flow on a test device with synthetic routes.

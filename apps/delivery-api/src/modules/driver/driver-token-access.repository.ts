@@ -94,8 +94,8 @@ export class PrismaDriverTokenAccessRepository {
         isStoreReviewData: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' as const },
-          select: { publishedAt: true },
-          take: 1,
+          select: { driverId: true, routePlanId: true, publishedAt: true },
+          take: 2,
           where: { status: 'CURRENT' as const, supersededAt: null }
         },
         shop: { select: { appId: true, id: true, shopDomain: true } },
@@ -130,6 +130,11 @@ export class PrismaDriverTokenAccessRepository {
       || (routePlan.driver.isStoreReviewData === true) !== (routePlan.driver.account?.isStoreReviewAccount === true)) {
       return null;
     }
+
+    const currentChildren = routePlan.routeGroupingChildVersions;
+    if (currentChildren.length > 1 || currentChildren.some((child) => (
+      child.driverId !== routePlan.driver?.id || child.routePlanId !== routePlan.id
+    ))) return null;
 
     if (
       toRouteExecutionStatus(routePlan.status) === 'READY'

@@ -48,7 +48,7 @@ export type LiveRouteStopSnapshot = {
   timeWindowStart: string | null;
   timeWindowEnd: string | null;
 };
-export type LiveRouteSnapshot = { schemaVersion: 1; stops: LiveRouteStopSnapshot[] };
+export type LiveRouteSnapshot = { schemaVersion: 1; stops: LiveRouteStopSnapshot[]; initialRouteVersionId?: string };
 type AdminCommandIdentity = Identity & { commandId: string; expectedAssignmentGeneration: string; expectedRouteVersionId: string; expectedRevision: number };
 export type SaveLiveRouteChangeInput = AdminCommandIdentity & {
   stopOverrides: LiveRouteStopOverride[];
@@ -177,6 +177,10 @@ function hasAssignmentChanged(route: Route, state: State): boolean {
   return state.driverId !== route.driverId || state.assignmentGeneration !== route.assignmentGeneration;
 }
 
+function belongsToPreviousAssignment(route: Route, state: State): boolean {
+  return state.assignmentGeneration < route.assignmentGeneration;
+}
+
 async function loadCurrentPublication(tx: Tx, state: State): Promise<Publication> {
   const publication = await tx.routeLiveChangePublication.findFirst({ where: {
     id: state.latestPublicationId, routePlanId: state.routePlanId, shopId: state.shopId,
@@ -221,7 +225,7 @@ export async function getAdminLiveRouteChange(prisma: Client, input: Identity) {
     const route = await loadRoute(tx, input);
     requireWritableRoute(route);
     const state = await loadState(tx, input);
-    if (state === null || hasAssignmentChanged(route, state)) return draftResponse(route, null, null);
+    if (state === null || belongsToPreviousAssignment(route, state)) return draftResponse(route, null, null);
     assertStateIdentity(route, state);
     const current = await loadCurrentPublication(tx, state);
     assertNoLiveDrift(route, current);
@@ -230,7 +234,7 @@ export async function getAdminLiveRouteChange(prisma: Client, input: Identity) {
 }
 
 async function enroll(tx: Tx, route: Route, input: Identity, replacing = false): Promise<State> {
-  const snapshot = captureSnapshot(route);
+  const snapshot = { ...captureSnapshot(route), initialRouteVersionId: underlyingVersion(route) };
   const id = randomUUID();
   const hash = contentHash(snapshot);
   await tx.routeLiveChangePublication.create({ data: { id, ...input, assignmentGeneration: route.assignmentGeneration,
@@ -264,18 +268,19 @@ function requireCommandId(value: string): void {
   }
 }
 
-function requireAdminCommandIdentity(route: Route, input: AdminCommandIdentity): void {
+function requireAdminCommandIdentity(route: Route, input: AdminCommandIdentity, checkVersion = true): void {
   if (!/^[1-9]\d{0,18}$/u.test(input.expectedAssignmentGeneration)) throw new LiveRouteChangeError('INVALID_INPUT', 400, 'expectedAssignmentGeneration must be canonical positive decimal');
   if (route.assignmentGeneration.toString() !== input.expectedAssignmentGeneration) throw new LiveRouteChangeError('ASSIGNMENT_CHANGED', 409, 'Route assignment has changed since the draft was read');
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(input.expectedRouteVersionId)) throw new LiveRouteChangeError('INVALID_INPUT', 400, 'expectedRouteVersionId must be a UUID');
-  if (underlyingVersion(route) !== input.expectedRouteVersionId) throw new LiveRouteChangeError('VERSION_CONFLICT', 409, 'Route membership has changed since the draft was read');
+  const version = underlyingVersion(route);
+  if (checkVersion && version !== input.expectedRouteVersionId) throw new LiveRouteChangeError('VERSION_CONFLICT', 409, 'Route membership has changed since the draft was read');
   if (route.driverId === null || route.status !== 'IN_PROGRESS') throw new LiveRouteChangeError('ROUTE_NOT_IN_PROGRESS', 409, 'Route is no longer active');
 }
 
 type DraftResponse = ReturnType<typeof draftResponse>;
 type PublishResponse = ReturnType<typeof publicationResponse> & { revision: number; changed: boolean };
 
-async function replayCommand<T>(tx: Tx, route: Route, input: Identity & { commandId: string }, kind: 'SAVE' | 'DISPATCH', requestHash: string): Promise<T | null> {
+async function replayCommand<T>(tx: Tx, route: Route, input: Identity & { commandId: string }, kind: 'SAVE' | 'DISPATCH' | 'DISCARD', requestHash: string): Promise<T | null> {
   const receipt = await tx.routeLiveChangeCommandReceipt.findFirst({ where: { ...inputIdentity(input), kind, commandId: input.commandId } });
   if (receipt === null) return null;
   if (receipt.driverId !== route.driverId || receipt.assignmentGeneration !== route.assignmentGeneration) {
@@ -285,7 +290,7 @@ async function replayCommand<T>(tx: Tx, route: Route, input: Identity & { comman
   return receipt.response as unknown as T;
 }
 
-async function recordCommand(tx: Tx, route: Route, input: Identity & { commandId: string }, kind: 'SAVE' | 'DISPATCH', requestHash: string,
+async function recordCommand(tx: Tx, route: Route, input: Identity & { commandId: string }, kind: 'SAVE' | 'DISPATCH' | 'DISCARD', requestHash: string,
   response: DraftResponse | PublishResponse, publicationId: string | null): Promise<void> {
   await tx.routeLiveChangeCommandReceipt.create({ data: { ...inputIdentity(input), commandId: input.commandId, kind,
     driverId: route.driverId!, assignmentGeneration: route.assignmentGeneration, requestHash,
@@ -332,14 +337,15 @@ export async function saveLiveRouteChange(prisma: Client, input: SaveLiveRouteCh
     expectedRouteVersionId: input.expectedRouteVersionId, stopOverrides: input.stopOverrides, futureStopOrder: input.futureStopOrder });
   return withRouteLock(prisma, input, async (tx) => {
     const route = await loadRoute(tx, input);
-    requireAdminCommandIdentity(route, input);
+    requireAdminCommandIdentity(route, input, false);
     const identity = { routePlanId: input.routePlanId, shopId: input.shopId };
     let state = await loadState(tx, identity);
-    if (state !== null && !hasAssignmentChanged(route, state)) assertStateIdentity(route, state);
+    if (state !== null && !belongsToPreviousAssignment(route, state)) assertStateIdentity(route, state);
     const replay = await replayCommand<DraftResponse>(tx, route, input, 'SAVE', requestHash);
     if (replay !== null) return replay;
+    requireAdminCommandIdentity(route, input);
     requireWritableRoute(route);
-    if (state === null || hasAssignmentChanged(route, state)) {
+    if (state === null || belongsToPreviousAssignment(route, state)) {
       if (input.expectedRevision !== 0) throw new LiveRouteChangeError('REVISION_CONFLICT', 409, 'Draft revision has changed');
       state = await enroll(tx, route, identity, state !== null);
     }
@@ -386,6 +392,78 @@ function changedStops(current: LiveRouteSnapshot, draft: LiveRouteSnapshot): Liv
   });
 }
 
+// Recovery never edits current stops or publication history. A repeated command
+// returns its original receipt even if another Save has since changed the draft.
+export async function discardLiveRouteChange(prisma: Client, input: PublishLiveRouteChangeInput) {
+  requireRevision(input.expectedRevision);
+  requireCommandId(input.commandId);
+  const requestHash = commandHash({ expectedRevision: input.expectedRevision, expectedAssignmentGeneration: input.expectedAssignmentGeneration,
+    expectedRouteVersionId: input.expectedRouteVersionId });
+  return withRouteLock(prisma, input, async (tx) => {
+    const route = await loadRoute(tx, input);
+    requireAdminCommandIdentity(route, input, false);
+    let state = await loadState(tx, input);
+    if (state === null) throw new LiveRouteChangeError('DRAFT_NOT_FOUND', 409, 'No draft exists to discard');
+    assertStateIdentity(route, state);
+    const replay = await replayCommand<DraftResponse>(tx, route, input, 'DISCARD', requestHash);
+    if (replay !== null) return replay;
+    requireAdminCommandIdentity(route, input);
+    requireWritableRoute(route);
+    if (state.revision !== input.expectedRevision) throw new LiveRouteChangeError('REVISION_CONFLICT', 409, 'Draft revision has changed');
+    const current = await loadCurrentPublication(tx, state);
+    assertNoLiveDrift(route, current);
+    if (state.draftHash !== current.contentHash) state = await tx.routeLiveChangeState.update({ where: { routePlanId: route.id },
+      data: { draftSnapshot: current.snapshot as Prisma.InputJsonValue, draftHash: current.contentHash, revision: { increment: 1 } } });
+    const response = draftResponse(route, state, current);
+    await recordCommand(tx, route, input, 'DISCARD', requestHash, response, current.id);
+    return response;
+  });
+}
+
+export type LiveRouteChildReplacementContext = { identity: Identity; state: State; current: Publication };
+
+// Existing successor writers call this before mutating stops while holding the
+// route lock. Private drafts require an explicit discard, never an implicit loss.
+export async function prepareLiveRouteChildReplacement(tx: Tx, input: Identity & { currentChildVersionId: string }): Promise<LiveRouteChildReplacementContext | null> {
+  const state = await loadState(tx, input);
+  if (state === null) return null;
+  const route = await loadRoute(tx, input);
+  if (hasDeliveryWorkCompleted(route)) requireWritableRoute(route);
+  if (belongsToPreviousAssignment(route, state)) return null;
+  assertStateIdentity(route, state);
+  requireWritableRoute(route);
+  if (underlyingVersion(route) !== input.currentChildVersionId) throw new LiveRouteChangeError('VERSION_CONFLICT', 409, 'Successor predecessor is no longer current');
+  const current = await loadCurrentPublication(tx, state);
+  assertNoLiveDrift(route, current);
+  if (state.draftHash !== current.contentHash) throw new LiveRouteChangeError('DRAFT_CONFLICT', 409, 'Discard the private live-change draft before replacing route membership');
+  return { identity: inputIdentity(input), state, current };
+}
+
+// Preserve immutable lineage and the applied cursor. A successor child is also
+// its publication UUID so legacy callers and live-change readers issue one ID.
+export async function completeLiveRouteChildReplacement(tx: Tx, input: { context: LiveRouteChildReplacementContext; nextChildVersionId: string }): Promise<void> {
+  const { identity, state, current } = input.context;
+  const route = await loadRoute(tx, identity);
+  if (belongsToPreviousAssignment(route, state)) return; // A real reassignment uses its new generic contract.
+  if (hasAssignmentChanged(route, state)) throw new LiveRouteChangeError('ASSIGNMENT_CHANGED', 409, 'Successor assignment is inconsistent');
+  if (underlyingVersion(route) !== input.nextChildVersionId) throw new LiveRouteChangeError('VERSION_CONFLICT', 409, 'Successor membership is ambiguous');
+  const previous = snapshotFromJson(current.snapshot);
+  const snapshot: LiveRouteSnapshot = { ...captureSnapshot(route), initialRouteVersionId: previous.initialRouteVersionId ?? state.baselineRouteVersionId };
+  if (membership(previous) !== membership(snapshot)) throw new LiveRouteChangeError('VERSION_CONFLICT', 409, 'Live-change successors require unchanged membership');
+  const oldStops = new Map(previous.stops.map(stop => [stop.deliveryStopId, stop]));
+  if (snapshot.stops.some(stop => operationalFingerprint({ ...stop, sequence: oldStops.get(stop.deliveryStopId)!.sequence }) !== operationalFingerprint(oldStops.get(stop.deliveryStopId)!))) {
+    throw new LiveRouteChangeError('VERSION_CONFLICT', 409, 'Successor changed operational data outside Dispatch');
+  }
+  const hash = contentHash(snapshot);
+  const publication = await tx.routeLiveChangePublication.create({ data: { ...identity, id: input.nextChildVersionId,
+    driverId: state.driverId, assignmentGeneration: state.assignmentGeneration, sequence: state.latestSequence + 1,
+    snapshot, contentHash: hash, notificationStatus: 'SKIPPED', nextAttemptAt: null, errorCode: 'LEGACY_CHILD_REPLACEMENT' } });
+  await tx.routeLiveChangeState.update({ where: { routePlanId: route.id }, data: {
+    baselineRouteVersionId: input.nextChildVersionId, latestPublicationId: publication.id, latestSequence: publication.sequence,
+    draftSnapshot: snapshot, draftHash: hash, revision: { increment: 1 }
+  } });
+}
+
 export async function publishLiveRouteChange(prisma: Client, input: PublishLiveRouteChangeInput) {
   requireRevision(input.expectedRevision);
   requireCommandId(input.commandId);
@@ -393,12 +471,13 @@ export async function publishLiveRouteChange(prisma: Client, input: PublishLiveR
     expectedRouteVersionId: input.expectedRouteVersionId });
   return withRouteLock(prisma, input, async (tx) => {
     let route = await loadRoute(tx, input);
-    requireAdminCommandIdentity(route, input);
+    requireAdminCommandIdentity(route, input, false);
     const state = await loadState(tx, input);
     if (state === null) throw new LiveRouteChangeError('DRAFT_NOT_FOUND', 409, 'Save a draft before Dispatch');
     assertStateIdentity(route, state);
     const replay = await replayCommand<PublishResponse>(tx, route, input, 'DISPATCH', requestHash);
     if (replay !== null) return replay;
+    requireAdminCommandIdentity(route, input);
     requireWritableRoute(route);
     if (state.revision !== input.expectedRevision) throw new LiveRouteChangeError('REVISION_CONFLICT', 409, 'Draft revision has changed');
     const current = await loadCurrentPublication(tx, state);
@@ -481,7 +560,8 @@ export async function getLiveRouteChange(prisma: Client, input: DriverIdentity &
     const route = await loadRoute(tx, input);
     requireDriver(route, input, input.now ?? new Date());
     const state = await loadState(tx, inputIdentity(input));
-    if (state === null) return null;
+    underlyingVersion(route);
+    if (state === null || belongsToPreviousAssignment(route, state)) return null;
     assertStateIdentity(route, state);
     const publication = await loadCurrentPublication(tx, state);
     assertNoLiveDrift(route, publication);
@@ -516,12 +596,15 @@ export async function validateLiveRouteEvent(tx: Tx, input: LiveRouteEventInput)
   if (state === null) return false;
   const route = await loadRoute(tx, input);
   requireDriver(route, input, new Date());
+  underlyingVersion(route);
+  if (belongsToPreviousAssignment(route, state)) return false;
   assertStateIdentity(route, state);
   const current = await loadCurrentPublication(tx, state);
   assertNoLiveDrift(route, current);
-  if (input.expectedRouteVersionId === current.id || (state.latestSequence === 0 && input.expectedRouteVersionId === state.baselineRouteVersionId)) return true;
+  const initialRouteVersionId = snapshotFromJson(current.snapshot).initialRouteVersionId ?? state.baselineRouteVersionId;
+  if (input.expectedRouteVersionId === current.id || (state.latestSequence === 0 && input.expectedRouteVersionId === initialRouteVersionId)) return true;
   if (!STOP_EVENTS.has(input.eventType) || input.deliveryStopId == null) throw new LiveRouteChangeError('VERSION_CONFLICT', 409, 'Execution event requires the latest publication');
-  const origin = input.expectedRouteVersionId === state.baselineRouteVersionId
+  const origin = input.expectedRouteVersionId === initialRouteVersionId
     ? await tx.routeLiveChangePublication.findFirst({ where: { ...inputIdentity(input), driverId: state.driverId, assignmentGeneration: state.assignmentGeneration, sequence: 0 } })
     : await tx.routeLiveChangePublication.findFirst({ where: { id: input.expectedRouteVersionId, ...inputIdentity(input), driverId: state.driverId, assignmentGeneration: state.assignmentGeneration } });
   if (origin === null || origin.sequence >= current.sequence) throw new LiveRouteChangeError('VERSION_CONFLICT', 409, 'Execution event references an unrelated publication');

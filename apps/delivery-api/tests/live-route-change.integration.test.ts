@@ -7,9 +7,12 @@ import { buildApp } from '../src/app.js';
 import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
 import { PrismaDriverEventRepository } from '../src/modules/driver/driver-event.repository.js';
 import { PrismaDriverTokenAccessRepository } from '../src/modules/driver/driver-token-access.repository.js';
+import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
+import { PrismaDriverRouteOrderService } from '../src/modules/driver/driver-route-order.service.js';
 import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 import {
   acknowledgeLiveRouteChange,
+  discardLiveRouteChange,
   getAdminLiveRouteChange,
   getLiveRouteChange,
   publishLiveRouteChange,
@@ -18,6 +21,7 @@ import {
 import { PrismaLiveRouteChangeService } from '../src/modules/route-plans/live-route-change.service.js';
 import { KFOOD_DELIVERY_APP_ID, KFOOD_DELIVERY_SHOP_DOMAIN } from '../src/modules/route-plans/kfood-delivery-completion.js';
 import type { DriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
 import type { RouteGeometryProvider } from '../src/modules/route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../src/modules/route-plans/route-plan.types.js';
 import { mapShopifyOrderNodeToDeliveryInputs } from '../src/modules/shopify/order-sync.mapper.js';
@@ -149,6 +153,55 @@ if (enabled) {
       .rejects.toMatchObject({ code: 'STOP_NOT_FUTURE', statusCode: 409 });
     expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[2]!.id } })).address1).toBe('3 Integration Road');
     expect(await publicationCount(prisma, f)).toBe(0);
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[1]!.id } })).status).toBe('DELIVERED');
+  });
+
+  test('explicitly discards a stranded private draft and recovers future Save and Dispatch with guarded retries', async () => {
+    const f = await fixture(prisma);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Previously Published Correction', latitude: 43.57, longitude: -80.57 }] });
+    const first = await dispatch(prisma, { ...adminIdentity(f), expectedRevision: 1 });
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 1,
+      stopOverrides: [{ deliveryStopId: f.stops[2]!.id, address1: '300 Stranded Private Correction', latitude: 43.53, longitude: -80.53 }] });
+    const completed = await new PrismaDriverEventRepository(prisma).recordDriverEvent(eventInput(f, f.stops[1]!.id));
+    await expect(dispatch(prisma, { ...adminIdentity(f), expectedRevision: 2 })).rejects.toMatchObject({ code: 'STOP_NOT_FUTURE' });
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 2,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Blocked Recovery Correction', latitude: 43.58, longitude: -80.58 }] });
+    await expect(dispatch(prisma, { ...adminIdentity(f), expectedRevision: 3 })).rejects.toMatchObject({ code: 'STOP_NOT_FUTURE' });
+    await expect(saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 3,
+      stopOverrides: [{ deliveryStopId: f.stops[2]!.id, address1: f.stops[2]!.address1, latitude: 43.42, longitude: -80.42 }] }))
+      .rejects.toMatchObject({ code: 'STOP_NOT_FUTURE' });
+    const stateBeforeGet = await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } });
+    expect((await getAdminLiveRouteChange(prisma, adminIdentity(f))).revision).toBe(3);
+    expect((await getAdminLiveRouteChange(prisma, adminIdentity(f))).revision).toBe(3);
+    expect(await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } })).toEqual(stateBeforeGet);
+    const publicationsBefore = await prisma.routeLiveChangePublication.findMany({ where: { routePlanId: f.route.id }, orderBy: { sequence: 'asc' } });
+    const receiptsBefore = await prisma.routeLiveChangeCommandReceipt.findMany({ where: { routePlanId: f.route.id }, orderBy: { id: 'asc' } });
+    const command = { ...adminIdentity(f), expectedRevision: 3, commandId: randomUUID() };
+    await expect(discardDraft(prisma, { ...command, expectedAssignmentGeneration: '3' })).rejects.toMatchObject({ code: 'ASSIGNMENT_CHANGED' });
+    await expect(discardDraft(prisma, { ...command, expectedRouteVersionId: randomUUID() })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    await expect(discardDraft(prisma, { ...command, expectedRevision: 2 })).rejects.toMatchObject({ code: 'REVISION_CONFLICT' });
+    const foreignShop = await prisma.shop.create({ data: { shopDomain: `discard-foreign-${randomUUID()}.example.invalid` } });
+    await expect(discardDraft(prisma, { ...command, shopId: foreignShop.id })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    const [discarded, retry] = await withRouteLock(prisma, f, () => Promise.all([
+      discardDraft(prisma, command), discardDraft(prisma, command)
+    ]), 2);
+    expect(discarded).toEqual(retry);
+    expect(discarded).toMatchObject({ revision: 4, hasUnpublishedChanges: false, publishedVersionId: first.publicationVersionId });
+    expect((await discardDraft(prisma, { ...adminIdentity(f), expectedRevision: 4 })).revision).toBe(4);
+    expect(await prisma.routeLiveChangeCommandReceipt.count({ where: { routePlanId: f.route.id, kind: 'DISCARD', commandId: command.commandId } })).toBe(1);
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[2]!.id } })).address1).toBe(f.stops[2]!.address1);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 4,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Recovered Future Correction', latitude: 43.59, longitude: -80.59 }] });
+    expect(await discardDraft(prisma, command)).toEqual(discarded);
+    await expect(discardDraft(prisma, { ...command, expectedRevision: 5 })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    const recovered = await dispatch(prisma, { ...adminIdentity(f), expectedRevision: 5 });
+    expect(recovered.sequence).toBe(2);
+    expect((await readAssigned(prisma, f)).stops.find(stop => stop.deliveryStopId === f.stops[6]!.id)?.address.address1).toBe('700 Recovered Future Correction');
+    expect(await prisma.routeLiveChangePublication.findMany({ where: { id: { in: publicationsBefore.map(row => row.id) } }, orderBy: { sequence: 'asc' } })).toEqual(publicationsBefore);
+    expect(await prisma.routeLiveChangeCommandReceipt.findMany({ where: { id: { in: receiptsBefore.map(row => row.id) } }, orderBy: { id: 'asc' } })).toEqual(receiptsBefore);
+    expect((await prisma.driverEvent.findUniqueOrThrow({ where: { id: completed.eventId } })).eventType).toBe('STOP_DELIVERED');
+    expect((await prisma.driverEvent.findUniqueOrThrow({ where: { id: f.arrival.id } })).occurredAt).toEqual(f.arrivedAt);
     expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[1]!.id } })).status).toBe('DELIVERED');
   });
 
@@ -385,6 +438,103 @@ if (enabled) {
     await expect(service.acknowledgeDriverPublication({ ...driverIdentity(f), accountId: f.account.id, publicationVersionId: published.publicationVersionId })).rejects.toThrow();
   });
 
+  test.each(['draft-only', 'published'] as const)('accepts the new assignment before an admin Save after %s live-change use', async mode => {
+    const f = await fixture(prisma);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Previous Assignment Correction', latitude: 43.57, longitude: -80.57 }] });
+    const previousPublication = mode === 'published' ? await dispatch(prisma, { ...adminIdentity(f), expectedRevision: 1 }) : null;
+    const previousState = await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } });
+    const account = await prisma.driverAccount.create({ data: { phone: `new-active-assignment-${randomUUID()}` } });
+    const driver = await prisma.driver.create({ data: { accountId: account.id, authSubject: `new-active-assignment-${randomUUID()}`,
+      displayName: 'Reassigned Synthetic Driver', shopId: f.shop.id } });
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${f.route.id}::uuid FOR UPDATE`;
+      await tx.routePlan.update({ where: { id: f.route.id }, data: { driverId: driver.id, assignmentGeneration: 3n } });
+      await tx.routeGroupingChildVersion.update({ where: { id: f.version.id }, data: { driverId: driver.id } });
+    });
+    const access = await new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({ accountId: account.id, routeContext: f.route.id });
+    expect(access.status).toBe('INVITED');
+    if (access.status !== 'INVITED') throw new Error('Synthetic reassigned route access was not issued');
+    expect(access.routeAccess).toMatchObject({ expectedRouteVersionId: f.version.id, assignmentGeneration: '3' });
+    const assigned = await new PrismaDriverAssignedRouteRepository(prisma).getAssignedRoute({ ...adminIdentity(f), driverId: driver.id,
+      routeContext: f.route.id, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN });
+    expect(assigned.status).toBe('ASSIGNED_ROUTE');
+    if (assigned.status !== 'ASSIGNED_ROUTE') throw new Error('Synthetic reassigned route was not issued');
+    expect(assigned.route.routeVersionId).toBe(access.routeAccess.expectedRouteVersionId);
+    const events = new PrismaDriverEventRepository(prisma);
+    const currentIdentity = { ...eventInput(f, f.stops[1]!.id), driverId: driver.id,
+      assignmentGeneration: access.routeAccess.assignmentGeneration, expectedRouteVersionId: access.routeAccess.expectedRouteVersionId };
+    for (const eventType of ['ROUTE_STARTED', 'PICKUP_COMPLETED']) {
+      await expect(events.recordDriverEvent({ ...currentIdentity, clientEventId: randomUUID(), deliveryStopId: null, eventType }))
+        .resolves.toMatchObject({ duplicate: false });
+    }
+    await expect(events.recordDriverEvent({ ...currentIdentity, clientEventId: randomUUID() })).resolves.toMatchObject({ duplicate: false });
+    expect(await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } })).toEqual(previousState);
+    await expect(events.recordDriverEvent(eventInput(f, f.stops[2]!.id))).rejects.toMatchObject({ code: 'ROUTE_ASSIGNMENT_CHANGED' });
+    await expect(events.recordDriverEvent({ ...currentIdentity, clientEventId: randomUUID(), deliveryStopId: f.stops[2]!.id, assignmentGeneration: '2' }))
+      .rejects.toMatchObject({ code: 'ROUTE_ASSIGNMENT_CHANGED' });
+    await expect(events.recordDriverEvent({ ...currentIdentity, clientEventId: randomUUID(), deliveryStopId: f.stops[2]!.id, expectedRouteVersionId: randomUUID() }))
+      .rejects.toMatchObject({ code: 'ROUTE_VERSION_MISMATCH' });
+    if (previousPublication !== null) {
+      await expect(events.recordDriverEvent({ ...currentIdentity, clientEventId: randomUUID(), deliveryStopId: f.stops[2]!.id,
+        expectedRouteVersionId: previousPublication.publicationVersionId })).rejects.toMatchObject({ code: 'ROUTE_VERSION_MISMATCH' });
+    }
+    for (const stop of f.stops.slice(2)) {
+      await events.recordDriverEvent({ ...currentIdentity, clientEventId: randomUUID(), deliveryStopId: stop.id });
+    }
+    const complete = await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } });
+    expect(complete.deliveryWorkCompletedGeneration).toBe(3n);
+    expect(complete.deliveryWorkCompletedAt).not.toBeNull();
+    expect(complete.driverNavigationUntil!.getTime() - complete.deliveryWorkCompletedAt!.getTime()).toBe(7_200_000);
+    const duringGrace = new Date(complete.driverNavigationUntil!.getTime() - 1);
+    expect(await new PrismaDriverTokenAccessRepository(prisma, () => duringGrace).resolveDriverRouteAccess({
+      accountId: account.id, routePlanId: f.route.id, tokenVersion: account.tokenVersion
+    })).not.toBeNull();
+    expect((await new PrismaDriverRouteAccessRepository(prisma, undefined, () => duringGrace)
+      .lookupRouteAccess({ accountId: account.id, routeContext: f.route.id })).status).toBe('INVITED');
+    expect(await new PrismaDriverTokenAccessRepository(prisma, () => complete.driverNavigationUntil!).resolveDriverRouteAccess({
+      accountId: account.id, routePlanId: f.route.id, tokenVersion: account.tokenVersion
+    })).toBeNull();
+  });
+
+  test('rejects a driver swap that keeps the generation and stale live-state owner', async () => {
+    const f = await fixture(prisma);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Same Generation Owner Swap', latitude: 43.57, longitude: -80.57 }] });
+    const published = await dispatch(prisma, { ...adminIdentity(f), expectedRevision: 1 });
+    const state = await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } });
+    const eventRows = await prisma.driverEvent.count({ where: { routePlanId: f.route.id } });
+    const account = await prisma.driverAccount.create({ data: { phone: `same-generation-swap-${randomUUID()}` } });
+    const driver = await prisma.driver.create({ data: { accountId: account.id, authSubject: `same-generation-swap-${randomUUID()}`,
+      displayName: 'Invalid Same Generation Synthetic Driver', shopId: f.shop.id } });
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${f.route.id}::uuid FOR UPDATE`;
+      await tx.routePlan.update({ where: { id: f.route.id }, data: { driverId: driver.id } });
+      await tx.routeGroupingChildVersion.update({ where: { id: f.version.id }, data: { driverId: driver.id } });
+    });
+    expect((await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } })).assignmentGeneration).toBe(2n);
+    expect((await new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({ accountId: account.id, routeContext: f.route.id })).status).toBe('NOT_FOUND');
+    await expect(new PrismaDriverAssignedRouteRepository(prisma).getAssignedRoute({ ...adminIdentity(f), driverId: driver.id,
+      routeContext: f.route.id, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN })).rejects.toThrow();
+    const identity = { ...adminIdentity(f), driverId: driver.id, accountId: account.id, tokenVersion: account.tokenVersion, assignmentGeneration: '2' };
+    const service = new PrismaLiveRouteChangeService(prisma);
+    await expect(service.getDriverPublication(identity)).rejects.toMatchObject({ code: 'ASSIGNMENT_CHANGED' });
+    await expect(service.acknowledgeDriverPublication({ ...identity, publicationVersionId: published.publicationVersionId }))
+      .rejects.toMatchObject({ code: 'ASSIGNMENT_CHANGED' });
+    const events = new PrismaDriverEventRepository(prisma);
+    await expect(events.recordDriverEvent({ ...eventInput(f, f.stops[1]!.id), driverId: driver.id }))
+      .rejects.toMatchObject({ code: 'ROUTE_ASSIGNMENT_CHANGED' });
+    await expect(events.recordDriverEvent({ ...eventInput(f, f.stops[1]!.id), driverId: driver.id, eventType: 'ROUTE_STARTED', deliveryStopId: null }))
+      .rejects.toMatchObject({ code: 'ROUTE_ASSIGNMENT_CHANGED' });
+    await expect(getAdminLiveRouteChange(prisma, adminIdentity(f))).rejects.toMatchObject({ code: 'ASSIGNMENT_CHANGED' });
+    await expect(saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 1,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Invalid Owner Enrollment', latitude: 43.58, longitude: -80.58 }] }))
+      .rejects.toMatchObject({ code: 'ASSIGNMENT_CHANGED' });
+    expect(await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } })).toEqual(state);
+    expect(await prisma.driverEvent.count({ where: { routePlanId: f.route.id } })).toBe(eventRows);
+    expect(await prisma.driverEvent.count({ where: { routePlanId: f.route.id, driverId: driver.id } })).toBe(0);
+  });
+
   test('starts a fresh draft and ACK cursor for a new assignment generation', async () => {
     const f = await fixture(prisma);
     const oldSave = { ...adminIdentity(f), commandId: randomUUID(), expectedRevision: 0,
@@ -438,6 +588,223 @@ if (enabled) {
       stopOverrides: [{ deliveryStopId: g.stops[6]!.id, address1: '700 Stale Membership Save', latitude: 43.57, longitude: -80.57 }] }))
       .rejects.toMatchObject({ code: 'VERSION_CONFLICT', statusCode: 409 });
     expect(await prisma.routeLiveChangeState.findUnique({ where: { routePlanId: g.route.id } })).toBeNull();
+  });
+
+  test('continues delivery through the real same-assignment grouping reorder after live Dispatch', async () => {
+    const f = await fixture(prisma);
+    await prepareGroupingFixture(prisma, f);
+    const originalSaveCommand = { ...adminIdentity(f), commandId: randomUUID(), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Grouping Reorder Correction', latitude: 43.57, longitude: -80.57 }] };
+    const originalSave = await saveDraft(prisma, originalSaveCommand);
+    const originalDispatchCommand = { ...adminIdentity(f), commandId: randomUUID(), expectedRevision: 1 };
+    const published = await dispatch(prisma, originalDispatchCommand);
+    const send = vi.fn<DriverPushProvider['sendRouteNotification']>().mockResolvedValue({ status: 'SKIPPED' });
+    const grouping = new PrismaRouteGroupingService(prisma, { providerName: 'synthetic-grouping-only', sendRouteNotification: send },
+      undefined, undefined, { buildRoute: detail => Promise.resolve(syntheticGeometry(detail)) });
+    const orderIds = [f.stops[0]!.orderId, f.stops[1]!.orderId, ...f.stops.slice(2).reverse().map(stop => stop.orderId)];
+    const saved = await grouping.saveDraft({ appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN,
+      groupingId: f.group.id, mode: 'MANUAL_ORDER', routes: [{ branchId: null, routeKey: `existing:${f.route.id}`,
+        routePlanId: f.route.id, driverId: f.driver.id, label: f.route.name, orderIds }] });
+    expect(saved).not.toBeNull();
+    const child = await prisma.routeGroupingChildVersion.findFirstOrThrow({ where: { routePlanId: f.route.id, status: 'CURRENT', supersededAt: null } });
+    expect(child.id).not.toBe(f.version.id);
+    expect((await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } })).assignmentGeneration).toBe(2n);
+    expect((await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: f.version.id } })).status).toBe('ARCHIVED');
+    const assigned = await readAssigned(prisma, f);
+    const access = await new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({ accountId: f.account.id, routeContext: f.route.id });
+    expect(access.status).toBe('INVITED');
+    if (access.status !== 'INVITED') throw new Error('Synthetic reordered route access was not issued');
+    expect(assigned.routeVersionId).toBe(access.routeAccess.expectedRouteVersionId);
+    expect(assigned.routeVersionId).toBe(child.id);
+    expect(await readPublication(prisma, f)).toMatchObject({ publicationVersionId: child.id, sequence: 2, pending: true });
+    const publicationRows = await publicationCount(prisma, f);
+    const receiptRows = await prisma.routeLiveChangeCommandReceipt.count({ where: { routePlanId: f.route.id } });
+    expect(await saveDraft(prisma, originalSaveCommand)).toEqual(originalSave);
+    expect(await dispatch(prisma, originalDispatchCommand)).toEqual(published);
+    expect(await publicationCount(prisma, f)).toBe(publicationRows);
+    expect(await prisma.routeLiveChangeCommandReceipt.count({ where: { routePlanId: f.route.id } })).toBe(receiptRows);
+    expect(assigned.stops.map(stop => stop.deliveryStopId)).toEqual([f.stops[0]!.id, f.stops[1]!.id, ...f.stops.slice(2).reverse().map(stop => stop.id)]);
+    expect(assigned.stops.find(stop => stop.deliveryStopId === f.stops[6]!.id)?.address.address1).toBe('700 Grouping Reorder Correction');
+    const events = new PrismaDriverEventRepository(prisma);
+    const delayed = { ...eventInput(f, f.stops[1]!.id), expectedRouteVersionId: published.publicationVersionId };
+    await expect(events.recordDriverEvent(delayed)).resolves.toMatchObject({ duplicate: false });
+    await expect(events.recordDriverEvent(eventInput(f, f.stops[1]!.id))).resolves.toHaveProperty('eventId');
+    const currentIdentity = { ...eventInput(f, f.stops[6]!.id), expectedRouteVersionId: access.routeAccess.expectedRouteVersionId };
+    await expect(events.recordDriverEvent({ ...currentIdentity, eventType: 'STOP_ARRIVED' })).resolves.toMatchObject({ duplicate: false });
+    await expect(events.recordDriverEvent({ ...eventInput(f, f.stops[6]!.id), expectedRouteVersionId: published.publicationVersionId }))
+      .rejects.toMatchObject({ code: 'ROUTE_VERSION_MISMATCH' });
+    await expect(events.recordDriverEvent(eventInput(f, f.stops[6]!.id))).rejects.toMatchObject({ code: 'ROUTE_VERSION_MISMATCH' });
+    await expect(events.recordDriverEvent({ ...currentIdentity, clientEventId: randomUUID() })).resolves.toMatchObject({ duplicate: false });
+    expect((await prisma.driverEvent.findUniqueOrThrow({ where: { id: f.arrival.id } })).occurredAt).toEqual(f.arrivedAt);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test.each(['current-assignment', 'previous-assignment-state'] as const)('blocks a real grouping reorder during completed-work grace with %s', async mode => {
+    const f = await fixture(prisma);
+    await prepareGroupingFixture(prisma, f);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Completed Navigation Grace', latitude: 43.57, longitude: -80.57 }] });
+    const published = await dispatch(prisma, { ...adminIdentity(f), expectedRevision: 1 });
+    const events = new PrismaDriverEventRepository(prisma);
+    let driver = f.driver;
+    let account = f.account;
+    let generation = '2';
+    let expectedRouteVersionId = published.publicationVersionId;
+    if (mode === 'previous-assignment-state') {
+      account = await prisma.driverAccount.create({ data: { phone: `completed-grace-reassignment-${randomUUID()}` } });
+      driver = await prisma.driver.create({ data: { accountId: account.id, authSubject: `completed-grace-reassignment-${randomUUID()}`,
+        displayName: 'Completed Grace Reassigned Driver', shopId: f.shop.id } });
+      const original = await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: f.version.id } });
+      await prisma.$transaction(async tx => {
+        await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${f.route.id}::uuid FOR UPDATE`;
+        await tx.routePlan.update({ where: { id: f.route.id }, data: { driverId: driver.id, assignmentGeneration: 3n } });
+        await tx.routeGroupingChildVersion.update({ where: { id: f.version.id }, data: { driverId: driver.id,
+          snapshot: { ...(original.snapshot as Prisma.InputJsonObject), driverId: driver.id } } });
+      });
+      generation = '3';
+      expectedRouteVersionId = f.version.id;
+      for (const eventType of ['ROUTE_STARTED', 'PICKUP_COMPLETED']) {
+        await events.recordDriverEvent({ ...eventInput(f, f.stops[1]!.id), driverId: driver.id, assignmentGeneration: generation,
+          expectedRouteVersionId, deliveryStopId: null, eventType });
+      }
+    }
+    for (const stop of f.stops.slice(1)) {
+      await events.recordDriverEvent({ ...eventInput(f, stop.id), driverId: driver.id, assignmentGeneration: generation, expectedRouteVersionId });
+    }
+    const completed = await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } });
+    expect(completed.deliveryWorkCompletedAt).not.toBeNull();
+    expect(completed.deliveryWorkCompletedGeneration).toBe(BigInt(generation));
+    expect(completed.driverNavigationUntil!.getTime() - completed.deliveryWorkCompletedAt!.getTime()).toBe(7_200_000);
+    const state = await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } });
+    expect(state.assignmentGeneration).toBe(2n);
+    const children = await prisma.routeGroupingChildVersion.findMany({ where: { routePlanId: f.route.id }, orderBy: { id: 'asc' } });
+    const history = await prisma.driverEvent.findMany({ where: { routePlanId: f.route.id }, orderBy: { id: 'asc' } });
+    const routeStops = await prisma.routePlanStop.findMany({ where: { routePlanId: f.route.id }, orderBy: { sequence: 'asc' } });
+    const grouping = new PrismaRouteGroupingService(prisma, { providerName: 'synthetic-grouping-only',
+      sendRouteNotification: () => Promise.resolve({ status: 'SKIPPED' }) }, undefined, undefined,
+    { buildRoute: detail => Promise.resolve(syntheticGeometry(detail)) });
+    await expect(grouping.saveDraft({ appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN,
+      groupingId: f.group.id, mode: 'MANUAL_ORDER', routes: [{ branchId: null, routeKey: `existing:${f.route.id}`,
+        routePlanId: f.route.id, driverId: driver.id, label: f.route.name,
+        orderIds: [f.stops[0]!.orderId, f.stops[1]!.orderId, ...f.stops.slice(2).reverse().map(stop => stop.orderId)] }] }))
+      .rejects.toMatchObject({ code: 'ROUTE_NOT_IN_PROGRESS' });
+    expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } })).toEqual(completed);
+    expect(await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } })).toEqual(state);
+    expect(await prisma.routeGroupingChildVersion.findMany({ where: { routePlanId: f.route.id }, orderBy: { id: 'asc' } })).toEqual(children);
+    expect(await prisma.driverEvent.findMany({ where: { routePlanId: f.route.id }, orderBy: { id: 'asc' } })).toEqual(history);
+    expect(await prisma.routePlanStop.findMany({ where: { routePlanId: f.route.id }, orderBy: { sequence: 'asc' } })).toEqual(routeStops);
+    const identity = { accountId: account.id, routePlanId: f.route.id, tokenVersion: account.tokenVersion };
+    const duringGrace = new Date(completed.driverNavigationUntil!.getTime() - 1);
+    expect(await new PrismaDriverTokenAccessRepository(prisma, () => duringGrace).resolveDriverRouteAccess(identity)).not.toBeNull();
+    expect((await new PrismaDriverRouteAccessRepository(prisma, undefined, () => duringGrace)
+      .lookupRouteAccess({ accountId: account.id, routeContext: f.route.id })).status).toBe('INVITED');
+    expect(await new PrismaDriverTokenAccessRepository(prisma, () => completed.driverNavigationUntil!).resolveDriverRouteAccess(identity)).toBeNull();
+    expect((await new PrismaDriverRouteAccessRepository(prisma, undefined, () => completed.driverNavigationUntil!)
+      .lookupRouteAccess({ accountId: account.id, routeContext: f.route.id })).status).toBe('NOT_FOUND');
+  });
+
+  test('requires explicit private-draft discard before the existing grouping service replaces its child', async () => {
+    const f = await fixture(prisma);
+    await prepareGroupingFixture(prisma, f);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Pending Private Child Correction', latitude: 43.57, longitude: -80.57 }] });
+    const grouping = new PrismaRouteGroupingService(prisma, { providerName: 'synthetic-grouping-only',
+      sendRouteNotification: () => Promise.resolve({ status: 'SKIPPED' }) }, undefined, undefined,
+    { buildRoute: detail => Promise.resolve(syntheticGeometry(detail)) });
+    const input = { appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN,
+      groupingId: f.group.id, mode: 'MANUAL_ORDER' as const, routes: [{ branchId: null, routeKey: `existing:${f.route.id}`,
+        routePlanId: f.route.id, driverId: f.driver.id, label: f.route.name,
+        orderIds: [f.stops[0]!.orderId, f.stops[1]!.orderId, ...f.stops.slice(2).reverse().map(stop => stop.orderId)] }] };
+    await expect(grouping.saveDraft(input)).rejects.toMatchObject({ code: 'DRAFT_CONFLICT' });
+    expect(await prisma.routeGroupingChildVersion.count({ where: { routePlanId: f.route.id, status: 'CURRENT', supersededAt: null } })).toBe(1);
+    expect((await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: f.version.id } })).status).toBe('CURRENT');
+    expect((await getAdminLiveRouteChange(prisma, adminIdentity(f))).hasUnpublishedChanges).toBe(true);
+    await discardDraft(prisma, { ...adminIdentity(f), expectedRevision: 1 });
+    expect(await grouping.saveDraft(input)).not.toBeNull();
+    const access = await new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({ accountId: f.account.id, routeContext: f.route.id });
+    expect(access.status).toBe('INVITED');
+    if (access.status !== 'INVITED') throw new Error('Synthetic recovered child access was not issued');
+    await expect(new PrismaDriverEventRepository(prisma).recordDriverEvent({ ...eventInput(f, f.stops[1]!.id),
+      expectedRouteVersionId: access.routeAccess.expectedRouteVersionId })).resolves.toMatchObject({ duplicate: false });
+  });
+
+  test('enforces the database defense against duplicate current children and preserves the valid identity', async () => {
+    const f = await fixture(prisma);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Ambiguous Child Correction', latitude: 43.57, longitude: -80.57 }] });
+    const published = await dispatch(prisma, { ...adminIdentity(f), expectedRevision: 1 });
+    const snapshot = (await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: f.version.id } })).snapshot;
+    await expect(prisma.routeGroupingChildVersion.create({ data: { shopId: f.shop.id, groupingId: f.group.id, groupingVersionId: f.parent.id,
+      routePlanId: f.route.id, driverId: f.driver.id, version: 2, snapshot: snapshot as Prisma.InputJsonObject, publishedAt: new Date() } }))
+      .rejects.toMatchObject({ code: 'P2002' });
+    expect(await prisma.routeGroupingChildVersion.count({ where: { routePlanId: f.route.id, status: 'CURRENT', supersededAt: null } })).toBe(1);
+    expect((await getAdminLiveRouteChange(prisma, adminIdentity(f))).publishedVersionId).toBe(published.publicationVersionId);
+    expect((await readAssigned(prisma, f)).routeVersionId).toBe(published.publicationVersionId);
+    const access = await new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({ accountId: f.account.id, routeContext: f.route.id });
+    expect(access.status).toBe('INVITED');
+    if (access.status !== 'INVITED') throw new Error('Synthetic valid child access was not retained');
+    expect(access.routeAccess.expectedRouteVersionId).toBe(published.publicationVersionId);
+    await expect(new PrismaDriverEventRepository(prisma).recordDriverEvent({ ...eventInput(f, f.stops[1]!.id),
+      expectedRouteVersionId: access.routeAccess.expectedRouteVersionId })).resolves.toMatchObject({ duplicate: false });
+  });
+
+  test('rejects same-assignment child drift that did not use the coordinated service transition', async () => {
+    const f = await fixture(prisma);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Uncoordinated Child Drift', latitude: 43.57, longitude: -80.57 }] });
+    await dispatch(prisma, { ...adminIdentity(f), expectedRevision: 1 });
+    const snapshot = (await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: f.version.id } })).snapshot;
+    const child = await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM route_plans WHERE id = ${f.route.id}::uuid FOR UPDATE`;
+      await tx.routeGroupingChildVersion.update({ where: { id: f.version.id }, data: { status: 'ARCHIVED', supersededAt: new Date() } });
+      const next = await tx.routeGroupingChildVersion.create({ data: { shopId: f.shop.id, groupingId: f.group.id, groupingVersionId: f.parent.id,
+        routePlanId: f.route.id, driverId: f.driver.id, version: 2, snapshot: snapshot as Prisma.InputJsonObject, publishedAt: new Date() } });
+      await tx.order.updateMany({ where: { id: { in: f.stops.map(stop => stop.orderId) } }, data: { currentRouteVersionId: next.id } });
+      return next;
+    });
+    expect((await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } })).assignmentGeneration).toBe(2n);
+    await expect(getAdminLiveRouteChange(prisma, adminIdentity(f))).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    await expect(readAssigned(prisma, f)).rejects.toThrow();
+    expect((await new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({ accountId: f.account.id, routeContext: f.route.id })).status).toBe('NOT_FOUND');
+    await expect(new PrismaDriverEventRepository(prisma).recordDriverEvent({ ...eventInput(f, f.stops[1]!.id), expectedRouteVersionId: child.id }))
+      .rejects.toMatchObject({ code: 'ROUTE_VERSION_MISMATCH' });
+  });
+
+  test('coordinates the real driver reorder with explicit draft discard, immutable publication lineage, and issued events', async () => {
+    const f = await fixture(prisma);
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Driver Reorder Correction', latitude: 43.57, longitude: -80.57 }] });
+    const orders = new PrismaDriverRouteOrderService(prisma);
+    const command = { ...adminIdentity(f), driverId: f.driver.id, commandId: randomUUID(), expectedVersion: f.version.id,
+      orderedStopIds: [f.stops[0]!.id, f.stops[1]!.id, ...f.stops.slice(2).reverse().map(stop => stop.id)] };
+    const beforeState = await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } });
+    await expect(orders.reorder(command)).rejects.toMatchObject({ code: 'DRAFT_CONFLICT' });
+    expect(await prisma.dsvCommandReceipt.count({ where: { shopId: f.shop.id, commandId: command.commandId } })).toBe(0);
+    expect(await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } })).toEqual(beforeState);
+    expect((await readAssigned(prisma, f)).stops.map(stop => stop.deliveryStopId)).toEqual(f.stops.map(stop => stop.id));
+    await discardDraft(prisma, { ...adminIdentity(f), expectedRevision: 1 });
+    await saveDraft(prisma, { ...adminIdentity(f), expectedRevision: 2,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Driver Reorder Correction', latitude: 43.57, longitude: -80.57 }] });
+    const previous = await dispatch(prisma, { ...adminIdentity(f), expectedRevision: 3 });
+    const immutable = await prisma.routeLiveChangePublication.findUniqueOrThrow({ where: { id: previous.publicationVersionId } });
+    const reordered = await orders.reorder(command);
+    expect(reordered.routeVersionId).not.toBe(f.version.id);
+    expect(await orders.reorder(command)).toEqual(reordered);
+    expect(await readPublication(prisma, f)).toMatchObject({ publicationVersionId: reordered.routeVersionId, sequence: 2, pending: true });
+    expect((await readAssigned(prisma, f)).routeVersionId).toBe(reordered.routeVersionId);
+    const access = await new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({ accountId: f.account.id, routeContext: f.route.id });
+    expect(access.status).toBe('INVITED');
+    if (access.status !== 'INVITED') throw new Error('Synthetic driver-reordered route access was not issued');
+    expect(access.routeAccess.expectedRouteVersionId).toBe(reordered.routeVersionId);
+    const events = new PrismaDriverEventRepository(prisma);
+    await expect(events.recordDriverEvent({ ...eventInput(f, f.stops[1]!.id), expectedRouteVersionId: previous.publicationVersionId }))
+      .resolves.toMatchObject({ duplicate: false });
+    await expect(events.recordDriverEvent({ ...eventInput(f, f.stops[6]!.id), expectedRouteVersionId: reordered.routeVersionId }))
+      .resolves.toMatchObject({ duplicate: false });
+    await expect(events.recordDriverEvent({ ...eventInput(f, f.stops[2]!.id), expectedRouteVersionId: previous.publicationVersionId }))
+      .rejects.toMatchObject({ code: 'ROUTE_VERSION_MISMATCH' });
+    expect(await prisma.routeLiveChangePublication.findUniqueOrThrow({ where: { id: previous.publicationVersionId } })).toEqual(immutable);
+    expect(await publicationCount(prisma, f)).toBe(2);
   });
 
   test('retries a failed mock push for the same publication without duplicate Dispatch delivery', async () => {
@@ -662,6 +1029,22 @@ if (enabled) {
       expect(published.statusCode).toBe(200);
       expect(published.headers['cache-control']).toBe('private, no-store');
       expect(await publicationCount(prisma, f)).toBe(1);
+      expect((await app.inject({ method: 'PATCH', url, headers, payload: { ...payload, commandId: randomUUID(), expectedRevision: 1,
+        stopOverrides: [{ deliveryStopId: f.stops[2]!.id, address1: '300 Private HTTP Discard', latitude: 43.53, longitude: -80.53 }] } })).statusCode).toBe(200);
+      const discardPayload = { ...dispatchPayload, commandId: randomUUID(), expectedRevision: 2 };
+      expect((await app.inject({ method: 'POST', url: `${url}/discard`, payload: discardPayload })).statusCode).toBe(401);
+      expect((await app.inject({ method: 'POST', url: `${url}/discard`, headers, payload: { ...discardPayload, commandId: undefined } })).statusCode).toBe(400);
+      expect((await app.inject({ method: 'POST', url: `${url}/discard`, headers: { ...headers, authorization: 'Bearer foreign-admin' }, payload: discardPayload })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'POST', url: `${url}/discard`, headers, payload: { ...discardPayload, expectedRevision: 1 } })).statusCode).toBe(409);
+      const discarded = await app.inject({ method: 'POST', url: `${url}/discard`, headers, payload: discardPayload });
+      expect(discarded.statusCode).toBe(200);
+      expect(discarded.headers['cache-control']).toBe('private, no-store');
+      expect(discarded.json<{ data: { revision: number; hasUnpublishedChanges: boolean } }>().data)
+        .toMatchObject({ revision: 3, hasUnpublishedChanges: false });
+      const retry = await app.inject({ method: 'POST', url: `${url}/discard`, headers, payload: discardPayload });
+      expect(retry.statusCode).toBe(200);
+      expect(retry.json()).toEqual(discarded.json());
+      expect(await publicationCount(prisma, f)).toBe(1);
     } finally { await app.close(); }
   });
 
@@ -731,6 +1114,11 @@ async function dispatch(prisma: PrismaClient, input: DispatchCommand) {
   if (identity === undefined) throw new Error('Synthetic Dispatch identity is missing');
   return publishLiveRouteChange(prisma, { ...identity, ...input, commandId: input.commandId ?? randomUUID() });
 }
+async function discardDraft(prisma: PrismaClient, input: DispatchCommand) {
+  const identity = fixtureIdentities.get(input.routePlanId);
+  if (identity === undefined) throw new Error('Synthetic discard identity is missing');
+  return discardLiveRouteChange(prisma, { ...identity, ...input, commandId: input.commandId ?? randomUUID() });
+}
 async function readAssigned(prisma: PrismaClient, f: Fixture) {
   const result = await new PrismaDriverAssignedRouteRepository(prisma).getAssignedRoute({
     ...driverIdentity(f), routeContext: f.route.id, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN
@@ -772,6 +1160,20 @@ async function withRouteLock<T>(prisma: PrismaClient, f: Fixture, start: () => P
     expect(observed).toBeGreaterThanOrEqual(waitingCount);
   } finally { unlock(); await blocker; }
   return mutations;
+}
+
+async function prepareGroupingFixture(prisma: PrismaClient, f: Fixture) {
+  await prisma.shop.update({ where: { id: f.shop.id }, data: { defaultDepotAddress: '1 Synthetic Grouping Depot',
+    defaultDepotLatitude: 43.4, defaultDepotLongitude: -80.4 } });
+  await prisma.routeGroupingOrder.createMany({ data: f.stops.map((stop, index) => ({
+    shopId: f.shop.id, groupingId: f.group.id, orderId: stop.orderId, deliveryStopId: stop.id,
+    assignedDriverId: f.driver.id, assignmentStatus: 'ASSIGNED', sourceSequence: index + 1
+  })) });
+  const version = await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: f.version.id } });
+  await prisma.routeGroupingChildVersion.update({ where: { id: f.version.id }, data: { snapshot: {
+    ...(version.snapshot as Prisma.InputJsonObject), driverId: f.driver.id, groupingId: f.group.id,
+    groupingVersion: 1, name: f.route.name, planDate: f.group.planDate.toISOString(), routeIdx: 1, sortOrder: 1
+  } } });
 }
 
 async function fixture(prisma: PrismaClient) {

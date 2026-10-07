@@ -62,7 +62,7 @@ import {
 } from '../modules/route-plans/live-route-change.service.js';
 
 export type AdminRoutePlanDependencies = {
-  liveRouteChangeService?: Pick<PrismaLiveRouteChangeService, 'getAdminDraft' | 'saveAdminDraft' | 'dispatchAdminDraft'>;
+  liveRouteChangeService?: Pick<PrismaLiveRouteChangeService, 'getAdminDraft' | 'saveAdminDraft' | 'dispatchAdminDraft' | 'discardAdminDraft'>;
   originalObservationsService?: OriginalObservationsService;
   operationalStateService?: Pick<PrismaRouteOperationalStateService, 'get' | 'getMany'>;
   routeGroupingService?: Pick<RouteGroupingService, 'recordChildRoutePublished'>;
@@ -129,6 +129,27 @@ export function registerAdminRoutePlanRoutes(
       catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid live route Dispatch payload')); }
       try {
         const data = await dependencies.liveRouteChangeService.dispatchAdminDraft({ appId: auth.appId, shopDomain: auth.shopDomain, ...command });
+        return reply.code(200).send({ data, error: null });
+      } catch (error) {
+        if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+        throw error;
+      }
+    }
+  );
+
+  app.post<{ Body: unknown; Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/live-change/discard', { bodyLimit: 4_096 }, async (request, reply) => {
+      reply.header('Cache-Control', 'private, no-store');
+      const auth = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log, surface: 'admin_route_plans'
+      });
+      if (auth.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', auth.message));
+      if (dependencies.liveRouteChangeService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Live route changes are unavailable'));
+      let command;
+      try { command = { routePlanId: readLiveRouteChangeRouteId(request.params.routePlanId), ...readLiveRouteChangeDispatchPayload(request.body) }; }
+      catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid live route discard payload')); }
+      try {
+        const data = await dependencies.liveRouteChangeService.discardAdminDraft({ appId: auth.appId, shopDomain: auth.shopDomain, ...command });
         return reply.code(200).send({ data, error: null });
       } catch (error) {
         if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));

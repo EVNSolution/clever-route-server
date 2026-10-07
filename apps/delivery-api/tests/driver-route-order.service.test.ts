@@ -77,6 +77,26 @@ describe('PrismaDriverRouteOrderService', () => {
       .rejects.toMatchObject({ code: 'IDEMPOTENCY_PAYLOAD_MISMATCH' });
     expect(replaceVersion).toHaveBeenCalledTimes(1);
   });
+
+  test('rejects a stale request version before changing retained stop rows', async () => {
+    const { prisma } = harness();
+    await expect(new PrismaDriverRouteOrderService(prisma as never).reorder({
+      ...baseInput, expectedVersion: 'unrelated-version'
+    })).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    expect(syncStops).not.toHaveBeenCalled();
+    expect(replaceVersion).not.toHaveBeenCalled();
+  });
+
+  test('rejects duplicate current children before changing retained stop rows', async () => {
+    const { prisma } = harness();
+    Object.assign(prisma.routeGroupingChildVersion, {
+      findMany: vi.fn(() => Promise.resolve([{ id: 'version-old' }, { id: 'duplicate-version' }]))
+    });
+    await expect(new PrismaDriverRouteOrderService(prisma as never).reorder(baseInput))
+      .rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    expect(syncStops).not.toHaveBeenCalled();
+    expect(replaceVersion).not.toHaveBeenCalled();
+  });
 });
 
 type HarnessOptions = { child?: null; deliveryWorkCompleted?: boolean; driverId?: string; status?: string };

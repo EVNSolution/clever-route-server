@@ -13,6 +13,7 @@ import type { RouteGeometryProvider } from './route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from './route-plan.types.js';
 import {
   acknowledgeLiveRouteChange,
+  discardLiveRouteChange,
   getAdminLiveRouteChange,
   getLiveRouteChange,
   LiveRouteChangeError,
@@ -106,6 +107,16 @@ export class PrismaLiveRouteChangeService {
     const geometry = await this.rebuildPublicationGeometry({ ...input, shopId }, result.publicationVersionId, result.assignmentGeneration);
     const notification = await this.sendPublicationNotification(result.publicationVersionId);
     return { ...result, geometry, notification };
+  }
+
+  async discardAdminDraft(input: AdminScope & {
+    commandId: string; expectedAssignmentGeneration: string; expectedRouteVersionId: string; expectedRevision: number
+  }) {
+    return discardLiveRouteChange(this.prisma, {
+      routePlanId: input.routePlanId, shopId: await this.adminShopId(input), commandId: input.commandId,
+      expectedAssignmentGeneration: input.expectedAssignmentGeneration, expectedRouteVersionId: input.expectedRouteVersionId,
+      expectedRevision: input.expectedRevision
+    });
   }
 
   async getDriverPublication(input: DriverScope) {

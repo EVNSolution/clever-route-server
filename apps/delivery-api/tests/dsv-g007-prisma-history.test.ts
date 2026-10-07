@@ -163,7 +163,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(113);
+    expect(migrations).toHaveLength(114);
+    expect(migrations).toContain('20261007140000_kfood_live_route_draft_discard');
     expect(migrations).toContain('20261007120000_kfood_live_route_changes');
     expect(migrations).toContain('20261002140000_kfood_delivery_navigation_grace');
     expect(migrations).toContain('20261002120000_driver_runtime_diagnostics');
@@ -421,7 +422,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20261002140000_kfood_delivery_navigation_grace')).toBeLessThan(
       migrations.indexOf('20261007120000_kfood_live_route_changes')
     );
-    expect(migrations.at(-1)).toBe('20261007120000_kfood_live_route_changes');
+    expect(migrations.indexOf('20261007120000_kfood_live_route_changes')).toBeLessThan(
+      migrations.indexOf('20261007140000_kfood_live_route_draft_discard')
+    );
+    expect(migrations.at(-1)).toBe('20261007140000_kfood_live_route_draft_discard');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {
