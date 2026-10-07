@@ -94,4 +94,4 @@ CLEVER_RUN_DISPOSABLE_DB_TESTS='1' \
 DSV_OPERATIONAL_DATABASE_TARGET_CLASS="$target_class" \
 DSV_OPERATIONAL_DATABASE_URL="$database_url" \
 DATABASE_URL="$database_url" \
-npm test -- dsv-operational-server.integration.test.ts --maxWorkers=1
+npm test -- dsv-operational-server.integration.test.ts dsv-isolated-client-http.integration.test.ts --maxWorkers=1

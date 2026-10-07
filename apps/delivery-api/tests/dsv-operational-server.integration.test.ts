@@ -2235,6 +2235,70 @@ live('DSV operational server PostgreSQL integration', () => {
       .resolves.toBe(0);
   });
 
+  test('serializes two geofence workers and two due timers without duplicating N04 or N05', async () => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'two-geofence-workers');
+    await enableSyntheticGeofence(prisma, fixture, 'LIVE');
+    const policy = syntheticGeofencePolicy('LIVE');
+    const workers = [new PrismaDsvGeofenceService(prisma, { policy }), new PrismaDsvGeofenceService(prisma, { policy })];
+    const telemetry = new PrismaUvisTelemetryRepository(prisma);
+    const times = [0, 10, 20, 30].map((seconds) => new Date(Date.parse('2026-10-06T00:10:00Z') + seconds * 1_000));
+    for (const [index, observedAt] of times.entries()) {
+      const coordinates: readonly [string, string] = index < 2 ? ['37.4900000', '127.0100000'] : ['37.5200000', '127.0300000'];
+      const stored = await telemetry.recordSample(telemetryInput(fixture, observedAt, coordinates));
+      const job = await prisma.dsvGeofenceJob.findUniqueOrThrow({ where: { sampleId: stored.sampleId } });
+      await makeGeofenceJobDue(prisma, job.id, observedAt);
+      const results = await Promise.all(workers.map((worker) => worker.process(job.id, new Date(observedAt.getTime() + 1_000))));
+      expect(results.filter((result) => result.status === 'PROCESSED')).toHaveLength(1);
+    }
+    await expect(prisma.dsvOperationalNotification.count({ where: { executionContextId: fixture.contextId, kind: 'N04' } })).resolves.toBe(1);
+    const due = new Date(times[3]!.getTime() + 300_000);
+    await expect(workers[0]!.tickReminders(new Date(due.getTime() - 1))).resolves.toBe(0);
+    expect((await Promise.all(workers.map((worker) => worker.tickReminders(due)))).reduce((sum, count) => sum + count, 0)).toBe(1);
+    const nextDue = new Date(due.getTime() + 300_000);
+    await expect(workers[1]!.tickReminders(new Date(nextDue.getTime() - 1))).resolves.toBe(0);
+    await expect(new PrismaDsvGeofenceService(prisma, { policy }).tickReminders(nextDue)).resolves.toBe(1);
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } })).resolves.toMatchObject({ reminderOrdinal: 2 });
+    const command = startInput(fixture);
+    await commandService(prisma).start({ ...command, occurredAt: new Date(nextDue.getTime() + 1_000) });
+    await expect(workers[0]!.tickReminders(new Date(nextDue.getTime() + 300_000))).resolves.toBe(0);
+    await expect(prisma.dsvOperationalNotification.count({ where: { executionContextId: fixture.contextId, kind: 'N05', businessStatus: 'OPEN' } })).resolves.toBe(0);
+  });
+
+  test('two send workers call the fake provider once for the same durable notification', async () => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'two-send-workers');
+    const now = new Date('2026-10-06T01:00:00Z');
+    const notification = await prepareLiveNotification(prisma, fixture, now);
+    const messages: string[] = [];
+    const provider: DsvOperationalPushProvider = {
+      providerName: 'synthetic-concurrent',
+      send: (message) => {
+        messages.push(message.payload.notificationId);
+        return Promise.resolve({ providerMessageId: 'synthetic-concurrent-success', status: 'SENT' });
+      },
+    };
+    const workers = [0, 1].map(() => new PrismaDsvOperationalDriverNotificationService(prisma, provider, liveSendPolicy(fixture), { clock: () => now }));
+    const outcomes = await Promise.all(workers.map((worker) => worker.runOnce(now)));
+    expect(outcomes.reduce((sum, outcome) => sum + outcome.sent, 0)).toBe(1);
+    expect(messages).toEqual([notification.id]);
+    await expect(prisma.dsvOperationalNotificationAttempt.count({ where: { notificationId: notification.id } })).resolves.toBe(1);
+  });
+
+  test.each(['OFF', 'SHADOW'])('real DB %s and the default send policy make no provider calls', async (mode) => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, `no-send-${mode}`);
+    const now = new Date('2026-10-06T01:00:00Z');
+    await prepareLiveNotification(prisma, fixture, now);
+    await prisma.dsvExecutionContext.update({ data: { notificationMode: mode }, where: { id: fixture.contextId } });
+    let calls = 0;
+    const provider: DsvOperationalPushProvider = {
+      providerName: 'synthetic-must-not-send',
+      send: () => { calls += 1; return Promise.resolve({ status: 'SENT' }); },
+    };
+    await new PrismaDsvOperationalDriverNotificationService(prisma, provider, liveSendPolicy(fixture), { clock: () => now }).runOnce(now);
+    await prisma.dsvExecutionContext.update({ data: { notificationMode: 'LIVE' }, where: { id: fixture.contextId } });
+    await new PrismaDsvOperationalDriverNotificationService(prisma, provider, undefined, { clock: () => now }).runOnce(now);
+    expect(calls).toBe(0);
+  });
+
   test('reclaims an expired send lease and rejects the late worker completion', async () => {
     const fixture = await createOperationalFixture(prisma, createdShopIds, 'notification-lease');
     const now = new Date('2026-10-06T01:00:00.000Z');
