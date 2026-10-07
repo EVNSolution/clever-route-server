@@ -13,6 +13,31 @@ import {
   type DsvIsolatedHttpHarness,
 } from './support/dsv-isolated-http-harness.js';
 
+type DriverRouteLookupEnvelope = {
+  data: {
+    routes: Array<{
+      driverAccess: { accessToken: string };
+      routeAccess: { routePlanId: string };
+    }>;
+  };
+};
+
+type DriverAssignedRouteEnvelope = {
+  data: {
+    route: {
+      deliveryDate: string;
+      id: string;
+      routeVersionId: string;
+      stops: Array<{
+        deliveryStopId: string;
+        destinationId: string;
+        shippedBoxes: number;
+      }>;
+    };
+    status: string;
+  };
+};
+
 const optedIn = process.env.CLEVER_RUN_DISPOSABLE_DB_TESTS === '1';
 const serverSuite = optedIn ? describe.sequential : describe.skip;
 
@@ -128,31 +153,28 @@ serverSuite('DSV isolated real PostgreSQL HTTP integration', () => {
     });
     expect(login.status).toBe(200);
     const accessToken = String(login.body.data.accessToken);
-    const lookup = await requestJson(baseUrl, '/driver/route-access/lookup', {
+    const lookup = await requestJson<DriverRouteLookupEnvelope>(baseUrl, '/driver/route-access/lookup', {
       headers: { authorization: `Bearer ${accessToken}` },
       body: { routeContext: null },
       method: 'POST',
     });
     expect(lookup.status).toBe(200);
-    const routeChoice = lookup.body.data.routes.find((route: any) => route.routeAccess.routePlanId === fixture.routePlanId);
-    expect(routeChoice).toBeDefined();
-    const assigned = await requestJson(baseUrl, `/driver/assigned-route?routeContext=${fixture.routePlanId}`, {
+    const routeChoice = lookup.body.data.routes.find((route) => route.routeAccess.routePlanId === fixture.routePlanId);
+    if (routeChoice === undefined) throw new Error('Synthetic route was not returned by route-access lookup');
+    const assigned = await requestJson<DriverAssignedRouteEnvelope>(baseUrl, `/driver/assigned-route?routeContext=${fixture.routePlanId}`, {
       headers: { authorization: `Bearer ${String(routeChoice.driverAccess.accessToken)}` },
     });
     expect(assigned.status).toBe(200);
-    expect(assigned.body.data).toMatchObject({
-      route: {
-        deliveryDate: fixture.serviceDate,
-        id: fixture.routePlanId,
-        routeVersionId: fixture.childVersionId,
-        stops: expect.arrayContaining([expect.objectContaining({
-          deliveryStopId: fixture.stopId,
-          destinationId: expect.stringMatching(/^DEST-PRIMARY-/u),
-          shippedBoxes: 3,
-        })]),
-      },
-      status: 'ASSIGNED_ROUTE',
+    expect(assigned.body.data.status).toBe('ASSIGNED_ROUTE');
+    expect(assigned.body.data.route).toMatchObject({
+      deliveryDate: fixture.serviceDate,
+      id: fixture.routePlanId,
+      routeVersionId: fixture.childVersionId,
     });
+    const primaryStop = assigned.body.data.route.stops.find(({ deliveryStopId }) => deliveryStopId === fixture.stopId);
+    expect(primaryStop).toBeDefined();
+    expect(primaryStop?.destinationId).toMatch(/^DEST-PRIMARY-/u);
+    expect(primaryStop?.shippedBoxes).toBe(3);
     expect(fixture.nextStopId).not.toBe(fixture.stopId);
 
     const warehouse = await requestJson(baseUrl, '/api/dsv/__fixture/actions/geofence/warehouse-cycle', {
@@ -468,11 +490,11 @@ function adminHeaders(fixture: DsvIsolatedFixture, csrf = true): Record<string, 
   return { cookie: fixture.admin.cookie, ...(csrf ? { 'x-csrf-token': fixture.admin.csrfToken } : {}) };
 }
 
-async function requestJson(
+async function requestJson<T = any>(
   baseUrl: string,
   path: string,
   options: { body?: unknown; headers?: Record<string, string>; method?: string } = {},
-): Promise<{ body: any; status: number }> {
+): Promise<{ body: T; status: number }> {
   const response = await fetch(`${baseUrl}${path}`, {
     headers: {
       ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
@@ -481,5 +503,5 @@ async function requestJson(
     method: options.method ?? 'GET',
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
   });
-  return { body: await response.json(), status: response.status };
+  return { body: await response.json() as T, status: response.status };
 }

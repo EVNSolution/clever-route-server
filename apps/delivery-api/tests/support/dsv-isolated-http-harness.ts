@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { Prisma, PrismaClient } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { buildApp } from '../../src/app.js';
@@ -278,19 +278,21 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
   });
   app.post('/api/dsv/__fixture/actions/begin', async (request, reply) => {
     requireLoopback(request);
-    await serializedFixtureMutation(async () => {
+    await serializedFixtureMutation(() => {
       const fixture = requireFixture(current);
       requireFixtureAdmin(request, fixture);
       flowLocked = true;
+      return Promise.resolve();
     });
     return reply.send({ data: { locked: true } });
   });
   app.post('/api/dsv/__fixture/actions/end', async (request, reply) => {
     requireLoopback(request);
-    await serializedFixtureMutation(async () => {
+    await serializedFixtureMutation(() => {
       const fixture = requireFixture(current);
       requireFixtureAdmin(request, fixture);
       flowLocked = false;
+      return Promise.resolve();
     });
     return reply.send({ data: { locked: false } });
   });
@@ -349,7 +351,7 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
           rawPayload: {
             ...rawPayload,
             dsv: { ...dsv, normalized: { ...normalized, shippedBoxes: 4 } },
-          } as Prisma.InputJsonValue,
+          },
         },
         where: { id: fixture.orderId },
       });
