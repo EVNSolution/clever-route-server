@@ -28,12 +28,18 @@ Driver PR61 `a7959e5a84393d7dc57e2caa654ea2f8edad202c`와 다른 worktree는 보
 고정 loopback 포트를 확보하지 못하면 중단한다. 해당 실행이 만든 클러스터만 종료한다.
 각 DB에 migration 113개를 적용했다. 기존 합성 Prisma 검사와 별도로 집계한다.
 
-최종 로컬 실제 DB 검사 결과는 총 106건 통과다.
-알림·회차 검사 58건, 실제 HTTP·Driver 코드 검사 4건, G003 배차 검사 37건, G002 이벤트 검사 7건이다.
+최종 로컬 실제 DB 검사 결과는 총 109건 통과다.
+알림·회차와 실제 HTTP·Driver 코드 검사 65건, G003 배차 검사 37건, G002 이벤트 검사 7건이다.
 첫 통합 실행에서 Driver 소스 환경값이 없는 1건은 skip이었다.
-최종 회차·HTTP 실행은 실제 Driver 소스를 연결해 62/62 통과했다. skip은 0건이다.
+최종 회차·HTTP 실행은 실제 Driver 소스를 연결해 65/65 통과했다. skip은 0건이다.
 추가한 worker 경쟁·OFF/SHADOW 검사 4건도 이 최종 실행에 포함됐다.
-실행 로그는 `/tmp/dsv-isolated-integration-20261007/postgres-regressions.log`에 보관했다.
+같은 사업장 재배정 검사는 실제 계정 등록으로 `accountId`와 `authSubject`를 연결했다.
+그 후 실제 Driver route-access와 assigned-route parser가 두 배송지를 읽는지 검사했다.
+제품 권한 검사는 완화하지 않았다.
+최종 테스트 실행 입력 서버 SHA는 `3de7a884a8592fe6442e33abe7d543b051e1f41f`다.
+실행 로그는 `/tmp/dsv-android-flow-20261007/final-postgres-regressions.log`에 보관했다.
+PostgreSQL data와 로그는
+`/var/folders/yw/0twpwfws0n148ltvr45g9l540000gn/T/dsv-isolated-postgres.K4nD6I`에 보관했다.
 
 실행 profile:
 
@@ -61,6 +67,10 @@ bash scripts/test-dsv-operational-local-postgres.sh
 - 미배송 보고·N07의 원자성, 관제 확인·처리 상태와 주문·배송 결과의 분리.
 - OFF·SHADOW·기본 send policy에서 provider 호출 0건.
 
+최종 실행은 dsv_operational, clever_g002, clever_g003에 migration 113개를 각각 새로 적용했다.
+세 클러스터는 검사 종료 후 해당 실행의 cleanup으로 종료됐다.
+이 109건은 이전 64건 실행과 합산하지 않는다.
+
 정책 숫자와 사유 코드는 합성 fixture 주입값이다.
 운영 정책 D01/D02/D04/D05/D07과 반복 최대 6회를 승인하지 않는다.
 
@@ -85,6 +95,50 @@ N07 열기·확인·처리 완료 후 주문·배송지 상태를 유지했다.
 N05는 서버 시작 승인 후 30초 polling으로 갱신됐다.
 1440×900·375×812 화면을 검사했다. 모바일 가로 넘침과 겹침은 없었다.
 화면 증거는 `/tmp/dsv-operations-postgres-browser/`에 보관했다.
+
+## 실제 Android UI와 HTTP·DB 경계
+
+실제 Android 검사는 별도 suffix package와 SM-N981N에서 수행했다.
+앱은 loopback reverse를 통해 `127.0.0.1:4908`의 테스트 전용 Fastify runtime에 연결했다.
+runtime은 실제 Prisma 저장소와 PostgreSQL을 사용했다.
+push provider는 `dsv-isolated-fake`만 구성했다.
+실제 FCM과 운영 provider는 사용하지 않았다.
+
+기기 흐름에서 다음 항목을 확인했다.
+
+- 실제 기사 로그인, 로그인 복구, 배송일 선택, 배차 선택, 두 배송지 표시.
+- N01 공개와 N02 내용 변경 표시.
+- 실제 GPS sample·job·geofence service의 창고 도착, 출발, 첫 N05, 5분 이상 뒤 반복 N05.
+- 실제 UI 시작 승인 후 N05 종료. 시작 후 1시간 tick은 0건이며 N05 수는 증가하지 않았다.
+- 두 배송지 중 지정한 배송지의 실제 N06 이동.
+- 오프라인 입력 보존, 앱 재시작, 응답 유실 후 동일 commandId 재시도.
+- 첫 보고 응답 201, 동일 commandId 재시도 200, 보고·N07·command receipt 각 1건.
+- 관제 웹의 N07 열기, 확인, 처리 완료. 주문과 배송지 상태는 별도로 유지.
+- 만료 access token의 401 후 refresh 200과 동일 N02 처리 복구.
+- 다른 계정의 N02 처리 404.
+- 같은 사업장 재배정 후 이전 기사의 처리 404와 새 기사의 두 배송지 조회.
+- 취소 후 열린 N03 사실 알림과 stale N02 처리 404.
+
+최종 실제 DB 상태는 보고 `RESOLVED`, N07 `RESOLVED`, 대상 배송지 `PENDING`이다.
+해당 경로의 `STOP_FAILED`는 0건이다.
+경로는 마지막 취소 검사 때문에 `CANCELLED`다.
+provider attempt는 0건이며 non-fake provider message도 0건이다.
+
+원본 증거는 다음 경로에 있다.
+
+- 전체 fixture 상태: `/tmp/dsv-android-flow-20261007/final-fixture-state.json`
+- 축약 상태와 HTTP trace: `/tmp/dsv-android-flow-20261007/final-fixture-summary.json`
+- 직접 SQL 결과: `/tmp/dsv-android-flow-20261007/final-db-evidence.json`
+- 시작 후 reminder tick: `/tmp/dsv-android-flow-20261007/post-start-tick.json`
+- native HTTP trace: `/tmp/dsv-android-flow-20261007/native-http.jsonl`
+
+실기기 runtime health SHA는 `55a8979d476df4e07e3c3ac0b2dd1ca0094e4217`이었다.
+후속 fixture 보완 SHA `0d800475d0b504ad4eb69b3ffdf265964c6c1f23`은
+두 배송지 metadata와 실제 Driver parser 회귀를 추가했다.
+최종 SHA `3de7a884a8592fe6442e33abe7d543b051e1f41f`은
+재배정 계정 연결과 production Driver route-access 회귀를 추가했다.
+두 후속 SHA는 최종 새 PostgreSQL 109건으로 검증했다.
+실기기 runtime SHA와 최종 테스트 SHA를 같은 실행으로 표현하지 않는다.
 
 ## 코드 검사와 독립 검토
 
