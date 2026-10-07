@@ -100,6 +100,13 @@ OOM이나 lint 오류는 출력되지 않았다. 메모리 압력 아래에서 �
 CI의 Driver 소스 환경값이 없는 1건은 skip이다. 해당 클라이언트 검사는 위 로컬 최종 4/4로 증명한다.
 초기 CI가 찾은 테스트 CORS 옵션 타입 오류는 `false`로 수정했다. 운영 옵션 계약을 넓히지 않았다.
 
+전체 검증 실행은 기존 `@fastify/busboy` 3.2.0의 production audit 차단도 발견했다.
+firebase-admin과 @fastify/multipart의 기존 `^3.0.0` 범위에서 lock entry 하나만 3.2.2로 갱신했다.
+기준 축소나 audit 제외는 없다. 일반 PR 검사에서 dependency 변경이 없었던 이전 실행은 이 audit를 실행하지 않았다.
+공식 수정 근거는 [3.2.1 DoS 수정](https://github.com/advisories/GHSA-x8mw-p69m-v3mx)과
+[3.2.2 CRLF 수정](https://github.com/advisories/GHSA-gxm5-99cw-xjw9)이다.
+수정 후 production audit와 전체 후보 CI 결과는 PR 갱신 기록에 연결한다.
+
 ## Driver audit와 native 증거 경계
 
 Driver Issue62의 기존 audit gate를 유지한다.
@@ -116,8 +123,13 @@ Expo 정합성·whitespace 후속 단계는 CI에서 skip이었다. 해당 로�
 
 격리 arm64 APK는 생성됐다. 첫 실행은 1,200초 timeout이었다. 오류·OOM은 없고 마지막 lint 단계까지 진행했다.
 유효한 Gradle/NDK 산출물을 재사용한 한 번의 제한된 후속 실행은 57.31초에 성공했다.
-APK는 45,577,787 bytes이며 SHA256은 `cf068ffefcb22addb3af6089c863e1d00d3fe1b82b0c94c24a1d3218c684db5a`다.
-설치·기기 화면·실제 FCM 수신은 APK 생성으로 대체하지 않는다.
+첫 APK는 일반 cleartext 옵션이 release manifest에 반영되지 않아 격리 HTTP 접근을 차단했다.
+격리 모드 전용 Android manifest plugin으로 수정했다. 기본 업무용 설정은 유지했다.
+최종 재빌드는 30.1초에 성공했다. APK는 45,577,823 bytes다.
+최종 SHA256은 `9fff45386f9384f0207ca496dbf0147a10ba956c78f1113290fc03ec8d3825f5`다.
+별도 package를 SM-N981N에 설치했다. 실제 테스트 DB의 합성 기사 로그인·홈 화면과 재실행 로그인 복구를 확인했다.
+업무용 package는 0.1.15/26을 유지했다. 실제 FCM 수신은 미검증이다.
+세 후보의 최종 SHA와 기기 화면·로그 경로는 PR의 최종 검증 갱신 기록에 남긴다.
 
 ## 남은 범위
 
