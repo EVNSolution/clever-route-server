@@ -28,10 +28,11 @@ Driver PR61 `a7959e5a84393d7dc57e2caa654ea2f8edad202c`와 다른 worktree는 보
 고정 loopback 포트를 확보하지 못하면 중단한다. 해당 실행이 만든 클러스터만 종료한다.
 각 DB에 migration 113개를 적용했다. 기존 합성 Prisma 검사와 별도로 집계한다.
 
-실제 DB 검사 결과는 총 102건 통과다.
-알림·회차 검사 54건, 실제 HTTP·Driver 코드 검사 4건, G003 배차 검사 37건, G002 이벤트 검사 7건이다.
+최종 로컬 실제 DB 검사 결과는 총 106건 통과다.
+알림·회차 검사 58건, 실제 HTTP·Driver 코드 검사 4건, G003 배차 검사 37건, G002 이벤트 검사 7건이다.
 첫 통합 실행에서 Driver 소스 환경값이 없는 1건은 skip이었다.
-최종 HTTP 실행은 실제 Driver 소스를 연결해 4/4 통과했다. skip을 통과로 계산하지 않았다.
+최종 회차·HTTP 실행은 실제 Driver 소스를 연결해 62/62 통과했다. skip은 0건이다.
+추가한 worker 경쟁·OFF/SHADOW 검사 4건도 이 최종 실행에 포함됐다.
 실행 로그는 `/tmp/dsv-isolated-integration-20261007/postgres-regressions.log`에 보관했다.
 
 실행 profile:
@@ -91,8 +92,13 @@ N05는 서버 시작 승인 후 30초 polling으로 갱신됐다.
 독립 검토에서 W1, 실제 DB HTTP harness, native 격리 설정의 코드 결함은 남지 않았다.
 전체 타입 인지 ESLint는 4GiB 명령 한도에서 600초 timeout으로 종료됐다.
 OOM이나 lint 오류는 출력되지 않았다. 메모리 압력 아래에서 로컬 전체 검사를 반복하지 않았다.
-전체 lint·typecheck·test·build는 동일 PR 후보의 GitHub CI에서 검증한다.
-최종 CI 결과와 정확한 SHA는 PR 갱신 기록에 남긴다.
+서버 소스 `96317ac35ffda99a1699b5b3ad19d3a2e0e33363`의
+[CI 37570355537](https://github.com/EVNSolution/clever-route-server/actions/runs/37570355537)는 통과했다.
+전체 lint·typecheck·단위 검사 3,267건·build·compose 검사가 통과했다.
+단위 단계의 guarded/optional skip 312건은 통과로 계산하지 않았다.
+실제 disposable DB profile 301건과 별도 원본 관측 5건도 통과했다.
+CI의 Driver 소스 환경값이 없는 1건은 skip이다. 해당 클라이언트 검사는 위 로컬 최종 4/4로 증명한다.
+초기 CI가 찾은 테스트 CORS 옵션 타입 오류는 `false`로 수정했다. 운영 옵션 계약을 넓히지 않았다.
 
 ## Driver audit와 native 증거 경계
 
@@ -101,6 +107,17 @@ bundle export, native APK 생성, suffix package 설치, 실제 FCM 수신은 �
 업무용 package와 데이터를 덮어쓰지 않는다.
 격리 native 후보는 별도 package와 loopback API를 사용한다. 실제 Firebase 발송 설정을 사용하지 않는다.
 audit·APK·설치의 최종 결과는 Driver의 격리 검증 기록과 각 PR 갱신 기록에 연결한다.
+
+Driver 소스 `ac1e688da250de9611dc2de0fde89f01ce41620e`의
+[CI 37570524933](https://github.com/EVNSolution/clever-driver-app/actions/runs/37570524933)는
+workspace 320/320, lint, Android/iOS export를 통과했다. audit 단계는 기존 20 high로 실패했다.
+Expo 정합성·whitespace 후속 단계는 CI에서 skip이었다. 해당 로컬 검사 결과는 Driver 기록에 남긴다.
+공식 advisory와 지원되는 Expo 의존성 조합에서 수정 버전을 확인하지 못했다. Issue62 차단을 유지한다.
+
+격리 arm64 APK는 생성됐다. 첫 실행은 1,200초 timeout이었다. 오류·OOM은 없고 마지막 lint 단계까지 진행했다.
+유효한 Gradle/NDK 산출물을 재사용한 한 번의 제한된 후속 실행은 57.31초에 성공했다.
+APK는 45,577,787 bytes이며 SHA256은 `cf068ffefcb22addb3af6089c863e1d00d3fe1b82b0c94c24a1d3218c684db5a`다.
+설치·기기 화면·실제 FCM 수신은 APK 생성으로 대체하지 않는다.
 
 ## 남은 범위
 
