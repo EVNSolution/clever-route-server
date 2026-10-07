@@ -36,7 +36,7 @@ Driver PR61 `a7959e5a84393d7dc57e2caa654ea2f8edad202c`와 다른 worktree는 보
 같은 사업장 재배정 검사는 실제 계정 등록으로 `accountId`와 `authSubject`를 연결했다.
 그 후 실제 Driver route-access와 assigned-route parser가 두 배송지를 읽는지 검사했다.
 제품 권한 검사는 완화하지 않았다.
-최종 테스트 실행 입력 서버 SHA는 `3de7a884a8592fe6442e33abe7d543b051e1f41f`다.
+109건 실행 입력 서버 SHA는 `3de7a884a8592fe6442e33abe7d543b051e1f41f`다.
 실행 로그는 `/tmp/dsv-android-flow-20261007/final-postgres-regressions.log`에 보관했다.
 PostgreSQL data와 로그는
 `/var/folders/yw/0twpwfws0n148ltvr45g9l540000gn/T/dsv-isolated-postgres.K4nD6I`에 보관했다.
@@ -153,6 +153,17 @@ OOM이나 lint 오류는 출력되지 않았다. 메모리 압력 아래에서 �
 실제 disposable DB profile 301건과 별도 원본 관측 5건도 통과했다.
 CI의 Driver 소스 환경값이 없는 1건은 skip이다. 해당 클라이언트 검사는 위 로컬 최종 4/4로 증명한다.
 초기 CI가 찾은 테스트 CORS 옵션 타입 오류는 `false`로 수정했다. 운영 옵션 계약을 넓히지 않았다.
+
+후속 CI는 격리 HTTP 테스트와 harness에서 타입 인지 ESLint 오류 8건을 찾았다.
+응답의 좁은 로컬 타입, 직접 필드 assertion, serializer callback, Prisma JSON 추론으로 수정했다.
+lint 규칙과 제품 권한을 완화하지 않았다.
+수정 SHA `86d7194cf615367ee0752d267a49319f6f48e12e`에서 변경 파일 typed ESLint와
+delivery-api typecheck가 통과했다.
+새 PostgreSQL 17에 migration 113개를 적용한 뒤 영향 범위 65/65도 다시 통과했다.
+로그는 `/tmp/dsv-android-flow-20261007/final-lint-fix-postgres.log`에 보관했다.
+해당 run directory는
+`/var/folders/yw/0twpwfws0n148ltvr45g9l540000gn/T/dsv-isolated-postgres.6jSYfI`다.
+G002와 G003 소스는 이 수정에서 바뀌지 않았다. 직전 새 클러스터 결과 7/7과 37/37을 유지한다.
 
 전체 검증 실행은 기존 `@fastify/busboy` 3.2.0의 production audit 차단도 발견했다.
 firebase-admin과 @fastify/multipart의 기존 `^3.0.0` 범위에서 lock entry 하나만 3.2.2로 갱신했다.
