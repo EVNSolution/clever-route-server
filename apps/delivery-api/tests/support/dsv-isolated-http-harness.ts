@@ -105,7 +105,7 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
   let current: FixtureRecord | null = null;
 
   const app = await buildApp({
-    corsOrigin: true,
+    corsOrigin: false,
     dsvExecution: {
       admin: {
         cookieName,
