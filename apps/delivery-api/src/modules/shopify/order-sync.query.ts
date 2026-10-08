@@ -61,6 +61,12 @@ const ORDER_FIELDS = `#graphql
             currencyCode
           }
         }
+        totalOutstandingSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
         currentShippingPriceSet {
           shopMoney {
             amount

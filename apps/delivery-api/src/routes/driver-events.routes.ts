@@ -1,3 +1,4 @@
+import { DriverCashCompletionError } from '../modules/driver/driver-completion.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MultipartFile, MultipartValue } from '@fastify/multipart';
 import type { Prisma } from '@prisma/client';
@@ -269,6 +270,7 @@ type DriverConsentRequestBody = {
 };
 
 type DriverEventRequestBody = {
+  completion?: unknown;
   appVersion?: unknown;
   assignmentGeneration?: unknown;
   changeRequestId?: unknown;
@@ -1552,6 +1554,9 @@ export function registerDriverEventRoutes(
         shopId: driverContext.shopId
       });
     } catch (error) {
+      if (error instanceof DriverCashCompletionError) {
+        return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+      }
       if (error instanceof DriverRouteCompletionIncompleteError) {
         request.log.warn({
           decision: error.evidence.decision,
@@ -1723,6 +1728,7 @@ export function registerDriverEventRoutes(
     return reply.code(result.duplicate ? 200 : 202).send({
       data: {
         duplicate: result.duplicate,
+        ...(result.completion === undefined ? {} : { completion: result.completion }),
         ...(result.etaSnapshot === undefined ? {} : { etaSnapshot: result.etaSnapshot }),
         ...(result.etaUpdate === undefined ? {} : { etaUpdate: result.etaUpdate }),
         eventId: result.eventId

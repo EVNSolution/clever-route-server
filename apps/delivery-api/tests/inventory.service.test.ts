@@ -27,7 +27,9 @@ describe('inventory service route-group follower behavior', () => {
       orders?: { include?: { order?: { include?: { deliveryStops?: unknown } } } };
     } | undefined;
     expect(include?.events?.include).toBeUndefined();
-    expect(include?.orders?.include?.order?.include?.deliveryStops).toBeUndefined();
+    expect(include?.orders?.include?.order?.include?.deliveryStops).toEqual({
+      select: { stopCompletionReceipt: { select: { result: true } } }, take: 1
+    });
   });
 
   test('hydrates detail items from raw Shopify line items when persisted order items are missing', async () => {

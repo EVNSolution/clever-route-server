@@ -1,8 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
+import type { RecordDriverEventResult } from './driver-event.repository.js';
 
 export type DriverEventReceipt = {
   assignmentGeneration: string | null;
   clientEventId: string;
+  completion?: RecordDriverEventResult['completion'];
   errorCode: string | null;
   expectedRouteVersionId: string | null;
   routePlanId: string;
@@ -32,6 +34,7 @@ export class PrismaDriverEventReceiptRepository {
       select: {
         assignmentGeneration: true,
         clientEventId: true,
+        stopCompletionReceipt: { select: { result: true } },
         expectedRouteVersionId: true,
         routePlan: { select: { status: true } },
         routePlanId: true
@@ -43,9 +46,11 @@ export class PrismaDriverEventReceiptRepository {
       }
     });
     if (committed !== null && committed.clientEventId !== null && committed.routePlanId !== null && committed.routePlan !== null) {
+      const completion = readStoredCompletion(committed.stopCompletionReceipt?.result);
       return {
         assignmentGeneration: committed.assignmentGeneration?.toString() ?? null,
         clientEventId: committed.clientEventId,
+        ...(completion === undefined ? {} : { completion }),
         errorCode: null,
         expectedRouteVersionId: committed.expectedRouteVersionId,
         routePlanId: committed.routePlanId,
@@ -100,6 +105,13 @@ export class PrismaDriverEventReceiptRepository {
       status: 'UNKNOWN'
     };
   }
+}
+
+function readStoredCompletion(result: unknown): RecordDriverEventResult['completion'] {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return undefined;
+  const completion = (result as Record<string, unknown>).completion;
+  if (completion === null || typeof completion !== 'object' || Array.isArray(completion)) return undefined;
+  return completion as NonNullable<RecordDriverEventResult['completion']>;
 }
 
 export type DriverEventReceiptServiceApi = Pick<PrismaDriverEventReceiptRepository, 'lookup'>;

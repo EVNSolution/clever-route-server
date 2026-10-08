@@ -2,6 +2,7 @@ import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import type { LiveRouteSnapshot } from '../route-plans/live-route-change.js';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
+import { readStoredDriverStopCompletion } from './driver-completion.js';
 import {
   buildCanonicalDestinationProjection,
   canonicalDestinationProfileSelect,
@@ -29,6 +30,7 @@ import type {
 import { applyCachedRouteGeometry, computeRouteShapeSignature } from '../route-plans/route-plan-geometry-cache.js';
 import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
+import { resolveOrderPayment } from '../payments/order-payment.js';
 import { resolveNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import {
   aggregateOrderItems,
@@ -93,6 +95,7 @@ type RoutePlanGeometryCacheMetadataRecord = Omit<RoutePlanGeometryCacheRecord, '
 
 type AssignedRoutePlanStopRecord = {
   deliveryStop: {
+    stopCompletionReceipt?: { result: unknown } | null;
     address1: string | null;
     address2: string | null;
     city: string | null;
@@ -191,6 +194,7 @@ const assignedRouteInclude = {
     include: {
       deliveryStop: {
         include: {
+          stopCompletionReceipt: { select: { result: true } },
           driverEvents: {
             orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
             select: { driverId: true, id: true, occurredAt: true, routePlanId: true },
@@ -524,6 +528,7 @@ function toAssignedRouteStop(
 ): DriverAssignedRouteStop {
   const deliveryStop = routeStop.deliveryStop;
   const rawPayload = objectOrNull(deliveryStop.order.rawPayload);
+  const payment = resolveOrderPayment(deliveryStop.order);
   const latitude = decimalNumber(deliveryStop.latitude);
   const longitude = decimalNumber(deliveryStop.longitude);
   const dsvNormalized = readDsvNormalizedPayload(rawPayload);
@@ -554,6 +559,7 @@ function toAssignedRouteStop(
       latitude,
       longitude
     },
+    completion: readStoredDriverStopCompletion(deliveryStop.stopCompletionReceipt?.result),
     currencyCode: readCurrencyCode(deliveryStop.order.currencyCode),
     customerNote: readCustomerNote(rawPayload),
     deliverySession: readString(rawPayload?.deliverySession)
@@ -581,7 +587,8 @@ function toAssignedRouteStop(
       normalizedPaymentStatus: rawPayload?.normalizedPaymentStatus
     }),
     orderName: deliveryStop.order.name,
-    paymentMethodTitle: readPaymentMethodTitle(rawPayload),
+    payment,
+    paymentMethodTitle: payment.methodTitle,
     ...optionalPendingTimeConstraintChange(toPendingTimeConstraintChange(deliveryStop.dsvDispatchChangeRequests?.[0] ?? null)),
     phone: deliveryStop.phone,
     recipientName: deliveryStop.recipientName,
@@ -835,16 +842,6 @@ function readCustomerNote(rawPayload: Record<string, unknown> | null): string | 
 function readCurrencyCode(value: unknown): string | null {
   const currencyCode = readString(value)?.toUpperCase() ?? null;
   return currencyCode !== null && /^[A-Z]{3}$/u.test(currencyCode) ? currencyCode : null;
-}
-
-function readPaymentMethodTitle(rawPayload: Record<string, unknown> | null): string | null {
-  if (rawPayload === null) {
-    return null;
-  }
-  return readString(rawPayload.payment_method_title)
-    ?? readString(rawPayload.paymentMethodTitle)
-    ?? readString(rawPayload.payment_method)
-    ?? readString(rawPayload.paymentMethod);
 }
 
 function decimalString(value: unknown): string | null {

@@ -4,9 +4,11 @@ import type {
   RoutePlanRouteMetrics
 } from '../route-plans/route-plan.types.js';
 import type { OrderItemDto } from '../order-items/order-items.js';
+import type { OrderPayment } from '../payments/order-payment.js';
 import type { NormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import type { DriverRouteEtaSnapshot } from './driver-route-eta.js';
 import type { DriverDestinationNotes } from './driver-destination-notes.repository.js';
+import type { DriverStopCompletion } from './driver-completion.js';
 
 export type DriverAssignedRouteInput = {
   driverId: string;
@@ -16,6 +18,7 @@ export type DriverAssignedRouteInput = {
 };
 
 export type DriverAssignedRouteStop = {
+  completion?: DriverStopCompletion | null;
   address: {
     address1: string | null;
     address2: string | null;
@@ -48,6 +51,7 @@ export type DriverAssignedRouteStop = {
   items: OrderItemDto[];
   normalizedPaymentStatus: NormalizedPaymentStatus | null;
   orderName: string;
+  payment?: OrderPayment;
   paymentMethodTitle: string | null;
   phone: string | null;
   recipientName: string | null;

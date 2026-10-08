@@ -377,3 +377,6 @@ npm test -- kfood-delivery-completion.integration.test.ts
 
 # Independent synthetic KFood live-change database and notification provider.
 bash scripts/test-live-route-change-db.sh
+
+# Single completion and first Cash receipt use an independent synthetic database.
+bash scripts/test-cash-completion-db.sh
