@@ -1,3 +1,4 @@
+import { dsvServiceDateAt } from '../dsv/dsv-business-time.js';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 
@@ -215,9 +216,9 @@ async function hasEligibleDsvExecution(
       shopId: device.shopId,
       status: 'ACTIVE',
       vehicleId: device.vehicleId,
-      AND: [
-        { OR: [{ monitorStartAt: null }, { monitorStartAt: { lte: observedAt } }] },
-        { OR: [{ monitorEndAt: null }, { monitorEndAt: { gt: observedAt } }] },
+      OR: [
+        { serviceDate: dsvServiceDateAt(observedAt) },
+        { monitorStartAt: { lte: observedAt }, monitorEndAt: { gt: observedAt } },
       ],
     },
   });

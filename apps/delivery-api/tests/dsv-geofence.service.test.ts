@@ -83,10 +83,10 @@ describe('PrismaDsvGeofenceService retry bounds', () => {
     });
   });
 
-  it('ends a changed-context retry after the execution monitor window closes', async () => {
+  it('ends a changed-context retry after the execution business day closes', async () => {
     const now = new Date('2026-10-06T00:10:00.000Z');
     const harness = createNoContextHarness({ now });
-    const context = executionContext(new Date(now.getTime() - 500));
+    const context = { ...executionContext(new Date(now.getTime() - 500)), serviceDate: new Date('2026-10-05T00:00:00.000Z') };
     harness.transaction.dsvExecutionContext.findMany.mockResolvedValue([context]);
     harness.transaction.dsvExecutionContext.findFirst.mockResolvedValue(null);
     const service = new PrismaDsvGeofenceService(harness.prisma as never, {
@@ -94,7 +94,7 @@ describe('PrismaDsvGeofenceService retry bounds', () => {
     });
 
     await expect(service.process(jobId, now)).resolves.toMatchObject({
-      reason: 'MONITOR_WINDOW_EXPIRED:CONTEXT_CHANGED',
+      reason: 'BUSINESS_DAY_EXPIRED:CONTEXT_CHANGED',
       status: 'IGNORED',
     });
   });
@@ -159,50 +159,50 @@ describe('PrismaDsvGeofenceService retry bounds', () => {
   it('T01/T02 creates no missing-start reminder before departure or before T+5 minutes', async () => {
     const beforeDeparture = reminderContext({
       departureObservedAt: null,
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
       reminderDueAt: null,
     });
     const beforeDepartureHarness = createReminderHarness(beforeDeparture);
     const serviceBeforeDeparture = new PrismaDsvGeofenceService(beforeDepartureHarness.prisma as never, { policy: livePolicy });
-    await expect(serviceBeforeDeparture.tickReminders(new Date('2026-10-06T07:30:00.000Z'))).resolves.toBe(0);
+    await expect(serviceBeforeDeparture.tickReminders(new Date('2026-10-06T00:30:00.000Z'))).resolves.toBe(0);
 
     const beforeDue = reminderContext({
-      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
-      reminderDueAt: new Date('2026-10-06T07:35:00.000Z'),
+      departureObservedAt: new Date('2026-10-06T00:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
+      reminderDueAt: new Date('2026-10-06T00:35:00.000Z'),
     });
     const beforeDueHarness = createReminderHarness(beforeDue);
     const serviceBeforeDue = new PrismaDsvGeofenceService(beforeDueHarness.prisma as never, { policy: livePolicy });
-    await expect(serviceBeforeDue.tickReminders(new Date('2026-10-06T07:34:59.999Z'))).resolves.toBe(0);
+    await expect(serviceBeforeDue.tickReminders(new Date('2026-10-06T00:34:59.999Z'))).resolves.toBe(0);
     expect(beforeDueHarness.notification.createMany).not.toHaveBeenCalled();
   });
 
   it('T03/T04 creates the first reminder at T+5 and the second only 300 seconds later', async () => {
     const context = reminderContext({
-      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
-      reminderDueAt: new Date('2026-10-06T07:35:00.000Z'),
+      departureObservedAt: new Date('2026-10-06T00:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
+      reminderDueAt: new Date('2026-10-06T00:35:00.000Z'),
     });
     const harness = createReminderHarness(context);
     const service = new PrismaDsvGeofenceService(harness.prisma as never, { policy: livePolicy });
 
-    await expect(service.tickReminders(new Date('2026-10-06T07:35:00.000Z'))).resolves.toBe(1);
-    await expect(service.tickReminders(new Date('2026-10-06T07:39:59.999Z'))).resolves.toBe(0);
-    await expect(service.tickReminders(new Date('2026-10-06T07:40:00.000Z'))).resolves.toBe(1);
+    await expect(service.tickReminders(new Date('2026-10-06T00:35:00.000Z'))).resolves.toBe(1);
+    await expect(service.tickReminders(new Date('2026-10-06T00:39:59.999Z'))).resolves.toBe(0);
+    await expect(service.tickReminders(new Date('2026-10-06T00:40:00.000Z'))).resolves.toBe(1);
     expect(harness.notification.createMany).toHaveBeenCalledTimes(2);
     expect(context).toMatchObject({
-      reminderDueAt: new Date('2026-10-06T07:45:00.000Z'),
+      reminderDueAt: new Date('2026-10-06T00:45:00.000Z'),
       reminderOrdinal: 2,
     });
   });
 
   it.each([
-    ['T05 start before the next due time', new Date('2026-10-06T07:42:00.000Z'), new Date('2026-10-06T07:45:00.000Z')],
-    ['T06 start before departure', new Date('2026-10-06T07:25:00.000Z'), new Date('2026-10-06T07:35:00.000Z')],
+    ['T05 start before the next due time', new Date('2026-10-06T00:42:00.000Z'), new Date('2026-10-06T00:45:00.000Z')],
+    ['T06 start before departure', new Date('2026-10-06T00:25:00.000Z'), new Date('2026-10-06T00:35:00.000Z')],
   ])('%s creates no N05 intent', async (_name, startedAt, reminderDueAt) => {
     const context = reminderContext({
-      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
+      departureObservedAt: new Date('2026-10-06T00:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
       reminderDueAt,
       startedAt,
     });
@@ -213,32 +213,72 @@ describe('PrismaDsvGeofenceService retry bounds', () => {
     expect(harness.notification.createMany).not.toHaveBeenCalled();
   });
 
-  it('T07 applies an injected six-reminder cap without treating six as a default', async () => {
+  it('continues beyond six reminders even when the snapshot retains a legacy cap', async () => {
     const context = reminderContext({
-      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
-      reminderDueAt: new Date('2026-10-06T07:35:00.000Z'),
+      departureObservedAt: new Date('2026-10-06T00:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
+      reminderDueAt: new Date('2026-10-06T00:35:00.000Z'),
     });
     context.policy = { ...livePolicy, maxReminderCount: 6 };
     const harness = createReminderHarness(context);
     const service = new PrismaDsvGeofenceService(harness.prisma as never, { policy: context.policy });
 
-    for (const time of ['07:35', '07:40', '07:45', '07:50', '07:55', '08:00']) {
+    for (const time of ['00:35', '00:40', '00:45', '00:50', '00:55', '01:00', '01:05', '01:10']) {
       await expect(service.tickReminders(new Date(`2026-10-06T${time}:00.000Z`))).resolves.toBe(1);
     }
-    await expect(service.tickReminders(new Date('2026-10-06T08:05:00.000Z'))).resolves.toBe(0);
-    expect(harness.notification.createMany).toHaveBeenCalledTimes(6);
-    expect(context).toMatchObject({ reminderDueAt: null, reminderOrdinal: 6, reminderStatus: 'CAP_REACHED' });
+    expect(harness.notification.createMany).toHaveBeenCalledTimes(8);
+    expect(context).toMatchObject({ reminderDueAt: new Date('2026-10-06T01:15:00.000Z'), reminderOrdinal: 8, reminderStatus: 'REMINDER_ACTIVE' });
+  });
+
+  it.each(['lock', 'authority'] as const)('rechecks noon after the asynchronous %s check', async (boundary) => {
+    let clock = new Date('2026-10-06T02:59:59.999Z');
+    const context = reminderContext({ departureObservedAt: new Date('2026-10-06T02:50:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T01:00:00.000Z'), reminderDueAt: new Date('2026-10-06T02:55:00.000Z') });
+    const harness = createReminderHarness(context);
+    if (boundary === 'lock') harness.transaction.$executeRaw.mockImplementation(() => {
+      clock = new Date('2026-10-06T03:00:00.000Z');
+      return Promise.resolve(1);
+    });
+    if (boundary === 'authority') harness.transaction.vehicle.findFirst.mockImplementation(() => {
+      clock = new Date('2026-10-06T03:00:00.000Z');
+      return Promise.resolve({ id: vehicleId });
+    });
+    const service = new PrismaDsvGeofenceService(harness.prisma as never, { clock: () => clock });
+    await expect(service.tickReminders(clock)).resolves.toBe(0);
+    expect(harness.notification.createMany).not.toHaveBeenCalled();
+    expect(context).toMatchObject({ reminderDueAt: null, reminderStatus: 'EXPIRED_NOON' });
   });
 
   it.each([
-    ['T08 late confirmation', '2026-10-06T07:37:00.000Z', '2026-10-06T07:42:00.000Z'],
-    ['T09 worker recovery', '2026-10-06T07:51:00.000Z', '2026-10-06T07:56:00.000Z'],
+    ['before the fifth minute', '2026-10-06T02:04:59.999Z', 0],
+    ['at the fifth minute', '2026-10-06T02:05:00.000Z', 1],
+    ['after noon', '2026-10-06T03:00:00.000Z', 0],
+    ['the next day', '2026-10-07T02:05:00.000Z', 0],
+  ] as const)('resumes an old capped reminder only during its business morning: %s', async (_label, at, expected) => {
+    const context = reminderContext({ departureObservedAt: new Date('2026-10-06T01:20:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T01:00:00.000Z'), reminderDueAt: null });
+    context.reminderStatus = 'CAP_REACHED';
+    context.reminderOrdinal = 6;
+    const harness = createReminderHarness(context);
+    harness.notification.findFirst.mockResolvedValue({ createdAt: new Date('2026-10-06T02:00:00.000Z') });
+    const service = new PrismaDsvGeofenceService(harness.prisma as never);
+    await expect(service.tickReminders(new Date(at))).resolves.toBe(expected);
+    expect(context.reminderOrdinal).toBe(6 + expected);
+    if (at >= '2026-10-06T03:00:00.000Z') {
+      expect(context).toMatchObject({ reminderDueAt: null, reminderStatus: 'EXPIRED_NOON' });
+    } else {
+      expect(context.reminderStatus).toBe('REMINDER_ACTIVE');
+    }
+  });
+
+  it.each([
+    ['T08 late confirmation', '2026-10-06T00:37:00.000Z', '2026-10-06T00:42:00.000Z'],
+    ['T09 worker recovery', '2026-10-06T00:51:00.000Z', '2026-10-06T00:56:00.000Z'],
   ])('%s creates at most one reminder and schedules from actual recovery', async (_name, recoveryAt, nextDueAt) => {
     const context = reminderContext({
-      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
-      reminderDueAt: new Date('2026-10-06T07:35:00.000Z'),
+      departureObservedAt: new Date('2026-10-06T00:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
+      reminderDueAt: new Date('2026-10-06T00:35:00.000Z'),
     });
     const harness = createReminderHarness(context);
     const service = new PrismaDsvGeofenceService(harness.prisma as never, { policy: livePolicy });
@@ -250,10 +290,10 @@ describe('PrismaDsvGeofenceService retry bounds', () => {
   });
 
   it('does not duplicate the T+300 reminder when the worker restarts and retries the same instant', async () => {
-    const dueAt = new Date('2026-10-06T07:35:00.000Z');
+    const dueAt = new Date('2026-10-06T00:35:00.000Z');
     const context = reminderContext({
-      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
+      departureObservedAt: new Date('2026-10-06T00:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
       reminderDueAt: dueAt,
     });
     const harness = createReminderHarness(context);
@@ -264,12 +304,12 @@ describe('PrismaDsvGeofenceService retry bounds', () => {
       .tickReminders(dueAt)).resolves.toBe(0);
     expect(harness.notification.createMany).toHaveBeenCalledOnce();
     expect(context).toMatchObject({
-      reminderDueAt: new Date('2026-10-06T07:40:00.000Z'),
+      reminderDueAt: new Date('2026-10-06T00:40:00.000Z'),
       reminderOrdinal: 1,
     });
   });
 
-  it('T11 preserves the execution and reminder ordinal across midnight', async () => {
+  it('never resumes a previous service-day reminder on the next day', async () => {
     const context = reminderContext({
       departureObservedAt: new Date('2026-10-06T23:58:00.000Z'),
       liveEligibleAt: new Date('2026-10-06T20:00:00.000Z'),
@@ -278,40 +318,41 @@ describe('PrismaDsvGeofenceService retry bounds', () => {
     const harness = createReminderHarness(context);
     const service = new PrismaDsvGeofenceService(harness.prisma as never, { policy: livePolicy });
 
-    await expect(service.tickReminders(new Date('2026-10-07T00:03:00.000Z'))).resolves.toBe(1);
+    await expect(service.tickReminders(new Date('2026-10-07T00:03:00.000Z'))).resolves.toBe(0);
     expect(context).toMatchObject({
-      reminderDueAt: new Date('2026-10-07T00:08:00.000Z'),
-      reminderOrdinal: 1,
+      reminderDueAt: null,
+      reminderOrdinal: 0,
+      reminderStatus: 'EXPIRED_NOON',
       status: 'ACTIVE',
     });
   });
 
-  it('ends reminder generation when the monitor window has closed', async () => {
+  it('does not apply an unrelated monitor window to missing-start reminders', async () => {
     const context = reminderContext({
-      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
-      reminderDueAt: new Date('2026-10-06T07:35:00.000Z'),
+      departureObservedAt: new Date('2026-10-06T00:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
+      reminderDueAt: new Date('2026-10-06T00:35:00.000Z'),
     });
-    context.monitorEndAt = new Date('2026-10-06T07:34:00.000Z');
+    context.monitorEndAt = new Date('2026-10-06T00:34:00.000Z');
     const harness = createReminderHarness(context);
     const service = new PrismaDsvGeofenceService(harness.prisma as never, { policy: livePolicy });
 
-    await expect(service.tickReminders(new Date('2026-10-06T07:35:00.000Z'))).resolves.toBe(0);
-    expect(context).toMatchObject({ reminderDueAt: null, reminderStatus: 'AUTHORITY_ENDED' });
+    await expect(service.tickReminders(new Date('2026-10-06T00:35:00.000Z'))).resolves.toBe(1);
+    expect(context).toMatchObject({ reminderStatus: 'REMINDER_ACTIVE' });
   });
 
   it('T12 does not treat a READ acknowledgement as business resolution', async () => {
     const context = reminderContext({
-      departureObservedAt: new Date('2026-10-06T07:30:00.000Z'),
-      liveEligibleAt: new Date('2026-10-06T07:00:00.000Z'),
-      reminderDueAt: new Date('2026-10-06T07:40:00.000Z'),
+      departureObservedAt: new Date('2026-10-06T00:30:00.000Z'),
+      liveEligibleAt: new Date('2026-10-06T00:00:00.000Z'),
+      reminderDueAt: new Date('2026-10-06T00:40:00.000Z'),
     });
     context.reminderOrdinal = 1;
     const harness = createReminderHarness(context);
     harness.acknowledgement.findFirst.mockResolvedValue({ ackKind: 'READ' });
     const service = new PrismaDsvGeofenceService(harness.prisma as never, { policy: livePolicy });
 
-    await expect(service.tickReminders(new Date('2026-10-06T07:40:00.000Z'))).resolves.toBe(1);
+    await expect(service.tickReminders(new Date('2026-10-06T00:40:00.000Z'))).resolves.toBe(1);
     expect(context.reminderOrdinal).toBe(2);
     expect(harness.acknowledgement.findFirst).not.toHaveBeenCalled();
   });
@@ -398,6 +439,7 @@ function executionContext(monitorEndAt: Date) {
     status: 'ACTIVE',
     vehicleId,
     warehouseNotifiedAt: null,
+    serviceDate: new Date('2026-10-06T00:00:00.000Z'),
   };
 }
 
@@ -434,6 +476,8 @@ function createReminderHarness(context: ReturnType<typeof reminderContext>) {
     }),
   };
   const notification = {
+    findFirst: vi.fn<(...args: unknown[]) => Promise<{ createdAt: Date } | null>>(() => Promise.resolve(null)),
+    updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
     createMany: vi.fn((args: unknown) => {
       void args;
       return Promise.resolve({ count: 1 });
@@ -460,5 +504,5 @@ function createReminderHarness(context: ReturnType<typeof reminderContext>) {
     $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
     dsvExecutionContext: executionContextDelegate,
   };
-  return { acknowledgement, executionContext: executionContextDelegate, notification, prisma };
+  return { acknowledgement, executionContext: executionContextDelegate, notification, prisma, transaction };
 }

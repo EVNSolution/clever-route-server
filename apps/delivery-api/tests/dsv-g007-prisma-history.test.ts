@@ -163,7 +163,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(114);
+    expect(migrations).toHaveLength(115);
+    expect(migrations).toContain('20261008090000_dsv_delivery_exception_email');
     expect(migrations).toContain('20261008010000_add_driver_event_completion_owner');
     expect(migrations).toContain('20261002140000_kfood_delivery_navigation_grace');
     expect(migrations).toContain('20261002120000_driver_runtime_diagnostics');
@@ -418,7 +419,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')).toBeLessThan(
       migrations.indexOf('20260929120000_add_incomplete_route_plan_status')
     );
-    expect(migrations.at(-1)).toBe('20261008010000_add_driver_event_completion_owner');
+    expect(migrations.at(-1)).toBe('20261008090000_dsv_delivery_exception_email');
+    expect(migrations.indexOf('20261008090000_dsv_delivery_exception_email')).toBeGreaterThan(
+      migrations.indexOf('20261008010000_add_driver_event_completion_owner')
+    );
     expect(migrations.indexOf('20261008010000_add_driver_event_completion_owner')).toBeGreaterThan(
       migrations.indexOf('20261006060000_dsv_operational_server')
     );

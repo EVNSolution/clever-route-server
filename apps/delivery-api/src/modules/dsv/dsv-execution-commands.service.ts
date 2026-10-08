@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import { Prisma, type PrismaClient } from '@prisma/client';
 
+import { createDsvDeliveryExceptionEmailSnapshot } from './dsv-delivery-exception-email.service.js';
+
 import type {
   DriverEventTransactionClient,
   PrismaDriverEventRepository,
@@ -32,7 +34,8 @@ export type DsvReportDeliveryExceptionInput = DsvExecutionFence & {
   commandId: string;
   explanation?: string | null;
   occurredAt: Date;
-  reasonCode: string;
+  reason?: string;
+  reasonCode?: string;
   targetStopId: string;
 };
 
@@ -52,6 +55,8 @@ export type DsvReportDeliveryExceptionResult = {
   duplicate: boolean;
   exceptionId: string;
   executionContextId: string;
+  emailStatus: string;
+  reportStatus: 'ACCEPTED';
   notificationId: string;
   routeVersion: number;
 };
@@ -63,7 +68,10 @@ export type DsvDeliveryExceptionView = {
   driverId: string;
   executionContextId: string;
   explanation: string | null;
+  emailStatus: string;
+  emailSentAt: string | null;
   id: string;
+  reason: string;
   reasonCode: string;
   resolvedAt: string | null;
   routeVersion: number;
@@ -113,6 +121,7 @@ type LockedExecution = {
   recipientAccountId: string | null;
   routePlanId: string;
   routeVersion: number;
+  serviceDate: Date;
   status: string;
 };
 
@@ -209,9 +218,16 @@ export class PrismaDsvExecutionCommandsService {
     validateCommandId(input.commandId);
     validateOccurredAt(input.occurredAt);
     validateUuid(input.targetStopId, 'targetStopId');
-    const reasonCode = requiredBoundedText(input.reasonCode, 'reasonCode', 80);
+    const reasonCode = input.reasonCode === undefined ? 'FREE_TEXT' : requiredBoundedText(input.reasonCode, 'reasonCode', 80);
     const explanation = optionalBoundedText(input.explanation, 'explanation', 1_000);
-    const payloadHash = commandHash('REPORT_DELIVERY_EXCEPTION', { ...input, explanation, reasonCode });
+    const reason = input.reason === undefined
+      ? explanation ?? (input.reasonCode === undefined ? null : reasonCode)
+      : requiredBoundedText(input.reason, 'reason', 1_000, true);
+    if (reason === null) throw new DsvExecutionCommandError('INVALID_INPUT', 'reason is required');
+    // Preserve the exact legacy request fingerprint so pre-upgrade retries replay.
+    const payloadHash = commandHash('REPORT_DELIVERY_EXCEPTION', {
+      ...input, ...(input.reason === undefined ? {} : { reason }), explanation, reasonCode,
+    });
 
     return this.prisma.$transaction(async (tx) => {
       const transaction = tx as ExecutionCommandTx;
@@ -222,11 +238,13 @@ export class PrismaDsvExecutionCommandsService {
         'REPORT_DELIVERY_EXCEPTION',
         payloadHash,
       );
-      if (replay !== null) return { ...replay, duplicate: true };
+      if (replay !== null) return { ...replay, duplicate: true, reportStatus: 'ACCEPTED', emailStatus: replay.emailStatus ?? 'NOT_PREPARED' };
 
       const execution = await lockAndValidateExecution(transaction, input);
       const stop = await transaction.routePlanStop.findFirst({
-        select: { deliveryStopId: true, deliveryStop: { select: { status: true } } },
+        select: { deliveryStopId: true, deliveryStop: { select: {
+          address1: true, address2: true, city: true, province: true, recipientName: true, status: true,
+        } } },
         where: { deliveryStopId: input.targetStopId, routePlanId: execution.routePlanId, shopId: input.shopId },
       });
       if (stop === null) throw new DsvExecutionCommandError('TARGET_NOT_FOUND');
@@ -234,12 +252,26 @@ export class PrismaDsvExecutionCommandsService {
         throw new DsvExecutionCommandError('TARGET_TERMINAL');
       }
 
+      const driver = await transaction.driver.findFirst({
+        select: { displayName: true }, where: { id: input.driverId, shopId: input.shopId },
+      });
+      if (driver === null) throw new DsvExecutionCommandError('UNAUTHORIZED');
+      const emailSnapshot = createDsvDeliveryExceptionEmailSnapshot({
+        destination: [stop.deliveryStop.recipientName, stop.deliveryStop.province, stop.deliveryStop.city,
+          stop.deliveryStop.address1, stop.deliveryStop.address2].filter(Boolean).join(' ') || input.targetStopId,
+        driver: driver.displayName,
+        reason,
+        reportedAt: input.occurredAt,
+        serviceDate: execution.serviceDate,
+      });
       const report = await transaction.dsvDeliveryException.create({
         data: {
           assignmentEpoch: BigInt(input.assignmentEpoch),
           driverId: input.driverId,
           executionContextId: input.executionContextId,
-          explanation,
+          explanation: input.reason === undefined ? explanation : reason,
+          emailSnapshot,
+          emailStatus: 'PREPARED',
           reasonCode,
           recipientAccountId: input.accountId,
           routeVersion: input.routeVersion,
@@ -272,6 +304,8 @@ export class PrismaDsvExecutionCommandsService {
         duplicate: false,
         exceptionId: report.id,
         executionContextId: input.executionContextId,
+        emailStatus: 'PREPARED',
+        reportStatus: 'ACCEPTED',
         notificationId: notification.id,
         routeVersion: input.routeVersion,
       };
@@ -382,6 +416,8 @@ function toDeliveryExceptionView(report: {
   driverId: string;
   executionContextId: string;
   explanation: string | null;
+  emailStatus: string;
+  emailSentAt: Date | null;
   id: string;
   reasonCode: string;
   resolvedAt: Date | null;
@@ -396,7 +432,10 @@ function toDeliveryExceptionView(report: {
     driverId: report.driverId,
     executionContextId: report.executionContextId,
     explanation: report.explanation,
+    emailStatus: report.emailStatus,
+    emailSentAt: report.emailSentAt?.toISOString() ?? null,
     id: report.id,
+    reason: report.explanation ?? report.reasonCode,
     reasonCode: report.reasonCode,
     resolvedAt: report.resolvedAt?.toISOString() ?? null,
     routeVersion: report.routeVersion,
@@ -448,7 +487,7 @@ async function lockAndValidateExecution(
     throw new DsvExecutionCommandError('ASSIGNMENT_CHANGED');
   }
   const rows = await tx.$queryRaw<LockedExecution[]>(Prisma.sql`
-    SELECT "assignmentEpoch", "driverId", "recipientAccountId", "routePlanId", "routeVersion", "status"
+    SELECT "assignmentEpoch", "driverId", "recipientAccountId", "routePlanId", "routeVersion", "serviceDate", "status"
     FROM "dsv_execution_contexts"
     WHERE "id" = ${input.executionContextId}::uuid AND "shopId" = ${input.shopId}::uuid
     FOR UPDATE
@@ -620,9 +659,10 @@ function validateOccurredAt(value: Date): void {
   if (!Number.isFinite(value.getTime())) throw new DsvExecutionCommandError('INVALID_INPUT', 'occurredAt is invalid');
 }
 
-function requiredBoundedText(value: string, field: string, max: number): string {
+function requiredBoundedText(value: string, field: string, max: number, multiline = false): string {
   const normalized = value.trim();
-  if (normalized === '' || normalized.length > max || containsControlCharacter(normalized)) {
+  const checked = multiline ? normalized.replace(/[\t\n\r]/gu, '') : normalized;
+  if (normalized === '' || normalized.length > max || containsControlCharacter(checked)) {
     throw new DsvExecutionCommandError('INVALID_INPUT', `${field} is invalid`);
   }
   return normalized;

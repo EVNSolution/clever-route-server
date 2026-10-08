@@ -1,3 +1,4 @@
+import { dsvBusinessDayBounds, isDsvBusinessDay, isDsvMissingStartWindow } from './dsv-business-time.js';
 import { randomUUID } from 'node:crypto';
 
 import { Prisma, type PrismaClient } from '@prisma/client';
@@ -424,6 +425,16 @@ export class PrismaDsvOperationalDriverNotificationService {
         AND notification."businessStatus" = 'OPEN'
         AND notification."dueAt" <= ${now}
         AND notification."expiresAt" > ${now}
+        AND (notification."kind" <> 'N05' OR (
+          notification."createdAt" + INTERVAL '5 minutes' > ${now}
+          AND EXISTS (
+            SELECT 1 FROM "dsv_execution_contexts" context
+            WHERE context."id" = notification."executionContextId"
+              AND context."serviceDate" = (${now}::timestamptz AT TIME ZONE 'Asia/Seoul')::date
+              AND (${now}::timestamptz AT TIME ZONE 'Asia/Seoul')::time < TIME '12:00'
+              AND context."status" = 'ACTIVE' AND context."closedAt" IS NULL AND context."startedAt" IS NULL
+          )
+        ))
         AND notification."recipientAccountId" IS NOT NULL
         AND notification."kind" IN (${Prisma.join(policy.allowedKinds)})
         AND EXISTS (
@@ -512,7 +523,7 @@ export class PrismaDsvOperationalDriverNotificationService {
       return 'skipped';
     }
     const fresh = await this.loadAttemptSendState(attempt);
-    const serviceDate = fresh.notification?.kind === 'N01'
+    const serviceDate = fresh.notification?.kind === 'N01' || fresh.notification?.kind === 'N05'
       ? await this.prisma.dsvExecutionContext.findFirst({
         select: { serviceDate: true },
         where: { id: fresh.notification.executionContextId, shopId: attempt.shopId },
@@ -562,6 +573,16 @@ export class PrismaDsvOperationalDriverNotificationService {
     });
     if (stillOwnsLease === null) return 'skipped';
     const kind = fresh.notification!.kind as DsvOperationalDriverNotificationKind;
+    const dispatchNow = this.options.clock?.() ?? new Date();
+    const expiresAt = kind === 'N05' && serviceDate !== null
+      ? new Date(Math.min(fresh.notification!.expiresAt.getTime(), fresh.notification!.createdAt.getTime() + 300_000,
+        dsvBusinessDayBounds(serviceDate.serviceDate).noon.getTime()))
+      : fresh.notification!.expiresAt;
+    if (kind === 'N05' && (serviceDate === null || dispatchNow >= expiresAt)) {
+      await this.completeLease(input, { completedAt: dispatchNow, errorCode: 'MISSING_START_EXPIRED',
+        leaseExpiresAt: null, leaseToken: null, status: 'SKIPPED' }, dispatchNow);
+      return 'skipped';
+    }
     const copy = notificationCopy(kind, serviceDate?.serviceDate);
     const providerResult = await this.provider.send({
       ...copy,
@@ -569,13 +590,13 @@ export class PrismaDsvOperationalDriverNotificationService {
         ? `${fresh.notification!.executionContextId}:${kind}:${fresh.notification!.targetStopId}:${fresh.notification!.ordinal}`
         : `${fresh.notification!.executionContextId}:${kind}`,
       payload: {
-        expiresAt: fresh.notification!.expiresAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
         kind,
         notificationId: fresh.notification!.id,
         schemaVersion: PUSH_SCHEMA_VERSION,
       },
       token: fresh.token!.devicePushToken,
-      ttlMs: Math.max(0, fresh.notification!.expiresAt.getTime() - sendNow.getTime()),
+      ttlMs: Math.max(0, expiresAt.getTime() - dispatchNow.getTime()),
     });
     const completedAt = this.options.clock?.() ?? new Date();
     if (providerResult.status === 'SENT') {
@@ -598,13 +619,15 @@ export class PrismaDsvOperationalDriverNotificationService {
       });
       return completed ? 'dead' : 'skipped';
     }
-    const exhausted = attempt.attemptCount >= sendPolicy.maxProviderAttempts! || completedAt >= fresh.notification!.expiresAt;
+    const nextAttemptAt = new Date(completedAt.getTime() + sendPolicy.retryDelayMs);
+    const exhausted = attempt.attemptCount >= sendPolicy.maxProviderAttempts!
+      || (kind === 'N05' ? nextAttemptAt >= expiresAt : completedAt >= expiresAt);
     const completed = await this.completeLease(input, {
       ...(exhausted ? { completedAt } : {}),
       errorCode: providerResult.errorCode ?? 'PROVIDER_SEND_FAILED',
       leaseExpiresAt: null,
       leaseToken: null,
-      nextAttemptAt: new Date(completedAt.getTime() + sendPolicy.retryDelayMs),
+      nextAttemptAt,
       status: exhausted ? 'DEAD' : 'RETRY',
     }, completedAt);
     if (!completed) return 'skipped';
@@ -714,10 +737,10 @@ export class PrismaDsvOperationalDriverNotificationService {
     if (!isDriverKind(notification.kind) || !policy.allowedKinds.includes(notification.kind)) return 'KIND_NOT_ALLOWED';
     if (notification.dueAt > now) return 'NOTIFICATION_NOT_DUE';
     if (notification.expiresAt <= now) return 'NOTIFICATION_EXPIRED';
+    if (notification.kind === 'N05' && notification.createdAt.getTime() + 300_000 <= now.getTime()) return 'STALE_REMINDER';
     if (notification.expiresAt.getTime() - notification.createdAt.getTime() > policy.notificationRetentionMs!) {
       return 'RETENTION_EXCEEDS_POLICY';
     }
-    if (notification.kind === 'N05' && notification.ordinal > policy.businessReminderCap!) return 'REMINDER_CAP_REACHED';
     if (capability === null || token === null) return 'CAPABILITY_OR_TOKEN_MISSING';
     if (!policy.allowedShopIds.includes(capability.shopId) || !policy.allowedAccountIds.includes(capability.accountId)) {
       return 'RECIPIENT_NOT_ALLOWLISTED';
@@ -763,7 +786,11 @@ export class PrismaDsvOperationalDriverNotificationService {
         targetStopId: notification.targetStopId,
       })) return 'TARGET_STOP_STALE';
     }
-    if (notification.kind === 'N03') return null;
+    if (notification.kind === 'N01' || notification.kind === 'N02' || notification.kind === 'N03') return null;
+    if (notification.kind === 'N05') return 'serviceDate' in context && context.serviceDate instanceof Date && isDsvMissingStartWindow(context.serviceDate, now)
+      ? null : 'MISSING_START_NOON';
+    if (notification.kind === 'N04') return 'serviceDate' in context && context.serviceDate instanceof Date && isDsvBusinessDay(context.serviceDate, now)
+      ? null : 'OUTSIDE_BUSINESS_DAY';
     if (context.monitorStartAt === null || context.monitorEndAt === null || now < context.monitorStartAt || now > context.monitorEndAt) return 'OUTSIDE_MONITOR_WINDOW';
     if (context.monitorEndAt.getTime() - context.monitorStartAt.getTime() > policy.monitorWindowMs!) return 'MONITOR_WINDOW_EXCEEDS_POLICY';
     return null;
@@ -822,6 +849,7 @@ export class PrismaDsvOperationalDriverNotificationService {
         policy: true,
         routePlanId: true,
         startedAt: true,
+        serviceDate: true,
         status: true,
         vehicleId: true,
       },
@@ -1011,9 +1039,6 @@ export function isCompleteLivePolicy(policy: DsvOperationalNotificationSendPolic
     && policy.approvedAuthorizationId.trim() !== ''
     && typeof policy.approvedGeofencePolicyVersion === 'string'
     && policy.approvedGeofencePolicyVersion.trim() !== ''
-    && policy.businessReminderCap !== null
-    && Number.isInteger(policy.businessReminderCap)
-    && policy.businessReminderCap > 0
     && policy.maxProviderAttempts !== null
     && Number.isInteger(policy.maxProviderAttempts)
     && policy.maxProviderAttempts > 0
