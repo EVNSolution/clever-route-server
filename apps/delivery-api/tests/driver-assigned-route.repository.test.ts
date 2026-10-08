@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { DriverAssignedRouteVersionError, PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
+import { PrismaInventoryService } from '../src/modules/inventory/inventory.service.js';
 import { computeRouteShapeSignature } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 import { dsvCanonicalNoteHash } from '../src/modules/dsv/dsv-time-constraint.js';
@@ -162,6 +163,52 @@ type LooseAssignedRouteStop = Omit<MutableRoutePlanRecord['routeStops'][number],
 };
 
 describe('PrismaDriverAssignedRouteRepository', () => {
+  test.each([
+    { paymentGatewayNames: ['Cash on Delivery (COD)'] },
+    { paymentGatewayNames: ['Email Money Transfer'] },
+    { cleverManualPaymentMethod: 'CASH' },
+    { cleverManualPaymentStatus: 'ETRANSFER' },
+    { payment_method_title: 'Cash' },
+    { paymentGatewayNames: ['unknown gateway'] }
+  ])('projects the same payment contract as office inventory from %j', async (source) => {
+    const rawPayload = { ...source, totalOutstandingSet: { shopMoney: { amount: '22.25', currencyCode: 'CAD' } } };
+    const existingStop = routePlanRecord.routeStops[0]!;
+    const savedCompletion = {
+      id: 'completion-id', eventId: 'event-id', deliveryStopId: 'stop-id', routePlanId: 'route-plan-id',
+      driverId: 'driver-id', assignmentGeneration: '1', expectedRouteVersionId: 'route-version-id', method: 'CASH',
+      payment: { currencyCode: 'CAD', expectedAmount: '122.25', expectedAmountSource: 'UNPAID_ORDER_TOTAL',
+        financialStatus: 'PENDING', gatewayNames: ['Cash'], method: 'CASH', methodTitle: 'Cash', requiresCashInput: true },
+      expectedAmount: '122.25', actualAmount: '122.00', differenceAmount: '-0.25', currencyCode: 'CAD',
+      occurredAt: '2026-10-08T00:00:00.000Z', recordedAt: '2026-10-08T00:00:01.000Z'
+    };
+    const stopCompletionReceipt = { result: { completion: savedCompletion } };
+    const order = { ...existingStop.deliveryStop.order, financialStatus: 'PARTIALLY_PAID', rawPayload,
+      deliveryFacts: [], deliveryStops: [{ stopCompletionReceipt }] };
+    const routePlan = { ...routePlanRecord, routeStops: [{ ...existingStop, deliveryStop: {
+      ...existingStop.deliveryStop, order, stopCompletionReceipt
+    } }] };
+    const { prisma } = createPrismaHarness({ routePlan });
+    const driver = await new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    });
+    const inventory = await new PrismaInventoryService({
+      shop: { findUnique: vi.fn(() => ({ id: 'shop-id' })) },
+      inventory: { findFirst: vi.fn(() => ({
+        createdAt: new Date('2026-10-08T00:00:00Z'), updatedAt: new Date('2026-10-08T00:00:00Z'),
+        id: 'inventory-id', name: 'Inventory', note: null, routeGroupingId: null, events: [],
+        orders: [{ orderId: order.id, order }]
+      })) }
+    } as never).getInventory({ inventoryId: 'inventory-id', shopDomain: 'dev1.tomatonofood.com' });
+    expect(driver.status).toBe('ASSIGNED_ROUTE');
+    if (driver.status !== 'ASSIGNED_ROUTE') throw new Error('Expected assigned route');
+    const stop = driver.route.stops[0]!;
+    expect(stop.payment).toEqual(inventory?.orders[0]?.payment);
+    expect(stop.paymentMethodTitle).toEqual(inventory?.orders[0]?.paymentMethodTitle);
+    expect(stop.payment?.expectedAmount).toBe('22.25');
+    expect(stop.completion).toEqual(savedCompletion);
+    expect(inventory?.orders[0]?.completion).toEqual(savedCompletion);
+  });
+
   test('rejects duplicate current children before using a matching live publication', async () => {
     const child = { id: 'child-current', driverId: 'driver-id', routePlanId: 'route-plan-id', status: 'CURRENT', supersededAt: null };
     const { prisma } = createPrismaHarness({ routePlan: {
@@ -306,6 +353,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
               postalCode: 'M5X 1A9',
               province: 'ON'
             },
+            completion: null,
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
             navigationTarget: 'COORDINATES',
             currencyCode: 'CAD',
@@ -342,6 +390,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             ],
             normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
             orderName: '#1001',
+            payment: { currencyCode: 'CAD', expectedAmount: null, expectedAmountSource: 'UNKNOWN', financialStatus: 'CASH', gatewayNames: [], method: 'CASH', methodTitle: 'Cash on delivery', requiresCashInput: true },
             paymentMethodTitle: 'Cash on delivery',
             phone: '+14165550123',
             recipientName: 'Recipient One',

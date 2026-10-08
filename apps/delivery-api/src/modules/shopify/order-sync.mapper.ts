@@ -29,6 +29,12 @@ export type ShopifyOrderNode = {
       currencyCode: string;
     };
   } | null;
+  totalOutstandingSet?: {
+    shopMoney: {
+      amount: string;
+      currencyCode: string;
+    };
+  } | null;
   currentShippingPriceSet?: {
     shopMoney: {
       amount: string;

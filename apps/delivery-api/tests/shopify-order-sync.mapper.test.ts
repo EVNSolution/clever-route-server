@@ -36,7 +36,7 @@ describe('buildOrdersUpdatedSinceQuery', () => {
       'id', 'legacyResourceId', 'name', 'email', 'phone', 'displayFinancialStatus',
       'paymentGatewayNames', 'displayFulfillmentStatus', 'createdAt', 'processedAt',
       'updatedAt', 'cancelledAt', 'note', 'tags', 'customAttributes', 'lineItems',
-      'currentTotalPriceSet', 'currentShippingPriceSet', 'totalShippingPriceSet', 'shippingAddress', 'address1',
+      'currentTotalPriceSet', 'totalOutstandingSet', 'currentShippingPriceSet', 'totalShippingPriceSet', 'shippingAddress', 'address1',
       'address2', 'city', 'province', 'provinceCode', 'zip', 'countryCodeV2', 'latitude',
       'longitude', 'coordinatesValidated', 'validationResultSummary',
     ];
@@ -75,6 +75,7 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       legacyResourceId: '123',
       name: '#1001',
       paymentGatewayNames: ['Cash on Delivery (COD)'],
+      totalOutstandingSet: { shopMoney: { amount: '22.25', currencyCode: 'USD' } },
       phone: '+15551234567',
       processedAt: '2026-05-07T04:00:00Z',
       shippingAddress: {
@@ -109,6 +110,7 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       }
     });
     expect(mapped.order.rawPayload.paymentGatewayNames).toEqual(['Cash on Delivery (COD)']);
+    expect(mapped.order.rawPayload.totalOutstandingSet).toEqual({ shopMoney: { amount: '22.25', currencyCode: 'USD' } });
     expect(mapped.order.rawPayload.shippingAddress).toEqual(
       expect.objectContaining({
         coordinatesValidated: false,

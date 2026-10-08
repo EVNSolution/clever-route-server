@@ -9752,6 +9752,13 @@ components:
       type: object
       required: [address, coordinates, deliveryStopId, distanceFromPreviousMeters, durationFromPreviousSeconds, estimatedArrivalAt, navigationTarget, orderName, phone, recipientName, sequence, specialInstructionNote, status, timeConstraintAcknowledgement, timeWindow, timeWindowEnd, timeWindowStart]
       properties:
+        payment:
+          $ref: '#/components/schemas/OrderPayment'
+        completion:
+          description: Immutable first completion and collection snapshot; null when unrecorded. Use this snapshot for historical amounts instead of current payment data.
+          oneOf:
+            - $ref: '#/components/schemas/DriverStopCompletion'
+            - type: 'null'
         deliveryStopId:
           type: string
         distanceFromPreviousMeters:
@@ -10288,6 +10295,8 @@ components:
       required: [eventType, occurredAt]
       description: PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null. TIME_CONSTRAINT_ACKNOWLEDGED requires nonblank clientEventId, deliveryStopId, and routePlanId for the authenticated route.
       properties:
+        completion:
+          $ref: '#/components/schemas/DriverStopCompletionRequest'
         accuracyMeters:
           description: Measured horizontal GPS accuracy for LOCATION_UPDATED; persisted as operational evidence and used to gate proximity conclusions.
           type: [number, 'null']
@@ -10339,6 +10348,104 @@ components:
             eventType: PICKUP_COMPLETED
             occurredAt: '2026-05-07T06:09:30.000Z'
             routePlanId: route-plan-id
+    DriverStopCompletionRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      description: Optional top-level event-body contract for KFood STOP_DELIVERED with driverContractVersion 2 and the original clientEventId, assignmentGeneration, and expectedRouteVersionId. It requires no STOP_ARRIVED event. Omission preserves legacy behavior and does not record zero Cash. The server determines the expected amount.
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        cashReceived:
+          type: object
+          additionalProperties: false
+          required: [amount, currency]
+          description: Actual Cash received. Required when payment.requiresCashInput is true. Omit for eTransfer or unknown methods. Paid or noncollectible Cash permits omission or explicit zero. An unknown source currency must be corrected before using this opt-in contract.
+          properties:
+            amount:
+              type: string
+              pattern: '^(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$'
+              description: Nonnegative exact decimal string with at most two decimal places. Zero is distinct from omitted input. Equivalent decimal strings normalize to two decimal places.
+              examples: ['122', '122.25', '123.00', '0']
+            currency:
+              type: string
+              pattern: '^[A-Z]{3}$'
+              description: Must match the server payment source currency.
+              examples: [CAD]
+    OrderPayment:
+      type: object
+      required: [method, methodTitle, gatewayNames, financialStatus, expectedAmount, currencyCode, expectedAmountSource, requiresCashInput]
+      description: Shared driver and office payment projection from current server order data. Unknown methods are never inferred as Cash. This object does not overwrite the original order total or a saved completion snapshot.
+      properties:
+        method:
+          type: string
+          enum: [CASH, ETRANSFER, OTHER, UNKNOWN]
+        methodTitle:
+          type: [string, 'null']
+        gatewayNames:
+          type: array
+          items: { type: string }
+        financialStatus:
+          type: [string, 'null']
+        expectedAmount:
+          type: [string, 'null']
+          pattern: '^-?(?:0|[1-9]\d{0,15})\.\d{2}$'
+          description: Server outstanding amount as an exact two-decimal string. Paid means zero. Partial or unknown balances remain null without reliable outstanding data. Negative outstanding indicates a refund balance and does not require Cash collection.
+          examples: ['122.25', '22.25', '0.00', null]
+        currencyCode:
+          type: [string, 'null']
+          pattern: '^[A-Z]{3}$'
+        expectedAmountSource:
+          type: string
+          enum: [SHOPIFY_OUTSTANDING, UNPAID_ORDER_TOTAL, PAID, UNKNOWN]
+          description: UNPAID_ORDER_TOTAL is permitted only when the original source supports an unpaid or pending status; a local office status edit cannot erase partial-payment evidence.
+        requiresCashInput:
+          type: boolean
+          description: True for collectible Cash, including an unknown balance or currency. Missing currency does not waive actual-amount input. Existing completion takes precedence over another first collection prompt.
+    DriverStopCompletion:
+      type: object
+      required: [id, eventId, deliveryStopId, routePlanId, driverId, assignmentGeneration, expectedRouteVersionId, method, payment, expectedAmount, actualAmount, differenceAmount, currencyCode, occurredAt, recordedAt]
+      description: Immutable first opt-in completion result. Exact retries return the original event, amounts, actor, assignment, and publication version. A conflicting request cannot change this record. This is not settlement approval.
+      properties:
+        id: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        deliveryStopId: { type: string, format: uuid }
+        routePlanId: { type: string, format: uuid }
+        driverId: { type: string, format: uuid }
+        assignmentGeneration:
+          type: string
+          pattern: '^[1-9]\d*$'
+          description: Original assignment generation as a decimal string.
+        expectedRouteVersionId: { type: string, format: uuid }
+        method:
+          type: string
+          enum: [CASH, ETRANSFER, OTHER, UNKNOWN]
+        payment:
+          $ref: '#/components/schemas/OrderPayment'
+        expectedAmount:
+          type: [string, 'null']
+          pattern: '^-?(?:0|[1-9]\d{0,15})\.\d{2}$'
+          description: Server expected amount fixed in the first completion transaction; null when unknown.
+        actualAmount:
+          type: [string, 'null']
+          pattern: '^(?:0|[1-9]\d{0,15})\.\d{2}$'
+          description: Actual Cash received, normalized to two decimal places. Null means no recorded Cash amount; zero is a recorded amount.
+        differenceAmount:
+          type: [string, 'null']
+          pattern: '^-?(?:0|[1-9]\d{0,15})\.\d{2}$'
+          description: Actual minus expected, or null when either amount is unknown.
+        currencyCode:
+          type: [string, 'null']
+          pattern: '^[A-Z]{3}$'
+        occurredAt:
+          type: string
+          format: date-time
+          description: Original client event time; not an inferred arrival time.
+        recordedAt:
+          type: string
+          format: date-time
+          description: Server event creation time.
     DriverSyncHeartbeatRequest:
       type: object
       additionalProperties: false
@@ -10548,6 +10655,8 @@ components:
           type: object
           required: [duplicate, eventId]
           properties:
+            completion:
+              $ref: '#/components/schemas/DriverStopCompletion'
             duplicate:
               type: boolean
             etaUpdate:
@@ -10567,6 +10676,8 @@ components:
           type: object
           required: [assignmentGeneration, clientEventId, errorCode, expectedRouteVersionId, routePlanId, routeStatus, status]
           properties:
+            completion:
+              $ref: '#/components/schemas/DriverStopCompletion'
             assignmentGeneration: { type: [string, 'null'] }
             clientEventId: { type: string }
             errorCode: { type: [string, 'null'] }

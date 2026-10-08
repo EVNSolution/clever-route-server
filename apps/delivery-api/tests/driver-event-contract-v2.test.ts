@@ -8,6 +8,7 @@ import {
   PrismaDriverEventRepository
 } from '../src/modules/driver/driver-event.repository.js';
 import {
+  DriverEventReceiptScopeError,
   PrismaDriverEventReceiptRepository
 } from '../src/modules/driver/driver-event-receipt.repository.js';
 import { signDriverAccountToken, signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
@@ -304,6 +305,46 @@ describe('ordered driver event contract v2', () => {
 });
 
 describe('driver completion receipt precedence', () => {
+  test('returns the original completion after route reassignment without reading the current order or attempt', async () => {
+    const completion = {
+      cash: { actualAmount: '0.00', currency: 'CAD', differenceAmount: '-122.25', expectedAmount: '122.25' },
+      clientEventId: 'complete-1',
+      driverId: 'original-driver-id',
+      eventId: 'original-event-id',
+      recordedAt: '2026-08-24T05:00:00.000Z'
+    };
+    const findCommitted = vi.fn(() => Promise.resolve({
+      assignmentGeneration: 7n,
+      clientEventId: 'complete-1',
+      stopCompletionReceipt: { result: { completion, duplicate: false, eventId: 'original-event-id' } },
+      expectedRouteVersionId: 'original-publication-id',
+      routePlan: { status: 'COMPLETED' },
+      routePlanId: 'route-id'
+    }));
+    const findAttempt = vi.fn();
+    const findRoute = vi.fn();
+    const prisma = {
+      driverEvent: { findFirst: findCommitted },
+      driverEventAttempt: { findFirst: findAttempt },
+      routePlan: { findFirst: findRoute }
+    };
+    const lookup = { accountId: 'original-account-id', clientEventId: 'complete-1', routePlanId: 'route-id' };
+    const original = await new PrismaDriverEventReceiptRepository(prisma as never).lookup(lookup);
+    const restored = await new PrismaDriverEventReceiptRepository(prisma as never).lookup(lookup);
+    expect(original).toEqual({
+      assignmentGeneration: '7', clientEventId: 'complete-1', completion, errorCode: null,
+      expectedRouteVersionId: 'original-publication-id', routePlanId: 'route-id', routeStatus: 'COMPLETED', status: 'APPLIED'
+    });
+    expect(restored).toEqual(original);
+    expect(findCommitted).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        clientEventId: 'complete-1', driver: { accountId: 'original-account-id' }, routePlanId: 'route-id'
+      }
+    }));
+    expect(findAttempt).not.toHaveBeenCalled();
+    expect(findRoute).not.toHaveBeenCalled();
+  });
+
   test('returns APPLIED from the committed event even when the admission row is still ACCEPTED', async () => {
     const repository = new PrismaDriverEventReceiptRepository({
       driverEvent: { findFirst: vi.fn(() => Promise.resolve({
@@ -326,6 +367,37 @@ describe('driver completion receipt precedence', () => {
         routeStatus: 'COMPLETED',
         status: 'APPLIED'
       });
+  });
+
+  test.each([null, { result: null }, { result: { duplicate: false, eventId: 'legacy-event-id' } }])(
+    'omits completion when the committed legacy event has no stored completion (%j)',
+    async (stopCompletionReceipt) => {
+      const repository = new PrismaDriverEventReceiptRepository({
+        driverEvent: { findFirst: vi.fn(() => Promise.resolve({
+          assignmentGeneration: 7n, clientEventId: 'complete-1', stopCompletionReceipt, expectedRouteVersionId: 'version-id',
+          routePlan: { status: 'COMPLETED' }, routePlanId: 'route-id'
+        })) },
+        driverEventAttempt: { findFirst: vi.fn() },
+        routePlan: { findFirst: vi.fn() }
+      } as never);
+      const receipt = await repository.lookup({ accountId: 'account-id', clientEventId: 'complete-1', routePlanId: 'route-id' });
+      expect(receipt.status).toBe('APPLIED');
+      expect(receipt).not.toHaveProperty('completion');
+    }
+  );
+
+  test('does not expose a stored completion to another account', async () => {
+    const findCommitted = vi.fn(() => Promise.resolve(null));
+    const repository = new PrismaDriverEventReceiptRepository({
+      driverEvent: { findFirst: findCommitted },
+      driverEventAttempt: { findFirst: vi.fn(() => Promise.resolve(null)) },
+      routePlan: { findFirst: vi.fn(() => Promise.resolve(null)) }
+    } as never);
+    await expect(repository.lookup({ accountId: 'other-account-id', clientEventId: 'complete-1', routePlanId: 'route-id' }))
+      .rejects.toBeInstanceOf(DriverEventReceiptScopeError);
+    expect(findCommitted).toHaveBeenCalledWith(expect.objectContaining({
+      where: { clientEventId: 'complete-1', driver: { accountId: 'other-account-id' }, routePlanId: 'route-id' }
+    }));
   });
 
   test('exposes receipt lookup only through an active account token', async () => {

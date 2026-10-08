@@ -1207,6 +1207,7 @@ model InventoryEvent {
 }
 
 model DeliveryStop {
+  stopCompletionReceipt         DriverStopCompletionReceipt?
   id                            String                         @id @default(uuid()) @db.Uuid
   shopId                        String                         @db.Uuid
   shop                          Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -3079,6 +3080,7 @@ model DsvDispatchChangeRequest {
 }
 
 model DriverEvent {
+  stopCompletionReceipt         DriverStopCompletionReceipt?
   id                            String                     @id @default(uuid()) @db.Uuid
   shopId                        String                     @db.Uuid
   shop                          Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -3104,10 +3106,40 @@ model DriverEvent {
   routeCompletionReview         DriverRouteCompletionReview?
 
   @@unique([driverId, clientEventId])
+  @@unique([id, shopId])
   @@index([shopId, routePlanId, occurredAt])
   @@index([shopId, routeVersionId, occurredAt])
   @@index([shopId, deliveryStopId, occurredAt])
   @@map("driver_events")
+}
+
+// First opt-in completion result. Updates are prohibited by the migration trigger.
+model DriverStopCompletionReceipt {
+  id                     String       @id @default(uuid()) @db.Uuid
+  eventId                String       @unique @db.Uuid
+  event                  DriverEvent  @relation(fields: [eventId, shopId], references: [id, shopId], onDelete: Cascade)
+  clientEventId          String       @unique @db.Text
+  shopId                 String       @db.Uuid
+  driverId               String       @db.Uuid
+  routePlanId            String       @db.Uuid
+  deliveryStopId         String       @unique @db.Uuid
+  deliveryStop           DeliveryStop @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: Cascade)
+  assignmentGeneration   BigInt
+  expectedRouteVersionId String       @db.Uuid
+  requestHash            String       @db.VarChar(64)
+  payment                Json
+  expectedAmount         Decimal?     @db.Decimal(18, 2)
+  actualAmount           Decimal?     @db.Decimal(18, 2)
+  differenceAmount       Decimal?     @db.Decimal(18, 2)
+  currencyCode           String?      @db.VarChar(3)
+  occurredAt             DateTime     @db.Timestamptz(6)
+  recordedAt             DateTime     @default(now()) @db.Timestamptz(6)
+  result                 Json
+
+  @@index([shopId, routePlanId])
+  @@map("driver_stop_completion_receipts")
+  @@unique([eventId, shopId])
+  @@unique([deliveryStopId, shopId])
 }
 
 model DriverEventAttempt {
