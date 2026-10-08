@@ -203,8 +203,11 @@ It rewrites no order amount or historical completion. Index creation needs a pro
 Existing privacy deletion may cascade receipts with their event or stop; immutability governs updates, not a new retention exemption.
 
 Stage migration and backend first, verify these APIs, then enable the app's opt-in flow in a separately reviewed release.
-Rollback the application first and retain the additive table and accepted receipts. Disable the app opt-in flow
-before an old backend can accept and ignore its new field. Do not drop receipts or replay Cash as a legacy event.
+Retain the additive table and accepted receipts during rollback. An installed ON app has no remote OFF switch:
+changing an EAS build variable does not disable that installation or remove its pending requests.
+Keep a compatible backend while those apps can submit or recover completion receipts. Before selecting an older
+backend, prove that the approved client rollout has stopped all affected submissions and retained unresolved requests.
+Do not drop receipts, regenerate their event IDs, or replay Cash as a legacy event.
 Any future correction must use a separate audited office contract. No correction or settlement authority is inferred here.
 
 ## Verification and release limits
