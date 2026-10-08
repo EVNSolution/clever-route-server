@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
+import { LiveRouteChangeError, validateLiveRouteEvent } from '../route-plans/live-route-change.js';
 import { safeErrorCode } from '../security/safe-telemetry-redaction.js';
 import { hasDeliveryNavigationGraceExpired, hasDeliveryWorkCompleted, KFOOD_DELIVERY_SHOP_DOMAIN, reconcileKfoodDeliveryWorkCompletion, type DeliveryWorkCompletionRecord } from '../route-plans/kfood-delivery-completion.js';
 import { assertRouteDispatchOwnership, claimRouteExecutionProjection, RouteExecutionConflictError } from '../route-plans/route-execution-ownership.js';
@@ -117,10 +118,7 @@ type DriverEventPrismaClient = Pick<
   '$queryRaw' | '$transaction' | 'customerRouteNotificationFact' | 'deliveryStop' | 'driverEvent' | 'driverEventAttempt' | 'driverRouteCompletionReview' | 'dsvDispatchChangeRequest' | 'order' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry' | 'shop'
 >;
 
-type DriverEventTransactionClient = Pick<
-  Prisma.TransactionClient,
-  '$queryRaw' | 'customerRouteNotificationFact' | 'deliveryStop' | 'driverEvent' | 'driverEventAttempt' | 'driverRouteCompletionReview' | 'dsvDispatchChangeRequest' | 'order' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry' | 'shop'
->;
+type DriverEventTransactionClient = Prisma.TransactionClient;
 
 type DriverEventSchemaCapabilities = {
   driverEventRouteVersionColumnExists: boolean;
@@ -718,6 +716,24 @@ async function validateVersionedOrderedContract(
   if (route.assignmentGeneration.toString() !== requireAssignmentGeneration(input)) {
     throw new DriverEventAssignmentChangedError();
   }
+  // The optional delegates keep existing repository test doubles compatible.
+  // Production clients always validate enrolled routes before generic reorder admission.
+  if (prisma.routeLiveChangeState !== undefined && prisma.routeLiveChangePublication !== undefined) {
+    try {
+      if (await validateLiveRouteEvent(prisma, {
+        routePlanId, shopId: input.shopId, driverId: input.driverId,
+        assignmentGeneration: requireAssignmentGeneration(input),
+        expectedRouteVersionId: requireExpectedRouteVersionId(input),
+        eventType: input.eventType, deliveryStopId: input.deliveryStopId, occurredAt: input.occurredAt
+      })) return;
+    } catch (error) {
+      if (error instanceof LiveRouteChangeError) {
+        if (error.code === 'ASSIGNMENT_CHANGED' || error.code === 'NOT_FOUND') throw new DriverEventAssignmentChangedError();
+        throw new DriverEventRouteVersionMismatchError();
+      }
+      throw error;
+    }
+  }
   const currentRouteVersionId = await loadCurrentRouteVersionIdForDriverEvent(
     prisma,
     { driverEventRouteVersionColumnExists: true, routePlanStopEtaOwnershipColumnsExist: true },
@@ -1168,10 +1184,19 @@ async function evaluateCompletionInvariant(
   mode: DriverRouteCompletionInvariantMode
 ): Promise<DriverRouteCompletionInvariantEvidence | null> {
   if (input.eventType !== 'ROUTE_COMPLETED') return null;
+  const expectedVersion = input.driverContractVersion === 2 ? requireExpectedRouteVersionId(input) : undefined;
+  const liveState = expectedVersion !== undefined && prisma.routeLiveChangeState !== undefined
+    ? await prisma.routeLiveChangeState.findFirst({ where: {
+        routePlanId: requireRoutePlanId(input), shopId: input.shopId, driverId: input.driverId,
+        assignmentGeneration: BigInt(requireAssignmentGeneration(input)), latestPublicationId: expectedVersion
+      } }) : null;
+  // Live publications keep the same child members and execution FK. Admission
+  // already proved the latest public identity under this transaction's route lock.
+  const executionVersion = liveState?.baselineRouteVersionId ?? expectedVersion;
   const routeVersion = await prisma.routeGroupingChildVersion.findFirst({
     select: { id: true, snapshot: true },
     where: {
-      ...(input.driverContractVersion === 2 ? { id: requireExpectedRouteVersionId(input) } : {}),
+      ...(executionVersion === undefined ? {} : { id: executionVersion }),
       routePlanId: requireRoutePlanId(input),
       shopId: input.shopId,
       status: 'CURRENT'
@@ -1877,9 +1902,11 @@ async function loadCurrentRouteVersionId(
     WHERE "routePlanId" = ${routePlanId}::uuid
       AND "shopId" = ${shopId}::uuid
       AND status = 'CURRENT'
+      AND "supersededAt" IS NULL
     ORDER BY "createdAt" DESC
-    LIMIT 1
+    LIMIT 2
   `);
+  if (routeVersions.length > 1) throw new DriverEventRouteVersionMismatchError();
   return routeVersions[0]?.id ?? null;
 }
 

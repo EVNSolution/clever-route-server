@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
+import { DriverAssignedRouteVersionError, PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
 import { computeRouteShapeSignature } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 import { dsvCanonicalNoteHash } from '../src/modules/dsv/dsv-time-constraint.js';
@@ -162,6 +162,56 @@ type LooseAssignedRouteStop = Omit<MutableRoutePlanRecord['routeStops'][number],
 };
 
 describe('PrismaDriverAssignedRouteRepository', () => {
+  test('rejects duplicate current children before using a matching live publication', async () => {
+    const child = { id: 'child-current', driverId: 'driver-id', routePlanId: 'route-plan-id', status: 'CURRENT', supersededAt: null };
+    const { prisma } = createPrismaHarness({ routePlan: {
+      ...routePlanRecord,
+      assignmentGeneration: 1n,
+      routeGroupingChildVersions: [child, { ...child, id: 'child-duplicate' }],
+      liveChangeState: {
+        assignmentGeneration: 1n, baselineRouteVersionId: child.id, driverId: 'driver-id',
+        latestPublicationId: 'publication-current', latestSequence: 1
+      }
+    } });
+    await expect(new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    })).rejects.toBeInstanceOf(DriverAssignedRouteVersionError);
+    expect(prisma.deliveryCustomerProfile.findMany).not.toHaveBeenCalled();
+  });
+
+  test('rejects same-assignment baseline drift even when the live state only has a draft', async () => {
+    const { prisma } = createPrismaHarness({ routePlan: {
+      ...routePlanRecord,
+      assignmentGeneration: 1n,
+      routeGroupingChildVersions: [{ id: 'child-current', driverId: 'driver-id', routePlanId: 'route-plan-id', status: 'CURRENT', supersededAt: null }],
+      liveChangeState: {
+        assignmentGeneration: 1n, baselineRouteVersionId: 'child-old', driverId: 'driver-id',
+        latestPublicationId: 'publication-baseline', latestSequence: 0
+      }
+    } });
+    await expect(new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    })).rejects.toBeInstanceOf(DriverAssignedRouteVersionError);
+  });
+
+  test.each([
+    ['same generation with another owner', 1n, 'previous-driver'],
+    ['state from a future generation', 2n, 'driver-id']
+  ])('rejects %s instead of ignoring live state', async (_name, generation, stateDriverId) => {
+    const { prisma } = createPrismaHarness({ routePlan: {
+      ...routePlanRecord,
+      assignmentGeneration: 1n,
+      routeGroupingChildVersions: [{ id: 'child-current', driverId: 'driver-id', routePlanId: 'route-plan-id', status: 'CURRENT', supersededAt: null }],
+      liveChangeState: {
+        assignmentGeneration: generation, baselineRouteVersionId: 'child-current', driverId: stateDriverId,
+        latestPublicationId: 'publication-baseline', latestSequence: 0
+      }
+    } });
+    await expect(new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    })).rejects.toBeInstanceOf(DriverAssignedRouteVersionError);
+  });
+
   test('projects a legacy duplicate destination as the oldest canonical id with aggregated notes', async () => {
     const routePlan = structuredClone(routePlanRecord);
     routePlan.routeStops[0]!.deliveryStop.order.destinationId = 'legacy-destination-id';

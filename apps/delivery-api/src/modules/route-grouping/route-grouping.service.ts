@@ -80,6 +80,12 @@ import {
 import { hashPushToken } from './driver-push-token.service.js';
 import { createRouteGroupingInventory, syncRouteGroupingInventoryOrders } from '../inventory/inventory.service.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
+import {
+  completeLiveRouteChildReplacement,
+  LiveRouteChangeError,
+  prepareLiveRouteChildReplacement,
+  type LiveRouteChildReplacementContext
+} from '../route-plans/live-route-change.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE = 'RETURN_TO_DEPOT' as const;
@@ -138,12 +144,15 @@ type CurrentOrderRouteVersionWriter = {
 
 type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
   routePlan: {
+    findFirst?: Tx['routePlan']['findFirst'];
     updateMany(args: Prisma.RoutePlanUpdateManyArgs): Promise<{ count: number }>;
   };
   routeGroupingChildVersion: {
     create(args: Prisma.RouteGroupingChildVersionCreateArgs): Promise<{ id: string }>;
+    findMany?(args: Prisma.RouteGroupingChildVersionFindManyArgs): Promise<Array<{ id: string }>>;
     updateMany(args: Prisma.RouteGroupingChildVersionUpdateManyArgs): Promise<{ count: number }>;
   };
+  routeLiveChangeState?: Pick<Tx['routeLiveChangeState'], 'findFirst'>;
 };
 
 type LoadedGrouping = Prisma.RouteGroupingGetPayload<{ include: ReturnType<typeof groupingInclude> }>;
@@ -286,6 +295,7 @@ export async function replaceCurrentRouteGroupingChildVersion(
     driverId: string | null;
     groupingId: string;
     groupingVersionId: string;
+    liveReplacementContext?: LiveRouteChildReplacementContext | null;
     notificationStatus: DriverRouteNotificationStatus;
     orderIds: string[];
     planning?: boolean;
@@ -296,6 +306,42 @@ export async function replaceCurrentRouteGroupingChildVersion(
     version: number;
   }
 ): Promise<string> {
+  if (input.routePlanId !== null && prisma.routeLiveChangeState !== undefined) {
+    if (prisma.routePlan.findFirst === undefined) throw new RouteGroupingConflictError('live route identity is unavailable');
+    const route = await prisma.routePlan.findFirst({
+      select: { driverId: true, assignmentGeneration: true },
+      where: { id: input.routePlanId, shopId: input.shopId }
+    });
+    const state = await prisma.routeLiveChangeState.findFirst({
+      where: { routePlanId: input.routePlanId, shopId: input.shopId }
+    });
+    if (route !== null && state !== null && state.assignmentGeneration >= route.assignmentGeneration) {
+      if (state.driverId !== route.driverId || state.assignmentGeneration !== route.assignmentGeneration) {
+        throw new LiveRouteGroupingConflictError(new LiveRouteChangeError(
+          'ASSIGNMENT_CHANGED', 409, 'Live route owner changed without a newer assignment generation'
+        ));
+      }
+      const context = input.liveReplacementContext;
+      if (context == null || context.identity.routePlanId !== input.routePlanId || context.identity.shopId !== input.shopId
+        || context.state.driverId !== state.driverId || context.state.assignmentGeneration !== state.assignmentGeneration
+        || context.state.revision !== state.revision || context.state.latestPublicationId !== state.latestPublicationId
+        || context.state.baselineRouteVersionId !== input.currentChildId || state.baselineRouteVersionId !== input.currentChildId) {
+        throw new LiveRouteGroupingConflictError(new LiveRouteChangeError(
+          'VERSION_CONFLICT', 409, 'Live child replacement requires a coordinated same-member transition'
+        ));
+      }
+    }
+  }
+  if (input.routePlanId !== null && prisma.routeGroupingChildVersion.findMany !== undefined) {
+    const currentChildren = await prisma.routeGroupingChildVersion.findMany({
+      select: { id: true },
+      take: 2,
+      where: { routePlanId: input.routePlanId, shopId: input.shopId, status: 'CURRENT', supersededAt: null }
+    });
+    if (currentChildren.length !== 1 || currentChildren[0]?.id !== input.currentChildId) {
+      throw new RouteGroupingConflictError('route current child membership is inconsistent; reload and retry');
+    }
+  }
   const archived = await prisma.routeGroupingChildVersion.updateMany({
     data: { status: 'ARCHIVED', supersededAt: new Date() },
     where: { id: input.currentChildId, status: 'CURRENT', supersededAt: null }
@@ -342,6 +388,43 @@ export async function replaceCurrentRouteGroupingChildVersion(
     shopId: input.shopId
   });
   return nextChild.id;
+}
+
+class LiveRouteGroupingConflictError extends RouteGroupingConflictError {
+  override readonly code: string;
+
+  constructor(error: LiveRouteChangeError) {
+    super(error.message);
+    this.code = error.code;
+  }
+}
+
+async function prepareGroupingLiveChildReplacement(
+  tx: Tx,
+  input: { shopId: string; routePlanId: string; currentChildVersionId: string }
+): Promise<LiveRouteChildReplacementContext | null> {
+  // Existing structural repository doubles do not include the additive live delegates.
+  if (tx.routeLiveChangeState === undefined || tx.routeLiveChangePublication === undefined) return null;
+  try {
+    return await prepareLiveRouteChildReplacement(tx, input);
+  } catch (error) {
+    if (error instanceof LiveRouteChangeError) throw new LiveRouteGroupingConflictError(error);
+    throw error;
+  }
+}
+
+async function completeGroupingLiveChildReplacement(
+  tx: Tx,
+  context: LiveRouteChildReplacementContext | null,
+  nextChildVersionId: string
+): Promise<void> {
+  if (context === null) return;
+  try {
+    await completeLiveRouteChildReplacement(tx, { context, nextChildVersionId });
+  } catch (error) {
+    if (error instanceof LiveRouteChangeError) throw new LiveRouteGroupingConflictError(error);
+    throw error;
+  }
 }
 
 export class PrismaRouteGroupingService implements RouteGroupingService {
@@ -1571,6 +1654,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               routePlanId: targetChild.routePlanId, shopId: group.shopId
             });
           }
+          let liveChildReplacement: LiveRouteChildReplacementContext | null = null;
           if (targetChild.routePlanId !== null) {
             if (lockedRoutePlan === undefined) throw new RouteGroupingValidationError(['route plan changed; reload and retry']);
             assertLockedRoutePlanChildAuthority(lockedRoutePlan, targetChild.id, route.expectedRoutePlanUpdatedAt);
@@ -1581,6 +1665,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               status: lockedRoutePlan.status
             });
             const lockedDriverId = lockedRoutePlan.driverId;
+            liveChildReplacement = lockedDriverId === driverId ? await prepareGroupingLiveChildReplacement(tx, {
+              shopId: group.shopId,
+              routePlanId: targetChild.routePlanId,
+              currentChildVersionId: targetChild.id
+            }) : null;
             await syncRoutePlanStopsPreservingRows(tx, group.shopId, targetChild.routePlanId, assignments);
             await tx.routePlan.update({
               data: {
@@ -1614,6 +1703,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           });
           const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
             planning: true,
+            liveReplacementContext: liveChildReplacement,
             currentChildId: targetChild.id,
             driverId,
             groupingId: group.id,
@@ -1636,6 +1726,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             ),
             version: loaded.currentVersion
           });
+          await completeGroupingLiveChildReplacement(tx, liveChildReplacement, nextChildVersionId);
           if (assignmentsChanged && targetChild.routePlanId !== null
             && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
             await claimRouteExecutionProjection(tx, { routePlanId: targetChild.routePlanId, shopId: group.shopId });
@@ -1822,8 +1913,14 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           throw new RouteGroupingValidationError(['route draft routeIdx changed; reload and retry']);
         }
         const routeIdx = savedRouteIdx ?? await nextGlobalRouteIdx(tx, group.shopId);
+        let liveChildReplacement: LiveRouteChildReplacementContext | null = null;
         if (targetChild.routePlanId !== null) {
           const lockedDriverId = lockedRoutePlan?.driverId ?? null;
+          liveChildReplacement = lockedDriverId === driverId ? await prepareGroupingLiveChildReplacement(tx, {
+            shopId: group.shopId,
+            routePlanId: targetChild.routePlanId,
+            currentChildVersionId: targetChild.id
+          }) : null;
           await syncRoutePlanStopsPreservingRows(tx, group.shopId, targetChild.routePlanId, assignments);
           await tx.routePlan.update({
             data: {
@@ -1853,6 +1950,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         });
         const nextChildVersionId = await replaceCurrentRouteGroupingChildVersion(tx, {
           planning: true,
+          liveReplacementContext: liveChildReplacement,
           currentChildId: targetChild.id,
           driverId,
           groupingId: group.id,
@@ -1875,6 +1973,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           ),
           version: loaded.currentVersion
         });
+        await completeGroupingLiveChildReplacement(tx, liveChildReplacement, nextChildVersionId);
         if (assignmentsChanged && targetChild.routePlanId !== null
           && (targetChild.publishedAt !== null || lockedRoutePlan?.status === 'IN_PROGRESS' || hasDispatchReservation(lockedRoutePlan?.constraints))) {
           await claimRouteExecutionProjection(tx, { routePlanId: targetChild.routePlanId, shopId: group.shopId });
@@ -2819,6 +2918,7 @@ type LockedRoutePlanMembership = {
 };
 
 type LockedRoutePlanMembershipRow = LockedRoutePlanMembership & {
+  currentChildCount?: number;
   lastLifecycleEventType: string | null;
 };
 
@@ -2832,6 +2932,7 @@ async function lockRoutePlanMembership(tx: Tx, routePlanId: string, shopId: stri
            route_plan."updatedAt",
            route_plan."vehicleId",
            current_child."id" AS "currentRouteVersionId",
+           current_children."count" AS "currentChildCount",
            lifecycle_event."eventType" AS "lastLifecycleEventType"
     FROM "route_plans" route_plan
     LEFT JOIN LATERAL (
@@ -2843,6 +2944,14 @@ async function lockRoutePlanMembership(tx: Tx, routePlanId: string, shopId: stri
         AND child."supersededAt" IS NULL
       LIMIT 1
     ) current_child ON true
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::INTEGER AS "count"
+      FROM "route_grouping_child_versions" child
+      WHERE child."routePlanId" = route_plan."id"
+        AND child."shopId" = route_plan."shopId"
+        AND child."status" = 'CURRENT'
+        AND child."supersededAt" IS NULL
+    ) current_children ON true
     LEFT JOIN LATERAL (
       SELECT event."eventType"
       FROM "driver_events" event
@@ -2860,6 +2969,9 @@ async function lockRoutePlanMembership(tx: Tx, routePlanId: string, shopId: stri
   `;
   const routePlan = rows[0];
   if (routePlan === undefined) throw new RouteGroupingValidationError(['route plan changed; reload and retry']);
+  if (routePlan.currentChildCount !== undefined && routePlan.currentChildCount > 1) {
+    throw new RouteGroupingConflictError('route current child membership is inconsistent; reload and retry');
+  }
   return {
     ...routePlan,
     status: toRouteExecutionStatus(

@@ -115,8 +115,15 @@ import {
   registerDriverCompletionAssistanceRoutes,
   type CompletionAssistanceServiceApi
 } from './driver-completion-assistance.routes.js';
+import {
+  LiveRouteChangeError,
+  readApplyLiveRouteChangePayload,
+  readLiveRouteChangeRouteId,
+  type PrismaLiveRouteChangeService
+} from '../modules/route-plans/live-route-change.service.js';
 
 export type DriverApiDependencies = {
+  liveRouteChangeService?: Pick<PrismaLiveRouteChangeService, 'getDriverPublication' | 'acknowledgeDriverPublication'>;
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   completionAssistanceService?: CompletionAssistanceServiceApi;
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
@@ -326,6 +333,50 @@ export function registerDriverEventRoutes(
   app: FastifyInstance,
   dependencies: DriverApiDependencies
 ): void {
+  app.get<{ Params: { routePlanId: string } }>('/driver/routes/:routePlanId/live-change', async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    const auth = await authenticateDriverRequest(request, dependencies);
+    if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
+    let tokenVersion: number;
+    try { tokenVersion = readLiveRouteChangeTokenVersion(request, dependencies); }
+    catch { return reply.code(401).send(driverAuthenticationErrorResponse('invalid')); }
+    if (dependencies.liveRouteChangeService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Live route changes are unavailable'));
+    let routePlanId: string;
+    try { routePlanId = readLiveRouteChangeRouteId(request.params.routePlanId); }
+    catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route ID')); }
+    if (routePlanId !== auth.context.routePlanId) return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver token does not cover this route'));
+    try {
+      const data = await dependencies.liveRouteChangeService.getDriverPublication({ ...auth.context, routePlanId, tokenVersion });
+      return reply.code(200).send({ data, error: null });
+    } catch (error) {
+      if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+      throw error;
+    }
+  });
+
+  app.post<{ Body: unknown; Params: { routePlanId: string } }>(
+    '/driver/routes/:routePlanId/live-change/applied', { bodyLimit: 4_096 }, async (request, reply) => {
+      reply.header('Cache-Control', 'private, no-store');
+      const auth = await authenticateDriverRequest(request, dependencies);
+      if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
+      let tokenVersion: number;
+      try { tokenVersion = readLiveRouteChangeTokenVersion(request, dependencies); }
+      catch { return reply.code(401).send(driverAuthenticationErrorResponse('invalid')); }
+      if (dependencies.liveRouteChangeService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Live route changes are unavailable'));
+      let command;
+      try { command = { routePlanId: readLiveRouteChangeRouteId(request.params.routePlanId), ...readApplyLiveRouteChangePayload(request.body) }; }
+      catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid live route application payload')); }
+      if (command.routePlanId !== auth.context.routePlanId) return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver token does not cover this route'));
+      try {
+        const data = await dependencies.liveRouteChangeService.acknowledgeDriverPublication({ ...auth.context, ...command, tokenVersion });
+        return reply.code(200).send({ data, error: null });
+      } catch (error) {
+        if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+        throw error;
+      }
+    }
+  );
+
   if (dependencies.completionAssistanceService !== undefined) {
     registerDriverCompletionAssistanceRoutes(app, {
       completionAssistanceService: dependencies.completionAssistanceService,
@@ -1679,6 +1730,15 @@ export function registerDriverEventRoutes(
       error: null
     });
   });
+}
+
+function readLiveRouteChangeTokenVersion(request: FastifyRequest, dependencies: DriverApiDependencies): number {
+  const token = extractBearerToken(request.headers.authorization);
+  if (token === null) throw new Error('Missing driver token');
+  const now = dependencies.now?.();
+  return verifyDriverRouteToken(token, now === undefined
+    ? { secret: dependencies.jwtSecret }
+    : { now, secret: dependencies.jwtSecret }).tokenVersion;
 }
 
 async function authenticateDriverRequest(

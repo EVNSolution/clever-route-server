@@ -57,6 +57,7 @@ import {
   assignmentMap
 } from '../dsv/dsv-assignment-command.service.js';
 import { PrismaCompletionAssistanceService } from './completion-assistance.service.js';
+import { PrismaLiveRouteChangeService } from '../route-plans/live-route-change.service.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 365;
 export const DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS = 90;
@@ -159,6 +160,7 @@ export function loadDriverApiDependencies(
 
   const driverSyncHealthService = new PrismaDriverSyncHealthService(input.prisma, input.operationalAlertRepository);
   return {
+    liveRouteChangeService: new PrismaLiveRouteChangeService(input.prisma),
     ...(input.adminNotificationService === undefined
       ? {}
       : { adminNotificationService: input.adminNotificationService }),

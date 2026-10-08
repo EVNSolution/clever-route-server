@@ -7,6 +7,50 @@ import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/ro
 const routePlanId = '11111111-1111-4111-8111-111111111111';
 
 describe('PrismaDriverRouteAccessRepository', () => {
+  test('does not issue access when two current child versions are projected', async () => {
+    const routePlan = routePlanRecord();
+    const child = routePlan.routeGroupingChildVersions?.[0];
+    if (child === undefined) throw new Error('Expected current child fixture');
+    const { prisma } = createPrismaHarness({ routePlan: {
+      ...routePlan,
+      routeGroupingChildVersions: [child, { ...child, id: '33333333-3333-4333-8333-333333333333' }]
+    } });
+    await expect(new PrismaDriverRouteAccessRepository(prisma as never).lookupRouteAccess({
+      accountId: 'account-id', routeContext: routePlanId
+    })).resolves.toEqual({ status: 'NOT_FOUND' });
+  });
+
+  test('does not issue a new child identity when the same assignment live baseline is stale', async () => {
+    const routePlan = {
+      ...routePlanRecord(),
+      liveChangeState: {
+        assignmentGeneration: 1n, baselineRouteVersionId: 'stale-child', driverId: 'driver-id',
+        latestPublicationId: 'publication-id', latestSequence: 0
+      }
+    };
+    const { prisma } = createPrismaHarness({ routePlan });
+    await expect(new PrismaDriverRouteAccessRepository(prisma as never).lookupRouteAccess({
+      accountId: 'account-id', routeContext: routePlanId
+    })).resolves.toEqual({ status: 'NOT_FOUND' });
+  });
+
+  test.each([
+    ['same generation with another owner', 1n, 'previous-driver'],
+    ['state from a future generation', 2n, 'driver-id']
+  ])('does not issue access for %s', async (_name, generation, stateDriverId) => {
+    const routePlan = {
+      ...routePlanRecord(),
+      liveChangeState: {
+        assignmentGeneration: generation, baselineRouteVersionId: '22222222-2222-4222-8222-222222222222', driverId: stateDriverId,
+        latestPublicationId: 'publication-id', latestSequence: 0
+      }
+    };
+    const { prisma } = createPrismaHarness({ routePlan });
+    await expect(new PrismaDriverRouteAccessRepository(prisma as never).lookupRouteAccess({
+      accountId: 'account-id', routeContext: routePlanId
+    })).resolves.toEqual({ status: 'NOT_FOUND' });
+  });
+
   test('matches an active assigned driver and maps non-sensitive company guidance', async () => {
     const { prisma } = createPrismaHarness({
       routePlan: routePlanRecord({ shopDomain: 'https://Dev1.TomatonoFood.com/admin' })
@@ -38,12 +82,15 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         driverNavigationUntil: true,
         isStoreReviewData: true,
+        liveChangeState: {
+          select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+        },
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true, publishedAt: true },
-          take: 1,
+          select: { id: true, driverId: true, routePlanId: true, publishedAt: true },
+          take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
         shop: { select: { appId: true, shopDomain: true } },
@@ -130,12 +177,15 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         driverNavigationUntil: true,
         isStoreReviewData: true,
+        liveChangeState: {
+          select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+        },
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true, publishedAt: true },
-          take: 1,
+          select: { id: true, driverId: true, routePlanId: true, publishedAt: true },
+          take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
         shop: { select: { appId: true, shopDomain: true } },
@@ -610,12 +660,15 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         driverNavigationUntil: true,
         isStoreReviewData: true,
+        liveChangeState: {
+          select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+        },
         name: true,
         planDate: true,
         routeGroupingChildVersions: {
           orderBy: { updatedAt: 'desc' },
-          select: { id: true, publishedAt: true },
-          take: 1,
+          select: { id: true, driverId: true, routePlanId: true, publishedAt: true },
+          take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
         shop: { select: { appId: true, shopDomain: true } },
@@ -879,6 +932,8 @@ function routePlanRecord(
       : {
           routeGroupingChildVersions: [{
             id: overrides.routeVersionId ?? '22222222-2222-4222-8222-222222222222',
+            driverId: 'driver-id',
+            routePlanId: overrides.id ?? routePlanId,
             publishedAt: overrides.publishedAt === undefined
               ? new Date('2026-05-11T12:00:00.000Z')
               : overrides.publishedAt,

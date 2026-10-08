@@ -1466,11 +1466,85 @@ model RoutePlan {
   nextDsvAuditEvents              DsvAuditEvent[]                  @relation("DsvAuditEventNextRoutePlan")
   driverSyncSessions              DriverSyncSession[]
   driverRouteSessionLeases        DriverRouteSessionLease[]
+  liveChangeState                 RouteLiveChangeState?
+  liveChangePublications          RouteLiveChangePublication[]
+  liveChangeCommandReceipts       RouteLiveChangeCommandReceipt[]
 
   @@unique([id, shopId])
   @@index([shopId, planDate, status])
   @@index([shopId, driverId, status])
   @@map("route_plans")
+}
+
+// Operational drafts are separate from the live DeliveryStop rows until Dispatch.
+model RouteLiveChangeState {
+  routePlanId             String    @id @db.Uuid
+  shopId                  String    @db.Uuid
+  routePlan               RoutePlan @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  assignmentGeneration    BigInt
+  driverId                String    @db.Uuid
+  baselineRouteVersionId  String    @db.Uuid
+  revision                Int       @default(0)
+  draftSnapshot           Json
+  draftHash               String    @db.Text
+  latestPublicationId     String    @db.Uuid
+  latestSequence          Int       @default(0)
+  appliedPublicationId    String?   @db.Uuid
+  appliedSequence         Int       @default(0)
+  appliedAt               DateTime? @db.Timestamptz(6)
+  createdAt               DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([routePlanId, shopId])
+  @@index([shopId, driverId])
+  @@map("route_live_change_states")
+}
+
+// Identity/content fields are immutable. Only notification delivery state changes.
+model RouteLiveChangePublication {
+  id                      String    @id @default(uuid()) @db.Uuid
+  routePlanId             String    @db.Uuid
+  shopId                  String    @db.Uuid
+  routePlan               RoutePlan @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  assignmentGeneration    BigInt
+  driverId                String    @db.Uuid
+  sequence                Int
+  contentHash             String    @db.Text
+  snapshot                Json
+  publishedAt             DateTime  @default(now()) @db.Timestamptz(6)
+  notificationStatus      String    @default("PENDING") @db.Text
+  leaseToken              String?   @db.Uuid
+  leaseUntil              DateTime? @db.Timestamptz(6)
+  providerId              String?   @db.Text
+  errorCode               String?   @db.Text
+  attemptCount            Int       @default(0)
+  nextAttemptAt           DateTime? @default(now()) @db.Timestamptz(6)
+  sentAt                  DateTime? @db.Timestamptz(6)
+
+  @@unique([routePlanId, shopId, assignmentGeneration, driverId, sequence], map: "route_live_change_publications_identity_key")
+  @@index([shopId, routePlanId, publishedAt])
+  @@index([notificationStatus, nextAttemptAt])
+  @@map("route_live_change_publications")
+}
+
+// Successful commands retain their original response across later edits and retries.
+model RouteLiveChangeCommandReceipt {
+  id                   String    @id @default(uuid()) @db.Uuid
+  shopId               String    @db.Uuid
+  routePlanId          String    @db.Uuid
+  routePlan            RoutePlan @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  assignmentGeneration BigInt
+  driverId             String    @db.Uuid
+  kind                 String    @db.Text
+  commandId            String    @db.Uuid
+  requestHash          String    @db.Text
+  response             Json
+  publicationId        String?   @db.Uuid
+  createdAt            DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([shopId, routePlanId, assignmentGeneration, driverId, kind, commandId], map: "route_live_change_command_receipts_identity_key")
+  @@index([shopId, routePlanId, kind, commandId])
+  @@map("route_live_change_command_receipts")
 }
 
 model RouteTrackingGeometry {

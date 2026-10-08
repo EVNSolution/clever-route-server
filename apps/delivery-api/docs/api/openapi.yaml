@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-09-08
+  x-contract-revision: 2026-10-07
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -5665,6 +5665,205 @@ paths:
         '204': { description: Provider event accepted. }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /admin/route-plans/{routePlanId}/live-change:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read a KFood future-stop draft and its revision
+      operationId: getAdminLiveRouteChange
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      description: >-
+        Uses the authenticated app and shop. The initial revision is 0. Returns
+        the assignment and underlying route version required by Save, Dispatch and Discard.
+        Reading does not publish a change or acknowledge driver application.
+      responses:
+        '200':
+          description: Draft and editable future stop IDs. Cache-Control is private, no-store.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRouteChangeDraftEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/LiveRouteChangeConflict' }
+        '501': { $ref: '#/components/responses/LiveRouteChangeUnavailable' }
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Save future delivery address and order changes as a private draft
+      operationId: saveAdminLiveRouteChange
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      x-side-effect: write-clever-db
+      security:
+        - ShopifySessionToken: []
+      description: >-
+        Changes only future PENDING or ASSIGNED stops. Save preserves live driver
+        content and execution records until Dispatch. Shopify source records are
+        immutable. Retry the same commandId with the exact original body to recover
+        its original response. A known receipt may retain its original baseline
+        after an authorized same-assignment child replacement. Fresh commands must
+        use the current baseline. An assignment, route version or revision conflict
+        requires a new GET and an explicit rebase. The body limit is 256000 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LiveRouteChangeSaveRequest' }
+      responses:
+        '200':
+          description: Saved draft or original command receipt. Cache-Control is private, no-store.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRouteChangeDraftEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/LiveRouteChangeConflict' }
+        '501': { $ref: '#/components/responses/LiveRouteChangeUnavailable' }
+  /admin/route-plans/{routePlanId}/live-change/dispatch:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Publish a saved future-stop change and request a driver push
+      operationId: dispatchAdminLiveRouteChange
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      x-side-effect: write-clever-db-and-driver-push
+      security:
+        - ShopifySessionToken: []
+      description: >-
+        Publishes immutable content independently from assignment generation and
+        driver application. Address-only changes create a new publication. Changed
+        locations need verified routeable coordinates. Unchanged content reuses
+        the publication. The same commandId returns the original publication even
+        after a newer command; GET current state after a delayed retry. Geometry and
+        notification results describe this attempt. A historical baseline is
+        accepted only for an existing receipt in the current assignment. Fresh commands
+        require the current baseline. Failed or expired notification
+        leases retry the same logical notification; SENT is provider acceptance
+        and never marks the publication applied. Provider failure does not undo
+        publication. The body limit is 4096 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LiveRouteChangeDispatchRequest' }
+      responses:
+        '200':
+          description: Publication receipt with separate geometry and notification outcomes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRouteChangeDispatchEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/LiveRouteChangeConflict' }
+        '501': { $ref: '#/components/responses/LiveRouteChangeUnavailable' }
+  /admin/route-plans/{routePlanId}/live-change/discard:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Discard private future-stop edits and restore the latest publication as the draft
+      operationId: discardAdminLiveRouteChange
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      x-side-effect: write-clever-db
+      security:
+        - ShopifySessionToken: []
+      description: >-
+        Explicit recovery when an edited future stop has become current. Restores
+        the draft from the latest publication without modifying any public stop,
+        execution record, assignment, geometry or notification. A dirty draft
+        increments revision once; a clean draft preserves revision. The route lock,
+        assignment, underlying version and expectedRevision must match. Retry the
+        same commandId and exact body to return the original receipt after later
+        edits or an authorized same-assignment child replacement. A historical
+        baseline is accepted only for that receipt; fresh commands require the
+        current baseline. GET never discards automatically. The body limit is 4096 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LiveRouteChangeDiscardRequest' }
+      responses:
+        '200':
+          description: Restored draft or original discard receipt. Cache-Control is private, no-store.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRouteChangeDraftEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/LiveRouteChangeConflict' }
+        '501': { $ref: '#/components/responses/LiveRouteChangeUnavailable' }
+  /driver/routes/{routePlanId}/live-change:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Driver Mobile]
+      summary: Read the current published route change and pending application state
+      operationId: getDriverLiveRouteChange
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      description: >-
+        The route bearer token must cover the path. The server rechecks account,
+        driver, tenant and current assignment. A route without enrollment for the current assignment returns
+        data null. Push receipt and GET do not acknowledge application. Use this
+        query after restart, duplicate push, push loss or an application retry.
+        An authorized same-assignment legacy child replacement publishes its new
+        child UUID through this query without a new physical push. Query periodically
+        during active delivery. Unknown same-assignment version or content drift is a conflict.
+      responses:
+        '200':
+          description: Latest immutable publication and applied state, or null. Cache-Control is private, no-store.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRouteChangePublicationEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/LiveRouteChangeConflict' }
+        '501': { $ref: '#/components/responses/LiveRouteChangeUnavailable' }
+  /driver/routes/{routePlanId}/live-change/applied:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Driver Mobile]
+      summary: Acknowledge the exact route publication successfully applied by the driver
+      operationId: acknowledgeDriverLiveRouteChange
+      x-source-file: src/routes/driver-events.routes.ts
+      x-side-effect: write-clever-db
+      security:
+        - DriverAccessToken: []
+      description: >-
+        Send only after local application succeeds. Repeating the same version is
+        idempotent. Acknowledging N cannot acknowledge N+1 or reduce a newer applied
+        sequence. The response contains the latest publication, so pending remains
+        true when a newer change exists. Valid return-navigation grace permits this
+        acknowledgment. Reassignment, cancellation and revoked access do not. This
+        request creates no arrival, completion or payment event. The body limit is
+        4096 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LiveRouteChangeApplyRequest' }
+      responses:
+        '200':
+          description: Latest publication with monotonic applied state. Cache-Control is private, no-store.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRouteChangeAppliedEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/LiveRouteChangeConflict' }
+        '501': { $ref: '#/components/responses/LiveRouteChangeUnavailable' }
 components:
   securitySchemes:
     ShopifyTokenBrokerHmac:
@@ -5878,6 +6077,20 @@ components:
         format: date-time
         type: string
   responses:
+    LiveRouteChangeConflict:
+      description: >-
+        REVISION_CONFLICT, IDEMPOTENCY_CONFLICT, ASSIGNMENT_CHANGED, VERSION_CONFLICT,
+        STOP_NOT_FUTURE, ROUTE_NOT_IN_PROGRESS, DRAFT_NOT_FOUND, DRAFT_CONFLICT or
+        STOP_LOCATION_NOT_ROUTEABLE. Preserve the original command or event.
+        GET authoritative state before rebasing a new command.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    LiveRouteChangeUnavailable:
+      description: NOT_IMPLEMENTED. Live route changes are unavailable in this runtime.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     BadRequest:
       description: Invalid request payload, query, path, or headers.
       content:
@@ -5963,6 +6176,220 @@ components:
           schema:
             $ref: '#/components/schemas/DsvV1ErrorEnvelope'
   schemas:
+    LiveRouteChangeAssignmentGeneration:
+      type: string
+      pattern: '^[1-9][0-9]{0,18}$'
+      description: Canonical positive decimal assignment generation, at most 9223372036854775807.
+    LiveRouteChangeDispatchRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedAssignmentGeneration, expectedRouteVersionId, expectedRevision]
+      properties:
+        commandId: { type: string, format: uuid }
+        expectedAssignmentGeneration: { $ref: '#/components/schemas/LiveRouteChangeAssignmentGeneration' }
+        expectedRouteVersionId:
+          type: string
+          format: uuid
+          description: Underlying route version returned by the admin draft GET.
+        expectedRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    LiveRouteChangeSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedAssignmentGeneration, expectedRouteVersionId, expectedRevision, stopOverrides]
+      properties:
+        commandId: { type: string, format: uuid }
+        expectedAssignmentGeneration: { $ref: '#/components/schemas/LiveRouteChangeAssignmentGeneration' }
+        expectedRouteVersionId: { type: string, format: uuid }
+        expectedRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        stopOverrides:
+          type: array
+          maxItems: 200
+          description: Delivery stop IDs must be distinct. Only address and paired coordinate changes are accepted.
+          items: { $ref: '#/components/schemas/LiveRouteChangeStopOverride' }
+        futureStopOrder:
+          type: array
+          minItems: 1
+          maxItems: 200
+          uniqueItems: true
+          description: Every editableFutureStopId exactly once; current and terminal stops keep their positions.
+          items: { type: string, format: uuid }
+      anyOf:
+        - properties:
+            stopOverrides: { minItems: 1 }
+        - required: [futureStopOrder]
+    LiveRouteChangeDiscardRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, expectedAssignmentGeneration, expectedRouteVersionId, expectedRevision]
+      properties:
+        commandId: { type: string, format: uuid }
+        expectedAssignmentGeneration: { $ref: '#/components/schemas/LiveRouteChangeAssignmentGeneration' }
+        expectedRouteVersionId:
+          type: string
+          format: uuid
+          description: Underlying route version returned by the admin draft GET.
+        expectedRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    LiveRouteChangeStopOverride:
+      type: object
+      additionalProperties: false
+      required: [deliveryStopId]
+      minProperties: 2
+      dependentRequired:
+        latitude: [longitude]
+        longitude: [latitude]
+      properties:
+        deliveryStopId: { type: string, format: uuid }
+        address1: { type: [string, 'null'], maxLength: 500 }
+        address2: { type: [string, 'null'], maxLength: 500 }
+        city: { type: [string, 'null'], maxLength: 255 }
+        province: { type: [string, 'null'], maxLength: 255 }
+        postalCode: { type: [string, 'null'], maxLength: 32 }
+        countryCode: { type: [string, 'null'], maxLength: 2, pattern: '^[A-Z]{2}$' }
+        latitude: { type: [number, 'null'], minimum: -90, maximum: 90 }
+        longitude: { type: [number, 'null'], minimum: -180, maximum: 180 }
+      anyOf:
+        - not:
+            anyOf:
+              - required: [latitude]
+              - required: [longitude]
+        - required: [latitude, longitude]
+          properties:
+            latitude: { type: number }
+            longitude: { type: number }
+        - required: [latitude, longitude]
+          properties:
+            latitude: { type: 'null' }
+            longitude: { type: 'null' }
+      description: >-
+        Coordinate pairs are both numeric or both null. Changing address text
+        without coordinates clears the old coordinates in the private draft.
+        Dispatch rejects changed locations without verified routeable coordinates.
+    LiveRouteChangeApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [publicationVersionId, assignmentGeneration]
+      properties:
+        publicationVersionId: { type: string, format: uuid }
+        assignmentGeneration: { $ref: '#/components/schemas/LiveRouteChangeAssignmentGeneration' }
+    LiveRouteChangeSnapshotStop:
+      type: object
+      additionalProperties: false
+      required: [routePlanStopId, deliveryStopId, orderId, sourceOrderId, sequence, recipientName, phone, address1, address2, city, province, postalCode, countryCode, instructions, latitude, longitude, serviceMinutes, timeWindowStart, timeWindowEnd]
+      properties:
+        routePlanStopId: { type: string, format: uuid }
+        deliveryStopId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        sourceOrderId: { type: [string, 'null'] }
+        sequence: { type: integer, minimum: 1 }
+        recipientName: { type: [string, 'null'] }
+        phone: { type: [string, 'null'] }
+        address1: { type: [string, 'null'] }
+        address2: { type: [string, 'null'] }
+        city: { type: [string, 'null'] }
+        province: { type: [string, 'null'] }
+        postalCode: { type: [string, 'null'] }
+        countryCode: { type: [string, 'null'] }
+        instructions: { type: [string, 'null'] }
+        latitude: { type: [string, 'null'], description: Decimal coordinate string or null. }
+        longitude: { type: [string, 'null'], description: Decimal coordinate string or null. }
+        serviceMinutes: { type: integer, minimum: 0 }
+        timeWindowStart: { type: [string, 'null'], format: date-time }
+        timeWindowEnd: { type: [string, 'null'], format: date-time }
+    LiveRouteChangeSnapshot:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, stops]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        initialRouteVersionId:
+          type: string
+          format: uuid
+          description: Original enrollment version, retained across authorized legacy child replacements. Optional on older stored snapshots.
+        stops:
+          type: array
+          items: { $ref: '#/components/schemas/LiveRouteChangeSnapshotStop' }
+    LiveRouteChangeDraft:
+      type: object
+      additionalProperties: false
+      required: [routePlanId, revision, assignmentGeneration, expectedRouteVersionId, publishedVersionId, hasUnpublishedChanges, editableFutureStopIds, draft]
+      properties:
+        routePlanId: { type: string, format: uuid }
+        revision: { type: integer, minimum: 0 }
+        assignmentGeneration: { $ref: '#/components/schemas/LiveRouteChangeAssignmentGeneration' }
+        expectedRouteVersionId: { type: string, format: uuid }
+        publishedVersionId: { type: [string, 'null'], format: uuid }
+        hasUnpublishedChanges: { type: boolean }
+        editableFutureStopIds:
+          type: array
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        draft: { $ref: '#/components/schemas/LiveRouteChangeSnapshot' }
+    LiveRouteChangePublication:
+      type: object
+      required: [routePlanId, publicationVersionId, assignmentGeneration, sequence, publishedAt, appliedVersionId, pending, snapshot]
+      properties:
+        routePlanId: { type: string, format: uuid }
+        publicationVersionId: { type: string, format: uuid }
+        assignmentGeneration: { $ref: '#/components/schemas/LiveRouteChangeAssignmentGeneration' }
+        sequence: { type: integer, minimum: 0 }
+        publishedAt: { type: string, format: date-time }
+        appliedVersionId: { type: [string, 'null'], format: uuid }
+        pending: { type: boolean }
+        snapshot: { $ref: '#/components/schemas/LiveRouteChangeSnapshot' }
+    LiveRouteChangeDispatch:
+      allOf:
+        - $ref: '#/components/schemas/LiveRouteChangePublication'
+        - type: object
+          required: [revision, changed, geometry, notification]
+          properties:
+            revision: { type: integer, minimum: 0 }
+            changed: { type: boolean }
+            geometry:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: { type: string, enum: [fresh, failed, superseded, unavailable] }
+                errorCode: { type: string }
+            notification:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [status, attemptCount, errorCode]
+              properties:
+                status: { type: string, enum: [PENDING, SENDING, SENT, FAILED, SKIPPED] }
+                attemptCount: { type: integer, minimum: 0 }
+                errorCode: { type: [string, 'null'] }
+    LiveRouteChangeDraftEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/LiveRouteChangeDraft' }
+        error: { type: 'null' }
+    LiveRouteChangeDispatchEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/LiveRouteChangeDispatch' }
+        error: { type: 'null' }
+    LiveRouteChangePublicationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data:
+          oneOf:
+            - $ref: '#/components/schemas/LiveRouteChangePublication'
+            - type: 'null'
+        error: { type: 'null' }
+    LiveRouteChangeAppliedEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/LiveRouteChangePublication' }
+        error: { type: 'null' }
     CustomRouteStopFields:
       type: object
       properties:
@@ -9292,7 +9719,10 @@ components:
       required: [commandId, expectedVersion, orderedStopIds]
       properties:
         commandId: { type: string, minLength: 1, maxLength: 120 }
-        expectedVersion: { type: string, format: uuid }
+        expectedVersion:
+          type: string
+          format: uuid
+          description: Current child UUID or latest live publication UUID for this assignment; older publications are rejected.
         orderedStopIds:
           description: Exact duplicate-free full deliveryStopId set from assigned-route, including completed stops.
           type: array

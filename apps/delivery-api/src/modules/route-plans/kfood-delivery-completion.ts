@@ -60,8 +60,15 @@ export async function reconcileKfoodDeliveryWorkCompletion(
       shop: { appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN }
     },
     select: {
-      id: true, assignmentGeneration: true, deliveryWorkCompletedAt: true, driverNavigationUntil: true,
+      id: true, driverId: true, assignmentGeneration: true, deliveryWorkCompletedAt: true, driverNavigationUntil: true,
       deliveryWorkCompletedGeneration: true, deliveryWorkCompletedVersionId: true, status: true,
+      liveChangeState: { select: {
+        driverId: true, assignmentGeneration: true, baselineRouteVersionId: true, latestPublicationId: true
+      } },
+      liveChangePublications: {
+        orderBy: [{ assignmentGeneration: 'desc' }, { sequence: 'desc' }], take: 1,
+        select: { id: true, driverId: true, assignmentGeneration: true, snapshot: true }
+      },
       routeGroupingChildVersions: {
         where: { status: 'CURRENT', supersededAt: null }, take: 2,
         select: { id: true, snapshot: true }
@@ -77,7 +84,8 @@ export async function reconcileKfoodDeliveryWorkCompletion(
   });
   if (route === null) return null;
   const version = route.routeGroupingChildVersions.length === 1 ? route.routeGroupingChildVersions[0] : undefined;
-  const resolved = version !== undefined && isResolvedCurrentMembership(version.snapshot, version.id, route.routeStops);
+  const snapshot = version === undefined ? null : completionMembershipSnapshot(route, version);
+  const resolved = version !== undefined && isResolvedCurrentMembership(snapshot, version.id, route.routeStops);
   const existing = hasDeliveryWorkCompleted(route) && route.deliveryWorkCompletedVersionId === version?.id;
   if (!resolved || (!existing && input.allowStart === false)) {
     if (route.deliveryWorkCompletedAt != null || route.driverNavigationUntil != null
@@ -110,6 +118,42 @@ export async function reconcileKfoodDeliveryWorkCompletion(
 type CompletionStop = { sequence: number; deliveryStopId: string; deliveryStop: {
   status: string; orderId: string; order: { currentRouteVersionId: string | null }
 } };
+
+function completionMembershipSnapshot(route: {
+  assignmentGeneration: bigint;
+  driverId: string | null;
+  liveChangeState?: {
+    assignmentGeneration: bigint; driverId: string; baselineRouteVersionId: string; latestPublicationId: string;
+  } | null;
+  liveChangePublications?: Array<{ id: string; driverId: string; assignmentGeneration: bigint; snapshot: unknown }>;
+}, version: { id: string; snapshot: unknown }): unknown {
+  const state = route.liveChangeState;
+  if (state == null || state.assignmentGeneration < route.assignmentGeneration) return version.snapshot;
+  const publication = route.liveChangePublications?.find(row => row.id === state.latestPublicationId);
+  if (state.baselineRouteVersionId !== version.id || state.driverId !== route.driverId
+    || state.assignmentGeneration !== route.assignmentGeneration || publication === undefined
+    || publication.driverId !== state.driverId || publication.assignmentGeneration !== state.assignmentGeneration) return null;
+  // A future reorder keeps child execution ownership. Prove the same child members
+  // before using the immutable Dispatch order for the completion/grace invariant.
+  const childMembers = snapshotMembers(version.snapshot);
+  const publicMembers = snapshotMembers(publication.snapshot);
+  if (childMembers === null || publicMembers === null || childMembers !== publicMembers) return null;
+  return publication.snapshot;
+}
+
+function snapshotMembers(snapshot: unknown): string | null {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+  const stops = (snapshot as Record<string, unknown>).stops;
+  if (!Array.isArray(stops)) return null;
+  const members: string[] = [];
+  for (const stop of stops) {
+    if (stop === null || typeof stop !== 'object' || Array.isArray(stop)) return null;
+    const row = stop as Record<string, unknown>;
+    if (typeof row.deliveryStopId !== 'string' || typeof row.orderId !== 'string') return null;
+    members.push(`${row.deliveryStopId}:${row.orderId}`);
+  }
+  return new Set(members).size === members.length ? JSON.stringify(members.sort()) : null;
+}
 
 function isResolvedCurrentMembership(snapshot: unknown, versionId: string, stops: CompletionStop[]): boolean {
   if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot) || stops.length === 0) return false;
