@@ -21,6 +21,9 @@ business day starts at 00:00 and ends at the next 00:00. Noon is 03:00 UTC on
 that calendar date. Start, cancellation, unassignment/reassignment, and execution
 closure stop N05 earlier. Recovery creates at most one current reminder; it does
 not send missed time slots. The next business day cannot revive an expired N05.
+Confirmed warehouse return pauses N05 and resolves its open notifications.
+A fresh confirmed departure resumes N05 five minutes later. Reconciliation and
+queued GPS processing preserve the same visit and reminder history on replay.
 
 GPS identity, vehicle/tenant attribution, active assignment, distinct sample
 counts, dwell, freshness, speed, mapping and ambiguous-execution checks remain.

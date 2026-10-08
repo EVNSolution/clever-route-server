@@ -69,6 +69,168 @@ live('DSV operational server PostgreSQL integration', () => {
     await prisma.$disconnect();
   }, 30_000);
 
+
+  test('runtime reconciliation pauses reminders on warehouse return before queued samples run', async () => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'runtime-reconcile-return');
+    const at = (time: string) => new Date(`2026-10-06T${time}.000Z`);
+    await prisma.dsvOperationalNotification.update({
+      data: { businessStatus: 'RESOLVED', resolutionReason: 'SYNTHETIC_BASELINE', resolvedAt: at('00:09:00') },
+      where: { id: fixture.warningId },
+    });
+    await prisma.dsvExecutionContext.update({
+      data: { departureObservedAt: null, reminderDueAt: null, reminderIncidentId: null,
+        reminderOrdinal: 0, reminderStatus: 'AWAITING_DEPARTURE' },
+      where: { id: fixture.contextId },
+    });
+    await enableSyntheticGeofence(prisma, fixture, 'SHADOW');
+    const telemetry = new PrismaUvisTelemetryRepository(prisma);
+    const service = new PrismaDsvGeofenceService(prisma);
+    const depot = ['37.4900000', '127.0100000'] as const;
+    const outside = ['37.5200000', '127.0300000'] as const;
+    const queue = async (time: string, coordinates: readonly [string, string]) => {
+      const observedAt = at(time);
+      const stored = await telemetry.recordSample(telemetryInput(fixture, observedAt, coordinates));
+      const job = await prisma.dsvGeofenceJob.findUniqueOrThrow({ where: { sampleId: stored.sampleId } });
+      await makeGeofenceJobDue(prisma, job.id, observedAt);
+      return job.id;
+    };
+    const iteration = async (now: Date) => {
+      await service.reconcileWarehouseArrivals(now);
+      await service.runOnce(now);
+      return service.tickReminders(now);
+    };
+    for (const time of ['00:10:00', '00:10:10']) {
+      const id = await queue(time, depot);
+      await service.process(id, new Date(at(time).getTime() + 1_000));
+    }
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({ warehouseNotifiedAt: null });
+    await enableSyntheticGeofence(prisma, fixture, 'LIVE');
+    await prisma.dsvExecutionContext.update({
+      data: { liveEligibleAt: at('00:10:30') }, where: { id: fixture.contextId },
+    });
+    for (const time of ['00:11:00', '00:11:10']) {
+      await queue(time, outside);
+      await iteration(new Date(at(time).getTime() + 1_000));
+    }
+    await expect(prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }))
+      .resolves.toMatchObject({ warehouseNotifiedAt: null, departureObservedAt: at('00:11:10'),
+        reminderStatus: 'REMINDER_ACTIVE', reminderDueAt: at('00:16:10') });
+    await expect(service.tickReminders(at('00:16:10'))).resolves.toBe(1);
+    const countBefore = await prisma.dsvOperationalNotification.count({
+      where: { executionContextId: fixture.contextId, kind: 'N05' },
+    });
+    await expect(prisma.dsvOperationalNotification.count({
+      where: { executionContextId: fixture.contextId, kind: 'N05', businessStatus: 'OPEN' },
+    })).resolves.toBe(1);
+    const returnJobs = [await queue('00:20:50', depot), await queue('00:21:00', depot)];
+    const generated = await iteration(at('00:21:11'));
+    await iteration(at('00:21:12'));
+    const context = await prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } });
+    const allN05 = await prisma.dsvOperationalNotification.count({
+      where: { executionContextId: fixture.contextId, kind: 'N05' },
+    });
+    const openN05 = await prisma.dsvOperationalNotification.count({
+      where: { executionContextId: fixture.contextId, kind: 'N05', businessStatus: 'OPEN' },
+    });
+    expect({ generated, reminderStatus: context.reminderStatus, reminderDueAt: context.reminderDueAt,
+      addedN05: allN05 - countBefore, openN05 }).toEqual({
+      generated: 0, reminderStatus: 'PAUSED_WAREHOUSE_RETURN', reminderDueAt: null, addedN05: 0, openN05: 0,
+    });
+    const readEffects = async () => ({
+      context: await prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } }),
+      events: await prisma.dsvGeofenceEvent.findMany({
+        where: { executionContextId: fixture.contextId, targetKey: 'DEPOT' }, orderBy: { confirmedObservedAt: 'asc' },
+      }),
+      notifications: await prisma.dsvOperationalNotification.findMany({
+        where: { executionContextId: fixture.contextId }, orderBy: { id: 'asc' },
+      }),
+      state: (await prisma.dsvGeofenceState.findFirstOrThrow({
+        where: { executionContextId: fixture.contextId, targetKey: 'DEPOT' },
+      })).state,
+    });
+    const paused = await readEffects();
+    expect(paused.state).toMatchObject({ geofence: { phase: 'INSIDE', visitOrdinal: 2 } });
+    expect(paused.events.map(({ transition, visitOrdinal }) => [transition, visitOrdinal]))
+      .toEqual([['ARRIVED', 1], ['DEPARTED', 1], ['ARRIVED', 2]]);
+    expect(paused.notifications.filter(({ kind }) => kind === 'N04')).toHaveLength(1);
+    expect(paused.notifications.find(({ kind, resolutionReason }) => kind === 'N05' && resolutionReason === 'WAREHOUSE_RETURN'))
+      .toMatchObject({ businessStatus: 'RESOLVED', resolvedAt: at('00:21:11') });
+
+    // Replay acknowledged queue work after a service restart, as in at-least-once recovery.
+    await prisma.dsvGeofenceJob.updateMany({
+      data: { status: 'PENDING', processedAt: null, nextAttemptAt: at('00:21:13'), resultReason: null },
+      where: { id: { in: returnJobs } },
+    });
+    const restarted = new PrismaDsvGeofenceService(prisma);
+    for (const time of ['00:21:13', '00:21:14']) {
+      await expect(restarted.reconcileWarehouseArrivals(at(time))).resolves.toBe(0);
+      await expect(restarted.runOnce(at(time))).resolves.toMatchObject({ status: 'PROCESSED' });
+      await expect(restarted.tickReminders(at(time))).resolves.toBe(0);
+    }
+    expect(await readEffects()).toEqual(paused);
+
+    for (const time of ['00:22:00', '00:22:10']) {
+      await queue(time, outside);
+      await iteration(new Date(at(time).getTime() + 1_000));
+    }
+    const resumed = await prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: fixture.contextId } });
+    expect(resumed).toMatchObject({ departureObservedAt: at('00:22:10'), reminderDueAt: at('00:27:10'),
+      reminderStatus: 'REMINDER_ACTIVE', reminderIncidentId: context.reminderIncidentId, reminderOrdinal: 1 });
+    await expect(iteration(new Date(at('00:27:10').getTime() - 1))).resolves.toBe(0);
+    await expect(iteration(at('00:27:10'))).resolves.toBe(1);
+    await expect(iteration(at('00:27:10'))).resolves.toBe(0);
+    await expect(prisma.dsvOperationalNotification.count({
+      where: { executionContextId: fixture.contextId, kind: 'N05', businessStatus: 'OPEN' },
+    })).resolves.toBe(1);
+    const final = await readEffects();
+    expect(final.context.reminderOrdinal).toBe(2);
+    expect(final.notifications.filter(({ kind }) => kind === 'N04')).toHaveLength(1);
+    expect(final.events.map(({ transition, visitOrdinal }) => [transition, visitOrdinal]))
+      .toEqual([['ARRIVED', 1], ['DEPARTED', 1], ['ARRIVED', 2], ['DEPARTED', 2]]);
+    // Runtime methods scan all contexts; do not leave this fixture active for later tests.
+    await prisma.shop.delete({ where: { id: fixture.shopId } });
+  }, 20_000);
+
+  test('LIVE reconciliation preserves an already recorded SHADOW return and its visit ordinal', async () => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'shadow-return-reconcile');
+    await enableSyntheticGeofence(prisma, fixture, 'SHADOW');
+    const at = (time: string) => new Date(`2026-10-06T${time}.000Z`);
+    const telemetry = new PrismaUvisTelemetryRepository(prisma);
+    const service = new PrismaDsvGeofenceService(prisma);
+    const depot = ['37.4900000', '127.0100000'] as const;
+    const outside = ['37.5200000', '127.0300000'] as const;
+    for (const [time, coordinates] of [
+      ['00:10:00', depot], ['00:10:10', depot], ['00:11:00', outside], ['00:11:10', outside],
+      ['00:12:00', depot], ['00:12:10', depot], ['00:20:50', depot], ['00:21:00', depot],
+    ] as const) {
+      const stored = await telemetry.recordSample(telemetryInput(fixture, at(time), coordinates));
+      const job = await prisma.dsvGeofenceJob.findUniqueOrThrow({ where: { sampleId: stored.sampleId } });
+      await makeGeofenceJobDue(prisma, job.id, at(time));
+      await service.process(job.id, new Date(at(time).getTime() + 1_000));
+    }
+    const previousEvents = await prisma.dsvGeofenceEvent.findMany({
+      where: { executionContextId: fixture.contextId }, orderBy: { logicalKey: 'asc' },
+    });
+    expect(previousEvents).toHaveLength(3);
+    await enableSyntheticGeofence(prisma, fixture, 'LIVE');
+    await prisma.dsvExecutionContext.update({
+      data: { liveEligibleAt: at('00:21:01') }, where: { id: fixture.contextId },
+    });
+    await expect(service.reconcileWarehouseArrivals(at('00:21:02'))).resolves.toBe(1);
+    await expect(service.reconcileWarehouseArrivals(at('00:21:03'))).resolves.toBe(0);
+    await expect(prisma.dsvGeofenceEvent.findMany({
+      where: { executionContextId: fixture.contextId }, orderBy: { logicalKey: 'asc' },
+    })).resolves.toEqual(previousEvents);
+    await expect(prisma.dsvGeofenceState.findFirstOrThrow({
+      where: { executionContextId: fixture.contextId, targetKey: 'DEPOT' },
+    })).resolves.toMatchObject({ state: { geofence: { phase: 'INSIDE', visitOrdinal: 2 } } });
+    await expect(prisma.dsvOperationalNotification.count({
+      where: { executionContextId: fixture.contextId, kind: 'N04' },
+    })).resolves.toBe(1);
+    await prisma.shop.delete({ where: { id: fixture.shopId } });
+  });
+
   test('accepts vehicle GPS arrival before 06 KST despite a later legacy monitor start', async () => {
     const fixture = await createOperationalFixture(prisma, createdShopIds, 'arrival-before-six');
     await enableSyntheticGeofence(prisma, fixture, 'LIVE');

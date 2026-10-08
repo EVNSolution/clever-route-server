@@ -183,6 +183,7 @@ export class PrismaDsvGeofenceService {
         let confirmedObservedAt: Date | null = null;
         let confirmationSampleId: string | null = null;
         let sourceSample: TelemetrySample | null = null;
+        const validSamples: TelemetrySample[] = [];
         for (const sample of samples) {
           if (validateObservationIdentity(sample, { shopId: context.shopId, vehicleId: context.vehicleId }) !== null
             || validateObservationTiming(sample, policy, sample.receivedAt) !== null) {
@@ -190,6 +191,7 @@ export class PrismaDsvGeofenceService {
             sourceSample = null;
             continue;
           }
+          validSamples.push(sample);
           if (state.lastObservationAt !== null
             && sample.observedAt.getTime() - Date.parse(state.lastObservationAt) > policy.maxGapSeconds * 1000) {
             state = emptyDsvGeofenceState();
@@ -210,11 +212,36 @@ export class PrismaDsvGeofenceService {
         if (state.phase !== 'INSIDE' || sourceSample === null || sourceSample.staleAfter <= now
           || validateObservationTiming(sourceSample, policy, now) !== null
           || firstObservedAt === null || confirmedObservedAt === null || confirmationSampleId === null) return 0;
+        const coordinateHash = geofenceCoordinateHash(depot, policy.warehouseRadiusMeters, policy.warehouseExitRadiusMeters);
+        const persisted = await transaction.dsvGeofenceState.findUnique({
+          where: { executionContextId_assignmentEpoch_targetKey: {
+            executionContextId: context.id, assignmentEpoch: context.assignmentEpoch, targetKey: 'DEPOT',
+          } },
+        });
+        const stored = parseStoredState(persisted?.state);
+        let arrivalEvidence: { confirmedObservedAt: Date; firstObservedAt: Date; sampleId: string } | null = {
+          confirmedObservedAt, firstObservedAt, sampleId: confirmationSampleId,
+        };
+        if (persisted?.policyVersion === policy.policyVersion && stored?.coordinateHash === coordinateHash) {
+          // The bounded dwell proof must not reset an existing visit or replay its ARRIVED event.
+          state = stored.geofence;
+          arrivalEvidence = null;
+          for (const sample of validSamples) {
+            const observation = toObservation(sample);
+            const advanced = advanceDsvGeofence(state, observation, {
+              ...depot, entryRadiusMeters: policy.warehouseRadiusMeters, exitRadiusMeters: policy.warehouseExitRadiusMeters,
+            }, policy);
+            if (advanced.transition === 'ARRIVED') {
+              arrivalEvidence = { ...dsvGeofenceTransitionEvidence(state, observation), sampleId: sample.id };
+            }
+            state = advanced.state;
+          }
+          if (state.phase !== 'INSIDE' || state.lastObservationAt !== sourceSample.observedAt.toISOString()) return 0;
+        }
         const created = await createLiveNotification(transaction, context, policy, now, {
           evidenceObservedAt: sourceSample.observedAt, kind: 'N04', logicalKey: `N04:${context.id}`, ordinal: 1, targetStopId: null,
         });
         if (!created) return 0;
-        const coordinateHash = geofenceCoordinateHash(depot, policy.warehouseRadiusMeters, policy.warehouseExitRadiusMeters);
         await transaction.dsvGeofenceState.upsert({
           create: { assignmentEpoch: context.assignmentEpoch, executionContextId: context.id, policyVersion: policy.policyVersion,
             shopId: context.shopId, state: { coordinateHash, geofence: state }, targetKey: 'DEPOT' },
@@ -223,17 +250,22 @@ export class PrismaDsvGeofenceService {
             executionContextId: context.id, assignmentEpoch: context.assignmentEpoch, targetKey: 'DEPOT',
           } },
         });
-        await transaction.dsvGeofenceEvent.createMany({
-          data: { assignmentEpoch: context.assignmentEpoch, confirmedAt: now, confirmedObservedAt,
-            executionContextId: context.id, firstObservedAt,
-            logicalKey: `${context.id}:${context.assignmentEpoch.toString()}:DEPOT:ARRIVED:${state.visitOrdinal}:${confirmationSampleId}`,
-            policyVersion: policy.policyVersion, routeVersion: context.routeVersion, shopId: context.shopId,
-            sourceSampleId: confirmationSampleId, targetKey: 'DEPOT', transition: 'ARRIVED', visitOrdinal: state.visitOrdinal },
-          skipDuplicates: true,
-        });
+        if (arrivalEvidence !== null) {
+          await transaction.dsvGeofenceEvent.createMany({
+            data: { assignmentEpoch: context.assignmentEpoch, confirmedAt: now,
+              confirmedObservedAt: arrivalEvidence.confirmedObservedAt,
+              executionContextId: context.id, firstObservedAt: arrivalEvidence.firstObservedAt,
+              logicalKey: `${context.id}:${context.assignmentEpoch.toString()}:DEPOT:ARRIVED:${state.visitOrdinal}:${arrivalEvidence.sampleId}`,
+              policyVersion: policy.policyVersion, routeVersion: context.routeVersion, shopId: context.shopId,
+              sourceSampleId: arrivalEvidence.sampleId, targetKey: 'DEPOT', transition: 'ARRIVED', visitOrdinal: state.visitOrdinal },
+            skipDuplicates: true,
+          });
+        }
         await transaction.dsvExecutionContext.update({
           data: { warehouseNotifiedAt: sourceSample.observedAt }, where: { id: context.id },
         });
+        // Reconciliation consumes these samples before the queue can emit ARRIVED.
+        await pauseMissingStartOnWarehouseReturn(transaction, context, now);
         return 1;
       });
     }
@@ -626,20 +658,7 @@ export class PrismaDsvGeofenceService {
             context.warehouseNotifiedAt = observation.observedAt;
           }
         }
-        if (context.startedAt === null && context.departureObservedAt !== null) {
-          await transaction.dsvExecutionContext.update({
-            data: { reminderDueAt: null, reminderStatus: 'PAUSED_WAREHOUSE_RETURN' },
-            where: { id: context.id },
-          });
-          await transaction.dsvOperationalNotification.updateMany({
-            data: { businessStatus: 'RESOLVED', resolutionReason: 'WAREHOUSE_RETURN', resolvedAt: now },
-            where: {
-              businessStatus: 'OPEN',
-              executionContextId: context.id,
-              kind: 'N05',
-            },
-          });
-        }
+        await pauseMissingStartOnWarehouseReturn(transaction, context, now);
       } else if (context.startedAt === null && isDsvMissingStartWindow(context.serviceDate, now)) {
         await transaction.dsvExecutionContext.update({
           data: {
@@ -670,6 +689,22 @@ export class PrismaDsvGeofenceService {
     if (contextPolicy !== null && contextPolicy !== undefined) return parseDsvGeofencePolicy(contextPolicy);
     return this.policy;
   }
+}
+
+async function pauseMissingStartOnWarehouseReturn(
+  transaction: Prisma.TransactionClient,
+  context: ExecutionContext,
+  now: Date,
+): Promise<void> {
+  if (context.startedAt !== null || context.departureObservedAt === null) return;
+  await transaction.dsvExecutionContext.update({
+    data: { reminderDueAt: null, reminderStatus: 'PAUSED_WAREHOUSE_RETURN' },
+    where: { id: context.id },
+  });
+  await transaction.dsvOperationalNotification.updateMany({
+    data: { businessStatus: 'RESOLVED', resolutionReason: 'WAREHOUSE_RETURN', resolvedAt: now },
+    where: { businessStatus: 'OPEN', executionContextId: context.id, kind: 'N05' },
+  });
 }
 
 async function createLiveNotification(

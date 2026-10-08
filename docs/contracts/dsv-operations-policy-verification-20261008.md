@@ -7,7 +7,45 @@ main checkout were not modified. The new PR is stacked on PR487.
 
 Contract and app follow-up: [confirmed policy](dsv-operations-policy-20261008.md).
 
-## Validation results
+## Warehouse return correction after manager review
+
+Review baseline: PR488 `332e8f7be86eedd8291108aae3b36a54624d8882`.
+The manager's SHADOW-arrival → LIVE-departure → warehouse-return reproduction
+failed again before this correction on a fresh isolated PostgreSQL 17 database:
+one new N05, two open N05 records, and `REMINDER_ACTIVE` remained after return.
+
+Reconciliation had saved `INSIDE` before the queue could emit `ARRIVED`, without
+performing the ordinary arrival path's reminder pause. Both paths now call the
+same transaction-scoped pause/resolve helper. The incident, reminder ordinal,
+and previous departure evidence are preserved for the next confirmed departure.
+Reconciliation also advances compatible persisted geofence state rather than
+resetting its visit ordinal from a bounded GPS history. An already recorded
+SHADOW arrival receives its first N04 without another `ARRIVED` event.
+
+Two permanent database regressions cover:
+
+- The actual `reconcileWarehouseArrivals → runOnce → tickReminders` order.
+- Zero new/open N05 after return, `PAUSED_WAREHOUSE_RETURN`, and null due time.
+- Service restart and replay of completed queue jobs with unchanged notification,
+  context, event, and geofence state; one N04 and monotonic visit ordinals.
+- No reminder before fresh departure + five minutes, exactly one at that time,
+  and no duplicate on another runtime iteration.
+- LIVE activation after an already recorded SHADOW return, including a recent
+  dwell window that no longer includes the original arrival samples.
+
+Both new regressions passed. The complete isolated PostgreSQL/HTTP lane passed
+83 tests, with two optional external Driver-source tests skipped. Independent
+source review accepted the correction. The new cluster applied all 115 migrations.
+It was stopped and removed after verification; its logs remain outside Git.
+No schema, frontend, provider wiring, or existing report/retention policy changed.
+
+Correction logs under the local observer directory listed below:
+
+- Before correction: `20261008T152018.809130+0900-332e8f7be86e-dsv-warehouse-return-red/summary.json`
+- Focused regressions: `20261008T152353.934955+0900-332e8f7be86e-dsv-warehouse-return-regression/summary.json`
+- PostgreSQL/HTTP: `20261008T152456.025153+0900-332e8f7be86e-dsv-return-db-final/summary.json`
+
+## Initial policy validation results
 
 | Check | Result |
 | --- | --- |
