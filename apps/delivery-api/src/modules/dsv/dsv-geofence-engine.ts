@@ -120,8 +120,8 @@ export function missingStartDueAt(departureConfirmedAt: Date): Date {
   return new Date(departureConfirmedAt.getTime() + 300_000);
 }
 
-export function nextMissingStartReminderAt(createdAt: Date, policy: DsvGeofencePolicy): Date {
-  return new Date(createdAt.getTime() + policy.reminderIntervalSeconds * 1000);
+export function nextMissingStartReminderAt(createdAt: Date): Date {
+  return new Date(createdAt.getTime() + 300_000);
 }
 
 export function resolveDsvExecutionAttribution<T extends { id: string }>(

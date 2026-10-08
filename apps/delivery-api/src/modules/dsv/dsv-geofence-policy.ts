@@ -38,11 +38,9 @@ export function parseDsvGeofencePolicy(value: unknown): DsvGeofencePolicy | null
   const maxObservationDelaySeconds = readNonNegativeNumber(source.maxObservationDelaySeconds);
   const futureToleranceSeconds = readNonNegativeNumber(source.futureToleranceSeconds);
   const maxSpeedKph = readPositiveNumber(source.maxSpeedKph);
-  const reminderIntervalSeconds = readPositiveNumber(source.reminderIntervalSeconds);
+
   const notificationTtlSeconds = readPositiveNumber(source.notificationTtlSeconds);
-  const maxReminderCount = source.maxReminderCount === null
-    ? null
-    : readPositiveInteger(source.maxReminderCount);
+
 
   if (
     policyVersion === null
@@ -60,10 +58,7 @@ export function parseDsvGeofencePolicy(value: unknown): DsvGeofencePolicy | null
     || maxObservationDelaySeconds === null
     || futureToleranceSeconds === null
     || maxSpeedKph === null
-    || reminderIntervalSeconds === null
-    || reminderIntervalSeconds < 300
     || notificationTtlSeconds === null
-    || maxReminderCount === undefined
   ) return null;
 
   return {
@@ -76,12 +71,13 @@ export function parseDsvGeofencePolicy(value: unknown): DsvGeofencePolicy | null
     futureToleranceSeconds,
     maxGapSeconds,
     maxObservationDelaySeconds,
-    maxReminderCount,
+    // Legacy snapshot fields cannot restore the superseded reminder cap.
+    maxReminderCount: null,
     maxSpeedKph,
     mode: source.mode,
     notificationTtlSeconds,
     policyVersion,
-    reminderIntervalSeconds,
+    reminderIntervalSeconds: 300,
     warehouseExitRadiusMeters,
     warehouseRadiusMeters,
   };

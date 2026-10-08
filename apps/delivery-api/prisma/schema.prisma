@@ -3534,6 +3534,13 @@ model DsvDeliveryException {
   reasonCode         String    @db.Text
   explanation        String?   @db.Text
   status             String    @default("OPEN") @db.Text
+  // The report row is also its single email job. No retention deadline applies.
+  emailStatus        String    @default("NOT_PREPARED") @db.Text
+  emailSnapshot      Json?
+  emailRecipient     String?   @db.Text
+  emailSender        String?   @db.Text
+  emailSentAt        DateTime? @db.Timestamptz(6)
+  emailMessageId     String?   @db.Text
   createdAt          DateTime  @default(now()) @db.Timestamptz(6)
   acknowledgedAt     DateTime? @db.Timestamptz(6)
   resolvedAt         DateTime? @db.Timestamptz(6)

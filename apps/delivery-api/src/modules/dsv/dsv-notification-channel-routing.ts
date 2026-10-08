@@ -30,10 +30,7 @@ export async function legacyDsvNotificationTokens<T extends Pick<DriverPushToken
     const contextPolicy = context.policy as Record<string, unknown> | null;
     if (!policy.allowedShopIds.includes(context.shopId)) continue;
     if (!release && (context.status !== 'ACTIVE' || context.closedAt !== null || context.recipientAccountId !== input.accountId)) continue;
-    if (contextPolicy?.authorizationId !== policy.approvedAuthorizationId
-      || (!release && (context.monitorStartAt === null || context.monitorEndAt === null
-        || now < context.monitorStartAt || now >= context.monitorEndAt
-        || context.monitorEndAt.getTime() - context.monitorStartAt.getTime() > policy.monitorWindowMs!))) continue;
+    if (contextPolicy?.authorizationId !== policy.approvedAuthorizationId) continue;
     const intent = await prisma.dsvOperationalNotification.findFirst({
       where: { shopId: context.shopId, executionContextId: context.id, recipientAccountId: input.accountId,
         kind: { in: kinds.filter((kind) => policy.allowedKinds.includes(kind)) }, businessStatus: 'OPEN',
