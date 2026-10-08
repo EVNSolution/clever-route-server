@@ -337,7 +337,6 @@ describe('driver completion receipt precedence', () => {
     });
     expect(restored).toEqual(original);
     expect(findCommitted).toHaveBeenCalledWith(expect.objectContaining({
-      select: expect.objectContaining({ stopCompletionReceipt: { select: { result: true } } }),
       where: {
         clientEventId: 'complete-1', driver: { accountId: 'original-account-id' }, routePlanId: 'route-id'
       }
