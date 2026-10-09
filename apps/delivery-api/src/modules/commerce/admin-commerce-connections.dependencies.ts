@@ -20,7 +20,9 @@ import {
   CoverageAwareRouteOptimizationService,
   hasExplicitCoverageUrls,
   readConfiguredCoverageBaseUrls,
-  readDefaultRouteEngineCoverage
+  readDefaultRouteEngineCoverage,
+  readLegacyRouteEngineCoverage,
+  type RouteEngineCoverage
 } from '../route-plans/route-engine-coverage.js';
 import { VroomRouteOptimizationClient } from '../route-plans/vroom-route-optimizer.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
@@ -395,6 +397,7 @@ function readAdminUiRouteOptimizationService(
         coverage,
         new VroomRouteOptimizationClient({
           baseUrl,
+          osrmBaseUrl: readConfiguredCoverageBaseUrls(env, 'OSRM')[coverage as RouteEngineCoverage],
           ...optionalTimeout(env.VROOM_TIMEOUT_MS)
         })
       ])
@@ -412,6 +415,7 @@ function readAdminUiRouteOptimizationService(
   return {
     routeOptimizationService: new VroomRouteOptimizationClient({
       baseUrl: vroomBaseUrl,
+      osrmBaseUrl: readConfiguredCoverageBaseUrls(env, 'OSRM')[readLegacyRouteEngineCoverage(env)],
       ...optionalTimeout(env.VROOM_TIMEOUT_MS)
     })
   };

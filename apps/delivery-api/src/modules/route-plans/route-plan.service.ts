@@ -1,3 +1,4 @@
+import { avoidsTolls } from './route-toll-policy.js';
 import { RouteOptimizationJobActiveError } from './route-optimization-job.types.js';
 import type { RouteOptimizationJobDto } from './route-optimization-job.types.js';
 import {
@@ -60,6 +61,9 @@ export type RoutePlanRepository = {
   assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null>;
   createRoutePlanDraft(input: {
     createdBy: string;
+    deliveryProof?: NonNullable<CreateRoutePlanInput['payload']['deliveryProof']>;
+    tollPolicy?: NonNullable<CreateRoutePlanInput['payload']['tollPolicy']>;
+    prepareGeometry?: (candidate: RoutePlanDetail) => Promise<RoutePlanRouteResult>;
     depot: CreateRoutePlanInput['payload']['depot'];
     name: string;
     orders: CreateRoutePlanInput['payload']['orders'];
@@ -70,6 +74,9 @@ export type RoutePlanRepository = {
   }): Promise<RoutePlanSummary>;
   createRoutePlanDraftFromOrderIds?(input: {
     createdBy: string;
+    deliveryProof?: NonNullable<CreateRoutePlanInput['payload']['deliveryProof']>;
+    tollPolicy?: NonNullable<CreateRoutePlanInput['payload']['tollPolicy']>;
+    prepareGeometry?: (candidate: RoutePlanDetail) => Promise<RoutePlanRouteResult>;
     depot: CreateRoutePlanInput['payload']['depot'];
     name: string;
     orderIds: string[];
@@ -123,6 +130,9 @@ export class RoutePlanAdminService implements RoutePlanService {
     const summary = await this.repository.createRoutePlanDraft({
       appId: input.appId,
       createdBy: input.createdBy,
+      ...(input.payload.deliveryProof === undefined ? {} : { deliveryProof: input.payload.deliveryProof }),
+      ...(input.payload.tollPolicy === undefined ? {} : { tollPolicy: input.payload.tollPolicy }),
+      ...(avoidsTolls(input.payload.tollPolicy) ? { prepareGeometry: (candidate: RoutePlanDetail) => this.buildTollGeometry(candidate) } : {}),
       depot: input.payload.depot,
       name: input.payload.name,
       orders: input.payload.orders,
@@ -130,6 +140,7 @@ export class RoutePlanAdminService implements RoutePlanService {
       routeScope: input.payload.routeScope,
       shopDomain: input.shopDomain
     });
+    if (avoidsTolls(input.payload.tollPolicy)) return summary;
     await this.refreshRouteGeometryById({
       appId: input.appId,
       routePlanId: summary.id,
@@ -146,12 +157,16 @@ export class RoutePlanAdminService implements RoutePlanService {
     const summary = await this.repository.createRoutePlanDraftFromOrderIds({
       appId: input.appId,
       createdBy: input.createdBy,
+      ...(input.payload.deliveryProof === undefined ? {} : { deliveryProof: input.payload.deliveryProof }),
+      ...(input.payload.tollPolicy === undefined ? {} : { tollPolicy: input.payload.tollPolicy }),
+      ...(avoidsTolls(input.payload.tollPolicy) ? { prepareGeometry: (candidate: RoutePlanDetail) => this.buildTollGeometry(candidate) } : {}),
       depot: input.payload.depot,
       name: input.payload.name,
       orderIds: input.payload.orderIds,
       planDate: input.payload.planDate,
       shopDomain: input.shopDomain
     });
+    if (avoidsTolls(input.payload.tollPolicy)) return summary;
     await this.refreshRouteGeometryById({
       appId: input.appId,
       routePlanId: summary.id,
@@ -186,7 +201,11 @@ export class RoutePlanAdminService implements RoutePlanService {
     if (this.repository.updateAdminRouteStopOverride === undefined) {
       throw new Error('Admin route stop overrides are not supported by this repository');
     }
-    const result = await this.repository.updateAdminRouteStopOverride(input);
+    const result = await this.repository.updateAdminRouteStopOverride({
+      ...input,
+      // The repository decides under its route lock whether the current policy needs this callback.
+      prepareGeometry: (candidate) => this.buildTollGeometry(candidate)
+    });
     if (result === null) return null;
     const { refreshGuard, ...response } = result;
     if (result.geometry.status === 'preserved' || refreshGuard === null) return response;
@@ -250,8 +269,11 @@ export class RoutePlanAdminService implements RoutePlanService {
     }
     const shouldCheckShape = hasRouteShapePayload(input);
     const before = shouldCheckShape ? await this.repository.findRoutePlanDetail(input) : null;
-    const saved = await this.repository.saveRoutePlan(input);
+    const prepareGeometry = this.deferredTollGeometry(before, input.payload);
+    const preparedRouteGeometry = prepareGeometry === undefined ? await this.prepareTollGeometry(before, input.payload) : undefined;
+    const saved = await this.repository.saveRoutePlan({ ...input, ...(preparedRouteGeometry === undefined ? {} : { preparedRouteGeometry }), ...(prepareGeometry === undefined ? {} : { prepareGeometry }) });
     if (saved === null) return null;
+    if (preparedRouteGeometry !== undefined || prepareGeometry !== undefined) return saved;
     const routeShapeChanged =
       shouldCheckShape &&
       (before === null || computeRouteShapeSignature(before) !== computeRouteShapeSignature(saved.detail));
@@ -270,7 +292,9 @@ export class RoutePlanAdminService implements RoutePlanService {
   async updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null> {
     await this.assertNoActiveUserOptimizationJob(input);
     const before = await this.repository.findRoutePlanDetail(input);
-    const updated = await this.repository.updateRoutePlanOptions(input);
+    const preparedRouteGeometry = await this.prepareTollGeometry(before, input.payload);
+    const updated = await this.repository.updateRoutePlanOptions({ ...input, ...(preparedRouteGeometry === undefined ? {} : { preparedRouteGeometry }) });
+    if (preparedRouteGeometry !== undefined) return updated;
     if (updated === null) return null;
     return this.refreshRouteGeometryIfShapeChanged({
       before,
@@ -282,13 +306,66 @@ export class RoutePlanAdminService implements RoutePlanService {
   async updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null> {
     await this.assertNoActiveUserOptimizationJob(input);
     const before = await this.repository.findRoutePlanDetail(input);
-    const updated = await this.repository.updateRoutePlanStops(input);
+    const prepareGeometry = this.deferredTollGeometry(before, input.payload);
+    const preparedRouteGeometry = prepareGeometry === undefined ? await this.prepareTollGeometry(before, input.payload, input.mutationContext?.source === 'route_optimization_job') : undefined;
+    const updated = await this.repository.updateRoutePlanStops({ ...input, ...(preparedRouteGeometry === undefined ? {} : { preparedRouteGeometry }), ...(prepareGeometry === undefined ? {} : { prepareGeometry }) });
+    if (preparedRouteGeometry !== undefined || prepareGeometry !== undefined) return updated;
     if (updated === null) return null;
     return this.refreshRouteGeometryIfShapeChanged({
       before,
       after: updated,
       source: input.mutationContext?.source === 'route_optimization_job' ? 'OPTIMIZATION_APPLY' : 'SHAPE_MUTATION'
     });
+  }
+
+  private deferredTollGeometry(
+    before: RoutePlanDetail | null,
+    payload: Pick<SaveRoutePlanInput['payload'], 'tollPolicy' | 'stops'>,
+  ): SaveRoutePlanInput['prepareGeometry'] {
+    if (before === null || (!avoidsTolls(payload.tollPolicy ?? before.routePlan.tollPolicy) && !avoidsTolls(before.routePlan.tollPolicy))) return undefined;
+    const hasNewStop = payload.stops?.some((entry) => !before.stops.some((stop) => stop.shopifyOrderGid === entry.shopifyOrderGid
+      && (entry.deliveryStopId == null || stop.deliveryStopId === entry.deliveryStopId))) ?? false;
+    // New order coordinates and canonical stop IDs are resolved inside the repository transaction.
+    return hasNewStop ? (candidate) => this.buildTollGeometry(candidate) : undefined;
+  }
+
+  private async prepareTollGeometry(
+    before: RoutePlanDetail | null,
+    payload: Pick<SaveRoutePlanInput['payload'], 'routeEndMode' | 'tollPolicy' | 'stops'>,
+    force = false,
+  ): Promise<SaveRoutePlanInput['preparedRouteGeometry']> {
+    if (before === null) return undefined;
+    const tollPolicy = payload.tollPolicy ?? before.routePlan.tollPolicy;
+    if (!avoidsTolls(tollPolicy) && !avoidsTolls(before.routePlan.tollPolicy)) return undefined;
+    const stops = payload.stops === undefined ? before.stops : payload.stops.map((entry) => {
+      const stop = before.stops.find((candidate) => candidate.shopifyOrderGid === entry.shopifyOrderGid
+        && (entry.deliveryStopId == null || candidate.deliveryStopId === entry.deliveryStopId));
+      if (stop === undefined) throw new RoutePlanGeometryRefreshFailedError('Toll-avoiding route requires resolved stop coordinates before it can change. Existing route was preserved.');
+      return { ...stop, sequence: entry.sequence };
+    });
+    const candidate: RoutePlanDetail = { ...before, stops, routePlan: { ...before.routePlan,
+      ...(tollPolicy === undefined ? {} : { tollPolicy }),
+      routeEndMode: payload.routeEndMode ?? before.routePlan.routeEndMode } };
+    if (!force && computeRouteShapeSignature(candidate) === computeRouteShapeSignature(before)) return undefined;
+    return { expectedShapeSignature: computeRouteShapeSignature(before), result: await this.buildTollGeometry(candidate) };
+  }
+
+  private async buildTollGeometry(candidate: RoutePlanDetail): Promise<RoutePlanRouteResult> {
+    if (this.routeGeometryProvider === undefined) {
+      throw new RoutePlanGeometryRefreshFailedError('Toll-avoiding route provider is unavailable. Existing route was preserved.');
+    }
+    if (!hasValidCoordinates(candidate.routePlan.depot.latitude, candidate.routePlan.depot.longitude)
+      || candidate.stops.some((stop) => stop.locationDiagnostic?.routeable === false
+        || !hasValidCoordinates(stop.coordinates.latitude, stop.coordinates.longitude))) {
+      throw new RoutePlanGeometryRefreshFailedError('Toll-avoiding route requires valid depot and stop coordinates. Existing route was preserved.');
+    }
+    let result: RoutePlanRouteResult;
+    try { result = await this.routeGeometryProvider.buildRoute(candidate); }
+    catch { throw new RoutePlanGeometryRefreshFailedError('Toll policy could not be applied. Existing route was preserved.'); }
+    if (!isCompleteOrderDataRouteResult(candidate, result)) {
+      throw new RoutePlanGeometryRefreshFailedError('Toll policy did not produce a complete route. Existing route was preserved.');
+    }
+    return result;
   }
 
   private async assertNoActiveUserOptimizationJob(
@@ -361,6 +438,7 @@ export class RoutePlanAdminService implements RoutePlanService {
       return this.refreshOrderDataGeometry(detail, scope);
     }
     if (this.routeGeometryProvider === undefined) {
+      if (avoidsTolls(detail.routePlan.tollPolicy)) throw new RoutePlanGeometryRefreshFailedError('Toll-avoiding route provider is unavailable. Existing geometry was preserved.');
       return detail;
     }
 
@@ -375,6 +453,9 @@ export class RoutePlanAdminService implements RoutePlanService {
       return withRouteGeometryResult(detail, emptyRouteResult(), { generatedAt, source });
     }
     const routeResult = await this.buildRouteSafely(detail);
+    if (avoidsTolls(detail.routePlan.tollPolicy) && (routeResult === null || !isCompleteOrderDataRouteResult(detail, routeResult))) {
+      throw new RoutePlanGeometryRefreshFailedError('Toll-avoiding route calculation failed. Existing geometry was preserved.');
+    }
     if (routeResult === null) {
       return withRouteGeometryResult(detail, emptyRouteResult(), { generatedAt, source });
     }
@@ -561,11 +642,13 @@ function hasRouteMutationPayload(input: SaveRoutePlanInput): boolean {
     input.payload.departureTime !== undefined ||
     input.payload.driverId !== undefined ||
     input.payload.routeEndMode !== undefined ||
+    input.payload.tollPolicy !== undefined ||
+    input.payload.deliveryProof !== undefined ||
     input.payload.scheduledStartAt !== undefined ||
     input.payload.stops !== undefined
   );
 }
 
 function hasRouteShapePayload(input: SaveRoutePlanInput): boolean {
-  return input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
+  return input.payload.routeEndMode !== undefined || input.payload.tollPolicy !== undefined || input.payload.stops !== undefined;
 }

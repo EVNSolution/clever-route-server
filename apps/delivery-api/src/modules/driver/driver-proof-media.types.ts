@@ -1,6 +1,7 @@
-export type DriverProofMediaSource = 'camera' | 'library';
+export type DriverProofMediaSource = 'camera' | 'library' | 'signature';
 
 export type StoreDriverProofMediaInput = {
+  kind?: 'photo' | 'signature';
   contentType: string;
   deliveryStopId: string;
   driverId: string;
@@ -16,7 +17,7 @@ export type StoreDriverProofMediaInput = {
 export type StoreDriverProofMediaResult = {
   contentType: string;
   deliveryStopIds: string[];
-  kind: 'photo';
+  kind: 'photo' | 'signature';
   mediaId: string;
   sha256: string;
   sizeBytes: number;
@@ -36,7 +37,7 @@ export type CreateDriverProofMediaReadAccessInput = {
 export type CreateDriverProofMediaReadAccessResult = {
   contentType: string;
   expiresAt: string;
-  kind: 'photo';
+  kind: 'photo' | 'signature';
   mediaId: string;
   url: string;
 };
@@ -54,7 +55,7 @@ export type CreateAdminDriverProofMediaReadAccessResult = {
   mediaId: string;
   sha256: string;
   sizeBytes: number;
-  source: DriverProofMediaSource;
+  source: 'camera' | 'library';
   uploadedAt: string;
   url: string;
 };

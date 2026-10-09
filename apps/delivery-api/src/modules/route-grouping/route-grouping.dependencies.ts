@@ -10,7 +10,9 @@ import {
   CoverageAwareRouteOptimizationService,
   hasExplicitCoverageUrls,
   readConfiguredCoverageBaseUrls,
-  readDefaultRouteEngineCoverage
+  readDefaultRouteEngineCoverage,
+  readLegacyRouteEngineCoverage,
+  type RouteEngineCoverage
 } from '../route-plans/route-engine-coverage.js';
 import { VroomRouteOptimizationClient } from '../route-plans/vroom-route-optimizer.client.js';
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
@@ -77,7 +79,7 @@ function readRouteOptimizationService(env: AdminRouteGroupRuntimeEnv) {
     const services = Object.fromEntries(
       Object.entries(readConfiguredCoverageBaseUrls(env, 'VROOM')).map(([coverage, baseUrl]) => [
         coverage,
-        new VroomRouteOptimizationClient({ baseUrl, ...optionalTimeout(env.VROOM_TIMEOUT_MS) })
+        new VroomRouteOptimizationClient({ baseUrl, osrmBaseUrl: readConfiguredCoverageBaseUrls(env, 'OSRM')[coverage as RouteEngineCoverage], ...optionalTimeout(env.VROOM_TIMEOUT_MS) })
       ])
     ) as ConstructorParameters<typeof CoverageAwareRouteOptimizationService>[0]['services'];
     return new CoverageAwareRouteOptimizationService({
@@ -89,7 +91,7 @@ function readRouteOptimizationService(env: AdminRouteGroupRuntimeEnv) {
   const vroomBaseUrl = readOptional(env.VROOM_BASE_URL);
   return vroomBaseUrl === undefined
     ? undefined
-    : new VroomRouteOptimizationClient({ baseUrl: vroomBaseUrl, ...optionalTimeout(env.VROOM_TIMEOUT_MS) });
+    : new VroomRouteOptimizationClient({ baseUrl: vroomBaseUrl, osrmBaseUrl: readConfiguredCoverageBaseUrls(env, 'OSRM')[readLegacyRouteEngineCoverage(env)], ...optionalTimeout(env.VROOM_TIMEOUT_MS) });
 }
 
 function readRouteGeometryProvider(env: AdminRouteGroupRuntimeEnv) {

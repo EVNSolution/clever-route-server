@@ -22,7 +22,8 @@ import { PrismaLiveRouteChangeService } from '../src/modules/route-plans/live-ro
 import { KFOOD_DELIVERY_APP_ID, KFOOD_DELIVERY_SHOP_DOMAIN } from '../src/modules/route-plans/kfood-delivery-completion.js';
 import type { DriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import { PrismaRouteGroupingService } from '../src/modules/route-grouping/route-grouping.service.js';
-import type { RouteGeometryProvider } from '../src/modules/route-plans/route-plan.service.js';
+import { RoutePlanAdminService, type RouteGeometryProvider } from '../src/modules/route-plans/route-plan.service.js';
+import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../src/modules/route-plans/route-plan.types.js';
 import { mapShopifyOrderNodeToDeliveryInputs } from '../src/modules/shopify/order-sync.mapper.js';
 import { PrismaOrderSyncRepository } from '../src/modules/shopify/order-sync.repository.js';
@@ -892,6 +893,120 @@ if (enabled) {
     expect(await publicationCount(prisma, f)).toBe(2);
   });
 
+  test('preserves a READY avoiding route address, cache, ETA and history when its address geometry fails', async () => {
+    const f = await readyAvoidingFixture(prisma);
+    const buildRoute = vi.fn<RouteGeometryProvider['buildRoute']>().mockRejectedValue(new Error('synthetic avoidance failure'));
+    const service = new RoutePlanAdminService(new PrismaRoutePlanRepository(prisma), { buildRoute });
+    await prisma.routePlanGeometryCache.create({ data: { routePlanId: f.route.id, shapeSignature: 'ready-previous-cache',
+      geometry: { type: 'LineString', coordinates: [[-80.4, 43.4], [-80.58, 43.58]] }, metrics: { distanceMeters: 900, durationSeconds: 90 },
+      stopPoints: [], provider: 'osrm', source: 'SYNTHETIC', overview: 'full' } });
+    const before = {
+      stop: await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[6]!.id } }),
+      eta: await prisma.routePlanStop.findMany({ where: { routePlanId: f.route.id }, orderBy: { sequence: 'asc' } }),
+      cache: await prisma.routePlanGeometryCache.findMany({ where: { routePlanId: f.route.id } }),
+      snapshot: await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: f.version.id } }),
+      order: await prisma.order.findUniqueOrThrow({ where: { id: f.stops[6]!.orderId } })
+    };
+    await expect(service.updateAdminRouteStopOverride({ ...serviceAdminIdentity(f), actor: 'synthetic-admin',
+      deliveryStopId: f.stops[6]!.id, payload: { address1: '700 READY Failed Edit', latitude: 43.57, longitude: -80.57 } }))
+      .rejects.toMatchObject({ code: 'ROUTE_REFRESH_GEOMETRY_FAILED' });
+    expect(await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[6]!.id } })).toEqual(before.stop);
+    expect(await prisma.routePlanStop.findMany({ where: { routePlanId: f.route.id }, orderBy: { sequence: 'asc' } })).toEqual(before.eta);
+    expect(await prisma.routePlanGeometryCache.findMany({ where: { routePlanId: f.route.id } })).toEqual(before.cache);
+    expect(await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: f.version.id } })).toEqual(before.snapshot);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: f.stops[6]!.orderId } })).toEqual(before.order);
+    expect(await prisma.driverEvent.count({ where: { routePlanId: f.route.id } })).toBe(0);
+  });
+
+  test('commits a READY avoiding route address and compliant geometry once in the same transaction', async () => {
+    const f = await readyAvoidingFixture(prisma);
+    const buildRoute = vi.fn<RouteGeometryProvider['buildRoute']>(detail => Promise.resolve(syntheticGeometry(detail)));
+    const service = new RoutePlanAdminService(new PrismaRoutePlanRepository(prisma), { buildRoute });
+    const result = await service.updateAdminRouteStopOverride({ ...serviceAdminIdentity(f), actor: 'synthetic-admin',
+      deliveryStopId: f.stops[6]!.id, payload: { address1: '700 READY Successful Edit', latitude: 43.57, longitude: -80.57 } });
+    expect(result?.geometry.status).toBe('fresh');
+    expect(result?.routePlan.routeGeometryStatus).toBe('fresh');
+    expect(result?.routePlan.stops.find(stop => stop.deliveryStopId === f.stops[6]!.id)?.address.address1).toBe('700 READY Successful Edit');
+    expect(await prisma.routePlanGeometryCache.count({ where: { routePlanId: f.route.id } })).toBe(1);
+    expect(buildRoute).toHaveBeenCalledTimes(1);
+    expect(buildRoute.mock.calls[0]?.[0].routePlan.tollPolicy).toBe('AVOID_TOLLS');
+  });
+
+  test('rolls back an avoid-tolls Dispatch and preserves stops, publication, receipts, and cache on provider failure', async () => {
+    const f = await fixture(prisma);
+    await prisma.routePlan.update({ where: { id: f.route.id }, data: { constraints: { timezone: 'America/Toronto', tollPolicy: 'AVOID_TOLLS' } } });
+    const buildRoute = vi.fn<RouteGeometryProvider['buildRoute']>().mockRejectedValue(new Error('synthetic excluded route unavailable'));
+    const send = vi.fn<DriverPushProvider['sendRouteNotification']>();
+    const service = new PrismaLiveRouteChangeService(prisma, { providerName: 'synthetic-only', sendRouteNotification: send }, { geometryProvider: { buildRoute } });
+    const admin = serviceAdminIdentity(f);
+    await service.saveAdminDraft({ ...admin, commandId: randomUUID(), expectedRevision: 0,
+      futureStopOrder: f.stops.slice(2).map(stop => stop.id).reverse(),
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Avoidance Failure', latitude: 43.57, longitude: -80.57 }] });
+    await prisma.routePlanGeometryCache.create({ data: { routePlanId: f.route.id, shapeSignature: 'previous-avoidance-cache',
+      geometry: { type: 'LineString', coordinates: [[-80.4, 43.4], [-80.58, 43.58]] }, metrics: { distanceMeters: 900, durationSeconds: 90 },
+      stopPoints: [], provider: 'osrm', source: 'SYNTHETIC', overview: 'full' } });
+    const before = {
+      route: await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } }),
+      stops: await prisma.deliveryStop.findMany({ where: { id: { in: f.stops.map(stop => stop.id) } }, orderBy: { id: 'asc' } }),
+      ordered: await prisma.routePlanStop.findMany({ where: { routePlanId: f.route.id }, orderBy: { sequence: 'asc' } }),
+      state: await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } }),
+      cache: await prisma.routePlanGeometryCache.findMany({ where: { routePlanId: f.route.id } })
+    };
+    const command = { ...admin, commandId: randomUUID(), expectedRevision: 1 };
+    await expect(service.dispatchAdminDraft(command)).rejects.toMatchObject({ code: 'TOLL_POLICY_ROUTE_UNAVAILABLE', statusCode: 503 });
+    expect(await prisma.routePlan.findUniqueOrThrow({ where: { id: f.route.id } })).toEqual(before.route);
+    expect(await prisma.deliveryStop.findMany({ where: { id: { in: f.stops.map(stop => stop.id) } }, orderBy: { id: 'asc' } })).toEqual(before.stops);
+    expect(await prisma.routePlanStop.findMany({ where: { routePlanId: f.route.id }, orderBy: { sequence: 'asc' } })).toEqual(before.ordered);
+    expect(await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } })).toEqual(before.state);
+    expect(await prisma.routePlanGeometryCache.findMany({ where: { routePlanId: f.route.id } })).toEqual(before.cache);
+    expect(await publicationCount(prisma, f)).toBe(0);
+    expect(await prisma.routeLiveChangeCommandReceipt.count({ where: { routePlanId: f.route.id, kind: 'DISPATCH' } })).toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    expect(buildRoute.mock.calls[0]?.[0].routePlan.tollPolicy).toBe('AVOID_TOLLS');
+  });
+
+  test('atomically publishes an avoid-tolls Dispatch with geometry and future ETA and replays it once', async () => {
+    const f = await fixture(prisma);
+    await prisma.routePlan.update({ where: { id: f.route.id }, data: { constraints: { timezone: 'America/Toronto', tollPolicy: 'AVOID_TOLLS' } } });
+    const buildRoute = vi.fn<RouteGeometryProvider['buildRoute']>(detail => Promise.resolve(syntheticGeometry(detail)));
+    const service = new PrismaLiveRouteChangeService(prisma, undefined, { geometryProvider: { buildRoute } });
+    const admin = serviceAdminIdentity(f);
+    await service.saveAdminDraft({ ...admin, commandId: randomUUID(), expectedRevision: 0,
+      futureStopOrder: f.stops.slice(2).map(stop => stop.id).reverse(),
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Avoidance Success', latitude: 43.57, longitude: -80.57 }] });
+    const command = { ...admin, commandId: randomUUID(), expectedRevision: 1 };
+    const result = await service.dispatchAdminDraft(command);
+    expect(result.geometry.status).toBe('fresh');
+    const retry = await service.dispatchAdminDraft(command);
+    expect(retry.publicationVersionId).toBe(result.publicationVersionId);
+    expect(retry.geometry.status).toBe('fresh');
+    expect(buildRoute).toHaveBeenCalledTimes(1);
+    expect(await publicationCount(prisma, f)).toBe(1);
+    expect(await prisma.routeLiveChangeCommandReceipt.count({ where: { routePlanId: f.route.id, kind: 'DISPATCH' } })).toBe(1);
+    const rows = await prisma.routePlanStop.findMany({ where: { routePlanId: f.route.id }, orderBy: { sequence: 'asc' } });
+    expect(rows[1]).toMatchObject({ deliveryStopId: f.stops[1]!.id, estimatedArrivalAt: f.currentEta, durationFromPreviousSeconds: 60 });
+    expect(rows[2]).toMatchObject({ deliveryStopId: f.stops[6]!.id, etaStatus: 'READY', durationFromPreviousSeconds: 90 });
+    expect(await prisma.routePlanGeometryCache.count({ where: { routePlanId: f.route.id } })).toBe(1);
+  });
+
+  test('rejects stale avoid-tolls Dispatch revisions before invoking the engine or changing the publication', async () => {
+    const f = await fixture(prisma);
+    await prisma.routePlan.update({ where: { id: f.route.id }, data: { constraints: { timezone: 'America/Toronto', tollPolicy: 'AVOID_TOLLS' } } });
+    const buildRoute = vi.fn<RouteGeometryProvider['buildRoute']>(detail => Promise.resolve(syntheticGeometry(detail)));
+    const service = new PrismaLiveRouteChangeService(prisma, undefined, { geometryProvider: { buildRoute } });
+    const admin = serviceAdminIdentity(f);
+    await service.saveAdminDraft({ ...admin, commandId: randomUUID(), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 First Draft', latitude: 43.57, longitude: -80.57 }] });
+    await service.saveAdminDraft({ ...admin, commandId: randomUUID(), expectedRevision: 1,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Newer Draft', latitude: 43.58, longitude: -80.58 }] });
+    await expect(service.dispatchAdminDraft({ ...admin, commandId: randomUUID(), expectedRevision: 1 }))
+      .rejects.toMatchObject({ code: 'REVISION_CONFLICT', statusCode: 409 });
+    expect(buildRoute).not.toHaveBeenCalled();
+    expect(await publicationCount(prisma, f)).toBe(0);
+    expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: f.stops[6]!.id } })).address1).toBe('7 Integration Road');
+    expect((await prisma.routeLiveChangeState.findUniqueOrThrow({ where: { routePlanId: f.route.id } })).revision).toBe(2);
+  });
+
   test('rebuilds future geometry and ETA while preserving the current arrival and ETA', async () => {
     const f = await fixture(prisma);
     const buildRoute = vi.fn<RouteGeometryProvider['buildRoute']>(detail => Promise.resolve(syntheticGeometry(detail)));
@@ -1174,6 +1289,16 @@ async function prepareGroupingFixture(prisma: PrismaClient, f: Fixture) {
     ...(version.snapshot as Prisma.InputJsonObject), driverId: f.driver.id, groupingId: f.group.id,
     groupingVersion: 1, name: f.route.name, planDate: f.group.planDate.toISOString(), routeIdx: 1, sortOrder: 1
   } } });
+}
+
+async function readyAvoidingFixture(prisma: PrismaClient) {
+  const f = await fixture(prisma);
+  await prisma.driverEvent.deleteMany({ where: { routePlanId: f.route.id } });
+  await prisma.deliveryStop.updateMany({ where: { id: { in: f.stops.map(stop => stop.id) } }, data: { status: 'PENDING' } });
+  await prisma.routePlan.update({ where: { id: f.route.id }, data: { status: 'DRAFT', driverId: null,
+    depotLatitude: 43.4, depotLongitude: -80.4, constraints: { timezone: 'America/Toronto', tollPolicy: 'AVOID_TOLLS', scheduledStartAt: new Date().toISOString() } } });
+  await prisma.routeGroupingChildVersion.update({ where: { id: f.version.id }, data: { driverId: null, publishedAt: null } });
+  return f;
 }
 
 async function fixture(prisma: PrismaClient) {

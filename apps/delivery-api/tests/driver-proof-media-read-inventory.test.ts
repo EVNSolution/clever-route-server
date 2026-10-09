@@ -17,6 +17,7 @@ describe('driver proof media production read inventory', () => {
       .filter(({ source }) => /driverProofMedia\.find(?:First|Many)/u.test(source))
       .map(({ path }) => path);
     expect(directReadFiles).toEqual([
+      'driver/driver-delivery-proof.ts', // Completion validation reads metadata only, under the event route lock.
       'driver/driver-proof-media.repository.ts',
       'dsv/dsv-store-review-access.ts',
     ]);
@@ -26,6 +27,17 @@ describe('driver proof media production read inventory', () => {
     expect(source).toMatch(/createAdminProofMediaReadAccess[\s\S]*?deletedAt:\s*null,[\s\S]*?shopId:\s*input\.shopId,[\s\S]*?uploadStatus:\s*'READY'/u);
     expect(source).toContain("uploadStatus: 'PENDING_UPLOAD'");
     expect(source).toContain("uploadStatus: 'CLEANING'");
+  });
+
+  test('required-proof validation reads only READY undeleted media for the exact event scope', () => {
+    const source = readFileSync(new URL('../src/modules/driver/driver-delivery-proof.ts', import.meta.url), 'utf8');
+    expect(source.match(/driverProofMedia\.find(?:First|Many)/gu)).toHaveLength(1);
+    for (const guard of ['shopId: input.shopId', 'routePlanId: input.routePlanId', 'deliveryStopId: input.deliveryStopId', 'driverId: input.driverId', "uploadStatus: 'READY'", 'deletedAt: null', 'id: mediaId, kind', "source: 'SIGNATURE'", "contentType: 'image/png'"]) expect(source).toContain(guard);
+    expect(source).toContain('select: { id: true }');
+    expect(source).not.toMatch(/\b(?:storageKey|url|fileBytes)\b/u);
+    const eventRepository = readFileSync(new URL('../src/modules/driver/driver-event.repository.ts', import.meta.url), 'utf8');
+    expect(eventRepository.indexOf('await lockRoutePlanForSerializedEvent(transaction, input)'))
+      .toBeLessThan(eventRepository.indexOf('await validateDriverDeliveryProof(transaction, input)'));
   });
 
   test('allows the DSV review access probe to read only a media id', () => {

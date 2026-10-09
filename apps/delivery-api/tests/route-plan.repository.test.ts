@@ -2560,6 +2560,39 @@ describe('PrismaRoutePlanRepository', () => {
     expect(routePlanStopCreateMany).not.toHaveBeenCalled();
   });
 
+  test('combined delivery options and route-end save claims the original timestamp before writing options', async () => {
+    const { prisma } = createPrismaHarness();
+    const route = routePlanRecord({ driverId: null, status: 'READY', constraints: { routeEndMode: 'LAST_STOP' }, updatedAt: new Date('2026-05-07T12:30:00.000Z') });
+    prisma.routePlan.findFirst.mockResolvedValue(route);
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+    await repository.saveRoutePlan({ routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com', payload: {
+      expectedUpdatedAt: '2026-05-07T12:30:00.000Z', deliveryProof: { photoRequired: false, signatureRequired: false }, tollPolicy: 'ALLOW_TOLLS', routeEndMode: 'RETURN_TO_DEPOT'
+    } });
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expectRoutePlanVersionClaim(prisma, '2026-05-07T12:30:00.000Z');
+    expect(prisma.routePlan.updateMany.mock.invocationCallOrder[0]).toBeLessThan(prisma.routePlan.update.mock.invocationCallOrder[0]!);
+  });
+
+  test('save rejects an AVOID geometry mutation without prepared geometry after acquiring the route lock', async () => {
+    const { prisma } = createPrismaHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRecord({ driverId: null, status: 'READY', constraints: { tollPolicy: 'AVOID_TOLLS', routeEndMode: 'END_AT_LAST_STOP' } }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+    await expect(repository.saveRoutePlan({ routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com', payload: { routeEndMode: 'RETURN_TO_DEPOT' } })).rejects.toBeInstanceOf(RoutePlanConflictError);
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expect(prisma.routePlan.update).not.toHaveBeenCalled();
+  });
+
+  test('delivery-options-only save rejects a stale revision before writing constraints', async () => {
+    const { prisma } = createPrismaHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRecord({ driverId: null, status: 'READY', updatedAt: new Date('2026-05-07T12:30:00.000Z') }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+    await expect(repository.saveRoutePlan({ routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com', payload: {
+      expectedUpdatedAt: '2026-05-07T12:29:59.000Z', tollPolicy: 'AVOID_TOLLS'
+    } })).rejects.toBeInstanceOf(RoutePlanConflictError);
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expect(prisma.routePlan.update).not.toHaveBeenCalled();
+  });
+
   test('aggregate save does not claim a route version when the payload has no route mutation', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness();
     const assignedRoute = routePlanRecord({

@@ -1,3 +1,5 @@
+import { parseDeliveryProof } from '../modules/route-plans/delivery-options.js';
+import { CashSettlementError, readCashSettlementCommand, type PrismaCashSettlementService } from '../modules/payments/cash-settlement.service.js';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import {
@@ -62,6 +64,7 @@ import {
 } from '../modules/route-plans/live-route-change.service.js';
 
 export type AdminRoutePlanDependencies = {
+  cashSettlementService?: Pick<PrismaCashSettlementService, 'list' | 'confirm'>;
   liveRouteChangeService?: Pick<PrismaLiveRouteChangeService, 'getAdminDraft' | 'saveAdminDraft' | 'dispatchAdminDraft' | 'discardAdminDraft'>;
   originalObservationsService?: OriginalObservationsService;
   operationalStateService?: Pick<PrismaRouteOperationalStateService, 'get' | 'getMany'>;
@@ -76,6 +79,22 @@ export function registerAdminRoutePlanRoutes(
   app: FastifyInstance,
   dependencies: AdminRoutePlanDependencies
 ): void {
+  app.get<{ Params: { routePlanId: string } }>('/admin/route-plans/:routePlanId/cash-settlements', async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    const auth = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, { log: request.log, surface: 'admin_route_plans' });
+    if (auth.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', auth.message));
+    if (dependencies.cashSettlementService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Cash confirmations unavailable'));
+    try { return reply.send({ data: await dependencies.cashSettlementService.list({ appId: auth.appId, shopDomain: auth.shopDomain, routePlanId: request.params.routePlanId }), error: null }); }
+    catch (error) { if (error instanceof CashSettlementError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message)); throw error; }
+  });
+  app.post<{ Params: { routePlanId: string }; Body: unknown }>('/admin/route-plans/:routePlanId/cash-settlements', { bodyLimit: 4096 }, async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    const auth = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, { log: request.log, surface: 'admin_route_plans' });
+    if (auth.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', auth.message));
+    if (dependencies.cashSettlementService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Cash confirmations unavailable'));
+    try { return reply.send({ data: await dependencies.cashSettlementService.confirm({ appId: auth.appId, shopDomain: auth.shopDomain, routePlanId: request.params.routePlanId, actor: auth.subject, command: readCashSettlementCommand(request.body) }), error: null }); }
+    catch (error) { if (error instanceof CashSettlementError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message)); throw error; }
+  });
   app.get<{ Params: { routePlanId: string } }>('/admin/route-plans/:routePlanId/live-change', async (request, reply) => {
     reply.header('Cache-Control', 'private, no-store');
     const auth = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
@@ -131,6 +150,8 @@ export function registerAdminRoutePlanRoutes(
         const data = await dependencies.liveRouteChangeService.dispatchAdminDraft({ appId: auth.appId, shopDomain: auth.shopDomain, ...command });
         return reply.code(200).send({ data, error: null });
       } catch (error) {
+        if (error instanceof RoutePlanGeometryRefreshFailedError) return reply.code(503).send(errorResponse(error.code, error.message));
+        if (error instanceof RoutePlanConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
         if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
         throw error;
       }
@@ -233,6 +254,12 @@ export function registerAdminRoutePlanRoutes(
         });
       }
     } catch (error) {
+      if (error instanceof RoutePlanGeometryRefreshFailedError) return reply.code(503).send(errorResponse(error.code, error.message));
+      if (error instanceof RoutePlanConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
+      if (error instanceof RoutePlanOptionsUpdateInvalidError) {
+        const policyCode = /^(DELIVERY_[A-Z_]+):/u.exec(error.message)?.[1];
+        return reply.code(policyCode === undefined ? 400 : 409).send(errorResponse(policyCode ?? error.code, error.message));
+      }
       if (error instanceof RoutePlanBatchInvalidError) {
         return reply.code(400).send(errorResponse(error.code, error.message));
       }
@@ -354,6 +381,12 @@ export function registerAdminRoutePlanRoutes(
           error: null
         });
       } catch (error) {
+        if (error instanceof RoutePlanGeometryRefreshFailedError) return reply.code(503).send(errorResponse(error.code, error.message));
+        if (error instanceof RoutePlanConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
+        if (error instanceof RoutePlanOptionsUpdateInvalidError) {
+          const policyCode = /^(DELIVERY_[A-Z_]+):/u.exec(error.message)?.[1];
+          return reply.code(policyCode === undefined ? 400 : 409).send(errorResponse(policyCode ?? error.code, error.message));
+        }
         if (error instanceof RouteExecutionConflictError) {
           return reply.code(409).send(errorResponse(error.code, error.message));
         }
@@ -763,6 +796,8 @@ export function registerAdminRoutePlanRoutes(
           error: null
         });
       } catch (error) {
+        if (error instanceof RoutePlanGeometryRefreshFailedError) return reply.code(503).send(errorResponse(error.code, error.message));
+        if (error instanceof RoutePlanConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
         if (error instanceof RoutePlanStopUpdateInvalidError) {
           return reply.code(400).send(errorResponse(error.code, error.message));
         }
@@ -867,6 +902,8 @@ export function registerAdminRoutePlanRoutes(
           shopDomain: authenticated.shopDomain
         });
       } catch (error) {
+        if (error instanceof RoutePlanGeometryRefreshFailedError) return reply.code(503).send(errorResponse(error.code, error.message));
+        if (error instanceof RoutePlanConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
         if (error instanceof RoutePlanStopOverrideInvalidError) {
           request.log.warn({
             code: error.code,
@@ -922,8 +959,11 @@ export function registerAdminRoutePlanRoutes(
           error: null
         });
       } catch (error) {
+        if (error instanceof RoutePlanGeometryRefreshFailedError) return reply.code(503).send(errorResponse(error.code, error.message));
+        if (error instanceof RoutePlanConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
         if (error instanceof RoutePlanOptionsUpdateInvalidError) {
-          return reply.code(400).send(errorResponse(error.code, error.message));
+          const policyCode = /^(DELIVERY_[A-Z_]+):/u.exec(error.message)?.[1];
+          return reply.code(policyCode === undefined ? 400 : 409).send(errorResponse(policyCode ?? error.code, error.message));
         }
         if (error instanceof RouteOptimizationJobActiveError) {
           return reply.code(409).send(errorResponse(error.code, error.message));
@@ -1108,6 +1148,7 @@ function readCreateRoutePlanFromOrderIdsPayload(value: unknown): CreateRoutePlan
     throw new Error('orderIds must be a non-empty array');
   }
   return {
+    ...readNewDeliveryOptions(object),
     depot: readDepot(object.depot),
     name: requireNonEmptyString(object.name),
     orderIds: object.orderIds.map(requireNonEmptyString),
@@ -1125,6 +1166,7 @@ function readCreateRoutePlanPayload(value: unknown): CreateRoutePlanPayload {
   validateRouteScope(planDate, orders, routeScope);
 
   return {
+    ...readNewDeliveryOptions(object),
     depot,
     name,
     orders,
@@ -1263,11 +1305,16 @@ function readUpdateRoutePlanStartTimePayload(value: unknown): { scheduledStartAt
 
 function readUpdateRoutePlanOptionsPayload(value: unknown): UpdateRoutePlanOptionsPayload {
   const object = requireObject(value);
-  const routeEndMode = requireNonEmptyString(object.routeEndMode);
-  if (routeEndMode !== 'END_AT_LAST_STOP' && routeEndMode !== 'RETURN_TO_DEPOT') {
-    throw new Error('routeEndMode must be supported');
-  }
-  return { routeEndMode };
+  const routeEndMode = object.routeEndMode;
+  if (routeEndMode !== undefined && routeEndMode !== 'END_AT_LAST_STOP' && routeEndMode !== 'RETURN_TO_DEPOT') throw new Error('routeEndMode must be supported');
+  const tollPolicy = object.tollPolicy;
+  if (tollPolicy !== undefined && tollPolicy !== 'ALLOW_TOLLS' && tollPolicy !== 'AVOID_TOLLS') throw new Error('Invalid toll policy');
+  const deliveryProof = object.deliveryProof === undefined ? undefined : parseDeliveryProof(object.deliveryProof);
+  if (routeEndMode === undefined && tollPolicy === undefined && deliveryProof === undefined) throw new Error('An option is required');
+  const expectedUpdatedAt = object.expectedUpdatedAt === undefined ? undefined : requireNonEmptyString(object.expectedUpdatedAt);
+  if ((tollPolicy !== undefined || deliveryProof !== undefined) && (expectedUpdatedAt === undefined || Number.isNaN(Date.parse(expectedUpdatedAt)))) throw new Error('expectedUpdatedAt is required');
+  return { ...(routeEndMode === undefined ? {} : { routeEndMode }), ...(tollPolicy === undefined ? {} : { tollPolicy }),
+    ...(deliveryProof === undefined ? {} : { deliveryProof }), ...(expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt }) };
 }
 
 
@@ -1548,4 +1595,10 @@ function errorResponse(code: string, message: string): {
     data: null,
     error: { code, message }
   };
+}
+
+function readNewDeliveryOptions(object: Record<string, unknown>): Pick<UpdateRoutePlanOptionsPayload, 'deliveryProof' | 'tollPolicy'> {
+  const tollPolicy = object.tollPolicy;
+  if (tollPolicy !== undefined && tollPolicy !== 'ALLOW_TOLLS' && tollPolicy !== 'AVOID_TOLLS') throw new Error('Invalid toll policy');
+  return { ...(object.deliveryProof === undefined ? {} : { deliveryProof: parseDeliveryProof(object.deliveryProof) }), ...(tollPolicy === undefined ? {} : { tollPolicy }) };
 }

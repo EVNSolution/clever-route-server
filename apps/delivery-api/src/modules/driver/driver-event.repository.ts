@@ -1,3 +1,4 @@
+import { DriverDeliveryProofError, validateDriverDeliveryProof } from './driver-delivery-proof.js';
 import { Prisma } from '@prisma/client';
 import { DriverCashCompletionError, prepareDriverCompletion, readDriverCompletion, replayDriverCompletion, saveDriverCompletion, type DriverStopCompletion } from './driver-completion.js';
 import type { PrismaClient } from '@prisma/client';
@@ -352,6 +353,7 @@ export class PrismaDriverEventRepository {
         }
         await validateVersionedOrderedContract(transaction, input);
         const deferCompletionForNavigation = await validateDriverEventStateContext(transaction, input, input.shopId, this.now());
+        await validateDriverDeliveryProof(transaction, input);
         const completionInvariant = await evaluateCompletionInvariant(transaction, input, this.completionInvariantMode);
         if (completionInvariant?.decision === 'REJECTED') {
           if (attemptId !== null) {
@@ -851,7 +853,7 @@ function attemptFailureFor(error: unknown): {
   retryable: boolean;
   status: 'FAILED' | 'REJECTED';
 } {
-  if (error instanceof DriverCashCompletionError) {
+  if (error instanceof DriverCashCompletionError || error instanceof DriverDeliveryProofError) {
     return { errorCode: error.code, failureStage: 'BUSINESS_VALIDATION', retryable: false, status: 'REJECTED' };
   }
   if (error instanceof DriverEventRouteVersionMismatchError || error instanceof DriverEventAssignmentChangedError) {

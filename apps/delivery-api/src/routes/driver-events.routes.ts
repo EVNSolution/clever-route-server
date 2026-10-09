@@ -1,3 +1,4 @@
+import { DriverDeliveryProofError } from '../modules/driver/driver-delivery-proof.js';
 import { DriverCashCompletionError } from '../modules/driver/driver-completion.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MultipartFile, MultipartValue } from '@fastify/multipart';
@@ -1436,6 +1437,7 @@ export function registerDriverEventRoutes(
           error: null
         });
       } catch (error) {
+        if (error instanceof DriverDeliveryProofError) return reply.code(400).send(errorResponse(error.code, error.message));
         if (error instanceof DriverEventContextError) {
           return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination or stop context'));
         }
@@ -1554,6 +1556,7 @@ export function registerDriverEventRoutes(
         shopId: driverContext.shopId
       });
     } catch (error) {
+      if (error instanceof DriverDeliveryProofError) return reply.code(400).send(errorResponse(error.code, error.message));
       if (error instanceof DriverCashCompletionError) {
         return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
       }
@@ -2329,10 +2332,10 @@ async function readDriverProofMediaUpload(
 
   const file = await request.file({
     limits: {
-      fields: 3,
+      fields: 4,
       fileSize: 10 * 1024 * 1024,
       files: 1,
-      parts: 4
+      parts: 5
     }
   });
 
@@ -2343,12 +2346,16 @@ async function readDriverProofMediaUpload(
   const deliveryStopId = readMultipartField(file, 'deliveryStopId');
   const routePlanId = readMultipartField(file, 'routePlanId');
   const source = readProofMediaSource(readMultipartField(file, 'source'));
+  const kind = file.fields.kind === undefined ? 'photo' : readMultipartField(file, 'kind');
+  if (kind !== 'photo' && kind !== 'signature') throw new Error('Invalid proof kind');
+  if ((kind === 'signature') !== (source === 'signature')) throw new Error('Signature source and kind must match');
   const fileBytes = await file.toBuffer();
   if (fileBytes.byteLength === 0) {
     throw new Error('Proof media file is empty');
   }
 
   const contentType = readProofMediaContentType(file.mimetype);
+  if (kind === 'signature' && contentType !== 'image/png') throw new Error('Signature must be PNG');
   if (!hasMatchingProofMediaSignature(contentType, fileBytes)) {
     throw new Error('Proof media file signature does not match its content type');
   }
@@ -2358,6 +2365,7 @@ async function readDriverProofMediaUpload(
     deliveryStopId,
     fileBytes,
     filename: readRequiredString(file.filename),
+    ...(file.fields.kind === undefined ? {} : { kind }),
     routePlanId,
     source
   };
@@ -2411,7 +2419,7 @@ function hasMatchingProofMediaSignature(contentType: string, fileBytes: Buffer):
 }
 
 function readProofMediaSource(value: string): DriverProofMediaSource {
-  if (value === 'camera' || value === 'library') {
+  if (value === 'camera' || value === 'library' || value === 'signature') {
     return value;
   }
 

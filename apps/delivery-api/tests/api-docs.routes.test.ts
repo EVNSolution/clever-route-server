@@ -250,6 +250,20 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('OpenAPI preserves Cash revision guards and optional proof compatibility', async () => {
+    const document = await readFile(new URL('../docs/api/openapi.yaml', import.meta.url), 'utf8');
+    execFileSync('ruby', ['-e', [
+      'require "date"; require "yaml"; doc = YAML.safe_load(STDIN.read, permitted_classes: [Date]); schemas = doc.dig("components", "schemas"); paths = doc.fetch("paths")',
+      'cash = paths.fetch("/admin/route-plans/{routePlanId}/cash-settlements"); %w[get post].each { |method| raise "Cash tenant auth missing" unless cash.fetch(method).fetch("security") == [{"ShopifySessionToken" => []}] }; raise "Cash conflict missing" unless cash.fetch("post").fetch("responses").key?("409")',
+      'command = schemas.fetch("CashSettlementRequest"); raise "Cash revision missing" unless command.fetch("required").include?("expectedRevision"); raise "Cash command scope expanded" unless command.fetch("additionalProperties") == false; raise "Cash correction reason missing" unless command.fetch("allOf").first.dig("then", "required") == ["reason"]',
+      'raise "Proof defaults changed" unless schemas.fetch("DeliveryProofPolicy").fetch("properties").values.all? { |property| property.fetch("default") == false }; raise "Toll default changed" unless schemas.fetch("TollPolicy").fetch("default") == "ALLOW_TOLLS"',
+      'raise "Options revision missing" unless schemas.fetch("RoutePlanOptionsRequest").fetch("dependentRequired") == {"deliveryProof" => ["expectedUpdatedAt"], "tollPolicy" => ["expectedUpdatedAt"]}',
+      'raise "Capability auth missing" unless paths.fetch("/driver/capabilities").fetch("post").fetch("security") == [{"DriverAccountAccessToken" => []}]; raise "Capability minimum missing" unless schemas.fetch("DriverCapabilityRequest").dig("properties", "versionCode", "minimum") == 43',
+      'event = schemas.fetch("DriverEventRequest"); raise "Required-proof event capability missing" unless event.dig("properties", "deliveryProofCapability", "const") == "delivery-proof-v1"; raise "Proof became mandatory on legacy routes" if event.fetch("required").include?("proof")',
+      'raise "Signature upload missing" unless schemas.fetch("DriverProofMediaUploadRequest").dig("properties", "kind", "enum") == %w[photo signature]; raise "DSV photo-only contract changed" unless schemas.fetch("DsvV1ProofMediaAccessEnvelope").dig("properties", "data", "properties", "kind", "const") == "photo"'
+    ].join('; ')], { input: document });
+  });
+
   test('GET /docs/openapi.yaml documents the explicit manual email boundary', async () => {
     const app = await buildApp();
 
@@ -719,6 +733,8 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'post', path: '/admin/route-plans' },
     { method: 'delete', path: '/admin/route-plans/:routePlanId' },
     { method: 'get', path: '/admin/route-plans/:routePlanId' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/cash-settlements' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/cash-settlements' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/preview' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/send' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/departure-time' },

@@ -108,6 +108,11 @@ const dispatchGroupingBackfillMigrationPath = new URL(
   `../prisma/migrations/${dispatchGroupingBackfillMigrationName}/migration.sql`,
   import.meta.url
 );
+const kfoodDeliveryOptionsMigrationName = '20261009090000_kfood_delivery_options_settlement';
+const kfoodDeliveryOptionsMigrationPath = new URL(
+  `../prisma/migrations/${kfoodDeliveryOptionsMigrationName}/migration.sql`,
+  import.meta.url
+);
 const schemaPath = new URL('../prisma/schema.prisma', import.meta.url);
 
 const legacySingleColumnConstraints = [
@@ -163,7 +168,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(115);
+    expect(migrations).toHaveLength(116);
+    expect(migrations[115]).toBe(kfoodDeliveryOptionsMigrationName);
     expect(migrations).toContain('20261008090000_driver_stop_completion_receipts');
     expect(migrations).toContain('20261007140000_kfood_live_route_draft_discard');
     expect(migrations).toContain('20261007120000_kfood_live_route_changes');
@@ -429,7 +435,8 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20261007140000_kfood_live_route_draft_discard')).toBeLessThan(
       migrations.indexOf('20261008090000_driver_stop_completion_receipts')
     );
-    expect(migrations.at(-1)).toBe('20261008090000_driver_stop_completion_receipts');
+    expect(migrations.slice(0, 115).at(-1)).toBe('20261008090000_driver_stop_completion_receipts');
+    expect(migrations.at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {
@@ -550,6 +557,40 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migration).toContain('DROP CONSTRAINT IF EXISTS "dsv_audit_events_customerId_shopId_fkey"');
     expect(migration.match(/ON DELETE NO ACTION ON UPDATE CASCADE/gu) ?? []).toHaveLength(4);
     expect(stripSqlLineComments(migration)).not.toMatch(/\bDROP\s+(?:TABLE|INDEX|SCHEMA|TYPE)\b|\bDELETE\s+FROM\b|\bTRUNCATE\b/iu);
+  });
+
+  test('adds KFood signature proof and nullable session capability without rewriting existing data', async () => {
+    const migration = await readFile(kfoodDeliveryOptionsMigrationPath, 'utf8');
+
+    expect(migration).toContain(`ALTER TYPE "DriverProofMediaKind" ADD VALUE 'SIGNATURE';`);
+    expect(migration).toContain(`ALTER TYPE "DriverProofMediaSource" ADD VALUE 'SIGNATURE';`);
+    expect(migration).toContain('ALTER TABLE "driver_account_sessions"');
+    for (const column of [
+      '"deliveryProofCapability" TEXT',
+      '"capabilityVersionCode" INTEGER',
+      '"capabilityPackageId" TEXT',
+      '"capabilityTokenVersion" INTEGER',
+      '"capabilityReportedAt" TIMESTAMPTZ(6)'
+    ]) {
+      expect(migration).toContain(`ADD COLUMN ${column}`);
+      expect(migration).not.toContain(`ADD COLUMN ${column} NOT NULL`);
+      expect(migration).not.toContain(`ADD COLUMN ${column} DEFAULT`);
+    }
+    expect(stripSqlLineComments(migration)).not.toMatch(/\bDROP\b|\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+"|\bINSERT\s+INTO\b/iu);
+  });
+
+  test('enforces tenant-safe append-only cash settlement revisions and amount constraints', async () => {
+    const migration = await readFile(kfoodDeliveryOptionsMigrationPath, 'utf8');
+
+    expect(migration).toContain('CREATE TABLE "driver_cash_settlements"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "driver_stop_completion_receipts_id_shopId_key" ON "driver_stop_completion_receipts"("id", "shopId")');
+    expect(migration).toContain('FOREIGN KEY ("receiptId", "shopId") REFERENCES "driver_stop_completion_receipts"("id", "shopId")');
+    expect(migration).toContain('CREATE UNIQUE INDEX "driver_cash_settlements_shopId_commandId_key" ON "driver_cash_settlements"("shopId", "commandId")');
+    expect(migration).toContain('CREATE UNIQUE INDEX "driver_cash_settlements_receiptId_revision_key" ON "driver_cash_settlements"("receiptId", "revision")');
+    expect(migration).toContain('CHECK ("confirmedAmount" >= 0 AND "revision" > 0 AND ("revision" = 1 OR ("reason" IS NOT NULL AND length(trim("reason")) > 0)))');
+    expect(migration).toContain('CREATE FUNCTION reject_driver_cash_settlement_update() RETURNS trigger LANGUAGE plpgsql');
+    expect(migration).toContain(`RAISE EXCEPTION 'Cash settlement records are append-only'`);
+    expect(migration).toContain('CREATE TRIGGER driver_cash_settlements_immutable BEFORE UPDATE ON driver_cash_settlements FOR EACH ROW EXECUTE FUNCTION reject_driver_cash_settlement_update();');
   });
 
   test('documents the baseline, G004 tenant-composite replacement, and G007 cleanup transition', async () => {
