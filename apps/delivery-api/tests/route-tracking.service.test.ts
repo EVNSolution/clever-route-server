@@ -689,4 +689,174 @@ describe('PrismaRouteTrackingService', () => {
     expect(snapshot.roadMatchedPath).toBeNull();
     expect(snapshot.latestPosition?.eventId).toBe('position-2');
   });
+
+  describe('stop completions', () => {
+    const completionEvent = (
+      id: string,
+      eventType: 'STOP_DELIVERED' | 'STOP_FAILED',
+      occurredAt: string,
+      overrides: { driverId?: string | null; receivedAt?: string } = {}
+    ) => ({
+      createdAt: new Date(overrides.receivedAt ?? new Date(Date.parse(occurredAt) + 1_000).toISOString()),
+      driverId: overrides.driverId === undefined ? 'driver-1' : overrides.driverId,
+      eventType,
+      id,
+      occurredAt: new Date(occurredAt)
+    });
+    const stopRow = (
+      deliveryStopId: string,
+      sequence: number,
+      status: string,
+      driverEvents: ReturnType<typeof completionEvent>[]
+    ) => ({ deliveryStop: { driverEvents, status }, deliveryStopId, sequence });
+    const buildService = (routeStops: unknown[], arrivals: unknown[] = []) => {
+      const driverEvent = {
+        findFirst: vi.fn(() => Promise.resolve(null)),
+        findMany: vi.fn((input: { where?: { eventType?: string } }) => Promise.resolve(
+          input.where?.eventType === 'STOP_ARRIVED' ? arrivals : []
+        ))
+      };
+      const routePlanStop = { findMany: vi.fn(() => Promise.resolve(routeStops)) };
+      const routeTrackingGeometry = { findUnique: vi.fn(() => Promise.resolve(null)) };
+      return {
+        routePlanStop,
+        service: new PrismaRouteTrackingService({ driverEvent, routePlanStop, routeTrackingGeometry } as never)
+      };
+    };
+
+    test('returns the completion time of every delivered or failed stop when no arrival was recorded', async () => {
+      const { service } = buildService([
+        stopRow('stop-2', 2, 'DELIVERED', [completionEvent('delivered-2', 'STOP_DELIVERED', '2026-07-20T04:20:00.000Z')]),
+        stopRow('stop-1', 1, 'DELIVERED', [completionEvent('delivered-1', 'STOP_DELIVERED', '2026-07-20T04:05:00.000Z')]),
+        stopRow('stop-3', 3, 'FAILED', [completionEvent('failed-3', 'STOP_FAILED', '2026-07-20T04:35:00.000Z', {
+          receivedAt: '2026-07-20T04:41:00.000Z'
+        })]),
+        stopRow('stop-4', 4, 'PENDING', [])
+      ]);
+
+      const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
+
+      expect(snapshot.stopArrivals).toEqual([]);
+      expect(snapshot.stopCompletions).toEqual([
+        {
+          deliveryStopId: 'stop-1',
+          driverId: 'driver-1',
+          eventId: 'delivered-1',
+          eventType: 'STOP_DELIVERED',
+          occurredAt: '2026-07-20T04:05:00.000Z',
+          receivedAt: '2026-07-20T04:05:01.000Z',
+          routePlanId: 'route-1',
+          schemaVersion: 'route_tracking_completion.v1',
+          stopSequence: 1
+        },
+        {
+          deliveryStopId: 'stop-2',
+          driverId: 'driver-1',
+          eventId: 'delivered-2',
+          eventType: 'STOP_DELIVERED',
+          occurredAt: '2026-07-20T04:20:00.000Z',
+          receivedAt: '2026-07-20T04:20:01.000Z',
+          routePlanId: 'route-1',
+          schemaVersion: 'route_tracking_completion.v1',
+          stopSequence: 2
+        },
+        {
+          deliveryStopId: 'stop-3',
+          driverId: 'driver-1',
+          eventId: 'failed-3',
+          eventType: 'STOP_FAILED',
+          occurredAt: '2026-07-20T04:35:00.000Z',
+          receivedAt: '2026-07-20T04:41:00.000Z',
+          routePlanId: 'route-1',
+          schemaVersion: 'route_tracking_completion.v1',
+          stopSequence: 3
+        }
+      ]);
+    });
+
+    test('keeps the arrival and the completion of one stop side by side', async () => {
+      const { service } = buildService(
+        [stopRow('stop-1', 1, 'DELIVERED', [completionEvent('delivered-1', 'STOP_DELIVERED', '2026-07-20T04:10:00.000Z')])],
+        [{
+          createdAt: new Date('2026-07-20T04:05:01.000Z'),
+          deliveryStopId: 'stop-1',
+          driverId: 'driver-1',
+          eventType: 'STOP_ARRIVED',
+          id: 'arrival-1',
+          latitude: '37.5',
+          longitude: '126.9',
+          occurredAt: new Date('2026-07-20T04:05:00.000Z'),
+          routePlanId: 'route-1'
+        }]
+      );
+
+      const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
+
+      expect(snapshot.stopArrivals?.map((arrival) => arrival.eventId)).toEqual(['arrival-1']);
+      expect(snapshot.stopCompletions?.map((completion) => completion.eventId)).toEqual(['delivered-1']);
+    });
+
+    test('uses the latest event that matches the current stop status and ignores everything else', async () => {
+      const { service } = buildService([
+        // A later button result replaces an earlier assisted one, whatever the row order.
+        stopRow('stop-a', 1, 'DELIVERED', [
+          completionEvent('assisted', 'STOP_DELIVERED', '2026-07-20T04:00:00.000Z'),
+          completionEvent('button', 'STOP_DELIVERED', '2026-07-20T04:03:00.000Z')
+        ]),
+        // A failed attempt that is not the current status does not hide the delivery.
+        stopRow('stop-b', 2, 'DELIVERED', [
+          completionEvent('later-failed', 'STOP_FAILED', '2026-07-20T04:30:00.000Z'),
+          completionEvent('delivered-b', 'STOP_DELIVERED', '2026-07-20T04:10:00.000Z')
+        ]),
+        // Status and event disagree, so there is no completion time to show.
+        stopRow('stop-c', 3, 'FAILED', [completionEvent('delivered-c', 'STOP_DELIVERED', '2026-07-20T04:15:00.000Z')]),
+        // The office moved the stop back, so the old event no longer describes it.
+        stopRow('stop-d', 4, 'PENDING', [completionEvent('delivered-d', 'STOP_DELIVERED', '2026-07-20T04:20:00.000Z')]),
+        // An event without a driver is not driver evidence.
+        stopRow('stop-e', 5, 'DELIVERED', [completionEvent('no-driver', 'STOP_DELIVERED', '2026-07-20T04:25:00.000Z', { driverId: null })])
+      ]);
+
+      const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
+
+      expect(snapshot.stopCompletions?.map((completion) => [completion.deliveryStopId, completion.eventId])).toEqual([
+        ['stop-a', 'button'],
+        ['stop-b', 'delivered-b']
+      ]);
+    });
+
+    test('reads only this route plan\'s driver completion events through the stop rows', async () => {
+      const { routePlanStop, service } = buildService([]);
+
+      const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
+
+      expect(snapshot.stopCompletions).toEqual([]);
+      const query = (routePlanStop.findMany.mock.calls as unknown as Array<[{
+        select: { deliveryStop: { select: { driverEvents: { orderBy: unknown; where: unknown } } } };
+        where: unknown;
+      }]>)[0]![0];
+      expect(query.where).toEqual({ routePlanId: 'route-1' });
+      expect(query.select.deliveryStop.select.driverEvents.where).toEqual({
+        driverId: { not: null },
+        eventType: { in: ['STOP_DELIVERED', 'STOP_FAILED'] },
+        routePlanId: 'route-1'
+      });
+      expect(query.select.deliveryStop.select.driverEvents.orderBy).toEqual([
+        { occurredAt: 'desc' },
+        { createdAt: 'desc' },
+        { id: 'desc' }
+      ]);
+    });
+
+    test('keeps stopCompletions empty for stop rows that carry no events', async () => {
+      const { service } = buildService([
+        { deliveryStop: { status: 'DELIVERED' }, deliveryStopId: 'stop-1', sequence: 1 }
+      ]);
+
+      const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
+
+      expect(snapshot.stopCompletions).toEqual([]);
+      expect(snapshot.progress.completedStopIds).toEqual(['stop-1']);
+    });
+  });
+
 });

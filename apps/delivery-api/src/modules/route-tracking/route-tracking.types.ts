@@ -43,6 +43,24 @@ export type RouteTrackingProgressSnapshotV1 = {
   latestEvent: RouteTrackingProgressEventV1 | null;
 };
 
+export type RouteTrackingStopCompletionEventType = 'STOP_DELIVERED' | 'STOP_FAILED';
+
+/**
+ * The time a driver finished a stop. The KFood single completion flow records
+ * only this event for a stop, so it is the only per-stop time in that flow.
+ */
+export type RouteTrackingStopCompletionV1 = {
+  deliveryStopId: string;
+  driverId: string;
+  eventId: string;
+  eventType: RouteTrackingStopCompletionEventType;
+  occurredAt: string;
+  receivedAt: string;
+  routePlanId: string;
+  schemaVersion: 'route_tracking_completion.v1';
+  stopSequence: number;
+};
+
 export type RouteTrackingStopArrivalV1 = {
   deliveryStopId: string;
   driverId: string;
@@ -168,6 +186,7 @@ export type RouteTrackingSnapshotV1 = {
   serverTime: string;
   status: RouteTrackingStatus;
   stopArrivals?: RouteTrackingStopArrivalV1[];
+  stopCompletions?: RouteTrackingStopCompletionV1[];
 };
 
 export type RouteTrackingService = {
