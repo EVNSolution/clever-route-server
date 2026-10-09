@@ -16,6 +16,8 @@ import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-
 import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 import { PrismaRouteGroupingService, rebindCurrentOrdersToRouteVersion } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
+import type { RoutePlanDetail } from '../src/modules/route-plans/route-plan.types.js';
+import type { RouteOptimizationInput } from '../src/modules/route-plans/route-optimization.types.js';
 import { PrismaOrderQueryRepository } from '../src/modules/shopify/order-query.repository.js';
 
 // Bootstrap only a new disposable local database before opting in:
@@ -1352,6 +1354,67 @@ describeDatabase('route grouping save database regressions', () => {
     expect(copy?.children.map(({ stopsCount }) => stopsCount).sort((a, b) => a - b)).toEqual([0, 18, 23]);
     expect(await prisma.routeGrouping.count({ where: { id: input.initialRoute.requestId } })).toBe(1);
   }, 30_000);
+
+  test('keeps configured initial options through retry, copy and geometry cache reads', async () => {
+    const orders = await seedOrders(2);
+    const buildRoute = vi.fn((detail: RoutePlanDetail) => Promise.resolve({
+      routeGeometry: { coordinates: [[-79.40, 43.60], [-79.39, 43.61]] as Array<[number, number]>, type: 'LineString' as const },
+      routeMetrics: { distanceMeters: 1234, durationSeconds: 240 },
+      routeStopPoints: detail.stops.map(stop => ({ inputCoordinates: [stop.coordinates.longitude!, stop.coordinates.latitude!] as [number, number],
+        snappedCoordinates: [stop.coordinates.longitude!, stop.coordinates.latitude!] as [number, number], name: stop.orderName, shopifyOrderGid: stop.shopifyOrderGid, snapDistanceMeters: 0,
+        deliveryStopId: stop.deliveryStopId, sequence: stop.sequence, distanceFromPreviousMeters: 617, durationFromPreviousSeconds: 120 }))
+    }));
+    const optimizeStopOrder = vi.fn(({ detail }: RouteOptimizationInput) => Promise.resolve({
+      missingCoordinateStops: 0, source: 'vroom' as const,
+      stops: [...detail.stops].reverse().map((stop, index) => ({ deliveryStopId: stop.deliveryStopId, shopifyOrderGid: stop.shopifyOrderGid, sequence: index + 1 }))
+    }));
+    const configured = new PrismaRouteGroupingService(prisma, new FakeDriverPushProvider(), undefined, { optimizeStopOrder }, { buildRoute });
+    const input = { appId, createdBy: 'integration', initialRoute: { requestId: randomUUID(), tollPolicy: 'AVOID_TOLLS' as const,
+      deliveryProof: { photoRequired: true, signatureRequired: true } }, name: 'Configured initial route', orderIds: orders.map(order => order.id), planDate: '2026-09-10', shopDomain };
+    const previousFlag = process.env.KFOOD_DELIVERY_PROOF_ENABLED;
+    process.env.KFOOD_DELIVERY_PROOF_ENABLED = 'true';
+    try {
+      const created = await configured.createGrouping(input);
+      const routeId = created.children[0]!.routePlanId!;
+      expect(created.children[0]?.routePlan).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      expect(created.children[0]?.routeMetrics).toEqual({ distanceMeters: 1234, durationSeconds: 240 });
+      expect(buildRoute.mock.calls[0]![0].routePlan.tollPolicy).toBe('AVOID_TOLLS');
+      const child = await prisma.routeGroupingChildVersion.findFirstOrThrow({ where: { routePlanId: routeId } });
+      expect(child.snapshot).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      expect((await configured.createGrouping(input)).id).toBe(created.id);
+      await expect(configured.createGrouping({ ...input, initialRoute: { ...input.initialRoute, tollPolicy: 'ALLOW_TOLLS' } })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+      const optimized = await configured.reOptimizeRoutes({ actor: 'integration', appId, groupingId: created.id, shopDomain });
+      expect(optimized?.children[0]?.routePlan).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      expect(optimizeStopOrder.mock.calls[0]![0].detail.routePlan.tollPolicy).toBe('AVOID_TOLLS');
+      const beforeFailure = await configured.getGrouping({ appId, groupingId: created.id, shopDomain });
+      buildRoute.mockRejectedValueOnce(new Error('AVOID service unavailable'));
+      await expect(configured.reOptimizeRoutes({ actor: 'integration', appId, groupingId: created.id, shopDomain })).rejects.toThrow('AVOID service unavailable');
+      expect(await configured.getGrouping({ appId, groupingId: created.id, shopDomain })).toEqual(beforeFailure);
+      const restored = await configured.rollback({ actor: 'integration', appId, groupingId: created.id, shopDomain, version: 1 });
+      expect(restored?.children[0]?.routePlan).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      const copy = await configured.copyGrouping({ actor: 'integration', appId, expectedUpdatedAt: restored!.updatedAt, groupingId: created.id, mode: 'VIRTUAL', shopDomain });
+      expect(copy?.children[0]?.routePlan).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      expect(copy?.children[0]?.routeMetrics).toEqual({ distanceMeters: 1234, durationSeconds: 240 });
+      expect(buildRoute.mock.calls.every(([detail]) => detail.routePlan.tollPolicy === 'AVOID_TOLLS')).toBe(true);
+    } finally {
+      if (previousFlag === undefined) delete process.env.KFOOD_DELIVERY_PROOF_ENABLED;
+      else process.env.KFOOD_DELIVERY_PROOF_ENABLED = previousFlag;
+    }
+  });
+
+  test('AVOID initial geometry failure rolls back grouping, route and inventory without allowing tolls', async () => {
+    const orders = await seedOrders(2);
+    const buildRoute = vi.fn().mockRejectedValue(new Error('OSRM exclusion unavailable'));
+    const failing = new PrismaRouteGroupingService(prisma, new FakeDriverPushProvider(), undefined, undefined, { buildRoute });
+    const input = { appId, createdBy: 'integration', initialRoute: { requestId: randomUUID(), tollPolicy: 'AVOID_TOLLS' as const },
+      name: 'Avoid failure', orderIds: orders.map(order => order.id), planDate: '2026-09-10', shopDomain };
+    const before = await prisma.routePlan.count({ where: { shopId } });
+    await expect(failing.createGrouping(input)).rejects.toThrow('OSRM exclusion unavailable');
+    expect(await prisma.routeGrouping.count({ where: { id: input.initialRoute.requestId } })).toBe(0);
+    expect(await prisma.routePlan.count({ where: { shopId } })).toBe(before);
+    expect(await prisma.inventory.count({ where: { routeGroupingId: input.initialRoute.requestId } })).toBe(0);
+    expect(buildRoute).toHaveBeenCalledOnce();
+  });
 
   test('initial route failure rolls back the group and can be retried with the same request', async () => {
     const orders = await seedOrders(2);

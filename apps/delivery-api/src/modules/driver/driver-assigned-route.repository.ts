@@ -1,3 +1,4 @@
+import { readDeliveryProof, readTollPolicy } from '../route-plans/delivery-options.js';
 import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import type { LiveRouteSnapshot } from '../route-plans/live-route-change.js';
 import { Prisma, type PrismaClient } from '@prisma/client';
@@ -443,6 +444,8 @@ function toAssignedRouteResult(
       routeMapPreview: null,
       routeMetrics: routeResult.routeMetrics,
       routeEndMode: readRouteEndMode(routePlan.constraints),
+      deliveryProof: readDeliveryProof(routePlan.constraints),
+      tollPolicy: readTollPolicy(routePlan.constraints),
       routeVersionId,
       routeStopPoints: routeResult.routeStopPoints.map(toAssignedRouteStopPoint),
       scheduledStartAt: readScheduledStartAt(routePlan.constraints),
@@ -510,6 +513,8 @@ function toRoutePlanDetailForCache(routePlan: AssignedRoutePlanRecord): RoutePla
       name: routePlan.name,
       planDate: formatDateOnly(routePlan.planDate),
       routeEndMode: readRouteEndMode(routePlan.constraints),
+      deliveryProof: readDeliveryProof(routePlan.constraints),
+      tollPolicy: readTollPolicy(routePlan.constraints),
       status: routePlan.status,
       stopsCount: sortedStops.length,
       updatedAt: routePlan.updatedAt.toISOString()

@@ -202,9 +202,11 @@ enum OrderMessageAudience {
 
 enum DriverProofMediaKind {
   PHOTO
+  SIGNATURE
 }
 
 enum DriverProofMediaSource {
+  SIGNATURE
   CAMERA
   LIBRARY
 }
@@ -1866,6 +1868,12 @@ model DriverAccountSession {
 
   @@index([accountId, expiresAt])
   @@map("driver_account_sessions")
+  deliveryProofCapability String? @db.Text
+  capabilityVersionCode Int?
+  capabilityPackageId String? @db.Text
+  capabilityTokenVersion Int?
+  capabilityReportedAt DateTime? @db.Timestamptz(6)
+
 }
 
 model DriverAccountPasswordResetLink {
@@ -3135,7 +3143,9 @@ model DriverStopCompletionReceipt {
   occurredAt             DateTime     @db.Timestamptz(6)
   recordedAt             DateTime     @default(now()) @db.Timestamptz(6)
   result                 Json
+  settlements            DriverCashSettlement[]
 
+  @@unique([id, shopId])
   @@index([shopId, routePlanId])
   @@map("driver_stop_completion_receipts")
   @@unique([eventId, shopId])
@@ -3440,4 +3450,29 @@ model DriverRuntimeDiagnosticSnapshot {
   @@index([driverId, snapshotObservedAt])
   @@index([expiresAt])
   @@map("driver_runtime_diagnostic_snapshots")
+}
+
+
+// Office confirmations append decisions without replacing the driver collection receipt.
+model DriverCashSettlement {
+  id                     String @id @default(uuid()) @db.Uuid
+  shopId                 String @db.Uuid
+  routePlanId            String @db.Uuid
+  receiptId              String @db.Uuid
+  receipt                DriverStopCompletionReceipt @relation(fields: [receiptId, shopId], references: [id, shopId], onDelete: Cascade)
+  commandId              String @db.Uuid
+  revision               Int
+  requestHash            String @db.VarChar(64)
+  confirmedAmount        Decimal @db.Decimal(18, 2)
+  currency               String @db.VarChar(3)
+  differenceFromActual   Decimal @db.Decimal(18, 2)
+  differenceFromExpected Decimal? @db.Decimal(18, 2)
+  reason                 String? @db.Text
+  actor                  String @db.Text
+  recordedAt             DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([shopId, commandId])
+  @@unique([receiptId, revision])
+  @@index([shopId, routePlanId])
+  @@map("driver_cash_settlements")
 }

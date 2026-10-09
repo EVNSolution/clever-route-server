@@ -34,6 +34,7 @@ const reviewedMutationInventory = [
   'modules/route-plans/live-route-change.service.ts:routePlanStop.updateMany:1',
   'modules/route-plans/live-route-change.ts:routePlanStop.update:2',
   'modules/route-plans/live-route-change.ts:routePlanStop.updateMany:1',
+  'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.update:1', // Draft policy snapshot only; no membership edits.
   'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.updateMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.createMany:4',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.deleteMany:4',
@@ -64,6 +65,24 @@ describe('route membership mutation authority', () => {
     const inventory = mutationInventory(['routeGroupingChildVersion', 'routePlanStop']);
 
     expect(inventory).toEqual(reviewedMutationInventory);
+  });
+
+  test('draft option synchronization changes only the unpublished current policy snapshot', () => {
+    const source = readFileSync(join(sourceRoot, 'modules/route-plans/route-plan.repository.ts'), 'utf8');
+    expect(callSiteInventory(source, 'syncUnpublishedDeliveryOptionsSnapshot')).toEqual([
+      'PrismaRoutePlanRepository.saveRoutePlan', 'PrismaRoutePlanRepository.updateRoutePlanOptions'
+    ]);
+    const body = source.slice(source.indexOf('async function syncUnpublishedDeliveryOptionsSnapshot('), source.indexOf('export async function readRoutePlanGeometryDetail('));
+    expect(body).toContain("where: { routePlanId, status: 'CURRENT', supersededAt: null, publishedAt: null }");
+    expect(body).toContain('data: { snapshot: { ...snapshot');
+    expect(body).toContain('deliveryProof: readDeliveryProof(constraints), tollPolicy: readTollPolicy(constraints)');
+    expect(body).not.toMatch(/routePlanStop\.|currentRouteVersionId|order\.|stops\s*:/u);
+    for (const [start, end] of [['async saveRoutePlan(', 'async createRoutePlanDraft('], ['async updateRoutePlanOptions(', 'async updateRoutePlanStops(']] as const) {
+      const mutation = source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+      expect(mutation.indexOf('FOR UPDATE')).toBeGreaterThanOrEqual(0);
+      expect(mutation.indexOf('FOR UPDATE')).toBeLessThan(mutation.indexOf('syncUnpublishedDeliveryOptionsSnapshot('));
+      expect(mutation.indexOf('assertDeliveryOptionsEditable(')).toBeLessThan(mutation.indexOf('syncUnpublishedDeliveryOptionsSnapshot('));
+    }
   });
 
   test('inventories assignment pointer writes by operation and data payload', () => {
@@ -304,7 +323,9 @@ function callSiteInventory(source: string, calleeName: string): string[] {
   const visit = (node: ts.Node, scope: string | null): void => {
     let nextScope = scope;
     if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
-      nextScope = `PrismaRouteGroupingService.${node.name.text}`;
+      const className = ts.isClassDeclaration(node.parent) ? node.parent.name?.text : undefined;
+      if (className === undefined) throw new Error('Unscoped membership writer method');
+      nextScope = `${className}.${node.name.text}`;
     } else if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
       nextScope = node.name.text;
     }

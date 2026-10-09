@@ -1,3 +1,4 @@
+import type { DeliveryProofPolicy, TollPolicy } from '../route-plans/delivery-options.js';
 import type {
   RoutePlanEndMode,
   RoutePlanRouteGeometry,
@@ -107,6 +108,8 @@ export type DriverRouteMapPreview = {
 };
 
 export type DriverAssignedRoute = {
+  deliveryProof?: DeliveryProofPolicy;
+  tollPolicy?: TollPolicy;
   deliveryDate: string;
   depot: {
     latitude: number | null;

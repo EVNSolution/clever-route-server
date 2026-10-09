@@ -1,3 +1,4 @@
+import { readDeliveryProof, readTollPolicy, type DeliveryProofPolicy, type TollPolicy } from './delivery-options.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { hasDeliveryNavigationGraceExpired, hasDeliveryWorkCompleted } from './kfood-delivery-completion.js';
@@ -48,7 +49,7 @@ export type LiveRouteStopSnapshot = {
   timeWindowStart: string | null;
   timeWindowEnd: string | null;
 };
-export type LiveRouteSnapshot = { schemaVersion: 1; stops: LiveRouteStopSnapshot[]; initialRouteVersionId?: string };
+export type LiveRouteSnapshot = { deliveryProof?: DeliveryProofPolicy; tollPolicy?: TollPolicy; schemaVersion: 1; stops: LiveRouteStopSnapshot[]; initialRouteVersionId?: string };
 type AdminCommandIdentity = Identity & { commandId: string; expectedAssignmentGeneration: string; expectedRouteVersionId: string; expectedRevision: number };
 export type SaveLiveRouteChangeInput = AdminCommandIdentity & {
   stopOverrides: LiveRouteStopOverride[];
@@ -64,7 +65,7 @@ export class LiveRouteChangeError extends Error {
 }
 
 const routeSelect = {
-  id: true, shopId: true, driverId: true, status: true, assignmentGeneration: true,
+  id: true, shopId: true, driverId: true, status: true, assignmentGeneration: true, constraints: true,
   driver: { select: { accountId: true, shopId: true, status: true, authSubject: true, account: { select: { status: true } } } },
   deliveryWorkCompletedAt: true, deliveryWorkCompletedGeneration: true,
   deliveryWorkCompletedVersionId: true, driverNavigationUntil: true,
@@ -118,7 +119,7 @@ function requireDriver(route: Route, input: DriverIdentity, now: Date): void {
 }
 
 function captureSnapshot(route: Route): LiveRouteSnapshot {
-  return { schemaVersion: 1, stops: route.routeStops.map((row) => {
+  return { schemaVersion: 1, deliveryProof: readDeliveryProof(route.constraints), tollPolicy: readTollPolicy(route.constraints), stops: route.routeStops.map((row) => {
     const stop = row.deliveryStop;
     return {
       routePlanStopId: row.id, deliveryStopId: row.deliveryStopId, orderId: stop.orderId,
@@ -143,7 +144,11 @@ function contentHash(snapshot: LiveRouteSnapshot): string {
   // Postgres JSONB changes object key order. Hash canonical field order instead.
   const stops = snapshot.stops.map((stop) => [stop.routePlanStopId, stop.deliveryStopId, stop.orderId, stop.sourceOrderId, stop.sequence,
     ...OPERATIONAL_FIELDS.map((field) => stop[field])]);
-  return createHash('sha256').update(JSON.stringify(stops)).digest('hex');
+  const policy = snapshot.deliveryProof;
+  const required = policy?.photoRequired === true || policy?.signatureRequired === true;
+  const content = required || snapshot.tollPolicy === 'AVOID_TOLLS'
+    ? { stops, deliveryProof: policy ?? { photoRequired: false, signatureRequired: false }, tollPolicy: snapshot.tollPolicy ?? 'ALLOW_TOLLS' } : stops;
+  return createHash('sha256').update(JSON.stringify(content)).digest('hex');
 }
 
 function operationalFingerprint(stop: LiveRouteStopSnapshot): string {

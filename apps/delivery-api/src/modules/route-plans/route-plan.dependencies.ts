@@ -1,3 +1,4 @@
+import { PrismaCashSettlementService } from '../payments/cash-settlement.service.js';
 import type { PrismaClient } from '@prisma/client';
 
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../shopify/shopify-app-credentials.js';
@@ -47,6 +48,7 @@ export function loadAdminRoutePlanDependencies(input: {
   );
   const syncHealthService = new PrismaDriverSyncHealthService(input.prisma, input.operationalAlertRepository);
   return {
+    cashSettlementService: new PrismaCashSettlementService(input.prisma),
     liveRouteChangeService: new PrismaLiveRouteChangeService(input.prisma, loadDriverPushProvider(input.env), {
       ...(routeGeometryProvider === undefined ? {} : { geometryProvider: routeGeometryProvider })
     }),

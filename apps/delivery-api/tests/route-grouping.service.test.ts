@@ -1324,7 +1324,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain('name: newChildRouteName(route.label, routeIdx)');
     expect(source).toContain('routeIdx,');
     expect(source).toContain('routePlanId: routePlan.id');
-    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, input.driverId, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx)');
+    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, input.driverId, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx, undefined, constraints)');
   });
 
   test('accepts queried routeIdx for generated new child labels', () => {
@@ -1354,7 +1354,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain('color: readChildSnapshot(child.snapshot).color ?? null');
     expect(source).toContain('color: effectiveGroup.color ?? null');
     expect(source).toContain('const existingRouteIdx = existingChildSnapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId)');
-    expect(source).toContain('snapshot: createChildSnapshot(loaded, numberedCandidate.assignments, numberedCandidate.driverId, routePlan.name, loaded.currentVersion, numberedCandidate.color, routeIdx, routeIdx)');
+    expect(source).toContain('snapshot: createChildSnapshot(loaded, numberedCandidate.assignments, numberedCandidate.driverId, routePlan.name, loaded.currentVersion, numberedCandidate.color, routeIdx, routeIdx, undefined, numberedCandidate.constraints)');
   });
 
   test('assigns a global routeIdx when rolling back a legacy child snapshot', () => {
@@ -1627,7 +1627,7 @@ describe('route grouping contracts', () => {
 
   test('keeps the parent route group Ready when the legacy child publish endpoint is called', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    expect(source).toContain("this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }");
+    expect(source).toContain("tx.routeGrouping.updateMany({ data: { status: 'READY' }");
     expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
   });
 
@@ -1711,7 +1711,8 @@ describe('route grouping contracts', () => {
     };
     const attempts = new Map<string, { action: string; id: string; status: string; providerMessageId?: string }>();
     const prisma = {
-      $transaction: vi.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
+      $transaction: vi.fn(async (operation: ((tx: unknown) => Promise<unknown>) | Promise<unknown>[]) => typeof operation === 'function' ? operation(prisma) : Promise.all(operation)),
+      $queryRaw: vi.fn().mockResolvedValue([{ assignmentGeneration: 1n, constraints: {}, currentRouteVersionId: 'child-1', currentChildCount: 1, driverId: 'driver-1', name: 'Route', status: 'READY', updatedAt: new Date(), vehicleId: null, lastLifecycleEventType: null }]),
       routeGrouping: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       routeGroupingChildVersion: {
         findFirst: vi.fn().mockResolvedValue(child),

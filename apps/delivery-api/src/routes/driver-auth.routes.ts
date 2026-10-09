@@ -20,6 +20,23 @@ const DRIVER_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const DRIVER_PIN_PATTERN = /^\d{6}$/u;
 
 export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: DriverAuthDependencies): void {
+  app.post<{ Body: unknown }>('/driver/capabilities', { bodyLimit: 4096 }, async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    const account = readDriverAccountToken(request.headers.authorization, dependencies.jwtSecret);
+    if (account === null) return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid account bearer token' } });
+    const body = objectOrNull(request.body);
+    if (body === null || Object.keys(body).some(key => !['refreshToken', 'capability', 'versionCode', 'packageId'].includes(key))
+      || typeof body.refreshToken !== 'string' || body.refreshToken.length < 32 || body.refreshToken.length > 512
+      || body.capability !== 'delivery-proof-v1' || !Number.isSafeInteger(body.versionCode) || (body.versionCode as number) < 43
+      || body.packageId !== 'com.evnsolution.clever.routes') {
+      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'A supported production app and current account session are required' } });
+    }
+    const registered = await dependencies.driverAuthRepository.registerDeliveryProofCapability({ ...account,
+      refreshToken: body.refreshToken, versionCode: body.versionCode as number, packageId: body.packageId });
+    return registered ? reply.send({ data: { registered: true, capability: 'delivery-proof-v1' }, error: null })
+      : reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid account session' } });
+  });
+
   app.get('/driver/account/profile', async (request, reply) => {
     const account = readDriverAccountToken(request.headers.authorization, dependencies.jwtSecret);
     if (account === null) {

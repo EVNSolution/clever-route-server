@@ -1,3 +1,4 @@
+import type { DeliveryProofPolicy, TollPolicy } from '../route-plans/delivery-options.js';
 import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint, RoutePlanSummary } from '../route-plans/route-plan.types.js';
 import type { DriverRoutePushResult } from './driver-push.provider.js';
 
@@ -124,6 +125,8 @@ export type RouteGroupingRoutesListChildDto = {
   driverName: string | null;
   routeMetrics: RoutePlanRouteMetrics | null;
   routePlan: {
+    deliveryProof?: DeliveryProofPolicy;
+    tollPolicy?: TollPolicy;
     createdAt: string;
     deliveredCount: number;
     driverId: string | null;
@@ -176,7 +179,7 @@ export type CreateRouteGroupingInput = {
   dateRangeEnd?: string;
   dateRangeStart?: string;
   depot?: RoutePlanDepotInput | undefined;
-  initialRoute?: { requestId: string };
+  initialRoute?: { requestId: string; deliveryProof?: DeliveryProofPolicy; tollPolicy?: TollPolicy };
   name: string;
   orderIds: string[];
   planDate?: string;

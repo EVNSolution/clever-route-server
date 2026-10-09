@@ -1,3 +1,4 @@
+import { tollExclusionQuery, type RouteTollPolicy } from './route-toll-policy.js';
 import type {
   RoutePlanDetail,
   RoutePlanDetailStop,
@@ -58,7 +59,7 @@ export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
     try {
-      response = await this.fetch(buildRouteUrl(this.baseUrl, routePoints.map((point) => point.coordinate)), {
+      response = await this.fetch(buildRouteUrl(this.baseUrl, routePoints.map((point) => point.coordinate), input.routePlan.tollPolicy), {
         method: 'GET',
         redirect: 'error',
         signal: controller.signal,
@@ -126,9 +127,9 @@ function toLngLat(latitude: number | null, longitude: number | null): [number, n
   return [longitude, latitude];
 }
 
-function buildRouteUrl(baseUrl: string, coordinates: Array<[number, number]>): string {
+function buildRouteUrl(baseUrl: string, coordinates: Array<[number, number]>, tollPolicy?: RouteTollPolicy): string {
   const coordinatePath = coordinates.map(([longitude, latitude]) => `${longitude},${latitude}`).join(';');
-  return `${baseUrl}/route/v1/driving/${coordinatePath}?overview=full&geometries=geojson&steps=false`;
+  return `${baseUrl}/route/v1/driving/${coordinatePath}?overview=full&geometries=geojson&steps=false${tollExclusionQuery(tollPolicy)}`;
 }
 
 function emptyRouteResult(): RoutePlanRouteResult {

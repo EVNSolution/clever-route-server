@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-10-07
+  x-contract-revision: 2026-10-09
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -2797,7 +2797,19 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, additionalProperties: true }
+            schema:
+              type: object
+              additionalProperties: true
+              properties:
+                initialRoute:
+                  type: object
+                  additionalProperties: false
+                  required: [requestId]
+                  description: Options persist atomically with the initial route. Failed AVOID_TOLLS geometry leaves no partial route.
+                  properties:
+                    requestId: { type: string, format: uuid, description: UUID v4 creation command identity. }
+                    deliveryProof: { $ref: '#/components/schemas/DeliveryProofPolicy' }
+                    tollPolicy: { $ref: '#/components/schemas/TollPolicy' }
       responses:
         '201':
           description: Created route group envelope.
@@ -4350,12 +4362,61 @@ paths:
           $ref: '#/components/responses/Conflict'
         '501':
           description: Route start date and time updates are unavailable in this runtime.
+  /admin/route-plans/{routePlanId}/cash-settlements:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read immutable Cash receipts and office confirmation history
+      description: Returns eligible Cash receipts for the authenticated KFood shop and route. Original driver receipts and Shopify order totals remain unchanged.
+      operationId: getAdminRouteCashSettlements
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Cash receipts, latest confirmation and newest-first history. Responses are private and no-store.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CashSettlementsEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { description: Cash confirmation service is unavailable. }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Append an office Cash confirmation or correction
+      description: Requires the latest receipt revision. An identical command from the same actor returns the original record; changed content or stale revision returns SETTLEMENT_CONFLICT. Corrections require a reason. Amounts never overwrite the immutable driver receipt or Shopify order.
+      operationId: confirmAdminRouteCashSettlement
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CashSettlementRequest' }
+      responses:
+        '200':
+          description: Saved append-only confirmation, or the original record for an identical retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CashSettlementEnvelope' }
+        '400': { description: SETTLEMENT_INVALID for invalid amount, currency or correction reason. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: SETTLEMENT_CONFLICT for stale revision or reused command identity. }
+        '501': { description: Cash confirmation service is unavailable. }
   /admin/route-plans/{routePlanId}/options:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
     patch:
       tags: [Shopify Embedded Admin]
       summary: Update route plan execution options
+      description: Proof and toll policies default to OFF and ALLOW_TOLLS. Changes require an unassigned, unpublished draft or ready route and current expectedUpdatedAt. Proof ON requires rollout enablement; dispatch additionally requires a compatible driver session. AVOID_TOLLS geometry failures preserve prior options and geometry.
       operationId: updateAdminRoutePlanOptions
       x-clever-audience: shopify-embedded-admin
       x-side-effect: write-clever-db
@@ -4366,7 +4427,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, additionalProperties: true }
+            schema: { $ref: '#/components/schemas/RoutePlanOptionsRequest' }
       responses:
         '200':
           description: Route plan detail after options update.
@@ -4380,6 +4441,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409': { description: Stale options, DELIVERY_OPTIONS_LOCKED, DELIVERY_PROOF_ROLLOUT_DISABLED or DELIVERY_PROOF_DRIVER_UPDATE_REQUIRED. }
+        '503': { description: GEOMETRY_REFRESH_FAILED; no partial option or geometry change. }
   /admin/route-plans/{routePlanId}/customer-email/preview:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -4565,6 +4628,38 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /driver/capabilities:
+    post:
+      tags: [Driver Mobile]
+      summary: Register proof support for the current driver account session
+      description: Register after login, restore and refresh, before route lookup. The current refresh token binds the report to an active, unrevoked, unexpired account session and current account token version. Required-proof Dispatch needs at least one compatible session; an older second session does not block it. This is compatibility gating, not device attestation. The request body must not be logged.
+      operationId: registerDriverCapabilities
+      x-source-file: src/routes/driver-auth.routes.ts
+      security:
+        - DriverAccountAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriverCapabilityRequest' }
+      responses:
+        '200':
+          description: Capability registered for the bound session. Response is no-store.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, error]
+                properties:
+                  data:
+                    type: object
+                    required: [registered, capability]
+                    properties:
+                      registered: { const: true }
+                      capability: { const: delivery-proof-v1 }
+                  error: { type: 'null' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /driver/auth/login:
     post:
       tags: [Driver Mobile]
@@ -6300,6 +6395,8 @@ components:
       additionalProperties: false
       required: [schemaVersion, stops]
       properties:
+        deliveryProof: { $ref: '#/components/schemas/DeliveryProofPolicy' }
+        tollPolicy: { $ref: '#/components/schemas/TollPolicy' }
         schemaVersion: { type: integer, const: 1 }
         initialRouteVersionId:
           type: string
@@ -8820,6 +8917,8 @@ components:
       type: object
       required: [name, planDate, depot, orders]
       properties:
+        deliveryProof: { $ref: '#/components/schemas/DeliveryProofPolicy' }
+        tollPolicy: { $ref: '#/components/schemas/TollPolicy' }
         name:
           type: string
         planDate:
@@ -9046,10 +9145,137 @@ components:
           description: Null resets the CLEVER stop to the default of 5 minutes.
         instructions: { type: [string, 'null'] }
       additionalProperties: false
+    DeliveryProofPolicy:
+      type: object
+      additionalProperties: false
+      required: [photoRequired, signatureRequired]
+      properties:
+        photoRequired: { type: boolean, default: false }
+        signatureRequired: { type: boolean, default: false }
+    TollPolicy:
+      type: string
+      enum: [ALLOW_TOLLS, AVOID_TOLLS]
+      default: ALLOW_TOLLS
+    RoutePlanOptionsRequest:
+      type: object
+      minProperties: 1
+      description: At least one option is required. expectedUpdatedAt is mandatory when proof or toll policy is supplied. Published or assigned policies are fixed for Dispatch/Apply and offline completion.
+      properties:
+        expectedUpdatedAt: { type: string, format: date-time }
+        routeEndMode: { type: string, enum: [END_AT_LAST_STOP, RETURN_TO_DEPOT] }
+        deliveryProof: { $ref: '#/components/schemas/DeliveryProofPolicy' }
+        tollPolicy: { $ref: '#/components/schemas/TollPolicy' }
+      anyOf:
+        - required: [routeEndMode]
+        - required: [deliveryProof]
+        - required: [tollPolicy]
+      dependentRequired:
+        deliveryProof: [expectedUpdatedAt]
+        tollPolicy: [expectedUpdatedAt]
+    DriverCapabilityRequest:
+      type: object
+      additionalProperties: false
+      required: [refreshToken, capability, versionCode, packageId]
+      properties:
+        refreshToken: { type: string, minLength: 32, maxLength: 512, writeOnly: true }
+        capability: { type: string, const: delivery-proof-v1 }
+        versionCode: { type: integer, minimum: 43 }
+        packageId: { type: string, const: com.evnsolution.clever.routes }
+    CashSettlementRequest:
+      type: object
+      additionalProperties: false
+      required: [commandId, receiptId, expectedRevision, confirmedAmount, currency]
+      description: Exact nonnegative money, including zero. Currency must match the original Cash receipt. A correction requires a nonblank trimmed reason. Revision zero denotes an unconfirmed receipt.
+      properties:
+        commandId: { type: string, format: uuid }
+        receiptId: { type: string, format: uuid }
+        expectedRevision: { type: integer, minimum: 0 }
+        confirmedAmount:
+          type: string
+          pattern: '^(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$'
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        reason: { type: [string, 'null'], maxLength: 1000 }
+      allOf:
+        - if:
+            properties:
+              expectedRevision: { minimum: 1 }
+          then:
+            required: [reason]
+            properties:
+              reason: { type: string, pattern: '\S', maxLength: 1000 }
+    CashSettlement:
+      type: object
+      required: [id, commandId, receiptId, revision, confirmedAmount, currency, differenceFromActual, differenceFromExpected, reason, actor, recordedAt]
+      description: Append-only office confirmation. Exact money is returned as two-decimal text. Expected difference is null when the receipt had no expected amount.
+      properties:
+        id: { type: string, format: uuid }
+        commandId: { type: string, format: uuid }
+        receiptId: { type: string, format: uuid }
+        revision: { type: integer, minimum: 1 }
+        confirmedAmount: { type: string }
+        currency: { type: string }
+        differenceFromActual: { type: string }
+        differenceFromExpected: { type: [string, 'null'] }
+        reason: { type: [string, 'null'] }
+        actor: { type: string }
+        recordedAt: { type: string, format: date-time }
+    CashSettlementSummary:
+      type: object
+      required: [currency, expectedAmount, actualAmount, confirmedAmount, receiptCount, confirmedCount]
+      properties:
+        currency: { type: string }
+        expectedAmount: { type: [string, 'null'], description: Null if any included receipt lacks an expected amount. }
+        actualAmount: { type: string }
+        confirmedAmount: { type: [string, 'null'], description: Null when no receipt is confirmed; otherwise the sum of latest confirmations only. }
+        receiptCount: { type: integer, minimum: 0 }
+        confirmedCount: { type: integer, minimum: 0 }
+    CashSettlementsEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [routePlanId, receipts]
+          properties:
+            routePlanId: { type: string, format: uuid }
+            receipts:
+              type: array
+              items:
+                type: object
+                required: [completion, revision, settlement, history]
+                properties:
+                  completion: { $ref: '#/components/schemas/DriverStopCompletion' }
+                  revision: { type: integer, minimum: 0 }
+                  settlement:
+                    oneOf:
+                      - $ref: '#/components/schemas/CashSettlement'
+                      - type: 'null'
+                  history:
+                    type: array
+                    description: Newest revision first.
+                    items: { $ref: '#/components/schemas/CashSettlement' }
+        error: { type: 'null' }
+    CashSettlementEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [settlement, duplicate]
+          properties:
+            settlement: { $ref: '#/components/schemas/CashSettlement' }
+            duplicate: { type: boolean }
+        error: { type: 'null' }
     RoutePlanSummary:
       type: object
       required: [id, name, status]
       properties:
+        cashSettlementSummary:
+          type: array
+          description: One row per currency; never sum different currencies. Confirmed counts distinguish partial confirmation.
+          items: { $ref: '#/components/schemas/CashSettlementSummary' }
+        deliveryProof: { $ref: '#/components/schemas/DeliveryProofPolicy' }
+        tollPolicy: { $ref: '#/components/schemas/TollPolicy' }
         id:
           type: string
         name:
@@ -9674,6 +9900,8 @@ components:
       type: object
       required: [deliveryDate, depot, etaSnapshot, id, name, routeEndMode, routeVersionId, scheduledStartAt, shopDomain, stops, timezone]
       properties:
+        deliveryProof: { $ref: '#/components/schemas/DeliveryProofPolicy' }
+        tollPolicy: { $ref: '#/components/schemas/TollPolicy' }
         id:
           type: string
         name:
@@ -10178,13 +10406,15 @@ components:
     DriverProofMediaUploadRequest:
       type: object
       required: [deliveryStopId, routePlanId, source, file]
+      description: kind defaults to photo. Signature requires kind=signature, source=signature and PNG bytes. Existing optional-photo behavior remains compatible.
       properties:
+        kind: { type: string, enum: [photo, signature], default: photo }
         deliveryStopId:
           type: string
         routePlanId:
           type: string
         source:
-          enum: [camera, library]
+          enum: [camera, library, signature]
           type: string
         file:
           description: One JPEG, PNG, WebP, HEIC, or HEIF image up to 10 MiB. The declared MIME type must match the file signature.
@@ -10203,7 +10433,7 @@ components:
       required: [contentType, deliveryStopIds, kind, mediaId, source, storageKey, uploadedAt]
       properties:
         kind:
-          const: photo
+          enum: [photo, signature]
         mediaId:
           type: string
         deliveryStopIds:
@@ -10217,7 +10447,7 @@ components:
         contentType:
           type: string
         source:
-          enum: [camera, library]
+          enum: [camera, library, signature]
           type: string
         uploadedAt:
           format: date-time
@@ -10236,7 +10466,7 @@ components:
           required: [contentType, expiresAt, kind, mediaId, url]
           properties:
             kind:
-              const: photo
+              enum: [photo, signature]
             mediaId:
               type: string
             contentType:
@@ -10295,6 +10525,16 @@ components:
       required: [eventType, occurredAt]
       description: PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null. TIME_CONSTRAINT_ACKNOWLEDGED requires nonblank clientEventId, deliveryStopId, and routePlanId for the authenticated route.
       properties:
+        deliveryProofCapability:
+          type: string
+          const: delivery-proof-v1
+          description: Required with versionCode >=43 for ROUTE_STARTED, PICKUP_COMPLETED and STOP_DELIVERED on required-proof routes. Missing or old clients receive DELIVERY_PROOF_APP_UPDATE_REQUIRED. Proof-OFF routes remain compatible.
+        proof:
+          type: object
+          description: STOP_DELIVERED requires each media ID enabled by the fixed route policy. Media must be READY, undeleted and match tenant, driver, route, stop and kind; signature must use SIGNATURE source and PNG. Invalid proof returns DELIVERY_PROOF_REQUIRED or DELIVERY_PROOF_INVALID before completion or Cash commit.
+          properties:
+            photoMediaId: { type: string, format: uuid }
+            signatureMediaId: { type: string, format: uuid }
         completion:
           $ref: '#/components/schemas/DriverStopCompletionRequest'
         accuracyMeters:

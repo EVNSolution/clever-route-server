@@ -1,3 +1,6 @@
+import { parseDeliveryProof } from '../modules/route-plans/delivery-options.js';
+import { RoutePlanOptionsUpdateInvalidError } from '../modules/route-plans/route-plan.types.js';
+import type { CreateRouteGroupingInput } from '../modules/route-grouping/route-grouping.types.js';
 import { projectVisibleDsvGrouping } from '../modules/dsv/dsv-test-visibility.js';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
@@ -612,20 +615,26 @@ function readCreateGroupingPayload(value: unknown): {
   dateRangeEnd?: string;
   dateRangeStart?: string;
   depot?: RoutePlanDepotInput;
-  initialRoute?: { requestId: string };
+  initialRoute?: NonNullable<CreateRouteGroupingInput['initialRoute']>;
   name: string;
   orderIds: string[];
   planDate?: string;
 } {
   const object = requireObject(value);
-  let initialRoute: { requestId: string } | undefined;
+  let initialRoute: CreateRouteGroupingInput['initialRoute'];
   if (object.initialRoute !== undefined) {
     const initial = requireObject(object.initialRoute);
     const requestId = requireNonEmptyString(initial.requestId).toLowerCase();
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
       throw new BadRouteGroupPayloadError('initialRoute.requestId must be a UUID v4');
     }
-    initialRoute = { requestId };
+    if (Object.keys(initial).some(key => !['requestId', 'deliveryProof', 'tollPolicy'].includes(key))) throw new BadRouteGroupPayloadError('Unknown initial route option');
+    if (initial.tollPolicy !== undefined && initial.tollPolicy !== 'ALLOW_TOLLS' && initial.tollPolicy !== 'AVOID_TOLLS') throw new BadRouteGroupPayloadError('Invalid toll policy');
+    try {
+      initialRoute = { requestId,
+        ...(initial.deliveryProof === undefined ? {} : { deliveryProof: parseDeliveryProof(initial.deliveryProof) }),
+        ...(initial.tollPolicy === undefined ? {} : { tollPolicy: initial.tollPolicy }) };
+    } catch { throw new BadRouteGroupPayloadError('Invalid delivery proof policy'); }
   }
   return {
     ...optionalDateField(object, 'planDate'),
@@ -957,6 +966,7 @@ function readGenerateChildRoutesPayload(value: unknown): { confirmRisk?: boolean
 }
 
 function sendRouteGroupingError(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof RoutePlanOptionsUpdateInvalidError) return reply.code(409).send(errorResponse(error.message.split(':')[0] ?? 'DELIVERY_OPTIONS_INVALID', error.message));
   if (error instanceof RouteExecutionConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
   if (error instanceof CustomOrderReferenceCopyNotAllowedError) return reply.code(400).send(errorResponse(error.code, error.message));
   if (error instanceof RouteGroupingBranchLockConflictError) return reply.code(409).send({ data: { orderIds: error.orderIds }, error: { code: error.code, message: error.message } });

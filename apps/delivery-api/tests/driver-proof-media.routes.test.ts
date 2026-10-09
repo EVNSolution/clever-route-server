@@ -14,6 +14,22 @@ const now = new Date('2026-05-12T10:00:00.000Z');
 const uploadBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
 
 describe('Driver proof media route', () => {
+  test('accepts PNG signature through scoped media pipeline and rejects source/type mismatch', async () => {
+    const { app, storeProofMedia } = await createAppHarness();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    try {
+      const makeRequest = (patch: Record<string, unknown> = {}) => {
+        const upload = multipartUploadRequest({ kind: 'signature', source: 'signature', contentType: 'image/png', fileBytes: png, ...patch });
+        return app.inject({ method: 'POST', url: '/driver/proof-media', payload: upload.payload, headers: { ...upload.headers, authorization: `Bearer ${driverToken()}` } });
+      };
+      expect((await makeRequest()).statusCode).toBe(201);
+      expect(storeProofMedia).toHaveBeenCalledWith(expect.objectContaining({ kind: 'signature', source: 'signature', contentType: 'image/png', driverId: 'driver-id', deliveryStopId: 'stop-id' }));
+      expect((await makeRequest({ source: 'camera' })).statusCode).toBe(400);
+      expect((await makeRequest({ contentType: 'image/jpeg', fileBytes: uploadBytes })).statusCode).toBe(400);
+      expect((await makeRequest({ kind: 'photo' })).statusCode).toBe(400);
+    } finally { await app.close(); }
+  });
+
   test('returns short-lived proof media read access for the authenticated driver', async () => {
     const { app, createProofMediaReadAccess } = await createAppHarness();
 
@@ -521,7 +537,7 @@ async function createAppHarness(input: {
   return { app, createProofMediaReadAccess, storeProofMedia };
 }
 
-function multipartUploadRequest(input: { contentType?: string; fileBytes?: Buffer; routePlanId?: string; source?: string } = {}): {
+function multipartUploadRequest(input: { kind?: string; contentType?: string; fileBytes?: Buffer; routePlanId?: string; source?: string } = {}): {
   headers: Record<string, string>;
   payload: Buffer;
 } {
@@ -532,6 +548,7 @@ function multipartUploadRequest(input: { contentType?: string; fileBytes?: Buffe
     fieldPart(boundary, 'deliveryStopId', 'stop-id'),
     fieldPart(boundary, 'routePlanId', input.routePlanId ?? 'route-plan-id'),
     fieldPart(boundary, 'source', source),
+    ...(input.kind === undefined ? [] : [fieldPart(boundary, 'kind', input.kind)]),
     Buffer.from(
       `--${boundary}\r\n` +
         'Content-Disposition: form-data; name="file"; filename="proof.jpg"\r\n' +

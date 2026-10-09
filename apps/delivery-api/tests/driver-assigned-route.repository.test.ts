@@ -323,6 +323,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       status: 'ASSIGNED_ROUTE',
             route: {
         deliveryDate: '2026-05-12',
+        deliveryProof: { photoRequired: false, signatureRequired: false },
+        tollPolicy: 'ALLOW_TOLLS',
         depot: { latitude: 43.6532, longitude: -79.3832 },
         etaSnapshot: {
           calculatedAt: null,

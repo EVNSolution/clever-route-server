@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { PrismaDriverAuthRepository } from '../src/modules/driver/driver-auth.repository.js';
+import { assertProofDriverCompatible } from '../src/modules/route-plans/delivery-options.js';
+import { PrismaCashSettlementService } from '../src/modules/payments/cash-settlement.service.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 
 import { PrismaClient, type Prisma } from '@prisma/client';
@@ -370,6 +373,80 @@ type EventBody = {
       expect(officeOrder.completion).toEqual(completion.body.data.completion);
     });
   });
+  test('office confirmation/correction is exact, append-only and preserves the original receipt', async () => {
+    const f = await fixture(prisma);
+    await withServer(prisma, async server => {
+      const response = await post(server, f, eventBody(f, '122.00'));
+      expect(response.status).toBe(202);
+      const receipt = response.body.data.completion!;
+      const service = new PrismaCashSettlementService(prisma);
+      const scope = { appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN, routePlanId: f.route.id, actor: 'office-fixture' };
+      const command = { commandId: randomUUID(), receiptId: receipt.id, expectedRevision: 0, confirmedAmount: '122.00', currency: 'CAD', reason: null };
+      const first = await service.confirm({ ...scope, command });
+      expect(first.settlement).toMatchObject({ revision: 1, differenceFromActual: '0.00', differenceFromExpected: '-0.25' });
+      expect(await service.confirm({ ...scope, command })).toEqual({ ...first, duplicate: true });
+      await expect(service.confirm({ ...scope, command: { ...command, confirmedAmount: '123.00' } })).rejects.toMatchObject({ code: 'SETTLEMENT_CONFLICT' });
+      const results = await Promise.allSettled(['123.00', '0.00'].map(amount => service.confirm({ ...scope, command: { ...command, commandId: randomUUID(), expectedRevision: 1, confirmedAmount: amount, reason: 'Office recount' } })));
+      expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+      const list = await service.list(scope);
+      expect(list.receipts[0]?.history).toHaveLength(2);
+      expect(list.receipts[0]?.completion.actualAmount).toBe('122.00');
+      await expect(service.confirm({ ...scope, shopDomain: 'foreign.myshopify.com', command })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(prisma.driverCashSettlement.update({ where: { id: first.settlement.id }, data: { confirmedAmount: '999.00' } })).rejects.toThrow(/append-only/);
+    });
+  });
+
+  test('proof capability survives restore and ignores old devices but rejects logout and token-version changes', async () => {
+    const f = await fixture(prisma);
+    const repo = new PrismaDriverAuthRepository(prisma);
+    const refreshToken = `synthetic-${randomUUID()}`;
+    const session = await prisma.driverAccountSession.create({ data: { accountId: f.account.id, refreshTokenHash: createHash('sha256').update(refreshToken).digest('hex'), expiresAt: new Date(Date.now() + 60_000) } });
+    await prisma.driverAccountSession.create({ data: { accountId: f.account.id, refreshTokenHash: randomUUID(), expiresAt: new Date(Date.now() + 60_000) } });
+    const report = { accountId: f.account.id, tokenVersion: f.account.tokenVersion, refreshToken, versionCode: 43, packageId: 'com.evnsolution.clever.routes' };
+    const route = { driverId: f.driver.id, constraints: { deliveryProof: { photoRequired: true, signatureRequired: false } } };
+    const previous = process.env.KFOOD_DELIVERY_PROOF_ENABLED;
+    process.env.KFOOD_DELIVERY_PROOF_ENABLED = 'true';
+    try {
+      await expect(repo.registerDeliveryProofCapability(report)).resolves.toBe(true);
+      await expect(repo.refreshSession({ refreshToken })).resolves.toMatchObject({ kind: 'account', accountId: f.account.id });
+      await expect(repo.registerDeliveryProofCapability(report)).resolves.toBe(true);
+      await expect(prisma.$transaction(tx => assertProofDriverCompatible(tx, route, f.shop.id))).resolves.toBeUndefined();
+      await prisma.driverAccount.update({ where: { id: f.account.id }, data: { tokenVersion: { increment: 1 } } });
+      await expect(repo.registerDeliveryProofCapability(report)).resolves.toBe(false);
+      await expect(prisma.$transaction(tx => assertProofDriverCompatible(tx, route, f.shop.id))).rejects.toThrow(/UPDATE_REQUIRED/);
+      await expect(repo.registerDeliveryProofCapability({ ...report, tokenVersion: report.tokenVersion + 1 })).resolves.toBe(true);
+      await prisma.driverAccountSession.update({ where: { id: session.id }, data: { revokedAt: new Date() } });
+      await expect(repo.registerDeliveryProofCapability({ ...report, tokenVersion: report.tokenVersion + 1 })).resolves.toBe(false);
+      await expect(repo.refreshSession({ refreshToken })).rejects.toThrow(/Invalid/);
+      await expect(prisma.$transaction(tx => assertProofDriverCompatible(tx, route, f.shop.id))).rejects.toThrow(/UPDATE_REQUIRED/);
+    } finally { if (previous === undefined) delete process.env.KFOOD_DELIVERY_PROOF_ENABLED; else process.env.KFOOD_DELIVERY_PROOF_ENABLED = previous; }
+  });
+
+  test('required photo and signature commit with Cash once; missing/wrong media cannot change delivery', async () => {
+    const f = await fixture(prisma);
+    await prisma.routePlan.update({ where: { id: f.route.id }, data: { constraints: { deliveryProof: { photoRequired: true, signatureRequired: true } } } });
+    await withServer(prisma, async server => {
+      const base = { ...eventBody(f, '122.00'), versionCode: 43, deliveryProofCapability: 'delivery-proof-v1' };
+      for (const unsupported of [{ ...base, versionCode: 42 }, { ...base, deliveryProofCapability: undefined }]) {
+        const rejected = await post(server, f, { ...unsupported, clientEventId: randomUUID() });
+        expect(rejected.status).toBe(400);
+        expect(rejected.body.error?.code).toBe('DELIVERY_PROOF_APP_UPDATE_REQUIRED');
+      }
+      expect((await post(server, f, base)).body.error?.code).toBe('DELIVERY_PROOF_REQUIRED');
+      expect(await receiptCount(prisma, f)).toBe(0);
+      const photo = await prisma.driverProofMedia.create({ data: { shopId: f.shop.id, driverId: f.driver.id, routePlanId: f.route.id, deliveryStopId: f.stops[0]!.id,
+        kind: 'PHOTO', source: 'CAMERA', contentType: 'image/png', storageKey: randomUUID(), sizeBytes: 8, sha256: 'a'.repeat(64), uploadedAt: new Date() } });
+      const signature = await prisma.driverProofMedia.create({ data: { shopId: f.shop.id, driverId: f.driver.id, routePlanId: f.route.id, deliveryStopId: f.stops[0]!.id,
+        kind: 'SIGNATURE', source: 'SIGNATURE', contentType: 'image/png', storageKey: randomUUID(), sizeBytes: 8, sha256: 'b'.repeat(64), uploadedAt: new Date() } });
+      const body = { ...base, clientEventId: randomUUID(), proof: { photoMediaId: photo.id, signatureMediaId: signature.id } };
+      const first = await post(server, f, body);
+      expect(first.status).toBe(202);
+      expect((await post(server, f, body)).body.data.duplicate).toBe(true);
+      expect(await receiptCount(prisma, f)).toBe(1);
+    });
+  });
+
 });
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;

@@ -1,3 +1,4 @@
+import { readTollPolicy } from './delivery-options.js';
 import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import {
@@ -8,7 +9,7 @@ import {
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import { hasDeliveryWorkCompleted, KFOOD_DELIVERY_APP_ID, KFOOD_DELIVERY_SHOP_DOMAIN } from './kfood-delivery-completion.js';
 import { computeRouteShapeSignature, computeRouteShapeSignatureFromParts, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
-import { PrismaRoutePlanRepository } from './route-plan.repository.js';
+import { PrismaRoutePlanRepository, readRoutePlanGeometryDetail } from './route-plan.repository.js';
 import type { RouteGeometryProvider } from './route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from './route-plan.types.js';
 import {
@@ -99,12 +100,22 @@ export class PrismaLiveRouteChangeService {
     commandId: string; expectedAssignmentGeneration: string; expectedRouteVersionId: string; expectedRevision: number
   }) {
     const shopId = await this.adminShopId(input);
-    const result = await publishLiveRouteChange(this.prisma, {
-      routePlanId: input.routePlanId, shopId, commandId: input.commandId,
-      expectedAssignmentGeneration: input.expectedAssignmentGeneration, expectedRouteVersionId: input.expectedRouteVersionId,
-      expectedRevision: input.expectedRevision
-    });
-    const geometry = await this.rebuildPublicationGeometry({ ...input, shopId }, result.publicationVersionId, result.assignmentGeneration);
+    const scope = { ...input, shopId };
+    // The publication and constrained geometry share the existing route lock. A failed
+    // provider call rolls back stop edits, the publication cursor, its receipt, and cache changes.
+    const { result, preparedGeometry } = await this.prisma.$transaction(async (tx) => {
+      const route = await this.lockGeometryRoute(tx, scope);
+      const result = await publishLiveRouteChange(tx, {
+        routePlanId: input.routePlanId, shopId, commandId: input.commandId,
+        expectedAssignmentGeneration: input.expectedAssignmentGeneration, expectedRouteVersionId: input.expectedRouteVersionId,
+        expectedRevision: input.expectedRevision
+      });
+      const preparedGeometry = readTollPolicy(route?.constraints) === 'AVOID_TOLLS'
+        ? await this.preparePublicationTollGeometry(tx, scope, result.publicationVersionId, result.assignmentGeneration)
+        : null;
+      return { result, preparedGeometry };
+    }, { timeout: 30_000 });
+    const geometry = preparedGeometry ?? await this.rebuildPublicationGeometry(scope, result.publicationVersionId, result.assignmentGeneration);
     const notification = await this.sendPublicationNotification(result.publicationVersionId);
     return { ...result, geometry, notification };
   }
@@ -174,6 +185,27 @@ export class PrismaLiveRouteChangeService {
 
   private now(): Date { return this.options.now?.() ?? new Date(); }
 
+  private async preparePublicationTollGeometry(
+    tx: Prisma.TransactionClient, scope: AdminScope & { shopId: string }, publicationVersionId: string, generation: string
+  ): Promise<LiveRouteGeometryResult> {
+    const detail = await readRoutePlanGeometryDetail(tx, scope);
+    if (detail === null) throw new LiveRouteChangeError('NOT_FOUND', 404, 'Route was not found');
+    const signature = computeRouteShapeSignature(detail);
+    const route = await this.lockGeometryRoute(tx, scope);
+    if (!geometryPublicationMatches(route, publicationVersionId, generation, signature)) return { status: 'superseded' };
+    const existing = await tx.routePlanGeometryCache.findUnique({
+      where: { routePlanId_shapeSignature: { routePlanId: scope.routePlanId, shapeSignature: signature } },
+      select: { geometry: true }
+    });
+    if (existing?.geometry != null) return { status: 'fresh' };
+    const result = await this.options.geometryProvider?.buildRoute(detail).catch(() => null) ?? null;
+    if (result === null || !isCompleteLiveGeometry(detail, result)) {
+      throw new LiveRouteChangeError('TOLL_POLICY_ROUTE_UNAVAILABLE', 503,
+        'Toll-avoiding route calculation failed. The existing published route was preserved.');
+    }
+    return this.commitPublicationGeometry(scope, publicationVersionId, generation, signature, result, 'ROUTE_GEOMETRY_BUILD_FAILED', tx);
+  }
+
   private async rebuildPublicationGeometry(
     scope: AdminScope & { shopId: string }, publicationVersionId: string, generation: string
   ): Promise<LiveRouteGeometryResult> {
@@ -207,9 +239,9 @@ export class PrismaLiveRouteChangeService {
 
   private async commitPublicationGeometry(
     scope: AdminScope & { shopId: string }, publicationVersionId: string, generation: string,
-    signature: string, result: RoutePlanRouteResult | null, failureCode: string
+    signature: string, result: RoutePlanRouteResult | null, failureCode: string, transaction?: Prisma.TransactionClient
   ): Promise<LiveRouteGeometryResult> {
-    return this.prisma.$transaction<LiveRouteGeometryResult>(async (tx) => {
+    const commit = async (tx: Prisma.TransactionClient): Promise<LiveRouteGeometryResult> => {
       const route = await this.lockGeometryRoute(tx, scope);
       if (route === null || !geometryPublicationMatches(route, publicationVersionId, generation, signature)) return { status: 'superseded' };
       const existingCache = await tx.routePlanGeometryCache.findUnique({
@@ -256,7 +288,8 @@ export class PrismaLiveRouteChangeService {
       }
       return result !== null ? { status: 'fresh' }
         : { status: failureCode === 'ROUTE_GEOMETRY_PROVIDER_UNAVAILABLE' ? 'unavailable' : 'failed', errorCode: failureCode };
-    }, { timeout: 15_000 });
+    };
+    return transaction === undefined ? this.prisma.$transaction(commit, { timeout: 15_000 }) : commit(transaction);
   }
 
   private async sendPublicationNotification(publicationVersionId: string) {
@@ -467,6 +500,7 @@ function geometryPublicationMatches(route: GeometryRoute | null, publicationVers
   return computeRouteShapeSignatureFromParts({
     depot: { latitude: route.depotLatitude === null ? null : Number(route.depotLatitude), longitude: route.depotLongitude === null ? null : Number(route.depotLongitude) },
     routeEndMode: constraints.routeEndMode === 'RETURN_TO_DEPOT' ? 'RETURN_TO_DEPOT' : 'END_AT_LAST_STOP',
+    tollPolicy: readTollPolicy(constraints),
     stops: route.routeStops.map((stop) => ({
       deliveryStopId: stop.deliveryStopId, orderId: stop.deliveryStop.orderId, sequence: stop.sequence,
       coordinates: {

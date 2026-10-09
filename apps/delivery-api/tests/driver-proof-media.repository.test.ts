@@ -906,6 +906,17 @@ describe('PrismaDriverProofMediaRepository', () => {
     expect(result).not.toHaveProperty('storageKey');
   });
 
+  test('keeps DSV administrator proof reads photo-only before creating signed access', async () => {
+    const { prisma } = createPrismaHarness();
+    prisma.driverProofMedia.findFirst.mockResolvedValueOnce({ kind: 'SIGNATURE', source: 'SIGNATURE' } as never);
+    const createReadAccess = vi.fn();
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, { storage: {
+      createReadAccess, remove: () => Promise.resolve('removed'), write: () => Promise.resolve()
+    } });
+    await expect(repository.createAdminProofMediaReadAccess({ mediaId: 'signature-id', shopId: 'shop-id' })).rejects.toMatchObject({ name: 'DriverProofMediaScopeError' });
+    expect(createReadAccess).not.toHaveBeenCalled();
+  });
+
   test('maps temporary credential or signing failures to unavailable without logging storage details', async () => {
     const storageFailure = new Error('IMDS credential request failed');
     const error = vi.fn();

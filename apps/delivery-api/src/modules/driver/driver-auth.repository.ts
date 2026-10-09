@@ -74,6 +74,17 @@ const DUMMY_PIN_HASH = 'CCrdwgxar5IhXbGpEZ_vYVcgujFSmiPgteYGuwjpGvDcRz9GD8gODaO3
 export class PrismaDriverAuthRepository {
   constructor(private readonly prisma: DriverAuthPrismaClient) {}
 
+  async registerDeliveryProofCapability(input: DriverAccountProfileScope & { refreshToken: string; versionCode: number; packageId: string }): Promise<boolean> {
+    const now = new Date();
+    const updated = await this.prisma.driverAccountSession.updateMany({
+      where: { refreshTokenHash: hashRefreshToken(input.refreshToken), accountId: input.accountId, revokedAt: null, expiresAt: { gt: now },
+        account: { status: 'ACTIVE', tokenVersion: input.tokenVersion } },
+      data: { deliveryProofCapability: 'delivery-proof-v1', capabilityVersionCode: input.versionCode, capabilityPackageId: input.packageId,
+        capabilityTokenVersion: input.tokenVersion, capabilityReportedAt: now }
+    });
+    return updated.count === 1;
+  }
+
   async getAccountProfile(input: DriverAccountProfileScope): Promise<DriverAccountProfile | null> {
     return this.prisma.driverAccount.findFirst({
       select: { name: true, phone: true },
