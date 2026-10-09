@@ -568,12 +568,12 @@ export function registerDriverEventRoutes(
             ...result,
             route: {
               ...result.route,
-              routeMapPreview: createDriverRouteMapPreview(dependencies, {
+              routeMapPreview: await createDriverRouteMapPreview(dependencies, {
                 driverId: driverContext.driverId,
                 route: result.route,
                 shopDomain: driverContext.shopDomain,
                 shopId: driverContext.shopId
-              }) ?? result.route.routeMapPreview
+              })
             }
           },
           error: null
@@ -894,12 +894,12 @@ export function registerDriverEventRoutes(
             ...result,
             route: {
               ...result.route,
-              routeMapPreview: createDriverRouteMapPreview(dependencies, {
+              routeMapPreview: await createDriverRouteMapPreview(dependencies, {
                 driverId: driverContext.driverId,
                 route: result.route,
                 shopDomain: driverContext.shopDomain,
                 shopId: driverContext.shopId
-              }) ?? result.route.routeMapPreview
+              })
             }
           },
           error: null
@@ -1800,7 +1800,7 @@ function driverAuthenticationErrorResponse(status: DriverAuthenticationResult['s
   );
 }
 
-function createDriverRouteMapPreview(
+async function createDriverRouteMapPreview(
   dependencies: DriverApiDependencies,
   input: {
     driverId: string;
@@ -1808,7 +1808,7 @@ function createDriverRouteMapPreview(
     shopDomain: string;
     shopId: string;
   }
-): DriverRouteMapPreview | null {
+): Promise<DriverRouteMapPreview | null> {
   if (dependencies.driverRouteMapPreviewService === undefined || dependencies.driverRouteMapPreviewBaseUrl === undefined) {
     return null;
   }

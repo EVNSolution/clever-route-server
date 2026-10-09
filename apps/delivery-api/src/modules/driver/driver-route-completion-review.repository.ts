@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { normalizeShopDomain } from '../commerce/commerce-connection.repository.js';
+import { KFOOD_PRIVATE_DEMO_APP_ID } from './private-driver-demo.js';
 
 export const DRIVER_ROUTE_COMPLETION_REVIEW_OUTCOMES = ['CONFIRMED_CORRECT', 'FALSE_POSITIVE'] as const;
 export type DriverRouteCompletionReviewOutcome = typeof DRIVER_ROUTE_COMPLETION_REVIEW_OUTCOMES[number];
@@ -36,7 +37,7 @@ export class PrismaDriverRouteCompletionReviewRepository {
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         select: { createdAt: true, id: true, mode: true, routePlanId: true, totalStopCount: true, unresolvedStopCount: true },
         take: limit,
-        where: { reviewOutcome: null, shop: { shopDomain: normalizeShopDomain(input.shopDomain) }, wouldReject: true }
+        where: { reviewOutcome: null, shop: { appId: { not: KFOOD_PRIVATE_DEMO_APP_ID }, shopDomain: normalizeShopDomain(input.shopDomain) }, wouldReject: true }
       });
       return rows.map((row) => ({ ...row, createdAt: row.createdAt.toISOString() }));
     });
@@ -63,7 +64,7 @@ export class PrismaDriverRouteCompletionReviewRepository {
         select: { id: true, reviewOutcome: true, reviewedAt: true },
         where: {
           id: input.reviewId,
-          shop: { shopDomain: normalizeShopDomain(input.shopDomain) },
+          shop: { appId: { not: KFOOD_PRIVATE_DEMO_APP_ID }, shopDomain: normalizeShopDomain(input.shopDomain) },
           wouldReject: true
         }
       });

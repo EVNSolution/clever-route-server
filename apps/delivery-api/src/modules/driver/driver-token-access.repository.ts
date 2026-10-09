@@ -8,9 +8,10 @@ import {
 } from '../route-plans/route-plan-lifecycle.js';
 import {
   hasDeliveryNavigationGraceExpired,
-  KFOOD_DELIVERY_APP_ID,
-  KFOOD_DELIVERY_SHOP_DOMAIN
+  isKfoodDeliveryScope
 } from '../route-plans/kfood-delivery-completion.js';
+
+import { isPrivateDriverDemoAppId, isPrivateDriverDemoScope, KFOOD_PRIVATE_DEMO_APP_ID } from './private-driver-demo.js';
 
 export type DriverTokenAccessPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount' | 'routePlan'>;
 
@@ -56,17 +57,17 @@ export class PrismaDriverTokenAccessRepository {
 
   async isDriverAccessTokenActive(input: DriverTokenAccessCheckInput): Promise<boolean> {
     const driver = await this.prisma.driver.findFirst({
-      select: { tokenVersion: true },
+      select: { tokenVersion: true, shop: { select: { appId: true } } },
       where: {
         authSubject: { not: null },
         isStoreReviewData: false,
         id: input.driverId,
-        shop: { shopDomain: normalizeDriverCommerceDomain(input.shopDomain) },
+        shop: { appId: { not: KFOOD_PRIVATE_DEMO_APP_ID }, shopDomain: normalizeDriverCommerceDomain(input.shopDomain) },
         status: 'ACTIVE'
       }
     });
 
-    return driver !== null && driver.tokenVersion === input.tokenVersion;
+    return driver !== null && !isPrivateDriverDemoAppId(driver.shop?.appId) && driver.tokenVersion === input.tokenVersion;
   }
 
   async resolveDriverRouteAccess(
@@ -115,8 +116,9 @@ export class PrismaDriverTokenAccessRepository {
 
     if (
       routePlan === null ||
-      (routePlan.shop.appId === KFOOD_DELIVERY_APP_ID
-        && routePlan.shop.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
+      (isPrivateDriverDemoAppId(routePlan.shop.appId)
+        && !isPrivateDriverDemoScope({ ...routePlan.shop, shopId: routePlan.shop.id, accountId: input.accountId })) ||
+      (isKfoodDeliveryScope({ ...routePlan.shop, shopId: routePlan.shop.id, accountId: input.accountId })
         && hasDeliveryNavigationGraceExpired(routePlan, this.now())) ||
       routePlan.driver === null ||
       routePlan.driver.accountId !== input.accountId ||

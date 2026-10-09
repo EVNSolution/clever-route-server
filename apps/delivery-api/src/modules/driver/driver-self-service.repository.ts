@@ -1,6 +1,7 @@
 import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
 import { DriverEventType, Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
+import { isPrivateDriverDemoAppId, isPrivateDriverDemoScope } from './private-driver-demo.js';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 import {
@@ -382,7 +383,7 @@ export class PrismaDriverSelfServiceRepository {
   private async resolveScopedDriver(input: DriverSelfServiceScopeInput): Promise<ScopedDriverRecord> {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({
-      select: { id: true, shopDomain: true },
+      select: { id: true, appId: true, shopDomain: true },
       where: { id: input.shopId }
     });
 
@@ -399,7 +400,8 @@ export class PrismaDriverSelfServiceRepository {
       }
     });
 
-    if (driver === null) {
+    if (driver === null || (isPrivateDriverDemoAppId(shop.appId)
+      && !isPrivateDriverDemoScope({ ...shop, shopId: shop.id, accountId: driver.accountId }))) {
       throw new DriverSelfServiceScopeError(`Driver not found for shop: ${input.driverId}`);
     }
 

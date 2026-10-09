@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
+import { isPrivateDriverDemoAppId } from './private-driver-demo.js';
 
 import {
   DriverProofMediaAccessUnavailableError,
@@ -128,6 +129,7 @@ export class PrismaDriverProofMediaRepository {
     input: CreateDriverProofMediaReadAccessInput
   ): Promise<CreateDriverProofMediaReadAccessResult> {
     const media = await this.prisma.driverProofMedia.findFirst({
+      include: { shop: { select: { appId: true } } },
       where: {
         deletedAt: null,
         driverId: input.driverId,
@@ -138,7 +140,7 @@ export class PrismaDriverProofMediaRepository {
         ...visibleDsvProofWhere(input.shopId)
       }
     });
-    if (media === null) {
+    if (media === null || isPrivateDriverDemoAppId(media.shop.appId)) {
       throw new DriverProofMediaScopeError(`Proof media not found for driver: ${input.mediaId}`);
     }
 
@@ -175,6 +177,7 @@ export class PrismaDriverProofMediaRepository {
         },
         id: true,
         kind: true,
+        shop: { select: { appId: true } },
         sha256: true,
         sizeBytes: true,
         source: true,
@@ -190,7 +193,8 @@ export class PrismaDriverProofMediaRepository {
       }
     });
     // DSV administrator reads retain their existing photo-only contract.
-    if (media === null || media.kind !== 'PHOTO' || (media.source !== 'CAMERA' && media.source !== 'LIBRARY')) {
+    if (media === null || media.kind !== 'PHOTO' || (media.source !== 'CAMERA' && media.source !== 'LIBRARY')
+      || isPrivateDriverDemoAppId(media.shop.appId)) {
       throw new DriverProofMediaScopeError(`Proof media not found for DSV administrator: ${input.mediaId}`);
     }
 

@@ -93,7 +93,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
           take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { appId: true, shopDomain: true } },
+        shop: { select: { id: true, appId: true, shopDomain: true } },
         status: true
       },
       where: {
@@ -188,7 +188,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
           take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { appId: true, shopDomain: true } },
+        shop: { select: { id: true, appId: true, shopDomain: true } },
         status: true
       },
       where: {
@@ -671,7 +671,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
           take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { appId: true, shopDomain: true } },
+        shop: { select: { id: true, appId: true, shopDomain: true } },
         status: true
       },
       take: 3,

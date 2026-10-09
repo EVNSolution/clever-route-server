@@ -1,3 +1,4 @@
+import { getPrivateDriverDemoConfig, isPrivateDriverDemoAppId, isPrivateDriverDemoScope, privateDriverDemoVisibilityWhere } from '../driver/private-driver-demo.js';
 import { readTollPolicy } from './delivery-options.js';
 import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
@@ -7,7 +8,7 @@ import {
   type DriverRoutePushResult
 } from '../route-grouping/driver-push.provider.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
-import { hasDeliveryWorkCompleted, KFOOD_DELIVERY_APP_ID, KFOOD_DELIVERY_SHOP_DOMAIN } from './kfood-delivery-completion.js';
+import { hasDeliveryWorkCompleted, kfoodDeliveryRouteWhere, KFOOD_DELIVERY_APP_ID, KFOOD_DELIVERY_SHOP_DOMAIN } from './kfood-delivery-completion.js';
 import { computeRouteShapeSignature, computeRouteShapeSignatureFromParts, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
 import { PrismaRoutePlanRepository, readRoutePlanGeometryDetail } from './route-plan.repository.js';
 import type { RouteGeometryProvider } from './route-plan.service.js';
@@ -147,13 +148,28 @@ export class PrismaLiveRouteChangeService {
   }
 
   private async adminShopId(input: AdminScope): Promise<string> {
-    if (input.appId !== KFOOD_DELIVERY_APP_ID || input.shopDomain.trim().toLowerCase() !== KFOOD_DELIVERY_SHOP_DOMAIN) {
+    const privateConfig = isPrivateDriverDemoAppId(input.appId) ? getPrivateDriverDemoConfig() : null;
+    if ((input.appId !== KFOOD_DELIVERY_APP_ID && privateConfig === null)
+      || input.shopDomain.trim().toLowerCase() !== KFOOD_DELIVERY_SHOP_DOMAIN) {
       throw new LiveRouteChangeError('NOT_FOUND', 404, 'Live route changes are unavailable for this shop');
     }
     const shop = await this.prisma.shop.findUnique({
       select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: input.shopDomain.trim().toLowerCase() })
     });
     if (shop === null) throw new LiveRouteChangeError('NOT_FOUND', 404, 'Route not found');
+    // Reserved app credentials cannot authenticate over HTTP. Internal demo tooling
+    // still has to prove the exact registered tenant and the route's current owner.
+    if (isPrivateDriverDemoAppId(input.appId)) {
+      if (privateConfig === null || !isPrivateDriverDemoScope({ ...input, shopId: shop.id, accountId: privateConfig.accountId })) {
+        throw new LiveRouteChangeError('NOT_FOUND', 404, 'Route not found');
+      }
+      const route = await this.prisma.routePlan.findFirst({
+        where: { id: input.routePlanId, shopId: shop.id, ...kfoodDeliveryRouteWhere(),
+          driver: { accountId: privateConfig.accountId, status: 'ACTIVE', account: { status: 'ACTIVE' } } },
+        select: { id: true }
+      });
+      if (route === null) throw new LiveRouteChangeError('NOT_FOUND', 404, 'Route not found');
+    }
     return shop.id;
   }
 
@@ -169,7 +185,7 @@ export class PrismaLiveRouteChangeService {
           accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE',
           account: { status: 'ACTIVE', ...(input.tokenVersion === undefined ? {} : { tokenVersion: input.tokenVersion }) }
         },
-        shop: { appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN }
+        ...kfoodDeliveryRouteWhere()
       }
     });
     if (route === null || route.driver === null
@@ -337,6 +353,7 @@ export class PrismaLiveRouteChangeService {
         select: { driver: { select: { accountId: true } }, assignmentGeneration: true, ...DELIVERY_COMPLETION_SELECT },
         where: {
           id: claimed.routePlanId, shopId: claimed.shopId, driverId: claimed.driverId,
+          AND: [privateDriverDemoVisibilityWhere()],
           assignmentGeneration: claimed.assignmentGeneration, status: 'IN_PROGRESS',
           driver: { authSubject: { not: null }, status: 'ACTIVE', account: { status: 'ACTIVE' } }
         }
@@ -352,6 +369,7 @@ export class PrismaLiveRouteChangeService {
           select: { id: true, assignmentGeneration: true, ...DELIVERY_COMPLETION_SELECT },
           where: {
             id: claimed.routePlanId, shopId: claimed.shopId, driverId: claimed.driverId,
+            AND: [privateDriverDemoVisibilityWhere()],
             assignmentGeneration: claimed.assignmentGeneration, status: 'IN_PROGRESS',
             liveChangeState: { latestPublicationId: claimed.id },
             driver: { accountId: route.driver.accountId, authSubject: { not: null }, status: 'ACTIVE', account: { status: 'ACTIVE' } }

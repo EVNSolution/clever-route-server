@@ -1,3 +1,4 @@
+import { isPrivateDriverDemoAppId, isPrivateDriverDemoScope } from '../driver/private-driver-demo.js';
 import { readDeliveryProof, readTollPolicy, type DeliveryProofPolicy, type TollPolicy } from './delivery-options.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
@@ -66,6 +67,7 @@ export class LiveRouteChangeError extends Error {
 
 const routeSelect = {
   id: true, shopId: true, driverId: true, status: true, assignmentGeneration: true, constraints: true,
+  shop: { select: { appId: true, shopDomain: true } },
   driver: { select: { accountId: true, shopId: true, status: true, authSubject: true, account: { select: { status: true } } } },
   deliveryWorkCompletedAt: true, deliveryWorkCompletedGeneration: true,
   deliveryWorkCompletedVersionId: true, driverNavigationUntil: true,
@@ -86,7 +88,10 @@ async function withRouteLock<T>(prisma: Client, identity: Identity, command: (tx
 
 async function loadRoute(tx: Tx, identity: Identity): Promise<Route> {
   const route = await tx.routePlan.findFirst({ where: { id: identity.routePlanId, shopId: identity.shopId }, select: routeSelect });
-  if (route === null) throw new LiveRouteChangeError('NOT_FOUND', 404, 'Route was not found');
+  if (route === null || (isPrivateDriverDemoAppId(route.shop.appId)
+    && !isPrivateDriverDemoScope({ ...route.shop, shopId: route.shopId, accountId: route.driver?.accountId }))) {
+    throw new LiveRouteChangeError('NOT_FOUND', 404, 'Route was not found');
+  }
   return route;
 }
 
