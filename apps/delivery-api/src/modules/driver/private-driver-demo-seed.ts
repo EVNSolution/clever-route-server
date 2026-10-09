@@ -11,13 +11,13 @@ const TIMEZONE = 'America/Toronto';
 const DEPOT = { latitude: 43.6534, longitude: -79.3841 };
 const ROUTES = [
   { key: 'cash', name: 'PRIVATE DEMO A · Cash / eTransfer · Proof OFF', proof: false, stops: [
-    { label: 'Nathan Phillips Square', address: '100 Queen Street West', latitude: 43.6525, longitude: -79.3839, amount: '122.25', gateway: 'Cash' },
-    { label: 'Osgoode Hall grounds', address: '130 Queen Street West', latitude: 43.6515, longitude: -79.3855, amount: '40.00', gateway: 'Interac e-Transfer' },
-    { label: 'Campbell House grounds', address: '160 Queen Street West', latitude: 43.6508, longitude: -79.3873, amount: '20.00', gateway: 'Cash' }
+    { label: 'Nathan Phillips Square', address: '100 Queen Street West', postalCode: 'M5H 2N2', latitude: 43.6525, longitude: -79.3839, amount: '122.25', gateway: 'Cash' },
+    { label: 'Osgoode Hall grounds', address: '130 Queen Street West', postalCode: 'M5H 2N6', latitude: 43.6515, longitude: -79.3855, amount: '40.00', gateway: 'Interac e-Transfer' },
+    { label: 'Campbell House grounds', address: '160 Queen Street West', postalCode: 'M5H 3H3', latitude: 43.6508, longitude: -79.3873, amount: '20.00', gateway: 'Cash' }
   ] },
   { key: 'proof', name: 'PRIVATE DEMO B · Photo + Signature ON', proof: true, stops: [
-    { label: 'Toronto City Hall grounds', address: '100 Queen Street West', latitude: 43.6534, longitude: -79.3841, amount: '10.00', gateway: 'Prepaid' },
-    { label: 'Trinity Square', address: '10 Trinity Square', latitude: 43.6542, longitude: -79.3816, amount: '15.00', gateway: 'Prepaid' }
+    { label: 'Toronto City Hall grounds', address: '100 Queen Street West', postalCode: 'M5H 2N2', latitude: 43.6534, longitude: -79.3841, amount: '10.00', gateway: 'Prepaid' },
+    { label: 'Trinity Square', address: '10 Trinity Square', postalCode: 'M5G 1B1', latitude: 43.6542, longitude: -79.3816, amount: '15.00', gateway: 'Prepaid' }
   ] }
 ] as const;
 
@@ -115,7 +115,7 @@ export async function seedPrivateDriverDemo(prisma: PrismaClient, input: { apply
         await tx.deliveryStop.create({ data: {
           id: stop.deliveryStopId, shopId: config.shopId, orderId: stop.orderId,
           recipientName: `DEMO ONLY · ${stopDefinition.label}`, address1: stopDefinition.address,
-          city: 'Toronto', province: 'Ontario', countryCode: 'CA', latitude: stopDefinition.latitude,
+          city: 'Toronto', province: 'Ontario', countryCode: 'CA', postalCode: stopDefinition.postalCode, latitude: stopDefinition.latitude,
           longitude: stopDefinition.longitude, geocodeStatus: 'RESOLVED', deliveryDate: planDate, status: 'ASSIGNED',
           instructions: 'Synthetic test only. No customer, no contact, no delivery or payment is owed.'
         } });
@@ -210,7 +210,8 @@ async function assertUnchangedSeed(tx: Prisma.TransactionClient, manifest: Priva
         || order.deliveryStatus !== 'ASSIGNED' || order.currencyCode !== 'CAD' || order.totalPriceAmount?.toFixed(2) !== definitionStop.amount
         || order.financialStatus !== (definition.proof ? 'PAID' : 'PENDING') || !same(order.rawPayload, orderPayload(definitionStop.gateway))
         || stop === undefined || stop.orderId !== order.id || stop.phone !== null || stop.status !== 'ASSIGNED'
-        || stop.address1 !== definitionStop.address || stop.latitude?.toNumber() !== definitionStop.latitude || stop.longitude?.toNumber() !== definitionStop.longitude
+        || stop.address1 !== definitionStop.address || stop.postalCode !== definitionStop.postalCode
+        || stop.latitude?.toNumber() !== definitionStop.latitude || stop.longitude?.toNumber() !== definitionStop.longitude
         || membership?.orderId !== order.id || membership.deliveryStopId !== stop.id || membership.groupingId !== expected.groupingId
         || membership.assignedDriverId !== manifest.driverId || membership.assignmentStatus !== 'ASSIGNED'
         || routeStop?.routePlanId !== route.id || routeStop.deliveryStopId !== stop.id || routeStop.sequence !== expectedStop.sequence) throw mismatch();

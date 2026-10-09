@@ -90,6 +90,10 @@ if (enabled) {
       expect(result.route.tollPolicy).toBe('ALLOW_TOLLS');
       expect(result.route.routeGeometry?.type).toBe('LineString');
       expect(result.route.stops.map(stop => stop.deliveryStopId)).toEqual(route.stops.map(stop => stop.deliveryStopId));
+      // Released app 43 requires a nonempty postalCode string on every assigned stop.
+      for (const stop of result.route.stops) expect(stop.address.postalCode).toMatch(/\S/u);
+      expect(result.route.stops.map(stop => stop.address.postalCode)).toEqual(route.key === 'cash'
+        ? ['M5H 2N2', 'M5H 2N6', 'M5H 3H3'] : ['M5H 2N2', 'M5G 1B1']);
       expect(result.route.stops.every(stop => stop.phone === null && stop.destinationId === null && stop.completion == null)).toBe(true);
       if (route.key === 'cash') expect(result.route.stops.map(stop => stop.payment)).toMatchObject([
         { method: 'CASH', expectedAmount: '122.25', currencyCode: 'CAD', requiresCashInput: true },
@@ -160,6 +164,9 @@ if (enabled) {
     const f = await fixture();
     const seeded = await seedPrivateDriverDemo(prisma, { apply: true });
     const stop = seeded.manifest.routes[0]!.stops[0]!;
+    await prisma.deliveryStop.update({ where: { id: stop.deliveryStopId }, data: { postalCode: null } });
+    await expect(seedPrivateDriverDemo(prisma, { apply: true })).rejects.toThrow('differs');
+    await prisma.deliveryStop.update({ where: { id: stop.deliveryStopId }, data: { postalCode: 'M5H 2N2' } });
     await prisma.deliveryStop.update({ where: { id: stop.deliveryStopId }, data: { status: 'DELIVERED' } });
     await expect(seedPrivateDriverDemo(prisma, { apply: true })).rejects.toThrow('differs');
     expect((await prisma.deliveryStop.findUniqueOrThrow({ where: { id: stop.deliveryStopId } })).status).toBe('DELIVERED');
