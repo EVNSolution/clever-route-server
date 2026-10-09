@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import type { DriverRouteAccessScope } from './driver-token-access.repository.js';
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
+import { privateDriverDemoVisibilityWhere } from './private-driver-demo.js';
 
 export const DRIVER_SYNC_HEALTH_DEFAULTS = {
   heartbeatAbsentSeconds: 180,
@@ -217,7 +218,7 @@ export class PrismaDriverSyncHealthService {
       await tx.$queryRaw`SELECT "id" FROM "route_plans" WHERE "id" = ${input.routePlanId}::uuid FOR UPDATE`;
       const route = await tx.routePlan.findFirst({
         select: { driver: { select: { accountId: true } }, driverId: true, shopId: true },
-        where: { id: input.routePlanId }
+        where: { id: input.routePlanId, AND: [privateDriverDemoVisibilityWhere()] }
       });
       if (route?.driverId === null || route?.driver?.accountId !== input.accountId) return null;
       const session = await tx.driverSyncSession.findUnique({

@@ -6,6 +6,7 @@ import ts from 'typescript';
 const sourceRoot = join(process.cwd(), 'src');
 const authorizedMembershipWriters = [
   'modules/driver/driver-route-order.service.ts',
+  'modules/driver/private-driver-demo-seed.ts', // Reviewed creation of a new isolated tenant; existing memberships are never rewritten.
   'modules/driver/rolling-eta-backfill.ts',
   'modules/dsv/dsv-assignment-command.service.ts',
   'modules/dsv/dsv-dispatch-import.service.ts',
@@ -19,6 +20,8 @@ const authorizedMembershipWriters = [
 const reviewedMutationInventory = [
   'modules/driver/driver-event.repository.ts:routePlanStop.update:2',
   'modules/driver/driver-route-order.service.ts:routePlanStop.updateMany:1',
+  'modules/driver/private-driver-demo-seed.ts:routeGroupingChildVersion.create:1',
+  'modules/driver/private-driver-demo-seed.ts:routePlanStop.createMany:1',
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-dispatch-import.service.ts:routeGroupingChildVersion.updateMany:1',
@@ -42,6 +45,7 @@ const reviewedMutationInventory = [
 ];
 
 const reviewedAssignmentPointerInventory = [
+  'modules/driver/private-driver-demo-seed.ts:order.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:order.updateMany:3',
   'modules/dsv/dsv-dispatch-import.service.ts:order.updateMany:1',
   'modules/route-grouping/route-grouping.service.ts:order.updateMany:2'

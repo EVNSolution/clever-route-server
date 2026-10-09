@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { isPrivateDriverDemoAppId } from '../driver/private-driver-demo.js';
 import { DEFAULT_SHOPIFY_APP_ID, normalizeShopifyAppId } from './shopify-app-scope.js';
 
 export type VerifiedShopifySession = {
@@ -95,6 +96,9 @@ export function verifyShopifySessionToken(
   const credential = findCredentialForAudience(normalizeCredentials(options), audience);
   if (credential === null) {
     throw new Error('Shopify session token audience mismatch');
+  }
+  if (isPrivateDriverDemoAppId(credential.appId)) {
+    throw new Error('Shopify administrator access is unavailable for this app');
   }
   verifySignature(`${encodedHeader}.${encodedPayload}`, encodedSignature, credential.clientSecret);
 

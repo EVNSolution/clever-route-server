@@ -54,6 +54,20 @@ describe('verifyShopifySessionToken', () => {
     });
   });
 
+  test('rejects reserved private demo credentials even when accidentally registered', () => {
+    expect(() => verifyShopifySessionToken(signTestSessionToken(), {
+      appCredentials: [{ appId: 'clever-route-kfood-private-demo', clientId, clientSecret }], now
+    })).toThrow('Shopify administrator access is unavailable for this app');
+  });
+
+  test('does not let an ordinary KFood token select the same-domain private app', () => {
+    const options = { appId: 'clever-route-kfood', clientId, clientSecret, now };
+    expect(verifyShopifySessionToken(signTestSessionToken(), options).appId).toBe('clever-route-kfood');
+    expect(() => verifyShopifySessionToken(signTestSessionToken(), {
+      ...options, expectedAppId: 'clever-route-kfood-private-demo'
+    })).toThrow('Shopify session token app mismatch');
+  });
+
   test('accepts an alternate app credential based on the token audience', () => {
     const verified = verifyShopifySessionToken(
       signTestSessionToken({ aud: devClientId }, {}, devClientSecret),

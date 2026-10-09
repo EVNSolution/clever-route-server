@@ -14,6 +14,7 @@ if [[ "${1:-}" == "--plan" ]]; then
     'G006: 127.0.0.1:55490 / clever_g006' \
     'Driver password reset: 127.0.0.1:55494 / driver_password_reset' \
     'Completion Assistance: 127.0.0.1:55495 / cc295_disposable' \
+    'Private driver demo: 127.0.0.1:55496 / clever_private_demo_test' \
     'Deletion lifecycle populated upgrade: 127.0.0.1:55492 / clever_deletion_upgrade'
   exit 0
 fi
@@ -76,6 +77,7 @@ driver_route_order_container="clever-api-audit-driver-route-order-${audit_suffix
 g006_container="clever-api-audit-g006-${audit_suffix}"
 driver_password_reset_container="clever-api-audit-driver-password-reset-${audit_suffix}"
 completion_assistance_container="clever-api-audit-completion-assistance-${audit_suffix}"
+private_driver_demo_container="clever-api-audit-private-driver-demo-${audit_suffix}"
 deletion_upgrade_container="clever-api-audit-deletion-upgrade-${audit_suffix}"
 
 g003_url='postgresql://clever_g003:clever_g003@127.0.0.1:55433/clever_g003?schema=public'
@@ -87,6 +89,7 @@ driver_route_order_url='postgresql://clever_route_order:clever_route_order@127.0
 g006_url='postgresql://clever_g006:clever_g006@127.0.0.1:55490/clever_g006?schema=public'
 driver_reset_url='postgresql://driver_password_reset:driver_password_reset@127.0.0.1:55494/driver_password_reset?schema=public'
 completion_assistance_url='postgresql://cc295:cc295@127.0.0.1:55495/cc295_disposable?schema=public'
+private_driver_demo_url='postgresql://clever_demo:clever_demo@127.0.0.1:55496/clever_private_demo_test?schema=public'
 
 start_postgres "$g003_container" 55433 clever_g003 clever_g003 clever_g003
 start_postgres "$g003_upgrade_container" 55434 clever_g003_upgrade clever_g003_upgrade clever_g003_upgrade
@@ -99,6 +102,7 @@ start_postgres "$driver_route_order_container" 55467 clever_route_order clever_r
 start_postgres "$g006_container" 55490 clever_g006 clever_g006 clever_g006
 start_postgres "$driver_password_reset_container" 55494 driver_password_reset driver_password_reset driver_password_reset
 start_postgres "$completion_assistance_container" 55495 cc295_disposable cc295 cc295
+start_postgres "$private_driver_demo_container" 55496 clever_private_demo_test clever_demo clever_demo
 start_postgres "$deletion_upgrade_container" 55492 clever_deletion_upgrade clever_deletion_upgrade clever_deletion_upgrade
 
 docker exec -i "$deletion_upgrade_container" psql -v ON_ERROR_STOP=1 \
@@ -305,7 +309,7 @@ g003_upgrade_manifest="$(docker exec "$g003_upgrade_container" psql -At -U cleve
 [[ "$(printf '%s\n' "$g003_upgrade_manifest" | wc -l | tr -d ' ')" == '2' ]] || { echo 'Missing per-shop G003 migration manifest' >&2; exit 1; }
 printf 'G003 populated migration upgrade: PASS\n%s\n' "$g003_upgrade_manifest"
 
-for database_url in "$g002_url" "$email_reconciliation_url" "$g003_url" "$g010_url" "$g005_url" "$driver_route_order_url" "$g006_url" "$driver_reset_url" "$completion_assistance_url"; do
+for database_url in "$g002_url" "$email_reconciliation_url" "$g003_url" "$g010_url" "$g005_url" "$driver_route_order_url" "$g006_url" "$driver_reset_url" "$completion_assistance_url" "$private_driver_demo_url"; do
   DATABASE_URL="$database_url" npm run prisma:migrate:deploy
 done
 
@@ -380,3 +384,11 @@ bash scripts/test-live-route-change-db.sh
 
 # Single completion and first Cash receipt use an independent synthetic database.
 bash scripts/test-cash-completion-db.sh
+
+# Keep the fixed reserved app/domain fixture isolated. Scope runs last because
+# its completion-assistance history is append-only until this container is removed.
+for private_demo_test in seed account-endpoints scope; do
+  PRIVATE_DRIVER_DEMO_DATABASE_TARGET_CLASS='safe-local-private-driver-demo-disposable' \
+  PRIVATE_DRIVER_DEMO_DATABASE_URL="$private_driver_demo_url" \
+  npm test -- "private-driver-demo-${private_demo_test}.integration.test.ts" --maxWorkers=1
+done

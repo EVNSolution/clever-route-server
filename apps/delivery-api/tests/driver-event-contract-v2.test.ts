@@ -338,7 +338,8 @@ describe('driver completion receipt precedence', () => {
     expect(restored).toEqual(original);
     expect(findCommitted).toHaveBeenCalledWith(expect.objectContaining({
       where: {
-        clientEventId: 'complete-1', driver: { accountId: 'original-account-id' }, routePlanId: 'route-id'
+        clientEventId: 'complete-1', driver: { accountId: 'original-account-id' }, routePlanId: 'route-id',
+        routePlan: { is: { OR: [{ shop: { appId: { not: 'clever-route-kfood-private-demo' } } }] } }
       }
     }));
     expect(findAttempt).not.toHaveBeenCalled();
@@ -396,7 +397,8 @@ describe('driver completion receipt precedence', () => {
     await expect(repository.lookup({ accountId: 'other-account-id', clientEventId: 'complete-1', routePlanId: 'route-id' }))
       .rejects.toBeInstanceOf(DriverEventReceiptScopeError);
     expect(findCommitted).toHaveBeenCalledWith(expect.objectContaining({
-      where: { clientEventId: 'complete-1', driver: { accountId: 'other-account-id' }, routePlanId: 'route-id' }
+      where: { clientEventId: 'complete-1', driver: { accountId: 'other-account-id' }, routePlanId: 'route-id',
+        routePlan: { is: { OR: [{ shop: { appId: { not: 'clever-route-kfood-private-demo' } } }] } } }
     }));
   });
 

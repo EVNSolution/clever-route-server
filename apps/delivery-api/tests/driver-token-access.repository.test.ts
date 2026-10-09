@@ -243,12 +243,12 @@ describe('PrismaDriverTokenAccessRepository', () => {
     ).resolves.toBe(true);
 
     expect(prisma.driver.findFirst).toHaveBeenCalledWith({
-      select: { tokenVersion: true },
+      select: { tokenVersion: true, shop: { select: { appId: true } } },
       where: {
         authSubject: { not: null },
         isStoreReviewData: false,
         id: 'driver-id',
-        shop: { shopDomain: 'dev1.tomatonofood.com' },
+        shop: { appId: { not: 'clever-route-kfood-private-demo' }, shopDomain: 'dev1.tomatonofood.com' },
         status: 'ACTIVE'
       }
     });

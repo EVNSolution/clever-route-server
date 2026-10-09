@@ -1,10 +1,24 @@
 import type { Prisma } from '@prisma/client';
+import { isPrivateDriverDemoScope, privateDriverDemoRouteWhere } from '../driver/private-driver-demo.js';
 import { toRouteExecutionStatus, type RouteExecutionStatus } from './route-plan-lifecycle.js';
 
 export const KFOOD_DELIVERY_APP_ID = 'clever-route-kfood';
 export const KFOOD_DELIVERY_SHOP_DOMAIN = '7hrud1-xq.myshopify.com';
 export const KFOOD_RETURN_NAVIGATION_GRACE_MS = 2 * 60 * 60_000;
 const TERMINAL_STOPS = new Set(['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED']);
+
+export function isKfoodDeliveryScope(scope: {
+  appId: string; shopDomain: string; shopId?: string; accountId?: string | null;
+}, env: Partial<Record<string, string>> = process.env): boolean {
+  return scope.appId === KFOOD_DELIVERY_APP_ID && scope.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
+    || isPrivateDriverDemoScope({ ...scope, shopId: scope.shopId, accountId: scope.accountId }, env);
+}
+
+export function kfoodDeliveryRouteWhere(env: Partial<Record<string, string>> = process.env): Prisma.RoutePlanWhereInput {
+  const standard = { shop: { appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN } };
+  const privateScope = privateDriverDemoRouteWhere(env);
+  return privateScope === null ? standard : { OR: [standard, privateScope] };
+}
 
 export type DeliveryWorkCompletionRecord = {
   assignmentGeneration?: bigint;
@@ -57,7 +71,7 @@ export async function reconcileKfoodDeliveryWorkCompletion(
   const route = await tx.routePlan.findFirst({
     where: {
       id: input.routePlanId, shopId: input.shopId, status: 'IN_PROGRESS',
-      shop: { appId: KFOOD_DELIVERY_APP_ID, shopDomain: KFOOD_DELIVERY_SHOP_DOMAIN }
+      ...kfoodDeliveryRouteWhere()
     },
     select: {
       id: true, driverId: true, assignmentGeneration: true, deliveryWorkCompletedAt: true, driverNavigationUntil: true,

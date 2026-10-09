@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { KFOOD_PRIVATE_DEMO_APP_ID } from '../src/modules/driver/private-driver-demo.js';
 import {
   DriverRouteCompletionReviewConflictError,
   DriverRouteCompletionReviewNotFoundError,
@@ -26,7 +27,7 @@ describe('PrismaDriverRouteCompletionReviewRepository', () => {
     })).resolves.toEqual({ outcome: 'FALSE_POSITIVE', reviewedAt: reviewedAt.toISOString() });
 
     expect(transaction.driverRouteCompletionReview.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'review-id', shop: { shopDomain: 'k-food.myshopify.com' }, wouldReject: true }
+      where: { id: 'review-id', shop: { appId: { not: KFOOD_PRIVATE_DEMO_APP_ID }, shopDomain: 'k-food.myshopify.com' }, wouldReject: true }
     }));
     expect(transaction.driverRouteCompletionReviewHistory.create).toHaveBeenCalledWith({ data: {
       actor: 'operator@example.com', createdAt: reviewedAt, note: 'Observed stop was already terminal.',
@@ -86,7 +87,7 @@ describe('PrismaDriverRouteCompletionReviewRepository', () => {
       createdAt: createdAt.toISOString(), id: 'review-id', mode: 'OBSERVE', routePlanId: 'route-id', totalStopCount: 12, unresolvedStopCount: 2
     }]);
     expect(transaction.driverRouteCompletionReview.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      take: 50, where: { reviewOutcome: null, shop: { shopDomain: 'k-food.myshopify.com' }, wouldReject: true }
+      take: 50, where: { reviewOutcome: null, shop: { appId: { not: KFOOD_PRIVATE_DEMO_APP_ID }, shopDomain: 'k-food.myshopify.com' }, wouldReject: true }
     }));
   });
 });

@@ -806,6 +806,7 @@ describe('PrismaDriverProofMediaRepository', () => {
     });
 
     expect(prisma.driverProofMedia.findFirst).toHaveBeenCalledWith({
+      include: { shop: { select: { appId: true } } },
       where: {
         deletedAt: null,
         driverId: 'driver-id',
@@ -873,6 +874,7 @@ describe('PrismaDriverProofMediaRepository', () => {
         },
         id: true,
         kind: true,
+        shop: { select: { appId: true } },
         sha256: true,
         sizeBytes: true,
         source: true,
@@ -914,6 +916,47 @@ describe('PrismaDriverProofMediaRepository', () => {
       createReadAccess, remove: () => Promise.resolve('removed'), write: () => Promise.resolve()
     } });
     await expect(repository.createAdminProofMediaReadAccess({ mediaId: 'signature-id', shopId: 'shop-id' })).rejects.toMatchObject({ name: 'DriverProofMediaScopeError' });
+    expect(createReadAccess).not.toHaveBeenCalled();
+  });
+
+  test('never issues private demo proof URLs to the driver or an administrator', async () => {
+    const { prisma } = createPrismaHarness({ proofMedia: {
+      contentType: 'image/jpeg', id: 'private-media', kind: 'PHOTO', source: 'CAMERA',
+      shop: { appId: 'clever-route-kfood-private-demo' },
+      storageKey: 'driver-proof/private-demo/photo.jpg', uploadedAt: now
+    } });
+    const createReadAccess = vi.fn();
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, { storage: {
+      createReadAccess, remove: () => Promise.resolve('removed'), write: () => Promise.resolve()
+    } });
+
+    await expect(repository.createProofMediaReadAccess({
+      driverId: 'driver-id', mediaId: 'private-media', routePlanId: 'route-plan-id',
+      shopDomain: '7hrud1-xq.myshopify.com', shopId: 'private-shop'
+    })).rejects.toMatchObject({ name: 'DriverProofMediaScopeError' });
+    await expect(repository.createAdminProofMediaReadAccess({
+      mediaId: 'private-media', shopId: 'private-shop'
+    })).rejects.toMatchObject({ name: 'DriverProofMediaScopeError' });
+    expect(createReadAccess).not.toHaveBeenCalled();
+  });
+
+  test('still stores private demo proof and returns a completion reference without a read URL', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlan: { id: 'route-plan-id', shop: { appId: 'clever-route-kfood-private-demo' } }
+    });
+    const createReadAccess = vi.fn();
+    const write = vi.fn(() => Promise.resolve());
+    const repository = new PrismaDriverProofMediaRepository(prisma as never, {
+      storage: { createReadAccess, remove: () => Promise.resolve('removed'), write },
+      createMediaId: () => '11111111-1111-4111-8111-111111111111', now: () => now
+    });
+
+    const result = await repository.storeProofMedia({
+      ...proofMediaInput(), shopDomain: '7hrud1-xq.myshopify.com', shopId: 'private-shop'
+    });
+    expect(write).toHaveBeenCalledOnce();
+    expect(result.mediaId).toBe('11111111-1111-4111-8111-111111111111');
+    expect(result).not.toHaveProperty('url');
     expect(createReadAccess).not.toHaveBeenCalled();
   });
 
@@ -1253,10 +1296,11 @@ function createPrismaHarness(input: {
     sha256?: string;
     sizeBytes?: number;
     source?: 'CAMERA' | 'LIBRARY';
+    shop?: { appId: string };
     storageKey: string;
     uploadedAt: Date;
   } | null;
-  routePlan?: { id: string } | null;
+  routePlan?: { id: string; shop?: { appId: string } } | null;
   routePlanStops?: {
     deliveryStop: { order: { destinationId: string | null } };
     deliveryStopId: string;
@@ -1271,7 +1315,7 @@ function createPrismaHarness(input: {
         create: vi.fn(({ data }: { data: Record<string, unknown> }) => input.createProofMediaError === undefined
           ? Promise.resolve({ ...data })
           : Promise.reject(input.createProofMediaError)),
-        findFirst: vi.fn(() => Promise.resolve(input.proofMedia === undefined ? null : input.proofMedia)),
+        findFirst: vi.fn(() => Promise.resolve(input.proofMedia == null ? null : { shop: { appId: 'clever-route-kfood' }, ...input.proofMedia })),
         findMany: vi.fn(() => Promise.resolve(input.expiredProofMedia ?? [])),
         deleteMany: vi.fn(() => Promise.resolve({ count: 1 })),
         updateMany: vi.fn((updateInput: unknown) => {

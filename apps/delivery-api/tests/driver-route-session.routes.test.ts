@@ -144,7 +144,7 @@ describe('Driver route session restore route', () => {
       routeSequenceChecksum: 'checksum',
       width: 720
     };
-    const createRouteMapPreview = vi.fn(() => routeMapPreview);
+    const createRouteMapPreview = vi.fn(() => Promise.resolve(routeMapPreview));
     const { app } = await createAppHarness({
       driverRouteMapPreviewBaseUrl: 'https://delivery.example.com',
       driverRouteMapPreviewService: {

@@ -254,7 +254,7 @@ describe('Driver assigned route route', () => {
       routeSequenceChecksum: 'checksum',
       width: 720
     };
-    const createRouteMapPreview = vi.fn(() => routeMapPreview);
+    const createRouteMapPreview = vi.fn(() => Promise.resolve(routeMapPreview));
     const { app } = await createAppHarness({
       driverRouteMapPreviewBaseUrl: 'https://delivery.example.com',
       driverRouteMapPreviewService: {
@@ -296,7 +296,7 @@ describe('Driver assigned route route', () => {
     const readRouteMapPreviewImage = vi.fn(() => Promise.resolve(image));
     const { app } = await createAppHarness({
       driverRouteMapPreviewService: {
-        createRouteMapPreview: vi.fn(() => null),
+        createRouteMapPreview: vi.fn(() => Promise.resolve(null)),
         readRouteMapPreviewImage
       }
     });
@@ -321,10 +321,31 @@ describe('Driver assigned route route', () => {
     }
   });
 
+  test('keeps the assigned route usable without a preview URL when preview access is denied', async () => {
+    const { app } = await createAppHarness({
+      driverRouteMapPreviewBaseUrl: 'https://delivery.example.com',
+      driverRouteMapPreviewService: {
+        createRouteMapPreview: vi.fn(() => Promise.resolve(null)),
+        readRouteMapPreviewImage: vi.fn(() => Promise.resolve(null))
+      }
+    });
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'GET', url: '/driver/assigned-route?routeContext=route-plan-id'
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: assignedRoute, error: null });
+      expect(response.body).not.toContain('imageUrl');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects unavailable or malformed route map preview image requests', async () => {
     const { app } = await createAppHarness({
       driverRouteMapPreviewService: {
-        createRouteMapPreview: vi.fn(() => null),
+        createRouteMapPreview: vi.fn(() => Promise.resolve(null)),
         readRouteMapPreviewImage: vi.fn(() => Promise.resolve(null))
       }
     });
