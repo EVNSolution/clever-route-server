@@ -161,9 +161,10 @@ describe('PrismaDriverEventRepository', () => {
       routePlanId: 'route-plan-id'
     }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
 
-    expect(prisma.driverEvent.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ eventType: 'LOCATION_UPDATED', routePlanId: 'route-plan-id' })
-    });
+    expect(prisma.driverEvent.create.mock.calls[0]?.[0]).toMatchObject({ data: {
+      eventType: 'LOCATION_UPDATED',
+      routePlanId: 'route-plan-id'
+    } });
     expect(prisma.routeTrackingGeometry.upsert).toHaveBeenCalledOnce();
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
       select: { id: true, status: true },
