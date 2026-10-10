@@ -5,20 +5,20 @@ import { assertProofDriverCompatible, assertProofRollout } from '../route-plans/
 import { computeRouteShapeSignatureFromParts } from '../route-plans/route-plan-geometry-cache.js';
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 import { getPrivateDriverDemoConfig, KFOOD_PRIVATE_DEMO_APP_ID, KFOOD_PRIVATE_DEMO_SHOP_DOMAIN } from './private-driver-demo.js';
+import {
+  findTemplateAddressGaps,
+  PRIVATE_DRIVER_DEMO_CITY,
+  PRIVATE_DRIVER_DEMO_COUNTRY_CODE,
+  PRIVATE_DRIVER_DEMO_PROVINCE,
+  PRIVATE_DRIVER_DEMO_TEMPLATES
+} from './private-driver-demo-templates.js';
 
 const SCHEMA = 'kfood_private_driver_demo_seed_v1';
 const TIMEZONE = 'America/Toronto';
 const DEPOT = { latitude: 43.6534, longitude: -79.3841 };
 const ROUTES = [
-  { key: 'cash', name: 'PRIVATE DEMO A · Cash / eTransfer · Proof OFF', proof: false, stops: [
-    { label: 'Nathan Phillips Square', address: '100 Queen Street West', latitude: 43.6525, longitude: -79.3839, amount: '122.25', gateway: 'Cash' },
-    { label: 'Osgoode Hall grounds', address: '130 Queen Street West', latitude: 43.6515, longitude: -79.3855, amount: '40.00', gateway: 'Interac e-Transfer' },
-    { label: 'Campbell House grounds', address: '160 Queen Street West', latitude: 43.6508, longitude: -79.3873, amount: '20.00', gateway: 'Cash' }
-  ] },
-  { key: 'proof', name: 'PRIVATE DEMO B · Photo + Signature ON', proof: true, stops: [
-    { label: 'Toronto City Hall grounds', address: '100 Queen Street West', latitude: 43.6534, longitude: -79.3841, amount: '10.00', gateway: 'Prepaid' },
-    { label: 'Trinity Square', address: '10 Trinity Square', latitude: 43.6542, longitude: -79.3816, amount: '15.00', gateway: 'Prepaid' }
-  ] }
+  { key: 'cash', name: 'PRIVATE DEMO A · Cash / eTransfer · Proof OFF', ...PRIVATE_DRIVER_DEMO_TEMPLATES.cash },
+  { key: 'proof', name: 'PRIVATE DEMO B · Photo + Signature ON', ...PRIVATE_DRIVER_DEMO_TEMPLATES.proof }
 ] as const;
 
 export type PrivateDriverDemoManifest = ReturnType<typeof buildManifest>;
@@ -47,6 +47,11 @@ export async function seedPrivateDriverDemo(prisma: PrismaClient, input: { apply
   const now = input.now ?? new Date();
   if (!Number.isFinite(now.getTime())) throw new Error('Invalid private demo seed time.');
   assertProofRollout({ photoRequired: true, signatureRequired: true });
+  // The driver app drops a route when a stop address part is missing, so a demo must never be created without them.
+  for (const route of ROUTES) {
+    const gaps = findTemplateAddressGaps(route);
+    if (gaps.length > 0) throw new Error(`Private demo route template is incomplete for the driver app: ${gaps.join(', ')}.`);
+  }
 
   return prisma.$transaction(async tx => {
     // Serialize this seed and keep the existing account active for the entire transaction.
@@ -115,7 +120,8 @@ export async function seedPrivateDriverDemo(prisma: PrismaClient, input: { apply
         await tx.deliveryStop.create({ data: {
           id: stop.deliveryStopId, shopId: config.shopId, orderId: stop.orderId,
           recipientName: `DEMO ONLY · ${stopDefinition.label}`, address1: stopDefinition.address,
-          city: 'Toronto', province: 'Ontario', countryCode: 'CA', latitude: stopDefinition.latitude,
+          city: PRIVATE_DRIVER_DEMO_CITY, province: PRIVATE_DRIVER_DEMO_PROVINCE, countryCode: PRIVATE_DRIVER_DEMO_COUNTRY_CODE,
+          postalCode: stopDefinition.postalCode, latitude: stopDefinition.latitude,
           longitude: stopDefinition.longitude, geocodeStatus: 'RESOLVED', deliveryDate: planDate, status: 'ASSIGNED',
           instructions: 'Synthetic test only. No customer, no contact, no delivery or payment is owed.'
         } });
@@ -210,7 +216,8 @@ async function assertUnchangedSeed(tx: Prisma.TransactionClient, manifest: Priva
         || order.deliveryStatus !== 'ASSIGNED' || order.currencyCode !== 'CAD' || order.totalPriceAmount?.toFixed(2) !== definitionStop.amount
         || order.financialStatus !== (definition.proof ? 'PAID' : 'PENDING') || !same(order.rawPayload, orderPayload(definitionStop.gateway))
         || stop === undefined || stop.orderId !== order.id || stop.phone !== null || stop.status !== 'ASSIGNED'
-        || stop.address1 !== definitionStop.address || stop.latitude?.toNumber() !== definitionStop.latitude || stop.longitude?.toNumber() !== definitionStop.longitude
+        || stop.address1 !== definitionStop.address || stop.postalCode !== definitionStop.postalCode
+        || stop.latitude?.toNumber() !== definitionStop.latitude || stop.longitude?.toNumber() !== definitionStop.longitude
         || membership?.orderId !== order.id || membership.deliveryStopId !== stop.id || membership.groupingId !== expected.groupingId
         || membership.assignedDriverId !== manifest.driverId || membership.assignmentStatus !== 'ASSIGNED'
         || routeStop?.routePlanId !== route.id || routeStop.deliveryStopId !== stop.id || routeStop.sequence !== expectedStop.sequence) throw mismatch();

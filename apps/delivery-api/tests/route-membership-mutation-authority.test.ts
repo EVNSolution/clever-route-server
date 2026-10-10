@@ -6,6 +6,7 @@ import ts from 'typescript';
 const sourceRoot = join(process.cwd(), 'src');
 const authorizedMembershipWriters = [
   'modules/driver/driver-route-order.service.ts',
+  'modules/driver/private-driver-demo-routes.ts', // Reviewed creation of unpublished synthetic routes in the isolated demo tenant; existing memberships are never rewritten.
   'modules/driver/private-driver-demo-seed.ts', // Reviewed creation of a new isolated tenant; existing memberships are never rewritten.
   'modules/driver/rolling-eta-backfill.ts',
   'modules/dsv/dsv-assignment-command.service.ts',
@@ -20,6 +21,8 @@ const authorizedMembershipWriters = [
 const reviewedMutationInventory = [
   'modules/driver/driver-event.repository.ts:routePlanStop.update:2',
   'modules/driver/driver-route-order.service.ts:routePlanStop.updateMany:1',
+  'modules/driver/private-driver-demo-routes.ts:routeGroupingChildVersion.create:1',
+  'modules/driver/private-driver-demo-routes.ts:routePlanStop.createMany:1',
   'modules/driver/private-driver-demo-seed.ts:routeGroupingChildVersion.create:1',
   'modules/driver/private-driver-demo-seed.ts:routePlanStop.createMany:1',
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
@@ -45,6 +48,7 @@ const reviewedMutationInventory = [
 ];
 
 const reviewedAssignmentPointerInventory = [
+  'modules/driver/private-driver-demo-routes.ts:order.updateMany:1',
   'modules/driver/private-driver-demo-seed.ts:order.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:order.updateMany:3',
   'modules/dsv/dsv-dispatch-import.service.ts:order.updateMany:1',
