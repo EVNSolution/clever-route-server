@@ -381,6 +381,27 @@ preserve the current geometry cache.
 Passing `null` for `serviceMinutes` resets the CLEVER stop to the database
 default of 5 minutes.
 
+### Where a Stop time came from
+
+`delivery_stops.serviceMinutesSource` records who chose a stop's `serviceMinutes`.
+It is not part of any response.
+
+| Value | Meaning |
+| --- | --- |
+| `STOP` | The office changed the Stop time of that stop (stop override, or a custom stop created or edited with another time). |
+| `ROUTE` | The unified Stop time given when the route was created (`initialRoute.serviceMinutes` of `POST /admin/route-groups`). |
+| `DRIVER` | Reserved for the per-driver average; nothing writes it yet. |
+| `null` | The system default of 5 minutes. |
+
+A stop override that sends the time a stop already has changes nothing, so the
+full Edit stop form does not mark every stop it saves. Sending `null` resets the
+time to 5 and clears the source. When the column was added, every stop whose
+time was not 5 was marked `STOP`, so no existing time is taken for a default.
+`POST /admin/route-groups` with `initialRoute.serviceMinutes` (integer 0 to
+1440) gives every stop of the new route that time and marks it `ROUTE`; it is
+part of the request identity, so a retry with the same `requestId` and another
+time is a conflict.
+
 ## GET `/admin/route-plans/:routePlanId/tracking`
 
 Original stored GPS facts have a separate bounded, authenticated read contract:
