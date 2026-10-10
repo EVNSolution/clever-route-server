@@ -20,12 +20,17 @@ plain connector is better than a gap ("경로가 끊기면 안 된다", change c
 `legacy-whole-match` provider used by UVIS vehicle trails is unchanged.
 
 - The OSRM match request keeps `tidy=true` and sends a per-sample search
-  radius of at least 25 m (still capped at 200 m). With the phone accuracy
-  (3-4 m) as radius OSRM returned null tracepoints for 25-60 % of the points;
-  the null tracepoints that tidy itself produces at stops are joined by the
-  pairing rule below. `tidy=false` was tried on 2026-10-11 and dropped: with
-  every fix of a stop in the request, noisy 80-point matches ran past the
-  30 s worker budget.
+  radius between 25 m and 50 m. With the phone accuracy (3-4 m) as radius
+  OSRM returned null tracepoints for 25-60 % of the points; the null
+  tracepoints that tidy itself produces at stops are joined by the pairing
+  rule below. `tidy=false` was tried on 2026-10-11 and dropped: with every
+  fix of a stop in the request, noisy 80-point matches ran past the 30 s
+  worker budget. The 50 m cap came the same day: OSRM searches three times
+  the radius and its matcher cost grows with the square of the candidates,
+  so 80-point chunks with 100-200 m fixes in a dense grid (2026.09.03 South,
+  2026.09.11 저녁배송) took 34 s and 113 s with their accuracy as radius and
+  about 2 s with the cap, at the same null tracepoints. Fixes up to 200 m
+  stay in the request as waypoints; above that they are left out (below).
 - OSRM's whole-trace `confidence` is recorded but does not gate a leg. It is a
   length ratio over the whole trace and falls on long delivery traces with
   stops; a leg is accepted on its own distance, speed and snap checks.

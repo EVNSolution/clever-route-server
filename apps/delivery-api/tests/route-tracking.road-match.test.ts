@@ -80,7 +80,8 @@ describe('route tracking road matching', () => {
     await provider.match(input);
 
     const requestedUrl = String((fetch.mock.calls as unknown as Array<[string]>)[0]![0]);
-    expect(requestedUrl).toContain('radiuses=75%3B75');
+    // The continuous mode caps every radius at 50 m; the legacy mode below sends the 75 m as is.
+    expect(requestedUrl).toContain('radiuses=50%3B50');
   });
 
   test('preserves legacy whole-match geometry only for an explicit no-accuracy consumer', async () => {
@@ -197,29 +198,33 @@ describe('route tracking road matching', () => {
     expect(result?.matchedGeometry).toBeNull();
   });
 
-  test('uses per-sample GPS accuracy as OSRM radiuses with a 25 m floor and a bounded fallback', async () => {
+  test('uses per-sample GPS accuracy as OSRM radiuses between a 25 m floor and a 50 m cap, with a bounded fallback', async () => {
+    const coordinates: Array<[number, number]> = [[126.9, 37.5], [126.901, 37.501], [126.902, 37.502], [126.903, 37.503]];
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       code: 'Ok',
       matchings: [{
         confidence: 0.9,
-        geometry: { coordinates: [[126.9, 37.5], [126.901, 37.501], [126.902, 37.502]], type: 'LineString' },
+        geometry: { coordinates, type: 'LineString' },
       }],
-      tracepoints: [{}, {}, {}],
+      tracepoints: [{}, {}, {}, {}],
     }))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
       baseUrls: { korea: 'http://osrm-korea:5000' },
       fetch,
       gpsPrecisionMeters: 40,
     });
-    const input = document([[126.9, 37.5], [126.901, 37.501], [126.902, 37.502]]);
+    const input = document(coordinates);
     input.samples[0]!.accuracyMeters = 8.4;
     input.samples[1]!.accuracyMeters = 25;
-    input.samples[2]!.accuracyMeters = null;
+    input.samples[2]!.accuracyMeters = 172.1;
+    input.samples[3]!.accuracyMeters = null;
 
     await provider.match(input);
 
+    // The 172 m fix stays in the request as a waypoint; only its search radius is capped.
     const requestedUrl = String((fetch.mock.calls as unknown as Array<[string]>)[0]![0]);
-    expect(requestedUrl).toContain('radiuses=25%3B25%3B40');
+    expect(requestedUrl).toContain('/match/v1/driving/126.9,37.5;126.901,37.501;126.902,37.502;126.903,37.503?');
+    expect(requestedUrl).toContain('radiuses=25%3B25%3B50%3B40');
   });
 
   test('splits by GPS gaps and by 80-point OSRM match request limit', async () => {
@@ -701,7 +706,7 @@ describe('route tracking road matching', () => {
     const matchUrls = (fetch.mock.calls as unknown as Array<[string]>).map(([url]) => String(url))
       .filter((url) => url.includes('/match/v1/driving/'));
     expect(matchUrls).toHaveLength(2);
-    expect(matchUrls[1]).toContain('radiuses=25%3B150%3B25');
+    expect(matchUrls[1]).toContain('radiuses=25%3B50%3B25');
     expect(matchUrls[1]).toContain('timestamps=1784592030%3B1784592060%3B1784592090');
     expect(result?.inferredGeometry?.coordinates).toEqual([supplementRouteCoordinates()]);
     expect(result?.inferredRanges).toEqual([expect.objectContaining({
