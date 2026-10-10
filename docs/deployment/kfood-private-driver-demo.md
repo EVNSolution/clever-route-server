@@ -60,6 +60,48 @@ Check other-account denial, normal-admin isolation, signed-media denial and
 unchanged real assignments separately from delivery-function checks. Save route
 identifiers and device evidence outside Git and public issues.
 
+## Driver app address contract
+
+The driver app (1.3.x) accepts an assigned route only when every stop address has address1, city, province, postal
+code and country code as strings. It drops the whole route without a message otherwise, so a demo stop without a
+postal code is listed and fetched by the app but never shown in My Routes. Every seeded and extra demo stop carries
+all five parts (`private-driver-demo-templates.ts`), the seed refuses an incomplete template, and Dispatch refuses a
+stored stop that has a gap. The server also returns an empty string for a missing part so a real route is not
+dropped (`driver-assigned-route.repository.ts`).
+
+## Add and Dispatch a new demo route
+
+The seed creates its two routes already published and sends no push. To test a Dispatch (route push and exposure in
+My Routes) add a separate route: it is created assigned but unpublished, so the driver app cannot see it until
+Dispatch. Run inside the verified API runtime; the commands print one JSON line and never print database errors.
+
+```sh
+node dist/scripts/private-driver-demo-route.js --mode check    --key cashv2 --name 'PRIVATE DEMO · Cash / eTransfer' --template cash
+node dist/scripts/private-driver-demo-route.js --mode create   --key cashv2 --name 'PRIVATE DEMO · Cash / eTransfer' --template cash
+node dist/scripts/private-driver-demo-route.js --mode dispatch --key cashv2 --name 'PRIVATE DEMO · Cash / eTransfer' --template cash
+```
+
+Templates are `simple` (2 stops), `cash` (3 stops, Cash and e-Transfer, proof off) and `proof` (2 stops, photo and
+signature required). The key is 3 to 16 lowercase letters or digits and fixes the route ids, so a repeated create
+returns `UNCHANGED`. Dispatch needs the configured push provider and an active push token of the demo account, calls
+the admin publish services, and prints `exposedInRouteList` and `appAddressContractOk` after reading the route back
+the way the app does. It sends the route push to every active token of the demo account.
+
+## Remove the demo routes
+
+`teardown-private-driver-demo` deletes every synthetic route row of the demo shop (routes, orders, stops, groupings,
+events, receipts, leases) and keeps the shop row, the demo driver row, accounts and sessions. It writes a private
+JSON snapshot to a new file first (`--evidence`, never overwritten). Run the dry run first: it performs the deletes in
+a transaction and rolls back.
+
+```sh
+node dist/scripts/teardown-private-driver-demo.js --mode dry-run --evidence /private/demo-teardown-dry-run.json
+node dist/scripts/teardown-private-driver-demo.js --mode apply   --evidence /private/demo-teardown.json
+```
+
+After a teardown the seed refuses to run (the shop row exists and differs from its manifest). Add routes with the
+command above. The driver app shows "No routes assigned yet" after its next refresh.
+
 ## Recovery
 
 Before creation, an image rollback uses the normal deployment procedure. After
