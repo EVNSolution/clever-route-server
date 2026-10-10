@@ -151,7 +151,7 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.routeTrackingGeometry.upsert).toHaveBeenCalledOnce();
   });
 
-  test('rejects location updates unless the route is in progress before writing the event', async () => {
+  test('keeps location updates for an owned route that is not started yet and writes its tracking geometry', async () => {
     const { prisma } = createPrismaHarness({ routePlan: { id: 'route-plan-id', status: 'READY' } });
     const repository = new PrismaDriverEventRepository(prisma as never);
 
@@ -159,9 +159,12 @@ describe('PrismaDriverEventRepository', () => {
       deliveryStopId: null,
       eventType: 'LOCATION_UPDATED',
       routePlanId: 'route-plan-id'
-    }))).rejects.toBeInstanceOf(DriverEventRouteNotInProgressError);
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
 
-    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.driverEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ eventType: 'LOCATION_UPDATED', routePlanId: 'route-plan-id' })
+    });
+    expect(prisma.routeTrackingGeometry.upsert).toHaveBeenCalledOnce();
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
       select: { id: true, status: true },
       where: {

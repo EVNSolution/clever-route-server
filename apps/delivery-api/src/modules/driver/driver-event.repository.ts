@@ -1325,11 +1325,13 @@ async function validateDriverEventStateContext(
     && input.eventType !== 'LOCATION_UPDATED' && input.eventType !== 'ROUTE_COMPLETED' && input.eventType !== 'NOTE_ADDED') {
     throw new DriverEventRouteNotInProgressError('Delivery work is complete; only return navigation remains available');
   }
+  // A GPS fix is kept for a route the driver owns but has not started yet: the app sends positions
+  // from the moment it shows the route, so the drive before Start is part of the tracking path
+  // (change control #344). Execution events still need a started route.
   if (
     routePlan.status !== 'IN_PROGRESS'
     && (
       input.eventType === 'PICKUP_COMPLETED'
-      || input.eventType === 'LOCATION_UPDATED'
       || input.eventType === 'STOP_ARRIVED'
       || input.eventType === 'STOP_DELIVERED'
       || input.eventType === 'STOP_FAILED'
