@@ -552,13 +552,15 @@ function toAssignedRouteStop(
     ? undefined
     : destinations.get(deliveryStop.order.destinationId);
   return {
+    // The driver app drops a whole route when any of these parts is not a string, so a stop that misses one
+    // (a custom stop, an order without province or postal code) must not make the route disappear.
     address: {
-      address1: deliveryStop.address1,
+      address1: deliveryStop.address1 ?? '',
       address2: deliveryStop.address2,
-      city: deliveryStop.city,
-      countryCode: deliveryStop.countryCode,
-      postalCode: deliveryStop.postalCode,
-      province: deliveryStop.province
+      city: deliveryStop.city ?? '',
+      countryCode: deliveryStop.countryCode ?? '',
+      postalCode: deliveryStop.postalCode ?? '',
+      province: deliveryStop.province ?? ''
     },
     coordinates: {
       latitude,

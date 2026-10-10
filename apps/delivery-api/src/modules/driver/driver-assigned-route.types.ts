@@ -21,12 +21,12 @@ export type DriverAssignedRouteInput = {
 export type DriverAssignedRouteStop = {
   completion?: DriverStopCompletion | null;
   address: {
-    address1: string | null;
+    address1: string;
     address2: string | null;
-    city: string | null;
-    countryCode: string | null;
-    postalCode: string | null;
-    province: string | null;
+    city: string;
+    countryCode: string;
+    postalCode: string;
+    province: string;
   };
   coordinates: {
     latitude: number | null;

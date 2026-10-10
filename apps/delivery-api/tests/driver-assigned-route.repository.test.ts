@@ -517,6 +517,34 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     }
   });
 
+  test('returns every required address part as a string so the driver app keeps the route', async () => {
+    const record = structuredClone(routePlanRecord);
+    const stop = record.routeStops[0]!.deliveryStop as unknown as Record<string, unknown>;
+    stop.address1 = null;
+    stop.city = null;
+    stop.province = null;
+    stop.postalCode = null;
+    stop.countryCode = null;
+    const { prisma } = createPrismaHarness({ routePlan: record });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') {
+      const address = result.route.stops[0]!.address;
+      expect(address).toMatchObject({ address1: '', city: '', countryCode: '', postalCode: '', province: '' });
+      for (const part of [address.address1, address.city, address.countryCode, address.postalCode, address.province]) {
+        expect(typeof part).toBe('string');
+      }
+    }
+  });
+
   test.each([
     [91, -79.3817],
     [43.6487, -181],
