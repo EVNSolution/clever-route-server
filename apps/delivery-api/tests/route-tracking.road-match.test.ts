@@ -1400,6 +1400,23 @@ describe('route tracking road matching', () => {
     expect(result?.inferredGeometry?.coordinates).toEqual([contextualSupplementRoute()]);
   });
 
+  test('keeps level 0 for adjacent samples whose source indexes are apart only because the document is simplified', async () => {
+    const input = document([[-79.4000, 43.6500], [-79.3997, 43.6500], [-79.3994, 43.6500]], { intervalMs: 20_000 });
+    input.samples.forEach((sample, index) => { sample.sourceIndex = index * 7; });
+    input.sourcePointCount = 15;
+    const fetch = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(
+      osrmMatchResponse(readRequestedCoordinates(url)),
+    ))));
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).match(input);
+
+    expect(result?.matchedRanges).toEqual([expect.objectContaining({ interpolationLevel: 0, startSourceIndex: 0, endSourceIndex: 14 })]);
+    expect(result?.matchedRanges?.[0]?.reason).toBeUndefined();
+    expect(result?.inferredRanges).toEqual([]);
+  });
+
   test('drops a single GPS spike instead of cutting the trace twice', async () => {
     const coordinates: Array<[number, number]> = [
       [-79.4000, 43.6500], [-79.3997, 43.6500], [-79.3800, 43.6700], [-79.3991, 43.6500], [-79.3988, 43.6500],

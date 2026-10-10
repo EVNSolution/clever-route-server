@@ -105,6 +105,8 @@ type MatchChunkResult = {
 type MatchChunk = {
   coordinates: Array<[number, number]>;
   samples: RouteTrackingGeometryDocumentV1['samples'];
+  /** True at a sample whose predecessor in the document was left out of this chunk (spike or poor accuracy). */
+  skippedBefore?: boolean[];
 };
 
 type GapSupplementCandidate = {
@@ -600,10 +602,12 @@ function splitForOsrmMatch(
   relaxed = false,
 ): MatchChunk[] {
   const byGap: MatchChunk[] = [];
-  let current: MatchChunk = { coordinates: [], samples: [] };
+  let current: MatchChunk = { coordinates: [], samples: [], skippedBefore: [] };
+  let skippedBefore = false;
   const flush = () => {
     if (current.coordinates.length >= 2) byGap.push(current);
-    current = { coordinates: [], samples: [] };
+    current = { coordinates: [], samples: [], skippedBefore: [] };
+    skippedBefore = false;
   };
   for (let index = 0; index < document.coordinates.length; index += 1) {
     const coordinate = document.coordinates[index]!;
@@ -616,7 +620,10 @@ function splitForOsrmMatch(
     );
     if (outOfCoverage || unusableAccuracy) {
       // Continuous policy: a poor fix is left out so its neighbours can still be joined.
-      if (relaxed && !outOfCoverage && sample.gapBefore !== true) continue;
+      if (relaxed && !outOfCoverage && sample.gapBefore !== true) {
+        skippedBefore = true;
+        continue;
+      }
       flush();
       continue;
     }
@@ -646,8 +653,11 @@ function splitForOsrmMatch(
             && isPlausibleStep(beforePreviousSample, beforePreviousCoordinate, sample, coordinate)) {
             current.samples.pop();
             current.coordinates.pop();
+            current.skippedBefore!.pop();
+            skippedBefore = true;
           } else if (nextSample !== undefined && nextCoordinate !== undefined && nextSample.gapBefore !== true
             && isPlausibleStep(previousSample, previousCoordinate, nextSample, nextCoordinate)) {
+            skippedBefore = true;
             continue;
           } else {
             flush();
@@ -657,6 +667,8 @@ function splitForOsrmMatch(
     }
     current.coordinates.push(coordinate);
     current.samples.push(sample);
+    current.skippedBefore!.push(skippedBefore);
+    skippedBefore = false;
   }
   flush();
 
@@ -699,7 +711,13 @@ function splitByMaxPoints(chunk: MatchChunk, maxMatchPoints: number): MatchChunk
     const end = Math.min(chunk.coordinates.length, start + maxMatchPoints);
     const coordinates = chunk.coordinates.slice(start, end);
     const samples = chunk.samples.slice(start, end);
-    if (coordinates.length >= 2) chunks.push({ coordinates, samples });
+    if (coordinates.length >= 2) {
+      chunks.push({
+        coordinates,
+        samples,
+        ...(chunk.skippedBefore === undefined ? {} : { skippedBefore: chunk.skippedBefore.slice(start, end) }),
+      });
+    }
     if (end === chunk.coordinates.length) break;
     start = end - 1;
   }
@@ -1705,9 +1723,10 @@ function readContinuousMatchedLegLines(
     const leftAccuracy = continuousAccuracy(leftSample.accuracyMeters);
     const rightAccuracy = continuousAccuracy(rightSample.accuracyMeters);
     const accuracySum = leftAccuracy + rightAccuracy;
+    // A source-index gap alone is normal (the document is simplified); only a null tracepoint or a
+    // fix left out of the chunk makes this a leg across skipped evidence.
     const skipped = rightIndex - leftIndex > 1
-      || (leftSample.sourceIndex !== undefined && rightSample.sourceIndex !== undefined
-        && rightSample.sourceIndex - leftSample.sourceIndex > 1);
+      || (chunk.skippedBefore?.slice(leftIndex + 1, rightIndex + 1).some(Boolean) ?? false);
     const maxElapsedSeconds = (skipped ? MAX_THROUGH_NULL_ELAPSED_MS : ROUTE_TRACKING_V1_POLICY.delayedThresholdMs) / 1000;
     if (
       coordinates === null
