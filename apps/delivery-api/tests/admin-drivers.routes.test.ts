@@ -7,6 +7,7 @@ import type { AdminDriversDependencies } from '../src/routes/admin-drivers.route
 const pendingDriver: AdminDriverRow = {
   authStatus: 'INVITE_PENDING',
   authSubject: null,
+  averageServiceMinutes: null,
   createdAt: '2026-05-11T02:00:00.000Z',
   displayName: '+821089216198',
   id: 'driver-id',
@@ -22,6 +23,7 @@ const pendingDriver: AdminDriverRow = {
 const linkedDriver: AdminDriverRow = {
   authStatus: 'APP_LINKED',
   authSubject: 'present',
+  averageServiceMinutes: null,
   createdAt: '2026-05-10T02:00:00.000Z',
   displayName: 'Minji Kim',
   id: 'linked-driver-id',
@@ -271,6 +273,94 @@ describe('Admin drivers routes', () => {
     }
   });
 
+  test('sets and clears the average Stop time of a driver for the authenticated shop', async () => {
+    const { dependencies, updateDriverAverageServiceMinutes, updateDriverName } = createDependencyHarness();
+    const app = await buildApp({ adminDrivers: dependencies });
+
+    try {
+      for (const averageServiceMinutes of [0, 7, 1_440, null]) {
+        const response = await app.inject({
+          headers: { authorization: 'Bearer session-token' },
+          method: 'PATCH',
+          payload: { averageServiceMinutes },
+          url: '/admin/drivers/linked-driver-id'
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ data: { driver: { ...linkedDriver, averageServiceMinutes } }, error: null });
+        expect(updateDriverAverageServiceMinutes).toHaveBeenLastCalledWith({
+          appId: 'clever',
+          averageServiceMinutes,
+          driverId: 'linked-driver-id',
+          shopDomain: 'example.myshopify.com'
+        });
+      }
+      expect(updateDriverName).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    [{ averageServiceMinutes: -1 }],
+    [{ averageServiceMinutes: 1_441 }],
+    [{ averageServiceMinutes: 7.5 }],
+    [{ averageServiceMinutes: '7' }],
+    [{ averageServiceMinutes: true }],
+    [{ averageServiceMinutes: 7, displayName: 'Mina Kim' }]
+  ])('rejects invalid driver average Stop time updates: %j', async (payload) => {
+    const { dependencies, updateDriverAverageServiceMinutes, updateDriverName } = createDependencyHarness();
+    const app = await buildApp({ adminDrivers: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/drivers/linked-driver-id'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid driver average Stop time payload' }
+      });
+      expect(updateDriverAverageServiceMinutes).not.toHaveBeenCalled();
+      expect(updateDriverName).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns not found for a missing driver and hides no storage failure when the average Stop time is saved', async () => {
+    const { dependencies, updateDriverAverageServiceMinutes } = createDependencyHarness();
+    const app = await buildApp({ adminDrivers: dependencies });
+
+    try {
+      updateDriverAverageServiceMinutes.mockRejectedValueOnce(Object.assign(new Error('missing driver'), { code: 'P2025' }));
+      const missing = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { averageServiceMinutes: 7 },
+        url: '/admin/drivers/missing-driver-id'
+      });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toEqual({ data: null, error: { code: 'NOT_FOUND', message: 'Driver not found' } });
+
+      updateDriverAverageServiceMinutes.mockRejectedValueOnce(new Error('database unavailable'));
+      const failed = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { averageServiceMinutes: 7 },
+        url: '/admin/drivers/linked-driver-id'
+      });
+      expect(failed.statusCode).toBe(500);
+      expect(failed.json()).toMatchObject({ data: null, error: { code: 'DRIVER_STORAGE_ERROR' } });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('returns not found only when the scoped driver does not exist', async () => {
     const { dependencies, updateDriverName } = createDependencyHarness();
     updateDriverName.mockRejectedValueOnce(Object.assign(new Error('missing driver'), { code: 'P2025' }));
@@ -411,6 +501,7 @@ function createDependencyHarness(): {
   dependencies: AdminDriversDependencies;
   listDrivers: ReturnType<typeof vi.fn<AdminDriversDependencies['adminDriverService']['listDrivers']>>;
   regenerateInviteCode: ReturnType<typeof vi.fn<AdminDriversDependencies['adminDriverService']['regenerateInviteCode']>>;
+  updateDriverAverageServiceMinutes: ReturnType<typeof vi.fn<AdminDriversDependencies['adminDriverService']['updateDriverAverageServiceMinutes']>>;
   updateDriverName: ReturnType<typeof vi.fn<AdminDriversDependencies['adminDriverService']['updateDriverName']>>;
 } {
   const verify = vi.fn(() => ({
@@ -432,6 +523,9 @@ function createDependencyHarness(): {
   const updateDriverName = vi.fn<AdminDriversDependencies['adminDriverService']['updateDriverName']>(() =>
     Promise.resolve(linkedDriver)
   );
+  const updateDriverAverageServiceMinutes = vi.fn<AdminDriversDependencies['adminDriverService']['updateDriverAverageServiceMinutes']>(
+    (input) => Promise.resolve({ ...linkedDriver, averageServiceMinutes: input.averageServiceMinutes })
+  );
 
   return {
     createPendingDriver,
@@ -441,6 +535,7 @@ function createDependencyHarness(): {
         deleteDriver,
         listDrivers,
         regenerateInviteCode,
+        updateDriverAverageServiceMinutes,
         updateDriverName
       },
       sessionTokenVerifier: { verify }
@@ -448,6 +543,7 @@ function createDependencyHarness(): {
     deleteDriver,
     listDrivers,
     regenerateInviteCode,
+    updateDriverAverageServiceMinutes,
     updateDriverName
   };
 }

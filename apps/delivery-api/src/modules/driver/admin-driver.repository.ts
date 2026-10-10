@@ -7,8 +7,11 @@ import type {
   DeleteAdminDriverInput,
   ListAdminDriversInput,
   RegenerateInviteCodeInput,
+  UpdateAdminDriverAverageServiceMinutesInput,
   UpdateAdminDriverNameInput
 } from './admin-driver.types.js';
+import { ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
+import { refreshPlannedRouteTimes } from '../route-plans/route-plan.repository.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 
@@ -20,6 +23,7 @@ type DriverRecord = {
   _count?: { driverEvents?: number };
   accountId: string | null;
   authSubject: string | null;
+  averageServiceMinutes: number | null;
   createdAt: Date;
   displayName: string;
   id: string;
@@ -159,6 +163,37 @@ export class PrismaAdminDriverRepository {
     return toAdminDriverRow(driver);
   }
 
+  /**
+   * Sets or clears the driver's average Stop time. The Ready routes of that driver take it for the stops nobody
+   * chose, and their planned ETAs are computed again, in the same transaction.
+   */
+  async updateDriverAverageServiceMinutes(input: UpdateAdminDriverAverageServiceMinutesInput): Promise<AdminDriverRow> {
+    const appId = normalizeShopifyAppId(input.appId);
+    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shop = await this.prisma.shop.findUnique({
+      select: { id: true },
+      where: appScopedShopWhere({ appId, shopDomain })
+    });
+    if (shop === null) {
+      throw new Error('Shop not found');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const driver = await tx.driver.update({
+        data: { averageServiceMinutes: input.averageServiceMinutes },
+        include: driverInclude,
+        where: { id: input.driverId, shopId: shop.id }
+      });
+      const routePlans = await tx.routePlan.findMany({
+        orderBy: { id: 'asc' },
+        select: { id: true },
+        where: { driverId: driver.id, shopId: shop.id, status: { in: [...ROUTE_READY_COMPATIBILITY_STATUSES] } }
+      });
+      for (const routePlan of routePlans) await refreshPlannedRouteTimes(tx, routePlan.id);
+      return toAdminDriverRow(driver);
+    });
+  }
+
   async regenerateInviteCode(input: RegenerateInviteCodeInput): Promise<AdminDriverRow> {
     const appId = normalizeShopifyAppId(input.appId);
     const shopDomain = normalizeShopDomain(input.shopDomain);
@@ -218,6 +253,7 @@ function toAdminDriverRow(driver: DriverRecord): AdminDriverRow {
   return {
     authStatus: isInvitePending ? 'INVITE_PENDING' : 'APP_LINKED',
     authSubject: isInvitePending ? null : 'present',
+    averageServiceMinutes: driver.averageServiceMinutes,
     createdAt: driver.createdAt.toISOString(),
     displayName: driver.displayName,
     id: driver.id,

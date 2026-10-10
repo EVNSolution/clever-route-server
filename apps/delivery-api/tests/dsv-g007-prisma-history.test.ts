@@ -109,6 +109,7 @@ const dispatchGroupingBackfillMigrationPath = new URL(
   import.meta.url
 );
 const kfoodDeliveryOptionsMigrationName = '20261009090000_kfood_delivery_options_settlement';
+const driverAverageStopTimeMigrationName = '20261010120000_driver_average_stop_time';
 const kfoodDeliveryOptionsMigrationPath = new URL(
   `../prisma/migrations/${kfoodDeliveryOptionsMigrationName}/migration.sql`,
   import.meta.url
@@ -168,8 +169,9 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(116);
+    expect(migrations).toHaveLength(117);
     expect(migrations[115]).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations[116]).toBe(driverAverageStopTimeMigrationName);
     expect(migrations).toContain('20261008090000_driver_stop_completion_receipts');
     expect(migrations).toContain('20261007140000_kfood_live_route_draft_discard');
     expect(migrations).toContain('20261007120000_kfood_live_route_changes');
@@ -436,7 +438,8 @@ describe('G007 DSV Prisma migration history', () => {
       migrations.indexOf('20261008090000_driver_stop_completion_receipts')
     );
     expect(migrations.slice(0, 115).at(-1)).toBe('20261008090000_driver_stop_completion_receipts');
-    expect(migrations.at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations.slice(0, 116).at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations.at(-1)).toBe(driverAverageStopTimeMigrationName);
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {
@@ -591,6 +594,18 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migration).toContain('CREATE FUNCTION reject_driver_cash_settlement_update() RETURNS trigger LANGUAGE plpgsql');
     expect(migration).toContain(`RAISE EXCEPTION 'Cash settlement records are append-only'`);
     expect(migration).toContain('CREATE TRIGGER driver_cash_settlements_immutable BEFORE UPDATE ON driver_cash_settlements FOR EACH ROW EXECUTE FUNCTION reject_driver_cash_settlement_update();');
+  });
+
+  test('adds the driver average and the Stop time source without taking any existing time for a default', async () => {
+    const migration = await readFile(new URL(`../prisma/migrations/${driverAverageStopTimeMigrationName}/migration.sql`, import.meta.url), 'utf8');
+    const sql = stripSqlLineComments(migration);
+
+    expect(sql).toContain('ALTER TABLE "drivers" ADD COLUMN "averageServiceMinutes" INTEGER;');
+    expect(sql).toContain('CHECK ("averageServiceMinutes" IS NULL OR ("averageServiceMinutes" >= 0 AND "averageServiceMinutes" <= 1440))');
+    expect(sql).toContain('ALTER TABLE "delivery_stops" ADD COLUMN "serviceMinutesSource" TEXT;');
+    expect(sql).toContain(`CHECK ("serviceMinutesSource" IS NULL OR "serviceMinutesSource" IN ('STOP', 'ROUTE', 'DRIVER'))`);
+    expect(sql).toContain(`UPDATE "delivery_stops" SET "serviceMinutesSource" = 'STOP' WHERE "serviceMinutes" <> 5;`);
+    expect(sql).not.toMatch(/\bNOT NULL\b|\bDEFAULT\b|\bDROP\b|\bDELETE\s+FROM\b|\bTRUNCATE\b|\bINSERT\s+INTO\b/iu);
   });
 
   test('documents the baseline, G004 tenant-composite replacement, and G007 cleanup transition', async () => {

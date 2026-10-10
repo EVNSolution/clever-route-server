@@ -8043,6 +8043,7 @@ function driverRow() {
   return {
     authStatus: "INVITE_PENDING" as const,
     authSubject: null,
+    averageServiceMinutes: null,
     createdAt: "2026-05-26T12:00:00.000Z",
     displayName: "Alex Driver",
     id: "driver-id",

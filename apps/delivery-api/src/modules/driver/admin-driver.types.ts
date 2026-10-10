@@ -4,6 +4,7 @@ export type AdminDriverStatus = 'ACTIVE' | 'INACTIVE' | 'PENDING' | 'SUSPENDED';
 export type AdminDriverRow = {
   authStatus: AdminDriverAuthStatus;
   authSubject: 'present' | null;
+  averageServiceMinutes: number | null;
   createdAt: string;
   displayName: string;
   id: string;
@@ -57,10 +58,18 @@ export type UpdateAdminDriverNameInput = {
   shopDomain: string;
 };
 
+export type UpdateAdminDriverAverageServiceMinutesInput = {
+  averageServiceMinutes: number | null;
+  driverId: string;
+  appId?: string | undefined;
+  shopDomain: string;
+};
+
 export type AdminDriverServiceContract = {
   createPendingDriver(input: CreatePendingDriverInput): Promise<AdminDriverRow>;
   deleteDriver(input: DeleteAdminDriverInput): Promise<string>;
   listDrivers(input: ListAdminDriversInput): Promise<AdminDriverRow[]>;
   regenerateInviteCode(input: RegenerateInviteCodeInput): Promise<AdminDriverRow>;
+  updateDriverAverageServiceMinutes(input: UpdateAdminDriverAverageServiceMinutesInput): Promise<AdminDriverRow>;
   updateDriverName(input: UpdateAdminDriverNameInput): Promise<AdminDriverRow>;
 };

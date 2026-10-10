@@ -57,6 +57,7 @@ import {
   routeGeometryCacheUpsertArgs
 } from './route-plan-geometry-cache.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
+import { applyDriverStopTimes } from './stop-service-time.js';
 import { reconcileKfoodDeliveryWorkCompletion, toRouteDeliveryDisplayStatus } from './kfood-delivery-completion.js';
 import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from './route-plan-summary-normalization.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
@@ -532,6 +533,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           province: true,
           recipientName: true,
           serviceMinutes: true,
+          serviceMinutesSource: true,
           timeWindowEnd: true,
           timeWindowStart: true
         },
@@ -683,6 +685,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           data: { assignmentGeneration: { increment: 1 }, driverId },
           where: { id: routePlan.id }
         });
+        await refreshPlannedRouteTimes(tx, routePlan.id);
       }
 
       return true;
@@ -1071,6 +1074,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             data: { assignmentGeneration: { increment: 1 }, driverId: nextDriverId },
             where: { id: routePlan.id }
           });
+          await refreshPlannedRouteTimes(tx, routePlan.id);
           operations.push({ name: 'driver', reason: nextDriverId === null ? 'driver_cleared' : 'driver_changed', status: 'applied' });
         }
       } else {
@@ -2050,10 +2054,41 @@ async function applyRouteGeometryCache(
   return applyCachedRouteGeometry(detail, toStaleRouteGeometryCacheRead(latest));
 }
 
+type PlannedRouteEtaInput = {
+  generatedAt?: Date | undefined;
+  routePlanId: string;
+  stopPoints: Array<{
+    deliveryStopId: string;
+    distanceFromPreviousMeters?: number | null | undefined;
+    durationFromPreviousSeconds?: number | null | undefined;
+  }>;
+};
+
+/**
+ * Re-plans a Ready route after only its Stop times changed (a driver's average was set, changed or removed): the
+ * stops take the driver's average and the planned ETAs are computed again from the leg times already stored.
+ */
+export async function refreshPlannedRouteTimes(tx: Prisma.TransactionClient, routePlanId: string): Promise<void> {
+  await tx.$queryRaw`SELECT "id" FROM "route_plans" WHERE "id" = ${routePlanId}::uuid FOR UPDATE`;
+  const legs = await tx.routePlanStop.findMany({
+    orderBy: { sequence: 'asc' },
+    select: { deliveryStopId: true, distanceFromPreviousMeters: true, durationFromPreviousSeconds: true },
+    where: { routePlanId }
+  });
+  // Legs that are not stored yet (new route, new stops) are stored with the ETAs when the geometry is; computing now
+  // would only record a failed ETA.
+  if (legs.some((leg) => leg.durationFromPreviousSeconds === null)) {
+    await applyDriverStopTimes(tx, routePlanId);
+    return;
+  }
+  await persistPlannedRouteEta(tx, { routePlanId, stopPoints: legs });
+}
+
 async function persistPlannedRouteEta(
   tx: Prisma.TransactionClient,
-  input: RouteGeometryCacheWrite
+  input: PlannedRouteEtaInput
 ): Promise<void> {
+  await applyDriverStopTimes(tx, input.routePlanId);
   const routePlan = await tx.routePlan.findUnique({
     select: {
       constraints: true,
@@ -2530,9 +2565,17 @@ function changedDeliveryStopOperationalOverride(
   const changedEntries = Object.entries(desired).filter(([field, value]) => (
     !sameDeliveryStopOverrideValue(field, currentValues[field], value)
   ));
+  const data: Record<string, unknown> = Object.fromEntries(changedEntries);
+  // A Stop time the office changed is its own choice; sending the value a stop already has changes nothing.
+  // Null resets to the default, which a route or driver time may replace later.
+  if (payload.serviceMinutes === null) {
+    if ((currentValues.serviceMinutesSource ?? null) !== null) data.serviceMinutesSource = null;
+  } else if ('serviceMinutes' in data) {
+    data.serviceMinutesSource = 'STOP';
+  }
   return {
-    changed: changedEntries.length > 0,
-    data: Object.fromEntries(changedEntries),
+    changed: Object.keys(data).length > 0,
+    data,
     geometryChanged: changedEntries.some(([field]) => GEOMETRY_AFFECTING_STOP_OVERRIDE_FIELDS.has(field))
   };
 }

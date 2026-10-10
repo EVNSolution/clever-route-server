@@ -5,6 +5,7 @@ import type {
   DeleteAdminDriverInput,
   ListAdminDriversInput,
   RegenerateInviteCodeInput,
+  UpdateAdminDriverAverageServiceMinutesInput,
   UpdateAdminDriverNameInput
 } from './admin-driver.types.js';
 
@@ -13,6 +14,7 @@ export type AdminDriverRepository = {
   deleteDriver(input: DeleteAdminDriverInput): Promise<string>;
   listDrivers(input: ListAdminDriversInput): Promise<AdminDriverRow[]>;
   regenerateInviteCode(input: RegenerateInviteCodeInput): Promise<AdminDriverRow>;
+  updateDriverAverageServiceMinutes(input: UpdateAdminDriverAverageServiceMinutesInput): Promise<AdminDriverRow>;
   updateDriverName(input: UpdateAdminDriverNameInput): Promise<AdminDriverRow>;
 };
 
@@ -45,5 +47,9 @@ export class AdminDriverService {
 
   updateDriverName(input: UpdateAdminDriverNameInput): Promise<AdminDriverRow> {
     return this.repository.updateDriverName(input);
+  }
+
+  updateDriverAverageServiceMinutes(input: UpdateAdminDriverAverageServiceMinutesInput): Promise<AdminDriverRow> {
+    return this.repository.updateDriverAverageServiceMinutes(input);
   }
 }

@@ -1230,6 +1230,7 @@ model DeliveryStop {
   timeWindowStart               DateTime?                      @db.Timestamptz(6)
   timeWindowEnd                 DateTime?                      @db.Timestamptz(6)
   serviceMinutes                Int                            @default(5)
+  serviceMinutesSource          String?                        @db.Text
   priority                      Int                            @default(0)
   instructions                  String?                        @db.Text
   status                        DeliveryStopStatus             @default(PENDING)
@@ -1709,6 +1710,7 @@ model Driver {
   shop                       Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   displayName                String                           @db.Text
   phone                      String?                          @db.Text
+  averageServiceMinutes      Int?
   status                     DriverStatus                     @default(ACTIVE)
   inviteCode                 String?                          @db.Text
   inviteCodeExpiresAt        DateTime?                        @db.Timestamptz(6)

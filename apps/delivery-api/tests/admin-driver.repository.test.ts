@@ -2,6 +2,9 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaAdminDriverRepository } from '../src/modules/driver/admin-driver.repository.js';
 
+const refreshPlannedRouteTimes = vi.hoisted(() => vi.fn<(tx: unknown, routePlanId: string) => Promise<void>>(() => Promise.resolve()));
+vi.mock('../src/modules/route-plans/route-plan.repository.js', () => ({ refreshPlannedRouteTimes }));
+
 const anyDateMatcher: unknown = expect.any(Date);
 const anyStringMatcher: unknown = expect.any(String);
 const sixHexCodeMatcher: unknown = expect.stringMatching(/^[0-9A-F]{6}$/u);
@@ -251,6 +254,77 @@ describe('PrismaAdminDriverRepository', () => {
     expect(driver).toEqual(expect.objectContaining({ displayName: 'Mina Kim', id: 'driver-id' }));
   });
 
+  test('sets the driver average Stop time and re-plans only that driver\'s Ready routes in the same transaction', async () => {
+    refreshPlannedRouteTimes.mockClear();
+    const updatedDriver = driverRecord({ averageServiceMinutes: 7, id: 'driver-id' });
+    const { prisma } = createPrismaHarness({ routePlans: [{ id: 'route-1' }, { id: 'route-2' }], updatedDriver });
+    const repository = new PrismaAdminDriverRepository(prisma as never);
+
+    const driver = await repository.updateDriverAverageServiceMinutes({
+      averageServiceMinutes: 7,
+      driverId: 'driver-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.driver.update).toHaveBeenCalledWith({
+      data: { averageServiceMinutes: 7 },
+      include: { _count: { select: { driverEvents: true } } },
+      where: { id: 'driver-id', shopId: 'shop-id' }
+    });
+    expect(prisma.routePlan.findMany).toHaveBeenCalledWith({
+      orderBy: { id: 'asc' },
+      select: { id: true },
+      where: {
+        driverId: 'driver-id',
+        shopId: 'shop-id',
+        status: { in: ['READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] }
+      }
+    });
+    expect(refreshPlannedRouteTimes.mock.calls.map((call) => [call[0] === prisma, call[1]])).toEqual([
+      [true, 'route-1'],
+      [true, 'route-2']
+    ]);
+    expect(driver).toEqual(expect.objectContaining({ averageServiceMinutes: 7, id: 'driver-id' }));
+  });
+
+  test('clears the driver average Stop time with null and re-plans the Ready routes again', async () => {
+    refreshPlannedRouteTimes.mockClear();
+    const { prisma } = createPrismaHarness({ routePlans: [{ id: 'route-1' }], updatedDriver: driverRecord({ id: 'driver-id' }) });
+    const repository = new PrismaAdminDriverRepository(prisma as never);
+
+    const driver = await repository.updateDriverAverageServiceMinutes({
+      averageServiceMinutes: null,
+      driverId: 'driver-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.driver.update).toHaveBeenCalledWith(expect.objectContaining({ data: { averageServiceMinutes: null } }));
+    expect(refreshPlannedRouteTimes).toHaveBeenCalledTimes(1);
+    expect(driver.averageServiceMinutes).toBeNull();
+  });
+
+  test('does not re-plan any route when the driver or the shop is not found', async () => {
+    refreshPlannedRouteTimes.mockClear();
+    const missingDriver = createPrismaHarness({ routePlans: [{ id: 'route-1' }] });
+    missingDriver.prisma.driver.update.mockRejectedValueOnce(Object.assign(new Error('missing driver'), { code: 'P2025' }));
+    await expect(new PrismaAdminDriverRepository(missingDriver.prisma as never).updateDriverAverageServiceMinutes({
+      averageServiceMinutes: 7,
+      driverId: 'missing-driver-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toMatchObject({ code: 'P2025' });
+    expect(missingDriver.prisma.routePlan.findMany).not.toHaveBeenCalled();
+
+    const missingShop = createPrismaHarness({ shop: null });
+    await expect(new PrismaAdminDriverRepository(missingShop.prisma as never).updateDriverAverageServiceMinutes({
+      averageServiceMinutes: 7,
+      driverId: 'driver-id',
+      shopDomain: 'missing.myshopify.com'
+    })).rejects.toThrow('Shop not found');
+    expect(missingShop.prisma.driver.update).not.toHaveBeenCalled();
+    expect(refreshPlannedRouteTimes).not.toHaveBeenCalled();
+  });
+
   test('deletes only the authenticated shop driver', async () => {
     const { prisma } = createPrismaHarness({ deletedDriver: { id: 'driver-id' } });
     const repository = new PrismaAdminDriverRepository(prisma as never);
@@ -280,6 +354,7 @@ function createPrismaHarness(input: {
   existingDriver?: ReturnType<typeof driverRecord> | null;
   foundDriver?: { accountId: string | null } | null;
   listDrivers?: ReturnType<typeof driverRecord>[];
+  routePlans?: Array<{ id: string }>;
   shop?: { id: string } | null;
   updatedDriver?: ReturnType<typeof driverRecord>;
 } = {}): {
@@ -300,6 +375,9 @@ function createPrismaHarness(input: {
     };
     driverSession: {
       updateMany: ReturnType<typeof vi.fn>;
+    };
+    routePlan: {
+      findMany: ReturnType<typeof vi.fn>;
     };
     shop: {
       findUnique: ReturnType<typeof vi.fn>;
@@ -328,6 +406,9 @@ function createPrismaHarness(input: {
       driverSession: {
         updateMany: vi.fn(() => Promise.resolve({ count: 0 }))
       },
+      routePlan: {
+        findMany: vi.fn(() => Promise.resolve(input.routePlans ?? []))
+      },
       shop: {
         findUnique: vi.fn(() => Promise.resolve(shop)),
         upsert: vi.fn(() => Promise.resolve(shop ?? { id: 'shop-id' }))
@@ -341,6 +422,7 @@ function createPrismaHarness(input: {
 function driverRecord(overrides: Partial<{
   accountId: string | null;
   authSubject: string | null;
+  averageServiceMinutes: number | null;
   createdAt: Date;
   displayName: string;
   id: string;
@@ -357,6 +439,7 @@ function driverRecord(overrides: Partial<{
   _count: { driverEvents: number };
   accountId: string | null;
   authSubject: string | null;
+  averageServiceMinutes: number | null;
   createdAt: Date;
   displayName: string;
   id: string;
@@ -373,6 +456,7 @@ function driverRecord(overrides: Partial<{
     _count: { driverEvents: overrides.recentEventsCount ?? 0 },
     accountId: overrides.accountId ?? null,
     authSubject: overrides.authSubject ?? null,
+    averageServiceMinutes: overrides.averageServiceMinutes ?? null,
     createdAt: overrides.createdAt ?? new Date('2026-05-11T02:00:00.000Z'),
     displayName: overrides.displayName ?? '+821089216198',
     id: overrides.id ?? 'driver-id',

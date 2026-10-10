@@ -85,6 +85,40 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
       return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
     }
 
+    if (isAverageServiceMinutesPayload(request.body)) {
+      let averageServiceMinutes: number | null;
+      try {
+        averageServiceMinutes = readDriverAverageServiceMinutesPayload(request.body);
+      } catch {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver average Stop time payload'));
+      }
+
+      try {
+        const driver = await dependencies.adminDriverService.updateDriverAverageServiceMinutes({
+          appId: authenticated.appId,
+          averageServiceMinutes,
+          driverId: request.params.id,
+          shopDomain: authenticated.shopDomain
+        });
+
+        return reply.code(200).send({ data: { driver }, error: null });
+      } catch (error) {
+        if (isPrismaRecordNotFoundError(error)) {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Driver not found'));
+        }
+
+        request.log.error(
+          {
+            driverId: request.params.id,
+            err: error,
+            shopDomain: authenticated.shopDomain
+          },
+          'admin driver average Stop time update failed'
+        );
+        return reply.code(500).send(adminDriverStorageErrorResponse(error));
+      }
+    }
+
     let displayName: string;
     try {
       displayName = readDriverNamePayload(request.body);
@@ -200,6 +234,26 @@ function readDriverNamePayload(value: unknown): string {
   }
 
   return displayName;
+}
+
+function isAverageServiceMinutesPayload(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.hasOwn(value, 'averageServiceMinutes');
+}
+
+// Whole minutes from 0 to 1440, or null to clear the driver's average. It is the only field of the request.
+function readDriverAverageServiceMinutesPayload(value: unknown): number | null {
+  const object = requireObject(value);
+  if (Object.keys(object).length !== 1) {
+    throw new Error('averageServiceMinutes only');
+  }
+
+  const minutes = object.averageServiceMinutes;
+  if (minutes === null) return null;
+  if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 0 || minutes > 1_440) {
+    throw new Error('averageServiceMinutes must be an integer from 0 to 1440');
+  }
+
+  return minutes;
 }
 
 function authenticate(
