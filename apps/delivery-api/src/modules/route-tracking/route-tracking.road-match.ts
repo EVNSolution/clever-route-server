@@ -740,14 +740,16 @@ function buildMatchUrl(
   const timestamps = chunk.samples
     .map((sample) => Math.floor(Date.parse(sample.occurredAt) / 1000))
     .join(';');
-  // Continuous policy: OSRM's tidy pass returns null tracepoints for close samples, and a radius
-  // equal to a 3 m phone accuracy misses the road centreline; both cut the path.
+  // Continuous policy: a radius equal to a 3 m phone accuracy misses the road centreline, so the
+  // relaxed request searches at least 25 m. OSRM's tidy pass stays on: it drops the fixes of a stop
+  // (the pairing across null tracepoints joins their neighbours), and without it a noisy 80-point
+  // request can run past the 30 s worker budget.
   const params = new URLSearchParams({
     overview: 'full',
     geometries: 'geojson',
     gaps: 'split',
     steps: 'true',
-    tidy: relaxed ? 'false' : 'true',
+    tidy: 'true',
     timestamps,
   });
   const minimumRadius = relaxed ? MIN_RELAXED_MATCH_RADIUS_METERS : 0;
