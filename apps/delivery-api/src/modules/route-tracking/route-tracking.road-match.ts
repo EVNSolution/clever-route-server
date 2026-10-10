@@ -50,6 +50,7 @@ const MAX_RECORDED_GAP_ELAPSED_MS = 10 * 60_000;
 // connectors over a conservative path with gaps. OSRM's whole-trace confidence no longer gates
 // a leg; the per-leg distance, speed and snap checks do.
 const MIN_RELAXED_MATCH_RADIUS_METERS = 25;
+const MAX_RELAXED_MATCH_RADIUS_METERS = 50;
 const ASSUMED_UNMEASURED_ACCURACY_METERS = 25;
 const MAX_RELAXED_LEG_ROAD_DISTANCE_METERS = 2_500;
 const MAX_THROUGH_NULL_ELAPSED_MS = 10 * 60_000;
@@ -743,7 +744,10 @@ function buildMatchUrl(
   // Continuous policy: a radius equal to a 3 m phone accuracy misses the road centreline, so the
   // relaxed request searches at least 25 m. OSRM's tidy pass stays on: it drops the fixes of a stop
   // (the pairing across null tracepoints joins their neighbours), and without it a noisy 80-point
-  // request can run past the 30 s worker budget.
+  // request can run past the 30 s worker budget. The radius is also capped at 50 m: OSRM searches
+  // three times the radius and its matcher cost grows with the square of the candidates, so a chunk
+  // with 100-200 m fixes in a dense grid took 34-113 s with their accuracy as radius and about 2 s
+  // with the cap, at the same null tracepoints. A poor fix stays in the request as a waypoint.
   const params = new URLSearchParams({
     overview: 'full',
     geometries: 'geojson',
@@ -753,11 +757,12 @@ function buildMatchUrl(
     timestamps,
   });
   const minimumRadius = relaxed ? MIN_RELAXED_MATCH_RADIUS_METERS : 0;
+  const maximumRadius = relaxed ? MAX_RELAXED_MATCH_RADIUS_METERS : maximumInputAccuracyMeters;
   if (relaxed || gpsPrecisionMeters !== null || chunk.samples.some((sample) => (sample.accuracyMeters ?? 0) > 0)) {
     params.set('radiuses', chunk.samples.map((sample) => (
       typeof sample.accuracyMeters === 'number' && sample.accuracyMeters > 0
-        ? String(Math.min(Math.max(sample.accuracyMeters, minimumRadius), maximumInputAccuracyMeters))
-        : String(Math.min(Math.max(gpsPrecisionMeters ?? 25, minimumRadius), maximumInputAccuracyMeters))
+        ? String(Math.min(Math.max(sample.accuracyMeters, minimumRadius), maximumRadius))
+        : String(Math.min(Math.max(gpsPrecisionMeters ?? 25, minimumRadius), maximumRadius))
     )).join(';'));
   }
   return `${baseUrl}/match/v1/driving/${coordinatePath}?${params.toString()}`;
