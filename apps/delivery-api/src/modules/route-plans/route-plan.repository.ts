@@ -63,6 +63,7 @@ import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from './route-plan-
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
 import { resolveNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
+import { resolveOrderPayment } from '../payments/order-payment.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 import { recordInventorySourceItemDeltas } from '../inventory/inventory.service.js';
 import { isIanaTimezone, localDateTimeInTimeZoneToUtc } from '../driver/driver-route-timezone.js';
@@ -2697,14 +2698,6 @@ function emptyDeliveryStopFallback(order: OrderRecord): DeliveryStopRecord {
 }
 
 
-function readPaymentMethodTitle(rawPayload: Record<string, unknown> | null): string | null {
-  if (rawPayload === null) return null;
-  return readString(rawPayload.payment_method_title)
-    ?? readString(rawPayload.paymentMethodTitle)
-    ?? readString(rawPayload.payment_method)
-    ?? readString(rawPayload.paymentMethod);
-}
-
 function readCustomerNote(rawPayload: Record<string, unknown> | null): string | null {
   if (rawPayload === null) return null;
   for (const key of ['customer_note', 'customerNote', 'note']) {
@@ -3414,7 +3407,14 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     etaCalculatedAt: routeStop.etaCalculatedAt?.toISOString() ?? null,
     etaSource: routeStop.etaSource,
     etaStatus: routeStop.etaStatus,
-    paymentMethodTitle: readPaymentMethodTitle(rawPayload),
+    // The shared projection of the driver app and the Inventory: Shopify gateway names, an explicit office method,
+    // then the legacy title keys. The legacy keys alone left every Shopify order without a method.
+    paymentMethodTitle: resolveOrderPayment({
+      currencyCode: order.currencyCode,
+      financialStatus: order.financialStatus,
+      rawPayload: order.rawPayload,
+      totalPriceAmount: order.totalPriceAmount
+    }).methodTitle,
     phone: deliveryStop.phone ?? order.phone ?? null,
     serviceMinutes: deliveryStop.serviceMinutes,
     shippingPriceAmount: readShippingPriceAmount(rawPayload),
