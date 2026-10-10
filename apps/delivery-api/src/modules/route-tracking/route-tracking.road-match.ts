@@ -46,6 +46,18 @@ const MAX_CONTEXTUAL_SUPPLEMENT_DISTANCE_METERS = 3_000;
 const MAX_CONTEXTUAL_SUPPLEMENT_ELAPSED_MS = 10 * 60_000;
 const MAX_RECORDED_GAP_DISTANCE_METERS = 3_000;
 const MAX_RECORDED_GAP_ELAPSED_MS = 10 * 60_000;
+// Continuous policy (bounded-per-leg mode): the office prefers a connected path with plain
+// connectors over a conservative path with gaps. OSRM's whole-trace confidence no longer gates
+// a leg; the per-leg distance, speed and snap checks do.
+const MIN_RELAXED_MATCH_RADIUS_METERS = 25;
+const ASSUMED_UNMEASURED_ACCURACY_METERS = 25;
+const MAX_RELAXED_LEG_ROAD_DISTANCE_METERS = 2_500;
+const MAX_THROUGH_NULL_ELAPSED_MS = 10 * 60_000;
+const THROUGH_NULL_CORRIDOR_METERS = 60;
+const MAX_BRIDGE_ELAPSED_MS = 20 * 60_000;
+const MAX_BRIDGE_STRAIGHT_DISTANCE_METERS = 10_000;
+const MAX_BRIDGE_ROAD_DISTANCE_METERS = 15_000;
+const MAX_BRIDGE_SPEED_METERS_PER_SECOND = 45;
 
 type FetchLike = (url: string, init: { method: 'GET'; redirect: 'error'; signal?: AbortSignal }) => Promise<Response>;
 
@@ -96,6 +108,7 @@ type MatchChunk = {
 };
 
 type GapSupplementCandidate = {
+  bridge?: boolean;
   contextual: boolean;
   coordinates: Array<[number, number]>;
   endCoordinate: [number, number];
@@ -126,6 +139,8 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
   private readonly maxMatchPoints: number;
   private readonly timeoutMs: number;
   private readonly allowUnmeasuredAccuracyInference: boolean;
+  // The continuous policy applies to route tracking only; UVIS keeps the legacy whole-match behaviour.
+  private readonly relaxed: boolean;
 
   constructor(options: OsrmRouteTrackingRoadMatchProviderOptions) {
     this.baseUrls = Object.fromEntries(
@@ -133,6 +148,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
         .map(([coverage, baseUrl]) => [coverage, normalizeRouteEngineBaseUrl('OSRM', baseUrl)])
     );
     this.classificationMode = options.classificationMode ?? 'bounded-per-leg';
+    this.relaxed = this.classificationMode === 'bounded-per-leg';
     this.fetch = options.fetch ?? fetch;
     this.gpsPrecisionMeters = normalizeGpsPrecision(options.gpsPrecisionMeters);
     this.maxMatchPoints = normalizeMaxMatchPoints(options.maxMatchPoints);
@@ -166,7 +182,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       ? ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters
       : ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters;
     let chunkIndex = 0;
-    for (const chunk of splitForOsrmMatch(input, coverage, this.maxMatchPoints, maximumInputAccuracyMeters)) {
+    for (const chunk of splitForOsrmMatch(input, coverage, this.maxMatchPoints, maximumInputAccuracyMeters, this.relaxed)) {
       if (chunk.coordinates.length < 2) continue;
       const result = await this.matchChunk(baseUrl, chunk, maximumInputAccuracyMeters, chunkIndex++);
       retryable ||= result.retryable;
@@ -176,6 +192,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     const mergedLines = mergeAdjacentMatchedLines(matchedLines);
     const confident = mergedLines.filter((line) => line.interpolationLevel === 0);
     const moderate = mergedLines.filter((line) => line.interpolationLevel === 1);
+    if (this.relaxed) for (const line of moderate) annotateSkippedSpanReason(input, line);
     const uncertain = mergedLines.filter((line) => line.interpolationLevel === 2);
     const matchedPointCount = mergedLines.reduce((sum, line) => sum + line.coordinates.length, 0);
     const lastSample = input.samples.at(-1)!;
@@ -243,7 +260,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
     try {
-      response = await this.fetch(buildMatchUrl(baseUrl, chunk, this.gpsPrecisionMeters, maximumInputAccuracyMeters), {
+      response = await this.fetch(buildMatchUrl(baseUrl, chunk, this.gpsPrecisionMeters, maximumInputAccuracyMeters, this.relaxed), {
         method: 'GET',
         redirect: 'error',
         signal: controller.signal,
@@ -261,7 +278,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     });
     const lines = this.classificationMode === 'legacy-whole-match'
       ? readLegacyMatchedLines(payload, chunk)
-      : readMatchedLines(payload, chunk, chunkIndex, this.allowUnmeasuredAccuracyInference);
+      : readMatchedLines(payload, chunk, chunkIndex, this.allowUnmeasuredAccuracyInference, this.relaxed);
     return {
       lastMatchedPosition: readLastMatchedPositionFromResponse(payload, chunk, lines),
       lines,
@@ -372,6 +389,27 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       retryable ||= batch.some((result) => result.retryable);
       inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
     }
+    // Continuous policy: every span still left between two accepted lines gets a bounded road
+    // bridge. What even this cannot bridge is drawn by the office map as a plain connector.
+    const bridgeCandidates = !this.relaxed ? [] : buildBridgeCandidates(
+      document,
+      [
+        ...approvedLines,
+        ...inferred.map((line) => ({
+          confidence: 1,
+          coordinates: line.coordinates,
+          interpolationLevel: 1 as const,
+          sourceRange: line.sourceRange,
+        })),
+      ],
+    ).slice(0, MAX_GAP_SUPPLEMENT_CANDIDATES);
+    for (let offset = 0; offset < bridgeCandidates.length; offset += 4) {
+      const batch = await Promise.all(bridgeCandidates.slice(offset, offset + 4).map((candidate) => (
+        this.routeGapSupplement(baseUrl, candidate)
+      )));
+      retryable ||= batch.some((result) => result.retryable);
+      inferred.push(...batch.flatMap((result) => result.line === null ? [] : [result.line]));
+    }
     return {
       lines: inferred.sort((left, right) => (
         left.sourceRange.startSourceIndex - right.sourceRange.startSourceIndex
@@ -427,6 +465,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
         chunk,
         this.gpsPrecisionMeters,
         ROUTE_TRACKING_V1_POLICY.maxInterpolationAccuracyMeters,
+        this.relaxed,
       ), {
         method: 'GET',
         redirect: 'error',
@@ -558,52 +597,84 @@ function splitForOsrmMatch(
   coverage: RouteEngineCoverage,
   maxMatchPoints: number,
   maximumInputAccuracyMeters: number,
+  relaxed = false,
 ): MatchChunk[] {
   const byGap: MatchChunk[] = [];
   let current: MatchChunk = { coordinates: [], samples: [] };
+  const flush = () => {
+    if (current.coordinates.length >= 2) byGap.push(current);
+    current = { coordinates: [], samples: [] };
+  };
   for (let index = 0; index < document.coordinates.length; index += 1) {
     const coordinate = document.coordinates[index]!;
     const sample = document.samples[index]!;
-    if (!coordinateInCoverage({ latitude: coordinate[1], longitude: coordinate[0] }, coverage)
-      || (typeof sample.accuracyMeters === 'number' && (
-        !Number.isFinite(sample.accuracyMeters)
-        || sample.accuracyMeters < 0
-        || sample.accuracyMeters > maximumInputAccuracyMeters
-      ))) {
-      if (current.coordinates.length >= 2) byGap.push(current);
-      current = { coordinates: [], samples: [] };
+    const outOfCoverage = !coordinateInCoverage({ latitude: coordinate[1], longitude: coordinate[0] }, coverage);
+    const unusableAccuracy = typeof sample.accuracyMeters === 'number' && (
+      !Number.isFinite(sample.accuracyMeters)
+      || sample.accuracyMeters < 0
+      || sample.accuracyMeters > maximumInputAccuracyMeters
+    );
+    if (outOfCoverage || unusableAccuracy) {
+      // Continuous policy: a poor fix is left out so its neighbours can still be joined.
+      if (relaxed && !outOfCoverage && sample.gapBefore !== true) continue;
+      flush();
       continue;
     }
     const previousSample = current.samples.at(-1);
     const previousCoordinate = current.coordinates.at(-1);
-    const elapsedMs = previousSample === undefined
-      ? null
-      : Date.parse(sample.occurredAt) - Date.parse(previousSample.occurredAt);
-    const isImplausibleJump = previousCoordinate !== undefined
-      && elapsedMs !== null
-      && elapsedMs > 0
-      && distanceBetweenCoordinatesMeters(previousCoordinate, coordinate) / (elapsedMs / 1000)
-        > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
-    if (
-      previousSample !== undefined &&
-      (
-        sample.gapBefore === true
+    if (previousSample !== undefined && previousCoordinate !== undefined) {
+      const elapsedMs = Date.parse(sample.occurredAt) - Date.parse(previousSample.occurredAt);
+      const hardBreak = sample.gapBefore === true
         || previousSample.driverId !== sample.driverId
-        || elapsedMs === null
-        || elapsedMs <= 0
-        || elapsedMs > ROUTE_TRACKING_V1_POLICY.delayedThresholdMs
-        || isImplausibleJump
-      )
-    ) {
-      if (current.coordinates.length >= 2) byGap.push(current);
-      current = { coordinates: [], samples: [] };
+        || !(elapsedMs > 0)
+        || elapsedMs > ROUTE_TRACKING_V1_POLICY.delayedThresholdMs;
+      const isImplausibleJump = !hardBreak
+        && distanceBetweenCoordinatesMeters(previousCoordinate, coordinate) / (elapsedMs / 1000)
+          > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
+      if (hardBreak) {
+        flush();
+      } else if (isImplausibleJump) {
+        if (!relaxed) {
+          flush();
+        } else {
+          // Continuous policy: one spike is dropped instead of cutting the trace twice.
+          const beforePreviousSample = current.samples.at(-2);
+          const beforePreviousCoordinate = current.coordinates.at(-2);
+          const nextSample = document.samples[index + 1];
+          const nextCoordinate = document.coordinates[index + 1];
+          if (beforePreviousSample !== undefined && beforePreviousCoordinate !== undefined
+            && isPlausibleStep(beforePreviousSample, beforePreviousCoordinate, sample, coordinate)) {
+            current.samples.pop();
+            current.coordinates.pop();
+          } else if (nextSample !== undefined && nextCoordinate !== undefined && nextSample.gapBefore !== true
+            && isPlausibleStep(previousSample, previousCoordinate, nextSample, nextCoordinate)) {
+            continue;
+          } else {
+            flush();
+          }
+        }
+      }
     }
     current.coordinates.push(coordinate);
     current.samples.push(sample);
   }
-  if (current.coordinates.length >= 2) byGap.push(current);
+  flush();
 
   return byGap.flatMap((chunk) => splitByMaxPoints(chunk, maxMatchPoints));
+}
+
+function isPlausibleStep(
+  from: RouteTrackingGeometryDocumentV1['samples'][number],
+  fromCoordinate: [number, number],
+  to: RouteTrackingGeometryDocumentV1['samples'][number],
+  toCoordinate: [number, number],
+): boolean {
+  const elapsedMs = Date.parse(to.occurredAt) - Date.parse(from.occurredAt);
+  return from.driverId === to.driverId
+    && elapsedMs > 0
+    && elapsedMs <= ROUTE_TRACKING_V1_POLICY.delayedThresholdMs
+    && distanceBetweenCoordinatesMeters(fromCoordinate, toCoordinate) / (elapsedMs / 1000)
+      <= MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
 }
 
 function distanceBetweenCoordinatesMeters(left: [number, number], right: [number, number]): number {
@@ -645,24 +716,28 @@ function buildMatchUrl(
   chunk: MatchChunk,
   gpsPrecisionMeters: number | null,
   maximumInputAccuracyMeters: number,
+  relaxed = false,
 ): string {
   const coordinatePath = chunk.coordinates.map(([longitude, latitude]) => `${longitude},${latitude}`).join(';');
   const timestamps = chunk.samples
     .map((sample) => Math.floor(Date.parse(sample.occurredAt) / 1000))
     .join(';');
+  // Continuous policy: OSRM's tidy pass returns null tracepoints for close samples, and a radius
+  // equal to a 3 m phone accuracy misses the road centreline; both cut the path.
   const params = new URLSearchParams({
     overview: 'full',
     geometries: 'geojson',
     gaps: 'split',
     steps: 'true',
-    tidy: 'true',
+    tidy: relaxed ? 'false' : 'true',
     timestamps,
   });
-  if (gpsPrecisionMeters !== null || chunk.samples.some((sample) => (sample.accuracyMeters ?? 0) > 0)) {
+  const minimumRadius = relaxed ? MIN_RELAXED_MATCH_RADIUS_METERS : 0;
+  if (relaxed || gpsPrecisionMeters !== null || chunk.samples.some((sample) => (sample.accuracyMeters ?? 0) > 0)) {
     params.set('radiuses', chunk.samples.map((sample) => (
       typeof sample.accuracyMeters === 'number' && sample.accuracyMeters > 0
-        ? String(Math.min(sample.accuracyMeters, maximumInputAccuracyMeters))
-        : String(Math.min(gpsPrecisionMeters ?? 25, maximumInputAccuracyMeters))
+        ? String(Math.min(Math.max(sample.accuracyMeters, minimumRadius), maximumInputAccuracyMeters))
+        : String(Math.min(Math.max(gpsPrecisionMeters ?? 25, minimumRadius), maximumInputAccuracyMeters))
     )).join(';'));
   }
   return `${baseUrl}/match/v1/driving/${coordinatePath}?${params.toString()}`;
@@ -1252,12 +1327,18 @@ function selectGapSupplementRoute(
     || distanceBetweenCoordinatesMeters(candidate.endCoordinate, endWaypoint) > maximumEndpointDisplacement
   ) return null;
   let maxRoadDistance = Math.min(1_250, candidate.straightDistanceMeters * 1.8 + 50);
-  if (candidate.recordedGap) {
+  if (candidate.bridge) {
+    maxRoadDistance = Math.min(MAX_BRIDGE_ROAD_DISTANCE_METERS, candidate.straightDistanceMeters * 2.2 + 200);
+  } else if (candidate.recordedGap) {
     maxRoadDistance = Math.min(5_000, candidate.straightDistanceMeters * 1.6 + 100);
   } else if (candidate.contextual && !candidate.observedNoMatch) {
     maxRoadDistance = Math.min(5_000, candidate.straightDistanceMeters * 2 + 100);
   }
-  const maxRouteDuration = candidate.elapsedSeconds * 1.5 + (candidate.contextual && !candidate.observedNoMatch ? 30 : 15);
+  // A bridge spans stops and waits, so the nominal road time may be well below the elapsed time.
+  const maxRouteDuration = candidate.bridge
+    ? candidate.elapsedSeconds * 2 + 120
+    : candidate.elapsedSeconds * 1.5 + (candidate.contextual && !candidate.observedNoMatch ? 30 : 15);
+  const maxAverageSpeed = candidate.bridge ? MAX_BRIDGE_SPEED_METERS_PER_SECOND : MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND;
   const routes = object.routes.flatMap((route) => {
     const record = objectOrNull(route);
     const distance = Number(record?.distance);
@@ -1273,7 +1354,7 @@ function selectGapSupplementRoute(
       || duration <= 0
       || distance > maxRoadDistance
       || distance / duration > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
-      || distance / candidate.elapsedSeconds > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
+      || distance / candidate.elapsedSeconds > maxAverageSpeed
       || (candidate.recordedGap && (
         geometryDistance > maxRoadDistance
         || geometryDistance / duration > MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
@@ -1288,6 +1369,8 @@ function selectGapSupplementRoute(
     .sort((left, right) => left.duration - right.duration || left.distance - right.distance);
   const best = routes[0];
   if (best === undefined) return null;
+  // A bridge takes the fastest road even when a similar alternative exists; the office accepts that.
+  if (candidate.bridge) return best.coordinates;
   const bestGeometry = JSON.stringify(best.coordinates);
   const ambiguous = routes.slice(1).some((route) => (
     route.distance <= best.distance * 1.25
@@ -1298,6 +1381,77 @@ function selectGapSupplementRoute(
   return candidate.contextual && !candidate.observedNoMatch && !supportsContextualRoute(candidate, best.coordinates)
     ? null
     : best.coordinates;
+}
+
+function buildBridgeCandidates(
+  document: RouteTrackingGeometryDocumentV1,
+  acceptedLines: MatchedLine[],
+): GapSupplementCandidate[] {
+  const ranges = acceptedLines.map((line) => line.sourceRange)
+    .sort((left, right) => (
+      left.startSourceIndex - right.startSourceIndex || left.endSourceIndex - right.endSourceIndex
+    ));
+  const candidates: GapSupplementCandidate[] = [];
+  let reach: RouteTrackingSourceRangeV1 | null = null;
+  for (const range of ranges) {
+    if (reach !== null && range.startSourceIndex > reach.endSourceIndex) {
+      const candidate = buildBridgeCandidate(document, reach, range);
+      if (candidate !== null) candidates.push(candidate);
+    }
+    if (reach === null || range.endSourceIndex > reach.endSourceIndex) reach = range;
+  }
+  return candidates;
+}
+
+function buildBridgeCandidate(
+  document: RouteTrackingGeometryDocumentV1,
+  left: RouteTrackingSourceRangeV1,
+  right: RouteTrackingSourceRangeV1,
+): GapSupplementCandidate | null {
+  const leftIndex = document.samples.findIndex((sample) => sample.sourceIndex === left.endSourceIndex);
+  const rightIndex = document.samples.findIndex((sample) => sample.sourceIndex === right.startSourceIndex);
+  if (leftIndex < 0 || rightIndex <= leftIndex) return null;
+  const leftSample = document.samples[leftIndex]!;
+  const rightSample = document.samples[rightIndex]!;
+  if (typeof leftSample.driverId !== 'string' || leftSample.driverId.trim() === '' || rightSample.driverId !== leftSample.driverId) return null;
+  const elapsedSeconds = (Date.parse(rightSample.occurredAt) - Date.parse(leftSample.occurredAt)) / 1000;
+  const startCoordinate = document.coordinates[leftIndex]!;
+  const endCoordinate = document.coordinates[rightIndex]!;
+  const straightDistanceMeters = distanceBetweenCoordinatesMeters(startCoordinate, endCoordinate);
+  if (
+    !(elapsedSeconds > 0 && elapsedSeconds <= MAX_BRIDGE_ELAPSED_MS / 1000)
+    || straightDistanceMeters < MIN_GAP_SUPPLEMENT_DISTANCE_METERS
+    || straightDistanceMeters > MAX_BRIDGE_STRAIGHT_DISTANCE_METERS
+    || straightDistanceMeters / elapsedSeconds > MAX_BRIDGE_SPEED_METERS_PER_SECOND
+  ) return null;
+  const spanned = document.samples.slice(leftIndex, rightIndex + 1);
+  // Another driver's fix inside the span means the two anchors do not belong to one drive.
+  if (spanned.some((sample) => sample.driverId !== leftSample.driverId)) return null;
+  const reason: NonNullable<RouteTrackingSourceRangeV1['reason']> = spanned.slice(1).some((sample) => sample.gapBefore === true)
+    ? 'GPS_GAP'
+    : spanned.some((sample) => (sample.accuracyMeters ?? 0) > ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters)
+      ? 'LOW_ACCURACY'
+      : 'NO_MATCH';
+  return {
+    bridge: true,
+    contextual: true,
+    coordinates: [startCoordinate, endCoordinate],
+    elapsedSeconds,
+    endCoordinate,
+    range: {
+      endEventId: rightSample.eventId,
+      endOccurredAt: rightSample.occurredAt,
+      endSourceIndex: right.startSourceIndex,
+      interpolationLevel: 1,
+      reason,
+      startEventId: leftSample.eventId,
+      startOccurredAt: leftSample.occurredAt,
+      startSourceIndex: left.endSourceIndex,
+    },
+    samples: [leftSample, rightSample],
+    startCoordinate,
+    straightDistanceMeters,
+  };
 }
 
 function supportsObservedNoMatchRoute(
@@ -1469,7 +1623,13 @@ function isUnambiguousTracepoint(value: Record<string, unknown> | null): boolean
   return readAlternativesCount(value) === 0;
 }
 
-function readMatchedLines(payload: unknown, chunk: MatchChunk, chunkIndex: number, allowUnmeasuredAccuracyInference: boolean): MatchedLine[] {
+function readMatchedLines(
+  payload: unknown,
+  chunk: MatchChunk,
+  chunkIndex: number,
+  allowUnmeasuredAccuracyInference: boolean,
+  relaxed = false,
+): MatchedLine[] {
   const object = objectOrNull(payload);
   const matchings = Array.isArray(object?.matchings) ? object.matchings : null;
   if (object?.code !== 'Ok' || matchings === null) return [];
@@ -1480,9 +1640,169 @@ function readMatchedLines(payload: unknown, chunk: MatchChunk, chunkIndex: numbe
       && match.confidence >= 0 && match.confidence <= 1
       ? match.confidence
       : 0;
-    return readMatchedLegLines(match, tracepoints, chunk, matchingIndex, matchings.length, confidence,
-      `${chunkIndex}:${matchingIndex}`, allowUnmeasuredAccuracyInference);
+    return relaxed
+      ? readContinuousMatchedLegLines(match, tracepoints, chunk, matchingIndex, matchings.length, confidence,
+        `${chunkIndex}:${matchingIndex}`)
+      : readMatchedLegLines(match, tracepoints, chunk, matchingIndex, matchings.length, confidence,
+        `${chunkIndex}:${matchingIndex}`, allowUnmeasuredAccuracyInference);
   });
+}
+
+/**
+ * Continuous policy. Consecutive non-null tracepoints of one matching are paired even across
+ * null tracepoints, and a leg is accepted on its own distance, speed and snap evidence. OSRM's
+ * whole-trace confidence is recorded but does not gate a leg. Level 0 needs an adjacent pair
+ * with measured accuracy up to 100 m and the strict checks; everything else accepted is level 1.
+ */
+function readContinuousMatchedLegLines(
+  matching: Record<string, unknown> | null,
+  tracepoints: unknown[],
+  chunk: MatchChunk,
+  matchingIndex: number,
+  matchingCount: number,
+  confidence: number,
+  matchingIdentity: string,
+): MatchedLine[] {
+  const legs = Array.isArray(matching?.legs) ? matching.legs : [];
+  const members: Array<{ index: number; point: Record<string, unknown> }> = [];
+  for (let index = 0; index < chunk.samples.length; index += 1) {
+    const point = objectOrNull(tracepoints[index]);
+    if (point !== null && isValidMatchingIndex(point.matchings_index, matchingCount) && point.matchings_index === matchingIndex) {
+      members.push({ index, point });
+    }
+  }
+  const lines: MatchedLine[] = [];
+  for (let position = 0; position + 1 < members.length; position += 1) {
+    const { index: leftIndex, point: left } = members[position]!;
+    const { index: rightIndex, point: right } = members[position + 1]!;
+    const samples = chunk.samples.slice(leftIndex, rightIndex + 1);
+    const inputCoordinates = chunk.coordinates.slice(leftIndex, rightIndex + 1);
+    const leftSample = samples[0]!;
+    const rightSample = samples.at(-1)!;
+    const reject = () => lines.push(rejectedSpanLine(chunk, leftIndex, rightIndex, confidence, matchingIdentity));
+    const leftWaypointIndex = left.waypoint_index;
+    const rightWaypointIndex = right.waypoint_index;
+    const leftAlternativesCount = readAlternativesCount(left);
+    const rightAlternativesCount = readAlternativesCount(right);
+    if (
+      typeof leftWaypointIndex !== 'number'
+      || !Number.isInteger(leftWaypointIndex)
+      || rightWaypointIndex !== leftWaypointIndex + 1
+      || leftAlternativesCount === null
+      || rightAlternativesCount === null
+    ) {
+      reject();
+      continue;
+    }
+    const leg = objectOrNull(legs[leftWaypointIndex]);
+    const coordinates = readLegCoordinates(leg);
+    const leftLocation = readCoordinatePair(left.location);
+    const rightLocation = readCoordinatePair(right.location);
+    const elapsedSeconds = (Date.parse(rightSample.occurredAt) - Date.parse(leftSample.occurredAt)) / 1000;
+    const roadDistance = Number(leg?.distance);
+    const roadDuration = Number(leg?.duration);
+    const pathDistance = lineDistanceMeters(inputCoordinates);
+    const leftAccuracy = continuousAccuracy(leftSample.accuracyMeters);
+    const rightAccuracy = continuousAccuracy(rightSample.accuracyMeters);
+    const accuracySum = leftAccuracy + rightAccuracy;
+    const skipped = rightIndex - leftIndex > 1
+      || (leftSample.sourceIndex !== undefined && rightSample.sourceIndex !== undefined
+        && rightSample.sourceIndex - leftSample.sourceIndex > 1);
+    const maxElapsedSeconds = (skipped ? MAX_THROUGH_NULL_ELAPSED_MS : ROUTE_TRACKING_V1_POLICY.delayedThresholdMs) / 1000;
+    if (
+      coordinates === null
+      || leftLocation === null
+      || rightLocation === null
+      || !Number.isFinite(roadDistance)
+      || !Number.isFinite(roadDuration)
+      || roadDistance <= 0
+      || roadDuration <= 0
+      || !(elapsedSeconds > 0 && elapsedSeconds <= maxElapsedSeconds)
+      || roadDistance > Math.min(MAX_RELAXED_LEG_ROAD_DISTANCE_METERS, pathDistance * 1.8 + 50 + 3 * accuracySum)
+      || Math.max(0, roadDistance - 3 * accuracySum) / elapsedSeconds > MAX_HARD_MATCH_SPEED_METERS_PER_SECOND
+      || !isSnapDisplacementPlausible(inputCoordinates[0]!, leftLocation, leftAccuracy, 3)
+      || !isSnapDisplacementPlausible(inputCoordinates.at(-1)!, rightLocation, rightAccuracy, 3)
+      || !skippedSamplesInsideCorridor(samples, inputCoordinates, coordinates)
+    ) {
+      reject();
+      continue;
+    }
+    const strict = !skipped
+      && isMeasuredAccuracy(leftSample.accuracyMeters)
+      && isMeasuredAccuracy(rightSample.accuracyMeters)
+      && leftAccuracy <= ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters
+      && rightAccuracy <= ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters
+      && leftAlternativesCount === 0
+      && rightAlternativesCount === 0
+      && roadDistance <= Math.min(MAX_RELAXED_LEG_ROAD_DISTANCE_METERS, pathDistance * 1.8 + 50)
+      && roadDistance / elapsedSeconds <= MAX_GAP_SUPPLEMENT_SPEED_METERS_PER_SECOND
+      && roadDuration <= elapsedSeconds * 1.5 + 15
+      && isSnapDisplacementPlausible(inputCoordinates[0]!, leftLocation, leftAccuracy, 1)
+      && isSnapDisplacementPlausible(inputCoordinates.at(-1)!, rightLocation, rightAccuracy, 1);
+    const interpolationLevel: 0 | 1 = strict ? 0 : 1;
+    const sourceRange = rangeFromSamples(samples, interpolationLevel);
+    if (skipped) {
+      sourceRange.reason = samples.some((sample) => (sample.accuracyMeters ?? 0) > ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters)
+        ? 'LOW_ACCURACY'
+        : 'NO_MATCH';
+    }
+    lines.push({ confidence, coordinates, interpolationLevel, matchingIdentity, sourceRange });
+  }
+  return lines;
+}
+
+/** A leg that skipped source fixes names the worst reason among them, including fixes left out of the chunk. */
+function annotateSkippedSpanReason(document: RouteTrackingGeometryDocumentV1, line: MatchedLine): void {
+  if (line.sourceRange.reason === undefined) return;
+  const { startSourceIndex, endSourceIndex } = line.sourceRange;
+  const lowAccuracyInside = document.samples.some((sample) => (
+    sample.sourceIndex !== undefined
+    && sample.sourceIndex > startSourceIndex
+    && sample.sourceIndex < endSourceIndex
+    && (sample.accuracyMeters ?? 0) > ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters
+  ));
+  if (lowAccuracyInside) line.sourceRange.reason = 'LOW_ACCURACY';
+}
+
+function rejectedSpanLine(
+  chunk: MatchChunk,
+  leftIndex: number,
+  rightIndex: number,
+  confidence: number,
+  matchingIdentity: string,
+): MatchedLine {
+  const samples = chunk.samples.slice(leftIndex, rightIndex + 1);
+  return {
+    confidence,
+    coordinates: chunk.coordinates.slice(leftIndex, rightIndex + 1),
+    interpolationLevel: 2,
+    matchingIdentity,
+    rescueEligible: false,
+    rescueObservedSourceIndexes: [],
+    sourceRange: rangeFromSamples(samples, 2),
+  };
+}
+
+function skippedSamplesInsideCorridor(
+  samples: RouteTrackingGeometryDocumentV1['samples'],
+  inputCoordinates: Array<[number, number]>,
+  legCoordinates: Array<[number, number]>,
+): boolean {
+  for (let index = 1; index < samples.length - 1; index += 1) {
+    const projection = projectCoordinateOntoLine(inputCoordinates[index]!, legCoordinates);
+    const corridor = THROUGH_NULL_CORRIDOR_METERS
+      + Math.min(ROUTE_TRACKING_V1_POLICY.maxMatchAccuracyMeters, continuousAccuracy(samples[index]!.accuracyMeters));
+    if (projection === null || projection.distanceMeters > corridor) return false;
+  }
+  return true;
+}
+
+function isMeasuredAccuracy(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function continuousAccuracy(value: number | null | undefined): number {
+  return isMeasuredAccuracy(value) ? value : ASSUMED_UNMEASURED_ACCURACY_METERS;
 }
 
 function readLegacyMatchedLines(payload: unknown, chunk: MatchChunk): MatchedLine[] {

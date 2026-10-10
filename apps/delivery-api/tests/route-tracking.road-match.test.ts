@@ -38,9 +38,9 @@ describe('route tracking road matching', () => {
     expect(requestedUrl).toContain('overview=full');
     expect(requestedUrl).toContain('geometries=geojson');
     expect(requestedUrl).toContain('gaps=split');
-    expect(requestedUrl).toContain('tidy=true');
+    expect(requestedUrl).toContain('tidy=false');
     expect(requestedUrl).toContain('timestamps=1784592000%3B1784592030%3B1784592060');
-    expect(requestedUrl).toContain('radiuses=20%3B20%3B20');
+    expect(requestedUrl).toContain('radiuses=25%3B25%3B25');
     expect(requestedUrl).toContain('steps=true');
     expect(result?.coverage).toBe('korea');
     expect(result?.matchedGeometry?.type).toBe('MultiLineString');
@@ -103,11 +103,13 @@ describe('route tracking road matching', () => {
     }).match(input);
 
     expect(defaultResult?.matchedGeometry).toBeNull();
-    expect(defaultResult?.uncertainRanges).toEqual([expect.objectContaining({ interpolationLevel: 2 })]);
+    expect(defaultResult?.inferredRanges).toEqual([expect.objectContaining({ interpolationLevel: 1 })]);
     expect(legacyResult?.matchedGeometry?.coordinates).toEqual([input.coordinates]);
     expect(legacyResult?.matchedRanges).toEqual([expect.objectContaining({ interpolationLevel: 0 })]);
     expect(legacyResult?.qualityVersion).toBe('gps_quality.v3');
-    expect(String((legacyFetch.mock.calls as unknown as Array<[string]>)[0]![0])).toContain('radiuses=75%3B75');
+    const legacyUrl = String((legacyFetch.mock.calls as unknown as Array<[string]>)[0]![0]);
+    expect(legacyUrl).toContain('radiuses=75%3B75');
+    expect(legacyUrl).toContain('tidy=true');
   });
 
   test('can infer only tightly corroborated short legs when GPS accuracy was not recorded', async () => {
@@ -129,11 +131,11 @@ describe('route tracking road matching', () => {
     expect(result?.inferredRanges).toEqual([expect.objectContaining({ interpolationLevel: 1 })]);
   });
 
-  test('keeps high-confidence missing-accuracy legs disconnected without explicit opt-in', async () => {
+  test('accepts missing-accuracy legs as level 1 without the opt-in, even over a long sampling interval', async () => {
     const coordinates: Array<[number, number]> = [
       [126.9, 37.5], [126.9001, 37.5], [126.9002, 37.5],
     ];
-    const input = document(coordinates);
+    const input = document(coordinates, { intervalMs: 45_000 });
     input.samples.forEach((sample) => { sample.accuracyMeters = null; });
     const result = await new OsrmRouteTrackingRoadMatchProvider({
       baseUrls: { korea: 'http://osrm-korea:5000' },
@@ -141,10 +143,11 @@ describe('route tracking road matching', () => {
     }).match(input);
 
     expect(result?.matchedGeometry).toBeNull();
-    expect(result?.inferredGeometry).toBeNull();
+    expect(result?.inferredGeometry?.coordinates).toHaveLength(1);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({ interpolationLevel: 1, startSourceIndex: 0, endSourceIndex: 2 })]);
   });
 
-  test('rejects missing-accuracy inference when confidence, alternatives, or snap evidence is weak', async () => {
+  test('accepts missing-accuracy legs regardless of confidence or alternatives, but not an implausible snap', async () => {
     const coordinates: Array<[number, number]> = [
       [126.9, 37.5], [126.9001, 37.5], [126.9002, 37.5],
     ];
@@ -153,37 +156,29 @@ describe('route tracking road matching', () => {
     const confident = osrmMatchResponse(coordinates, { confidence: 0.98 });
     const ambiguous = structuredClone(confident);
     ambiguous.tracepoints[1]!.alternatives_count = 1;
-    const displaced = structuredClone(confident);
-    displaced.tracepoints[1]!.location = [126.9001, 37.5002];
-    const lowConfidence = osrmMatchResponse(coordinates, { confidence: 0.94 });
+    const lowConfidence = osrmMatchResponse(coordinates, { confidence: 0.3 });
     const invalidConfidence = osrmMatchResponse(coordinates, { confidence: 1.01 });
 
-    for (const response of [ambiguous, displaced, lowConfidence, invalidConfidence]) {
+    for (const response of [ambiguous, lowConfidence, invalidConfidence]) {
       const result = await new OsrmRouteTrackingRoadMatchProvider({
         baseUrls: { korea: 'http://osrm-korea:5000' },
-        allowUnmeasuredAccuracyInference: true,
         fetch: vi.fn(() => Promise.resolve(new Response(JSON.stringify(response)))),
       }).match(input);
 
       expect(result?.matchedGeometry).toBeNull();
-      expect(result?.inferredGeometry).toBeNull();
+      expect(result?.inferredGeometry?.coordinates).toHaveLength(1);
     }
-  });
 
-  test('rejects missing-accuracy inference across a long sampling interval', async () => {
-    const coordinates: Array<[number, number]> = [
-      [126.9, 37.5], [126.9001, 37.5], [126.9002, 37.5],
-    ];
-    const input = document(coordinates, { intervalMs: 45_000 });
-    input.samples.forEach((sample) => { sample.accuracyMeters = null; });
-    const result = await new OsrmRouteTrackingRoadMatchProvider({
+    // About 220 m between the fix and its snapped location: three times the assumed 25 m plus 10 m is exceeded.
+    const displaced = structuredClone(confident);
+    displaced.tracepoints[1]!.location = [126.9001, 37.502];
+    const rejected = await new OsrmRouteTrackingRoadMatchProvider({
       baseUrls: { korea: 'http://osrm-korea:5000' },
-      allowUnmeasuredAccuracyInference: true,
-      fetch: vi.fn(() => Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(coordinates, { confidence: 0.98 }))))),
+      fetch: vi.fn(() => Promise.resolve(new Response(JSON.stringify(displaced)))),
     }).match(input);
 
-    expect(result?.matchedGeometry).toBeNull();
-    expect(result?.inferredGeometry).toBeNull();
+    expect(rejected?.inferredGeometry).toBeNull();
+    expect(rejected?.uncertainRanges).toEqual([expect.objectContaining({ interpolationLevel: 2, startSourceIndex: 0, endSourceIndex: 2 })]);
   });
 
   test('keeps the legacy whole-match input accuracy cap at 100 meters', async () => {
@@ -202,7 +197,7 @@ describe('route tracking road matching', () => {
     expect(result?.matchedGeometry).toBeNull();
   });
 
-  test('uses per-sample GPS accuracy as OSRM radiuses with a bounded fallback', async () => {
+  test('uses per-sample GPS accuracy as OSRM radiuses with a 25 m floor and a bounded fallback', async () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       code: 'Ok',
       matchings: [{
@@ -224,7 +219,7 @@ describe('route tracking road matching', () => {
     await provider.match(input);
 
     const requestedUrl = String((fetch.mock.calls as unknown as Array<[string]>)[0]![0]);
-    expect(requestedUrl).toContain('radiuses=8.4%3B25%3B40');
+    expect(requestedUrl).toContain('radiuses=25%3B25%3B40');
   });
 
   test('splits by GPS gaps and by 80-point OSRM match request limit', async () => {
@@ -332,9 +327,9 @@ describe('route tracking road matching', () => {
     expect(requestPointCounts).toEqual([2, 2]);
   });
 
-  test('returns uncertain geometry when OSRM confidence is below the display threshold', async () => {
-    const coordinates: Array<[number, number]> = [[-79.4, 43.65], [-79.41, 43.66]];
-    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(coordinates, { confidence: 0.49 })))));
+  test('accepts a leg whose whole-trace OSRM confidence is low when its own distance, speed and snap checks pass', async () => {
+    const coordinates: Array<[number, number]> = [[-79.4, 43.65], [-79.4003, 43.6502]];
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(coordinates, { confidence: 0.12 })))));
     const provider = new OsrmRouteTrackingRoadMatchProvider({
       baseUrls: { ontario: 'http://osrm-ontario:5000' },
       fetch,
@@ -342,8 +337,9 @@ describe('route tracking road matching', () => {
 
     const result = await provider.match(document(coordinates));
 
-    expect(result?.matchedGeometry).toBeNull();
-    expect(result?.uncertainGeometry?.coordinates).toEqual([[[-79.4, 43.65], [-79.41, 43.66]]]);
+    expect(result?.matchedGeometry?.coordinates).toEqual([coordinates]);
+    expect(result?.matchedRanges).toEqual([expect.objectContaining({ interpolationLevel: 0 })]);
+    expect(result?.uncertainGeometry).toBeNull();
   });
 
   test('classifies OSRM transport failures as retryable without changing match null behavior', async () => {
@@ -431,7 +427,7 @@ describe('route tracking road matching', () => {
     })]);
   });
 
-  test('keeps only explicit valid legs when one internal tracepoint is an OSRM outlier', async () => {
+  test('joins the neighbours of a null tracepoint with the OSRM leg between them as level 1', async () => {
     const coordinates: Array<[number, number]> = [
       [-79.4, 43.65], [-79.401, 43.651], [-79.402, 43.652], [-79.403, 43.653],
     ];
@@ -446,12 +442,37 @@ describe('route tracking road matching', () => {
 
     const result = await provider.match(document(coordinates));
 
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(result?.matchedRanges).toEqual([expect.objectContaining({
       startSourceIndex: 0,
       endSourceIndex: 1,
       interpolationLevel: 0,
     })]);
-    expect(result?.unmatchedRanges).toEqual([expect.objectContaining({ startSourceIndex: 2, interpolationLevel: 2 })]);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({
+      startSourceIndex: 1,
+      endSourceIndex: 3,
+      interpolationLevel: 1,
+      reason: 'NO_MATCH',
+    })]);
+    expect(result?.inferredGeometry?.coordinates).toEqual([[coordinates[1], coordinates[3]]]);
+    expect(result?.unmatchedRanges).toEqual([]);
+  });
+
+  test('leaves a null tracepoint span disconnected when a skipped fix lies outside the leg corridor', async () => {
+    const coordinates: Array<[number, number]> = [
+      [-79.4, 43.65], [-79.401, 43.651], [-79.402, 43.655], [-79.403, 43.653],
+    ];
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(coordinates, {
+      nullIndexes: [2],
+    })))));
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' },
+      fetch,
+    }).match(document(coordinates));
+
+    expect(result?.matchedRanges).toEqual([expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 })]);
+    expect(result?.inferredRanges).toEqual([]);
+    expect(result?.uncertainRanges).toEqual([expect.objectContaining({ startSourceIndex: 1, endSourceIndex: 3, interpolationLevel: 2 })]);
   });
 
   test('never lets a matched source range cross an actual acquisition gap', async () => {
@@ -470,7 +491,7 @@ describe('route tracking road matching', () => {
     ]);
   });
 
-  test('excludes low-accuracy samples from confident road matching and reports their raw range', async () => {
+  test('leaves a fix above 200 m out and joins its neighbours with a level-1 leg instead of splitting the trace', async () => {
     const fetch = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(
       osrmMatchResponse(readRequestedCoordinates(url)),
     ))));
@@ -482,13 +503,19 @@ describe('route tracking road matching', () => {
 
     const result = await provider.match(input);
 
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(String((fetch.mock.calls as unknown as Array<[string]>)[0]![0])).not.toContain('-79.8');
-    expect(result?.unmatchedRanges).toEqual([expect.objectContaining({
-      startEventId: 'event-2',
-      endEventId: 'event-2',
+    expect(result?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1, interpolationLevel: 0 }),
+      expect.objectContaining({ startSourceIndex: 3, endSourceIndex: 4, interpolationLevel: 0 }),
+    ]);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({
+      startSourceIndex: 1,
+      endSourceIndex: 3,
+      interpolationLevel: 1,
       reason: 'LOW_ACCURACY',
     })]);
+    expect(result?.unmatchedRanges).toEqual([]);
   });
 
   test.each([
@@ -522,10 +549,7 @@ describe('route tracking road matching', () => {
     expect(result?.unmatchedRanges).toEqual([expect.objectContaining({ interpolationLevel: 2, reason: 'LOW_ACCURACY' })]);
   });
 
-  test.each([
-    [0.9, true],
-    [0.79, false],
-  ])('accepts locally ambiguous legs only as high-confidence level 1 (confidence %s)', async (confidence, accepted) => {
+  test.each([0.9, 0.79, 0.3])('accepts a locally ambiguous leg as level 1 regardless of matching confidence (%s)', async (confidence) => {
     const input = document([[-79.4, 43.65], [-79.3995, 43.6502]]);
     const payload = osrmMatchResponse(input.coordinates, { confidence });
     payload.tracepoints[0]!.alternatives_count = 1;
@@ -534,9 +558,8 @@ describe('route tracking road matching', () => {
       fetch: vi.fn(() => Promise.resolve(new Response(JSON.stringify(payload)))),
     }).match(input);
 
-    expect(result?.inferredRanges).toHaveLength(accepted ? 1 : 0);
-    expect(result?.uncertainRanges).toHaveLength(accepted ? 0 : 1);
-    if (accepted) expect(result?.inferredRanges?.[0]).toEqual(expect.objectContaining({ interpolationLevel: 1 }));
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({ interpolationLevel: 1 })]);
+    expect(result?.uncertainRanges).toEqual([]);
   });
 
   test('uses bounded GPS uncertainty for a high-confidence level-1 detour', async () => {
@@ -618,7 +641,7 @@ describe('route tracking road matching', () => {
   });
 
   test.each(['missing-alternatives', 'out-of-range-matching-index'])(
-    'blocks supplementation across %s middle evidence between valid anchors',
+    'rejects %s middle evidence between valid anchors and leaves the span to a plain connector',
     async (malformation) => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
@@ -635,7 +658,9 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).match(input);
 
-    expect(fetch).toHaveBeenCalledTimes(1);
+    // One match request, then one road bridge attempt that this match-shaped answer cannot satisfy.
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(String((fetch.mock.calls as unknown as Array<[string]>)[1]![0])).toContain('/route/v1/driving/');
     expect(result?.uncertainRanges).toEqual([expect.objectContaining({
       interpolationLevel: 2, startSourceIndex: 1, endSourceIndex: 3,
     })]);
@@ -676,7 +701,7 @@ describe('route tracking road matching', () => {
     const matchUrls = (fetch.mock.calls as unknown as Array<[string]>).map(([url]) => String(url))
       .filter((url) => url.includes('/match/v1/driving/'));
     expect(matchUrls).toHaveLength(2);
-    expect(matchUrls[1]).toContain('radiuses=20%3B150%3B20');
+    expect(matchUrls[1]).toContain('radiuses=25%3B150%3B25');
     expect(matchUrls[1]).toContain('timestamps=1784592030%3B1784592060%3B1784592090');
     expect(result?.inferredGeometry?.coordinates).toEqual([supplementRouteCoordinates()]);
     expect(result?.inferredRanges).toEqual([expect.objectContaining({
@@ -763,13 +788,14 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).match(input);
 
-    expect(fetch).toHaveBeenCalledTimes(1);
+    // One match request plus a bridge attempt for each matching boundary (refused by the match-shaped answer).
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(result?.inferredRanges).toEqual([expect.objectContaining({
       interpolationLevel: 1, startSourceIndex: 2, endSourceIndex: 3,
     })]);
   });
 
-  test('does not supplement across an existing level-2 rejected range', async () => {
+  test('accepts a low-confidence matching on its leg evidence and tries to bridge the matching boundaries', async () => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
       [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
@@ -789,14 +815,18 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).match(input);
 
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(result?.uncertainRanges).toEqual([expect.objectContaining({
-      interpolationLevel: 2, startSourceIndex: 2, endSourceIndex: 3,
-    })]);
+    // One match, a strict supplement and a bridge attempt per matching boundary (both refused by the match-shaped stub).
+    expect(fetch).toHaveBeenCalledTimes(5);
+    expect(result?.matchedRanges).toEqual([
+      expect.objectContaining({ interpolationLevel: 0, startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ interpolationLevel: 0, startSourceIndex: 2, endSourceIndex: 3 }),
+      expect.objectContaining({ interpolationLevel: 0, startSourceIndex: 4, endSourceIndex: 5 }),
+    ]);
+    expect(result?.uncertainRanges).toEqual([]);
     expect(result?.inferredRanges).toEqual([]);
   });
 
-  test('bridges an explicit recorded GPS gap only between measured adjacent raw anchors', async () => {
+  test('bridges an explicit recorded GPS gap between measured adjacent raw anchors', async () => {
     const input = recordedGapInput();
     const fetch = recordedGapFetch(input);
 
@@ -804,9 +834,11 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).matchWithStatus(input, rawEvidenceFromDocument(input));
 
+    // The recorded-gap request plus two bridge attempts for the null spans beside it; the stubbed
+    // answer carries the recorded-gap waypoints, so only the recorded gap is accepted.
     expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
       String(url).includes('/route/v1/driving/')
-    ))).toHaveLength(1);
+    ))).toHaveLength(3);
     expect(result.path?.matchedRanges).toEqual([
       expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
       expect.objectContaining({ startSourceIndex: 6, endSourceIndex: 7 }),
@@ -870,9 +902,10 @@ describe('route tracking road matching', () => {
     }).matchWithStatus(input, rawEvidence);
 
     expect(result.path?.inferredRanges).toEqual([]);
+    // Only the general bridge attempt remains; the recorded-gap pass never asked.
     expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
       String(url).includes('/route/v1/driving/')
-    ))).toHaveLength(0);
+    ))).toHaveLength(1);
   });
 
   test.each([
@@ -893,7 +926,7 @@ describe('route tracking road matching', () => {
     expect(result.path?.inferredRanges).toEqual([]);
     expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
       String(url).includes('/route/v1/driving/')
-    ))).toHaveLength(0);
+    ))).toHaveLength(1);
   });
 
   test('keeps an explicit GPS gap disconnected when OSRM returns an equally supported alternative', async () => {
@@ -931,12 +964,13 @@ describe('route tracking road matching', () => {
     }).matchWithStatus(input, rawEvidenceFromDocument(input));
 
     expect(result.path?.inferredRanges).toEqual([]);
+    // The general bridge still asks once; the stubbed recorded-gap answer does not fit its anchors.
     expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
       String(url).includes('/route/v1/driving/')
-    ))).toHaveLength(0);
+    ))).toHaveLength(1);
   });
 
-  test('rescues only an observed short NO_MATCH corridor between confident road anchors', async () => {
+  test('joins an observed short NO_MATCH corridor with the OSRM leg between its confident anchors', async () => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
       [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
@@ -948,7 +982,7 @@ describe('route tracking road matching', () => {
     }).matchWithStatus(input, rawEvidenceFromDocument(input));
 
     expect((fetch.mock.calls as unknown as Array<[string]>).map(([url]) => String(url))
-      .filter((url) => url.includes('/route/v1/driving/'))).toHaveLength(1);
+      .filter((url) => url.includes('/route/v1/driving/'))).toHaveLength(0);
     expect(result.path?.matchedRanges).toEqual([
       expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
       expect.objectContaining({ startSourceIndex: 4, endSourceIndex: 5 }),
@@ -956,10 +990,10 @@ describe('route tracking road matching', () => {
     expect(result.path?.inferredRanges).toEqual([expect.objectContaining({
       interpolationLevel: 1, reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex: 4,
     })]);
-    expect(result.path?.inferredGeometry?.coordinates).toEqual([input.coordinates.slice(1, 5)]);
+    expect(result.path?.inferredGeometry?.coordinates).toEqual([[input.coordinates[1], input.coordinates[4]]]);
   });
 
-  test('does not add observed NO_MATCH Route requests to the normal durable worker', async () => {
+  test('joins null tracepoints in the normal durable worker without raw evidence or Route requests', async () => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
       [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
@@ -972,7 +1006,9 @@ describe('route tracking road matching', () => {
     }).matchWithStatus(input);
 
     expect(result.retryable).toBe(false);
-    expect(result.path?.inferredRanges).toEqual([]);
+    expect(result.path?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1, reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex: 4,
+    })]);
     expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) =>
       String(url).includes('/route/v1/driving/'))).toHaveLength(0);
   });
@@ -986,8 +1022,10 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).matchWithStatus(input, rawEvidenceFromDocument(input));
 
+    // The raw windows stay as they were; the ambiguous window between them is closed by the general bridge.
     expect(result.path?.inferredRanges).toEqual([
       expect.objectContaining({ reason: 'NO_MATCH', startSourceIndex: 0, endSourceIndex: 19 }),
+      expect.objectContaining({ reason: 'NO_MATCH', startSourceIndex: 19, endSourceIndex: 38 }),
       expect.objectContaining({ reason: 'NO_MATCH', startSourceIndex: 38, endSourceIndex: 44 }),
     ]);
     expect(result.path?.unmatchedRanges).toEqual([
@@ -995,7 +1033,7 @@ describe('route tracking road matching', () => {
     ]);
   });
 
-  test('does not infer across unknown-accuracy raw evidence', async () => {
+  test('bridges around an unknown-accuracy raw fix after the raw windows refused it', async () => {
     const input = continuousNoMatchInput(31);
     delete input.samples[5]!.accuracyMeters;
     const fetch = continuousNoMatchFetch(input);
@@ -1004,9 +1042,9 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).matchWithStatus(input, rawEvidenceFromDocument(input));
 
-    expect(result.path?.inferredRanges?.some((range) => (
-      range.startSourceIndex < 5 && range.endSourceIndex > 5
-    ))).toBe(false);
+    expect(result.path?.inferredRanges).toContainEqual(expect.objectContaining({
+      reason: 'NO_MATCH', startSourceIndex: 4, endSourceIndex: 6,
+    }));
   });
 
   test('does not infer across an acquisition gap inside a continuous NO_MATCH range', async () => {
@@ -1116,9 +1154,10 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).matchWithStatus(input, rawEvidenceFromDocument(input));
 
+    // 64 bounded raw windows, then the general bridge closes the gaps between them.
     expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
       String(url).includes('/route/v1/driving/')
-    ))).toHaveLength(64);
+    )).length).toBeGreaterThanOrEqual(64);
     expect(result.path?.inferredRanges).toEqual(
       [...(result.path?.inferredRanges ?? [])].sort((left, right) => (
         left.startSourceIndex - right.startSourceIndex || left.endSourceIndex - right.endSourceIndex
@@ -1131,7 +1170,7 @@ describe('route tracking road matching', () => {
     ]));
   });
 
-  test('does not bridge a null tracepoint run that also crosses an OSRM matching boundary', async () => {
+  test('joins a null run inside a matching and tries a road bridge across the matching boundary', async () => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
       [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
@@ -1152,15 +1191,18 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).matchWithStatus(input, rawEvidenceFromDocument(input));
 
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(String((fetch.mock.calls as unknown as Array<[string]>)[1]![0])).toContain('/route/v1/driving/');
     expect(result.path?.matchedRanges).toEqual([
       expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
       expect.objectContaining({ startSourceIndex: 4, endSourceIndex: 5 }),
     ]);
-    expect(result.path?.inferredRanges).toEqual([]);
+    expect(result.path?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1, reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex: 3,
+    })]);
   });
 
-  test('does not bridge a null-only run between different OSRM matching identities', async () => {
+  test('tries a road bridge across a null-only run between different OSRM matching identities', async () => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
       [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
@@ -1187,10 +1229,17 @@ describe('route tracking road matching', () => {
       expect.objectContaining({ startSourceIndex: 4, endSourceIndex: 5 }),
     ]);
     expect(result.path?.inferredRanges).toEqual([]);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    // One match, then the strict four-point supplement match and the general road bridge, both refused by the stub.
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(String((fetch.mock.calls as unknown as Array<[string]>)[1]![0])).toContain('/match/v1/driving/');
+    expect(String((fetch.mock.calls as unknown as Array<[string]>)[2]![0])).toContain('/route/v1/driving/');
   });
 
-  test.each(['valid', 'invalid-waypoint', 'ambiguous'])('does not bridge a null run around an interior %s tracepoint', async (variant) => {
+  test.each([
+    ['valid', 0],
+    ['invalid-waypoint', 1],
+    ['ambiguous', 0],
+  ])('joins a null run around an interior %s tracepoint (%s road bridge request)', async (variant, routeRequests) => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
       [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
@@ -1218,11 +1267,12 @@ describe('route tracking road matching', () => {
       baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).matchWithStatus(input, rawEvidenceFromDocument(input));
 
+    // A malformed interior tracepoint rejects the OSRM legs; the general bridge then asks for a road.
     expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) =>
-      String(url).includes('/route/v1/driving/'))).toHaveLength(0);
-    expect(result.path?.inferredRanges).not.toContainEqual(expect.objectContaining({
-      reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex: 5,
-    }));
+      String(url).includes('/route/v1/driving/'))).toHaveLength(routeRequests);
+    expect(result.path?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1, reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex: 5,
+    })]);
   });
 
   test.each([
@@ -1234,11 +1284,6 @@ describe('route tracking road matching', () => {
       input.samples[3]!.gapBefore = true;
     }, {}],
     ['a driver change', (input: RouteTrackingGeometryDocumentV1) => { input.samples[3]!.driverId = 'driver-2'; }, {}],
-    ['an unexamined raw GPS point', (input: RouteTrackingGeometryDocumentV1) => {
-      input.samples.slice(3).forEach((sample) => { sample.sourceIndex! += 1; });
-      input.sourcePointCount += 1;
-    }, {}],
-    ['an equally supported alternative road', () => {}, { alternate: true }],
   ])('keeps a short NO_MATCH corridor disconnected for %s', async (_label, mutate, options) => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
@@ -1257,10 +1302,35 @@ describe('route tracking road matching', () => {
   });
 
   test.each([
-    ['supported', [-79.3993, 43.6500], true],
-    ['backtracking', [-79.3998, 43.6500], false],
-    ['off-road', [-79.3993, 43.6520], false],
-  ] as const)('checks a filtered raw GPS point before rescuing an observed corridor: %s', async (_label, omitted, accepted) => {
+    ['an unexamined raw GPS point', (input: RouteTrackingGeometryDocumentV1) => {
+      input.samples.slice(3).forEach((sample) => { sample.sourceIndex! += 1; });
+      input.sourcePointCount += 1;
+    }, {}, 5],
+    ['an equally supported alternative road', () => {}, { alternate: true }, 4],
+  ])('joins a short NO_MATCH corridor across %s with the OSRM leg', async (_label, mutate, options, endSourceIndex) => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
+      [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
+    ], { intervalMs: 10_000 });
+    input.samples.forEach((sample, index) => { if (index > 0) sample.gapBefore = false; sample.sourceIndex = index; });
+    mutate(input);
+    const fetch = observedNoMatchFetch(input, options);
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).matchWithStatus(input, rawEvidenceFromDocument(input));
+
+    expect(result.path?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1, reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex,
+    })]);
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) =>
+      String(url).includes('/route/v1/driving/'))).toHaveLength(0);
+  });
+
+  test.each([
+    ['supported', [-79.3993, 43.6500]],
+    ['backtracking', [-79.3998, 43.6500]],
+    ['off-road', [-79.3993, 43.6520]],
+  ] as const)('joins null tracepoints without consulting a filtered raw GPS point: %s', async (_label, omitted) => {
     const input = document([
       [-79.4000, 43.6500], [-79.3998, 43.6500], [-79.3996, 43.6500],
       [-79.3994, 43.6500], [-79.3992, 43.6500], [-79.3990, 43.6500],
@@ -1296,16 +1366,17 @@ describe('route tracking road matching', () => {
     }).matchWithStatus(input, rawEvidence);
 
     expect(result.retryable).toBe(false);
+    expect(omitted).toHaveLength(2);
     expect(result.path?.matchedRanges).toEqual([
       expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
       expect.objectContaining({ startSourceIndex: 5, endSourceIndex: 6 }),
     ]);
-    expect(result.path?.inferredRanges?.some((range) => (
-      range.reason === 'NO_MATCH' && range.startSourceIndex === 1 && range.endSourceIndex === 5
-    )) ?? false).toBe(accepted);
+    expect(result.path?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1, reason: 'NO_MATCH', startSourceIndex: 1, endSourceIndex: 5,
+    })]);
   });
 
-  test('uses the full observed corridor to infer a longer high-accuracy-excluded span', async () => {
+  test('bridges the span left by fixes above 200 m with a bounded road route', async () => {
     const input = contextualSupplementInput();
     const fetch = contextualSupplementFetch(input);
 
@@ -1314,10 +1385,12 @@ describe('route tracking road matching', () => {
       fetch,
     }).match(input);
 
-    const routeCalls = (fetch.mock.calls as unknown as Array<[string]>)
-      .map(([url]) => String(url))
-      .filter((url) => url.includes('/route/v1/driving/'));
-    expect(routeCalls).toHaveLength(1);
+    // Leaving three 60 s fixes out opens a 240 s gap, so the trace is matched in two parts and the
+    // general bridge joins them.
+    const urls = (fetch.mock.calls as unknown as Array<[string]>).map(([url]) => String(url));
+    expect(urls.filter((url) => url.includes('/match/v1/driving/'))).toHaveLength(2);
+    expect(urls.filter((url) => url.includes('/route/v1/driving/'))).toHaveLength(1);
+    expect(urls.some((url) => url.includes('-79.404,'))).toBe(false);
     expect(result?.inferredRanges).toEqual([expect.objectContaining({
       interpolationLevel: 1,
       reason: 'LOW_ACCURACY',
@@ -1327,24 +1400,118 @@ describe('route tracking road matching', () => {
     expect(result?.inferredGeometry?.coordinates).toEqual([contextualSupplementRoute()]);
   });
 
-  test.each([
-    ['an ambiguous road alternative', { ambiguous: true, offCorridor: false }],
-    ['a route outside the recorded accuracy corridor', { ambiguous: false, offCorridor: true }],
-  ])('keeps a contextual span disconnected for %s', async (_label, options) => {
-    const input = contextualSupplementInput();
-    const fetch = contextualSupplementFetch(input, options);
+  test('drops a single GPS spike instead of cutting the trace twice', async () => {
+    const coordinates: Array<[number, number]> = [
+      [-79.4000, 43.6500], [-79.3997, 43.6500], [-79.3800, 43.6700], [-79.3991, 43.6500], [-79.3988, 43.6500],
+    ];
+    const fetch = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(
+      osrmMatchResponse(readRequestedCoordinates(url)),
+    ))));
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).match(document(coordinates, { intervalMs: 10_000 }));
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(readRequestedCoordinates(String((fetch.mock.calls as unknown as Array<[string]>)[0]![0]))).toEqual([
+      coordinates[0], coordinates[1], coordinates[3], coordinates[4],
+    ]);
+    expect(result?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1, interpolationLevel: 0 }),
+      expect.objectContaining({ startSourceIndex: 3, endSourceIndex: 4, interpolationLevel: 0 }),
+    ]);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({
+      startSourceIndex: 1, endSourceIndex: 3, interpolationLevel: 1, reason: 'NO_MATCH',
+    })]);
+    expect(result?.unmatchedRanges).toEqual([]);
+  });
+
+  test('drops a slow drift fix once the next fix shows it was the outlier', async () => {
+    // 540 m west in 10 s (54 m/s) passes as plausible; the way back (588 m in 10 s) does not, and the fix before
+    // the drift explains the next fix, so the drift is the outlier.
+    const coordinates: Array<[number, number]> = [
+      [-79.4000, 43.6500], [-79.3997, 43.6500], [-79.4064, 43.6500], [-79.3991, 43.6500], [-79.3988, 43.6500],
+    ];
+    const fetch = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(
+      osrmMatchResponse(readRequestedCoordinates(url)),
+    ))));
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+    }).match(document(coordinates, { intervalMs: 10_000 }));
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(readRequestedCoordinates(String((fetch.mock.calls as unknown as Array<[string]>)[0]![0]))).toEqual([
+      coordinates[0], coordinates[1], coordinates[3], coordinates[4],
+    ]);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({ startSourceIndex: 1, endSourceIndex: 3 })]);
+  });
+
+  test('bridges the span between two matched parts with the fastest bounded road, even beside a similar alternative', async () => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3997, 43.6500], [-79.3990, 43.6500],
+      [-79.3983, 43.6500], [-79.3980, 43.6500], [-79.3977, 43.6500],
+    ], { intervalMs: 70_000 });
+    input.samples[2]!.accuracyMeters = 250;
+    input.samples[3]!.accuracyMeters = 250;
+    const bridge: Array<[number, number]> = [input.coordinates[1]!, [-79.3990, 43.6503], input.coordinates[4]!];
+    const fetch = vi.fn((url: string) => {
+      if (url.includes('/route/v1/driving/')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          code: 'Ok',
+          routes: [
+            { distance: 200, duration: 40, geometry: { coordinates: bridge, type: 'LineString' } },
+            { distance: 210, duration: 42, geometry: { coordinates: [bridge[0], [-79.3990, 43.6497], bridge[2]], type: 'LineString' } },
+          ],
+          waypoints: [{ location: input.coordinates[1] }, { location: input.coordinates[4] }],
+        })));
+      }
+      return Promise.resolve(new Response(JSON.stringify(osrmMatchResponse(readRequestedCoordinates(url)))));
+    });
 
     const result = await new OsrmRouteTrackingRoadMatchProvider({
-      baseUrls: { ontario: 'http://osrm-ontario:5000' },
-      fetch,
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
     }).match(input);
 
-    expect(result?.inferredRanges).toEqual([]);
-    expect(result?.unmatchedRanges).toEqual([expect.objectContaining({
-      reason: 'LOW_ACCURACY',
-      startSourceIndex: 2,
-      endSourceIndex: 4,
+    // The contextual supplement refuses the similar alternative; the general bridge takes the fastest road.
+    const urls = (fetch.mock.calls as unknown as Array<[string]>).map(([url]) => String(url));
+    expect(urls.filter((url) => url.includes('/match/v1/driving/'))).toHaveLength(2);
+    expect(urls.filter((url) => url.includes('/route/v1/driving/'))).toHaveLength(2);
+    expect(result?.matchedRanges).toEqual([
+      expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 }),
+      expect.objectContaining({ startSourceIndex: 4, endSourceIndex: 5 }),
+    ]);
+    expect(result?.inferredRanges).toEqual([expect.objectContaining({
+      interpolationLevel: 1, reason: 'LOW_ACCURACY', startSourceIndex: 1, endSourceIndex: 4,
     })]);
+    expect(result?.inferredGeometry?.coordinates).toEqual([bridge]);
+  });
+
+  test.each([
+    ['a span longer than 20 minutes', (input: RouteTrackingGeometryDocumentV1) => {
+      input.samples.slice(2).forEach((sample) => {
+        sample.occurredAt = new Date(Date.parse(sample.occurredAt) + 25 * 60_000).toISOString();
+      });
+    }],
+    ['the legacy whole-match provider', () => {}, 'legacy-whole-match' as const],
+  ])('does not bridge %s', async (_label, mutate, classificationMode?: 'legacy-whole-match') => {
+    const input = document([
+      [-79.4000, 43.6500], [-79.3997, 43.6500], [-79.3990, 43.6500], [-79.3987, 43.6500],
+    ], { gapBeforeIndex: 2 });
+    mutate(input);
+    const fetch = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(
+      url.includes('/route/v1/driving/')
+        ? routeResponse()
+        : osrmMatchResponse(readRequestedCoordinates(url)),
+    ))));
+
+    const result = await new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { ontario: 'http://osrm-ontario:5000' }, fetch,
+      ...(classificationMode === undefined ? {} : { classificationMode }),
+    }).match(input);
+
+    expect((fetch.mock.calls as unknown as Array<[string]>).filter(([url]) => (
+      String(url).includes('/route/v1/driving/')
+    ))).toHaveLength(0);
+    expect(result?.inferredRanges ?? []).toEqual([]);
   });
 
   test.each(['missing-alternatives', 'string-waypoint'])('rejects malformed %s tracepoint metadata', async (kind) => {
@@ -1397,7 +1564,7 @@ describe('route tracking road matching', () => {
     }));
   });
 
-  test('does not supplement when either retained anchor has poor or unknown accuracy', async () => {
+  test('falls back to a road bridge request when a retained anchor is too poor for the strict supplement', async () => {
     const input = supplementInput();
     input.samples[1]!.accuracyMeters = 51;
     const fetch = supplementFetch();
@@ -1405,11 +1572,13 @@ describe('route tracking road matching', () => {
 
     const result = await provider.match(input);
 
-    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => String(url).includes('/route/v1/driving/'))).toBe(false);
+    const urls = (fetch.mock.calls as unknown as Array<[string]>).map(([url]) => String(url));
+    expect(urls.filter((url) => url.includes('/match/v1/driving/'))).toHaveLength(1);
+    expect(urls.filter((url) => url.includes('/route/v1/driving/'))).toHaveLength(1);
     expect(result?.inferredGeometry).toBeNull();
   });
 
-  test('does not widen a LOW_ACCURACY supplement across an adjacent good-accuracy NO_MATCH sample', async () => {
+  test('leaves a fix above 200 m out of the request and reports the unmatched tail by reason', async () => {
     const input = document([
       [-79.4000, 43.6500], [-79.3997, 43.6500], [-79.3994, 43.6501],
       [-79.3991, 43.6501], [-79.3988, 43.6500], [-79.3985, 43.6500],
@@ -1433,12 +1602,14 @@ describe('route tracking road matching', () => {
 
     const result = await provider.match(input);
 
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String((fetch.mock.calls as unknown as Array<[string]>)[0]![0])).not.toContain('-79.3994,43.6501');
+    expect(result?.matchedRanges).toEqual([expect.objectContaining({ startSourceIndex: 0, endSourceIndex: 1 })]);
     expect(result?.unmatchedRanges).toEqual([
       expect.objectContaining({ startEventId: 'event-2', endEventId: 'event-2', reason: 'LOW_ACCURACY' }),
-      expect.objectContaining({ startEventId: 'event-3', endEventId: 'event-3', reason: 'NO_MATCH' }),
+      expect.objectContaining({ startEventId: 'event-3', endEventId: 'event-5', reason: 'NO_MATCH' }),
     ]);
     expect(result?.inferredGeometry).toBeNull();
-    expect((fetch.mock.calls as unknown as Array<[string]>).some(([url]) => String(url).includes('/route/v1/driving/'))).toBe(false);
   });
 
   test.each([
@@ -1451,7 +1622,8 @@ describe('route tracking road matching', () => {
 
     const result = await provider.match(supplementInput());
 
-    expect(fetch).toHaveBeenCalledTimes(2);
+    // Match, strict supplement, then the general bridge attempt that the stub cannot satisfy.
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(result?.inferredGeometry).toBeNull();
     expect(result?.inferredRanges).toEqual([]);
   });
