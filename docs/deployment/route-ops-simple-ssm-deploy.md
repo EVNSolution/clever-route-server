@@ -123,6 +123,9 @@ The EC2 host does not build. A real deploy does this in order:
 15. Verifies public `/healthz`.
 16. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
 
+The host also runs `.deploy/route-ops-docker-cleanup.sh --enforce` before step 9 and after step 16.
+See [Docker cleanup and disk retention](#docker-cleanup-and-disk-retention).
+
 ### UVIS server-only runtime secret
 
 UVIS vehicle GPS and temperature collection is disabled unless `UVIS_ENABLED=true` is supplied through an encrypted SSM parameter. Never place the vendor company key, access key, endpoint URLs, or vendor specification in Git, GitHub Actions secrets, image build arguments, compose inline environment, or frontend variables.
@@ -281,3 +284,92 @@ candidate `ROUTE_OPS_WEB_STATIC_IMAGE` ref with the previous value from
 
 Use the force flag when debugging volume state, repairing a suspected stale static volume,
 or deliberately rehydrating the static artifact without changing the image digest. Local manual `--publish` fallbacks may still render mutable channel tags; those refs are intentionally staged conservatively instead of using the unchanged skip.
+
+## Docker cleanup and disk retention
+
+The deploy runs `.deploy/route-ops-docker-cleanup.sh --enforce` before the image pull and again after promotion.
+`operation=docker_cleanup` in `Route Ops operations` runs the same worker alone.
+After cleanup the Docker root must have at least 20 GiB and 20 percent free, or the run fails.
+
+The worker removes:
+
+- dangling images older than 168 hours;
+- build cache older than 168 hours (4 GB is kept);
+- unused old Route Ops release images, by image ID (see below).
+
+It never removes containers, volumes, or networks.
+It never forces an image removal and never prunes all images.
+
+### SSM command size
+
+AWS limits an SSM document to 64 KB, and `SendCommand` can fail with `MaxDocumentSizeExceeded`.
+The deploy command embeds the compose file and this worker as gzip plus base64 to stay well below that size.
+`tests/deploy/ssm-simple-route-ops-deploy.test.sh` checks that both decode back to the repository files and that the rendered parameters stay within 62,736 bytes (the size before the gzip embeds).
+Compress any new embedded file the same way.
+
+### Release image retention
+
+The host pulls release images by digest, so they show as `repo:<none>` and are not dangling.
+Each one is 750 to 935 MB, and they pile up.
+The worker removes a release image only when every rule holds:
+
+| Rule | Meaning |
+| --- | --- |
+| Release repository | The repository is in `ROUTE_OPS_DOCKER_RELEASE_REPOS`. Other repositories (postgres, caddy, osrm, vroom, Shopify) are never touched. |
+| Not in use | No container uses the image, running or stopped. |
+| Not pinned | No pin file contains the image ID or one of its repo digests (any `sha256:<64 hex>` in the file). |
+| Not newest | The image is not one of the newest `ROUTE_OPS_DOCKER_RELEASE_KEEP` images of its repository by creation time. |
+| Old enough | The image is older than `ROUTE_OPS_DOCKER_RELEASE_MIN_AGE`. This uses the image build time. |
+| One tag | The image has at most one tag and one repository. A digest reference (`repo@sha256:...`) is not a tag: the containerd image store of Docker 29 lists it in `RepoTags` too, and the worker does not count it. Docker needs force for more than one tag, so the worker skips such an image and logs why. |
+
+An image survives when any rule protects it.
+The newest N are counted over all local images of the repository, so a pinned or running image takes one of the N places and does not add a place.
+With the defaults, the three newest images of each repository stay, plus every image that a container or a pin file uses (the current release and the rollback release).
+
+| Variable | Default |
+| --- | --- |
+| `ROUTE_OPS_DOCKER_RELEASE_REPOS` | `ghcr.io/evnsolution/clever-route-server-delivery-api ghcr.io/evnsolution/clever-route-server-delivery-api-migration ghcr.io/evnsolution/clever-route-server-route-ops-web-static` (space separated) |
+| `ROUTE_OPS_DOCKER_PIN_FILES` | `current-image.env simple-rollback-image.env simple-candidate-image.env previous-image.env` in the directory of the worker (`.deploy` on the host). Space separated. Missing files are ignored. |
+| `ROUTE_OPS_DOCKER_RELEASE_KEEP` | `3` |
+| `ROUTE_OPS_DOCKER_RELEASE_MIN_AGE` | `48h` (`h` or `d` suffix) |
+
+The 20 GiB and 20 percent thresholds are unchanged.
+
+Log lines to look for:
+
+```text
+release image prune policy: repos=... keep_newest=3 min_age=48h created_before=... pin_files_read=3 pinned_digests=4
+release image kept: sha256:... ghcr.io/evnsolution/clever-route-server-delivery-api <created> 812MB (named in a pin file)
+release image prune candidate: sha256:... ghcr.io/evnsolution/clever-route-server-delivery-api <created> 812MB   (--dry-run only)
+release image removed: sha256:... ghcr.io/evnsolution/clever-route-server-delivery-api <created> 812MB
+release image prune: removed=4 kept=12 skipped=0
+```
+
+- `--dry-run` prints `release image prune candidate:` lines and `release image prune dry-run: candidates=... kept=... skipped=...`. It removes nothing.
+- A failed `docker image rm` prints `release image remove failed:`, counts as skipped, and does not stop the run.
+- If no pin file can be read, or Docker cannot list containers and images, the worker prints `release image prune skipped:` and removes no release image. The capacity check still runs.
+- The first run after this rule was added can remove many old images at once.
+
+### Container log limits
+
+`infra/compose/docker-compose.prod.yml` defines the `x-route-ops-logging` anchor: `json-file`, `max-size: 50m`, `max-file: 5` (at most 250 MB per container).
+`caddy`, `route-ops-web-static`, `clever-route-api-migrate`, `vroom`, `vroom-korea`, `osrm-ontario`, and `osrm-korea` use it.
+`clever-route-api` keeps its `awslogs` block.
+`postgres` is not changed on purpose: `docker compose run` can recreate a dependency whose config changed, and the migration lane runs `docker compose run --rm clever-route-api-migrate`.
+
+A changed logging config applies only when a container is created or recreated.
+The deploy force-recreates only `clever-route-api` with `--no-deps`, so the OSRM containers keep their old log options until an operator recreates them.
+Recreate them in a quiet window.
+They reload map data when they start, so routing and ETA calls fail for a short time.
+Recreating also removes the old unbounded log file.
+
+```bash
+cd /srv/clever-route-server
+docker compose -p clever-route --env-file .deploy/current-image.env \
+  -f infra/compose/docker-compose.prod.yml --profile osrm up -d --no-deps osrm-ontario
+docker compose -p clever-route --env-file .deploy/current-image.env \
+  -f infra/compose/docker-compose.prod.yml --profile korea up -d --no-deps osrm-korea
+docker inspect --format '{{.HostConfig.LogConfig}}' clever-route-osrm-ontario-1 clever-route-osrm-korea-1
+```
+
+Run the OSRM smoke after each recreate (see `route-ops-osrm-ontario.md` and `route-ops-multi-coverage-routing.md`).
