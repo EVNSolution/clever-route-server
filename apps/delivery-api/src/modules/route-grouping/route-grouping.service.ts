@@ -553,7 +553,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       });
       if (initialServiceMinutes !== undefined) {
         await tx.deliveryStop.updateMany({
-          data: { serviceMinutes: initialServiceMinutes, serviceMinutesSource: 'ROUTE' },
+          data: { serviceMinutes: initialServiceMinutes },
           where: { id: { in: orderedFacts.flatMap((fact) => fact.order.deliveryStops[0]?.id ?? []) }, shopId: shop.id }
         });
       }
@@ -1298,7 +1298,6 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               province: normalizeOptionalText(input.province),
               recipientName: normalizeOptionalText(input.recipientName),
               serviceMinutes: input.serviceMinutes ?? 5,
-              ...(input.serviceMinutes === undefined || input.serviceMinutes === 5 ? {} : { serviceMinutesSource: 'STOP' }),
               timeWindowEnd: parseCustomStopInstant(input.timeWindowEnd),
               timeWindowStart: parseCustomStopInstant(input.timeWindowStart)
             }
@@ -1405,7 +1404,6 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           ...(input.province === undefined ? {} : { province: normalizeOptionalText(input.province) }),
           ...(input.recipientName === undefined ? {} : { recipientName: normalizeOptionalText(input.recipientName) }),
           ...(input.serviceMinutes === undefined ? {} : { serviceMinutes: input.serviceMinutes }),
-          ...(input.serviceMinutes === undefined || input.serviceMinutes === assignment.deliveryStop.serviceMinutes ? {} : { serviceMinutesSource: 'STOP' }),
           ...(input.timeWindowEnd === undefined ? {} : { timeWindowEnd: parseCustomStopInstant(input.timeWindowEnd) }),
           ...(input.timeWindowStart === undefined ? {} : { timeWindowStart: parseCustomStopInstant(input.timeWindowStart) }),
           ...(input.latitude === undefined && input.longitude === undefined ? {} : { geocodeStatus: hasCustomStopCoordinates(merged) ? 'RESOLVED' : 'PENDING' })

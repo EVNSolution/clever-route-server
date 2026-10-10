@@ -532,7 +532,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           province: true,
           recipientName: true,
           serviceMinutes: true,
-          serviceMinutesSource: true,
           timeWindowEnd: true,
           timeWindowStart: true
         },
@@ -2531,17 +2530,9 @@ function changedDeliveryStopOperationalOverride(
   const changedEntries = Object.entries(desired).filter(([field, value]) => (
     !sameDeliveryStopOverrideValue(field, currentValues[field], value)
   ));
-  const data: Record<string, unknown> = Object.fromEntries(changedEntries);
-  // A Stop time the office changed is its own choice; sending the value a stop already has changes nothing.
-  // Null resets to the default, which later rules (a route or driver time) may replace.
-  if (payload.serviceMinutes === null) {
-    if ((currentValues.serviceMinutesSource ?? null) !== null) data.serviceMinutesSource = null;
-  } else if ('serviceMinutes' in data) {
-    data.serviceMinutesSource = 'STOP';
-  }
   return {
-    changed: Object.keys(data).length > 0,
-    data,
+    changed: changedEntries.length > 0,
+    data: Object.fromEntries(changedEntries),
     geometryChanged: changedEntries.some(([field]) => GEOMETRY_AFFECTING_STOP_OVERRIDE_FIELDS.has(field))
   };
 }

@@ -1230,7 +1230,6 @@ model DeliveryStop {
   timeWindowStart               DateTime?                      @db.Timestamptz(6)
   timeWindowEnd                 DateTime?                      @db.Timestamptz(6)
   serviceMinutes                Int                            @default(5)
-  serviceMinutesSource          String?                        @db.Text
   priority                      Int                            @default(0)
   instructions                  String?                        @db.Text
   status                        DeliveryStopStatus             @default(PENDING)

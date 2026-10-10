@@ -932,25 +932,6 @@ if (enabled) {
     expect(buildRoute.mock.calls[0]?.[0].routePlan.tollPolicy).toBe('AVOID_TOLLS');
   });
 
-  test('records a changed Stop time of a READY route as the office choice and clears the choice on reset', async () => {
-    const f = await readyAvoidingFixture(prisma);
-    const buildRoute = vi.fn<RouteGeometryProvider['buildRoute']>(detail => Promise.resolve(syntheticGeometry(detail)));
-    const service = new RoutePlanAdminService(new PrismaRoutePlanRepository(prisma), { buildRoute });
-    const deliveryStopId = f.stops[6]!.id;
-    const edit = (serviceMinutes: number | null) => service.updateAdminRouteStopOverride({ ...serviceAdminIdentity(f), actor: 'synthetic-admin', deliveryStopId, payload: { serviceMinutes } });
-    const read = () => prisma.deliveryStop.findUniqueOrThrow({ select: { serviceMinutes: true, serviceMinutesSource: true }, where: { id: deliveryStopId } });
-
-    await edit(11);
-    expect(await read()).toEqual({ serviceMinutes: 11, serviceMinutesSource: 'STOP' });
-    // The same time again changes nothing: no new geometry, and the stop keeps its source.
-    const geometryCalls = buildRoute.mock.calls.length;
-    await edit(11);
-    expect(buildRoute.mock.calls.length).toBe(geometryCalls);
-    expect(await read()).toEqual({ serviceMinutes: 11, serviceMinutesSource: 'STOP' });
-    await edit(null);
-    expect(await read()).toEqual({ serviceMinutes: 5, serviceMinutesSource: null });
-  });
-
   test('rolls back an avoid-tolls Dispatch and preserves stops, publication, receipts, and cache on provider failure', async () => {
     const f = await fixture(prisma);
     await prisma.routePlan.update({ where: { id: f.route.id }, data: { constraints: { timezone: 'America/Toronto', tollPolicy: 'AVOID_TOLLS' } } });

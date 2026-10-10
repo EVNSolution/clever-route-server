@@ -1402,34 +1402,30 @@ describeDatabase('route grouping save database regressions', () => {
     }
   });
 
-  test('gives every stop of a new route the unified Stop time, records its source and keeps the request identity', async () => {
+  test('gives every stop of a new route the unified Stop time and keeps the request identity', async () => {
     const orders = await seedOrders(2);
     const plain = await seedOrders(1);
     const requestId = randomUUID();
     const input = { appId, createdBy: 'integration', initialRoute: { requestId, serviceMinutes: 7 },
       name: 'Unified Stop time', orderIds: orders.map(order => order.id), planDate: '2026-09-10', shopDomain };
-    const stopTimes = (orderIds: string[]) => prisma.deliveryStop.findMany({
-      orderBy: { orderId: 'asc' }, select: { serviceMinutes: true, serviceMinutesSource: true }, where: { orderId: { in: orderIds } }
-    });
+    const stopTimes = async (orderIds: string[]) => (await prisma.deliveryStop.findMany({
+      orderBy: { orderId: 'asc' }, select: { serviceMinutes: true }, where: { orderId: { in: orderIds } }
+    })).map(stop => stop.serviceMinutes);
 
     const created = await service.createGrouping(input);
     expect(created.children[0]?.routePlan).toMatchObject({ stopsCount: 2 });
-    expect(await stopTimes(input.orderIds)).toEqual([
-      { serviceMinutes: 7, serviceMinutesSource: 'ROUTE' }, { serviceMinutes: 7, serviceMinutesSource: 'ROUTE' }
-    ]);
+    expect(await stopTimes(input.orderIds)).toEqual([7, 7]);
     // The same request replays; any other Stop time, or none, under the same request id is a stale write.
     expect((await service.createGrouping(input)).id).toBe(created.id);
     await expect(service.createGrouping({ ...input, initialRoute: { requestId, serviceMinutes: 9 } })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
     await expect(service.createGrouping({ ...input, initialRoute: { requestId } })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
-    expect(await stopTimes(input.orderIds)).toEqual([
-      { serviceMinutes: 7, serviceMinutesSource: 'ROUTE' }, { serviceMinutes: 7, serviceMinutesSource: 'ROUTE' }
-    ]);
+    expect(await stopTimes(input.orderIds)).toEqual([7, 7]);
 
-    // Without the option nothing about the stops changes, including a Stop time the office already chose.
-    await prisma.deliveryStop.updateMany({ data: { serviceMinutes: 12, serviceMinutesSource: 'STOP' }, where: { orderId: plain[0]!.id } });
+    // Without the option nothing about the stops changes, including a time the office already chose.
+    await prisma.deliveryStop.updateMany({ data: { serviceMinutes: 12 }, where: { orderId: plain[0]!.id } });
     await service.createGrouping({ appId, createdBy: 'integration', initialRoute: { requestId: randomUUID() },
       name: 'No unified Stop time', orderIds: plain.map(order => order.id), planDate: '2026-09-10', shopDomain });
-    expect(await stopTimes(plain.map(order => order.id))).toEqual([{ serviceMinutes: 12, serviceMinutesSource: 'STOP' }]);
+    expect(await stopTimes(plain.map(order => order.id))).toEqual([12]);
   }, 30_000);
 
   test('AVOID initial geometry failure rolls back grouping, route and inventory without allowing tolls', async () => {
