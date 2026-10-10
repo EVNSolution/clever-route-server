@@ -8,7 +8,7 @@ import {
   type DriverRoutePushResult
 } from '../route-grouping/driver-push.provider.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
-import { hasDeliveryWorkCompleted, kfoodDeliveryRouteWhere, KFOOD_DELIVERY_APP_ID, KFOOD_DELIVERY_SHOP_DOMAIN } from './kfood-delivery-completion.js';
+import { DRIVER_ROUTES_APP_PACKAGE_ID, hasDeliveryWorkCompleted, kfoodDeliveryRouteWhere, KFOOD_DELIVERY_APP_ID, KFOOD_DELIVERY_SHOP_DOMAIN } from './kfood-delivery-completion.js';
 import { computeRouteShapeSignature, computeRouteShapeSignatureFromParts, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
 import { PrismaRoutePlanRepository, readRoutePlanGeometryDetail } from './route-plan.repository.js';
 import type { RouteGeometryProvider } from './route-plan.service.js';
@@ -363,7 +363,7 @@ export class PrismaLiveRouteChangeService {
         result = { status: 'SKIPPED', errorCode: 'ASSIGNMENT_CHANGED' };
       } else {
         const tokens = await this.prisma.driverPushToken.findMany({
-          where: { accountId: route.driver.accountId, appId: KFOOD_DELIVERY_APP_ID, status: 'ACTIVE' }, orderBy: { lastSeenAt: 'desc' }
+          where: { accountId: route.driver.accountId, appId: { in: [DRIVER_ROUTES_APP_PACKAGE_ID, KFOOD_DELIVERY_APP_ID] }, status: 'ACTIVE' }, orderBy: { lastSeenAt: 'desc' }
         });
         const currentRoute = await this.prisma.routePlan.findFirst({
           select: { id: true, assignmentGeneration: true, ...DELIVERY_COMPLETION_SELECT },

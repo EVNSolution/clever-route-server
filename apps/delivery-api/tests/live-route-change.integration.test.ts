@@ -836,6 +836,29 @@ if (enabled) {
     expect((await readPublication(prisma, f)).pending).toBe(true);
   });
 
+  test('sends a live change push to the token the driver app registers under its package id, and to no other app', async () => {
+    const f = await fixture(prisma);
+    const driverAppToken = `synthetic-driver-app-token-${randomUUID()}`;
+    const legacyToken = `synthetic-tenant-token-${randomUUID()}`;
+    const otherAppToken = `synthetic-other-app-token-${randomUUID()}`;
+    await prisma.driverPushToken.createMany({ data: [
+      { accountId: f.account.id, devicePushToken: driverAppToken, tokenHash: randomUUID(), platform: 'android', appId: 'com.evnsolution.clever.routes' },
+      { accountId: f.account.id, devicePushToken: legacyToken, tokenHash: randomUUID(), platform: 'android', appId: KFOOD_DELIVERY_APP_ID },
+      { accountId: f.account.id, devicePushToken: otherAppToken, tokenHash: randomUUID(), platform: 'android', appId: 'com.evns.cleverdriverapp' }
+    ] });
+    const send = vi.fn<DriverPushProvider['sendRouteNotification']>().mockResolvedValue({ status: 'SENT', providerMessageId: 'synthetic-sent' });
+    const service = new PrismaLiveRouteChangeService(prisma, { providerName: 'synthetic-only', sendRouteNotification: send });
+    const admin = serviceAdminIdentity(f);
+    await service.saveAdminDraft({ ...admin, commandId: randomUUID(), expectedRevision: 0,
+      stopOverrides: [{ deliveryStopId: f.stops[6]!.id, address1: '700 Driver App Token Road', latitude: 43.57, longitude: -80.57 }] });
+
+    const dispatched = await service.dispatchAdminDraft({ ...admin, commandId: randomUUID(), expectedRevision: 1 });
+
+    expect(dispatched.notification?.status).toBe('SENT');
+    expect(send.mock.calls.map(([payload]) => payload.devicePushToken).sort()).toEqual([driverAppToken, legacyToken].sort());
+    expect(send.mock.calls.every(([payload]) => payload.action === 'changed' && payload.publicationVersion === dispatched.publicationVersionId)).toBe(true);
+  });
+
   test('skips a failed notification retry and geometry refresh after delivery work completes', async () => {
     const f = await fixture(prisma);
     await prisma.driverPushToken.create({ data: { accountId: f.account.id, devicePushToken: `synthetic-token-${randomUUID()}`, tokenHash: randomUUID(), platform: 'android', appId: KFOOD_DELIVERY_APP_ID } });

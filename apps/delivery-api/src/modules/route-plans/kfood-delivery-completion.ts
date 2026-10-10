@@ -3,6 +3,8 @@ import { isPrivateDriverDemoScope, privateDriverDemoRouteWhere } from '../driver
 import { toRouteExecutionStatus, type RouteExecutionStatus } from './route-plan-lifecycle.js';
 
 export const KFOOD_DELIVERY_APP_ID = 'clever-route-kfood';
+/** The driver app registers its package id as the `appId` of its push token; it is not the tenant app id above. */
+export const DRIVER_ROUTES_APP_PACKAGE_ID = 'com.evnsolution.clever.routes';
 export const KFOOD_DELIVERY_SHOP_DOMAIN = '7hrud1-xq.myshopify.com';
 export const KFOOD_RETURN_NAVIGATION_GRACE_MS = 2 * 60 * 60_000;
 const TERMINAL_STOPS = new Set(['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED']);
