@@ -22,6 +22,7 @@ import {
 } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import { toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
+import { applyDriverStopTimes } from '../route-plans/stop-service-time.js';
 import { toRouteDeliveryDisplayStatus } from '../route-plans/kfood-delivery-completion.js';
 import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from '../route-plans/route-plan-summary-normalization.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
@@ -553,7 +554,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       });
       if (initialServiceMinutes !== undefined) {
         await tx.deliveryStop.updateMany({
-          data: { serviceMinutes: initialServiceMinutes },
+          data: { serviceMinutes: initialServiceMinutes, serviceMinutesSource: 'ROUTE' },
           where: { id: { in: orderedFacts.flatMap((fact) => fact.order.deliveryStops[0]?.id ?? []) }, shopId: shop.id }
         });
       }
@@ -1298,6 +1299,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               province: normalizeOptionalText(input.province),
               recipientName: normalizeOptionalText(input.recipientName),
               serviceMinutes: input.serviceMinutes ?? 5,
+              ...(input.serviceMinutes === undefined || input.serviceMinutes === 5 ? {} : { serviceMinutesSource: 'STOP' }),
               timeWindowEnd: parseCustomStopInstant(input.timeWindowEnd),
               timeWindowStart: parseCustomStopInstant(input.timeWindowStart)
             }
@@ -1404,6 +1406,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           ...(input.province === undefined ? {} : { province: normalizeOptionalText(input.province) }),
           ...(input.recipientName === undefined ? {} : { recipientName: normalizeOptionalText(input.recipientName) }),
           ...(input.serviceMinutes === undefined ? {} : { serviceMinutes: input.serviceMinutes }),
+          ...(input.serviceMinutes === undefined || input.serviceMinutes === assignment.deliveryStop.serviceMinutes ? {} : { serviceMinutesSource: 'STOP' }),
           ...(input.timeWindowEnd === undefined ? {} : { timeWindowEnd: parseCustomStopInstant(input.timeWindowEnd) }),
           ...(input.timeWindowStart === undefined ? {} : { timeWindowStart: parseCustomStopInstant(input.timeWindowStart) }),
           ...(input.latitude === undefined && input.longitude === undefined ? {} : { geocodeStatus: hasCustomStopCoordinates(merged) ? 'RESOLVED' : 'PENDING' })
@@ -1710,6 +1713,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               },
               where: { id: targetChild.routePlanId }
             });
+            await applyDriverStopTimes(tx, targetChild.routePlanId);
             if (draftOptimization !== undefined) {
               await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetChild.routePlanId } });
               await createDraftRouteGeometryCache(tx, targetChild.routePlanId, draftOptimization);
@@ -1974,6 +1978,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             },
             where: { id: targetChild.routePlanId }
           });
+          await applyDriverStopTimes(tx, targetChild.routePlanId);
         }
         const reorderCompatibility = lockedRoutePlan === null || lockedRoutePlan === undefined ? undefined : activeReorderCompatibility({
           assignmentsChanged,
@@ -5071,6 +5076,8 @@ async function createDraftChildRoutePlan(
     select: { id: true, name: true }
   });
   await tx.routePlanStop.createMany({ data: input.assignments.map((assignment, index) => ({ deliveryStopId: assignment.deliveryStopId, routePlanId: routePlan.id, shopId: group.shopId, sequence: index + 1 })) });
+  // A new route without a driver changes nothing: its stops may be shared with the route it was copied from.
+  if (input.driverId !== null) await applyDriverStopTimes(tx, routePlan.id);
   const childVersion = await tx.routeGroupingChildVersion.create({
     data: {
       driverId: input.driverId,
@@ -5138,6 +5145,7 @@ async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: Op
   });
   if (candidate.assignments.length > 0) {
     await tx.routePlanStop.createMany({ data: candidate.assignments.map((assignment, index) => ({ deliveryStopId: assignment.deliveryStopId, routePlanId: routePlan.id, shopId: group.shopId, sequence: index + 1 })) });
+    if (candidate.driverId !== null) await applyDriverStopTimes(tx, routePlan.id);
   }
   return routePlan;
 }
