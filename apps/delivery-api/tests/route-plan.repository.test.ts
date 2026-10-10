@@ -525,6 +525,54 @@ describe('PrismaRoutePlanRepository', () => {
     }));
   });
 
+  test('returns the payment method of Shopify and legacy orders on route detail stops', async () => {
+    const stopFor = (index: number, rawPayload: Record<string, unknown>) => routePlanStopRecord({
+      deliveryStopId: `stop-${index}`,
+      estimatedArrivalAt: null,
+      distanceFromPreviousMeters: null,
+      durationFromPreviousSeconds: null,
+      order: orderRecord({
+        currencyCode: 'CAD',
+        deliveryDate: '2026-05-08',
+        gid: `gid://shopify/Order/90${index}`,
+        id: `order-${index}`,
+        rawPayload,
+        stopId: `stop-${index}`
+      }),
+      sequence: index,
+      serviceMinutes: null
+    });
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        routeStops: [
+          stopFor(1, { paymentGatewayNames: ['Cash on Delivery (COD)'] }),
+          stopFor(2, { paymentGatewayNames: ['manual', 'e-Transfer'] }),
+          stopFor(3, { paymentGatewayNames: ['manual'], cleverManualPaymentMethod: 'ETRANSFER' }),
+          stopFor(4, { paymentGatewayNames: ['PayPal Express Checkout'] }),
+          stopFor(5, { payment_method_title: 'Visa' }),
+          stopFor(6, {})
+        ]
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.stops.map((stop) => stop.paymentMethodTitle)).toEqual([
+      'Cash',
+      'e-Transfer',
+      'e-Transfer',
+      'PayPal Express Checkout',
+      'Visa',
+      null
+    ]);
+  });
+
   test('keeps planned scheduled start time from closing transfer as actual in-progress execution', async () => {
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: routePlanRecord({
