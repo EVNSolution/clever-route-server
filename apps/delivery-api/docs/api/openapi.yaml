@@ -2809,6 +2809,11 @@ paths:
                   properties:
                     requestId: { type: string, format: uuid, description: UUID v4 creation command identity. }
                     deliveryProof: { $ref: '#/components/schemas/DeliveryProofPolicy' }
+                    serviceMinutes:
+                      type: integer
+                      minimum: 0
+                      maximum: 1440
+                      description: Unified Stop time. Every stop of the new route gets this time in the same transaction. Omit it to leave each stop's own time. Part of the request identity, like the other options.
                     tollPolicy: { $ref: '#/components/schemas/TollPolicy' }
       responses:
         '201':

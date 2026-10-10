@@ -473,6 +473,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
   async createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto> {
     const initialOptions = deliveryOptions(input.initialRoute);
+    const initialServiceMinutes = input.initialRoute?.serviceMinutes;
+    // The unified Stop time is part of the request identity; routes created without it keep the identity they always had.
+    const initialIdentity = JSON.stringify({ ...initialOptions, ...(initialServiceMinutes === undefined ? {} : { serviceMinutes: initialServiceMinutes }) });
     const orderIds = normalizeIds(input.orderIds);
     const dateRange = readGroupingDateRange(input);
     if (orderIds.length === 0) throw new RouteGroupingValidationError(['select at least one order']);
@@ -488,7 +491,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           if (existing.shopId !== shop.id || existing.name !== input.name
             || formatDateOnly(existing.planDate) !== formatDateOnly(dateRange.planDate)
             || !sameStringSequence(existing.orders.map(({ orderId }) => orderId), orderIds)
-            || initialRouteOptionsIdentity(existing.versions.find(version => version.version === 1)?.changeReason) !== JSON.stringify(initialOptions)) {
+            || initialRouteOptionsIdentity(existing.versions.find(version => version.version === 1)?.changeReason) !== initialIdentity) {
             throw new RouteGroupingConflictError('initial route request changed; start a new request');
           }
           return existing.id;
@@ -536,7 +539,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       });
       await tx.routeGroupingVersion.create({
         data: { actor: input.createdBy, groupingId: grouping.id, shopId: shop.id, status: 'CURRENT', version: 1,
-          ...(input.initialRoute === undefined ? {} : { changeReason: `initial-route-options:${JSON.stringify(initialOptions)}` }) },
+          ...(input.initialRoute === undefined ? {} : { changeReason: `initial-route-options:${initialIdentity}` }) },
         select: { id: true }
       });
       await tx.routeGroupingOrder.createMany({
@@ -548,6 +551,12 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           sourceSequence: index + 1
         }))
       });
+      if (initialServiceMinutes !== undefined) {
+        await tx.deliveryStop.updateMany({
+          data: { serviceMinutes: initialServiceMinutes },
+          where: { id: { in: orderedFacts.flatMap((fact) => fact.order.deliveryStops[0]?.id ?? []) }, shopId: shop.id }
+        });
+      }
       const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: grouping.id } });
       if (loaded === null) throw new RouteGroupingValidationError(['created grouping not found']);
       await createRouteGroupingInventory(tx, {

@@ -179,7 +179,7 @@ export type CreateRouteGroupingInput = {
   dateRangeEnd?: string;
   dateRangeStart?: string;
   depot?: RoutePlanDepotInput | undefined;
-  initialRoute?: { requestId: string; deliveryProof?: DeliveryProofPolicy; tollPolicy?: TollPolicy };
+  initialRoute?: { requestId: string; deliveryProof?: DeliveryProofPolicy; serviceMinutes?: number; tollPolicy?: TollPolicy };
   name: string;
   orderIds: string[];
   planDate?: string;

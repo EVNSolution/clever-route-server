@@ -628,13 +628,17 @@ function readCreateGroupingPayload(value: unknown): {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
       throw new BadRouteGroupPayloadError('initialRoute.requestId must be a UUID v4');
     }
-    if (Object.keys(initial).some(key => !['requestId', 'deliveryProof', 'tollPolicy'].includes(key))) throw new BadRouteGroupPayloadError('Unknown initial route option');
+    if (Object.keys(initial).some(key => !['requestId', 'deliveryProof', 'serviceMinutes', 'tollPolicy'].includes(key))) throw new BadRouteGroupPayloadError('Unknown initial route option');
     if (initial.tollPolicy !== undefined && initial.tollPolicy !== 'ALLOW_TOLLS' && initial.tollPolicy !== 'AVOID_TOLLS') throw new BadRouteGroupPayloadError('Invalid toll policy');
     try {
       initialRoute = { requestId,
         ...(initial.deliveryProof === undefined ? {} : { deliveryProof: parseDeliveryProof(initial.deliveryProof) }),
+        ...(initial.serviceMinutes === undefined ? {} : { serviceMinutes: readBoundedInteger(initial.serviceMinutes, 'initialRoute.serviceMinutes', 0, 1_440) }),
         ...(initial.tollPolicy === undefined ? {} : { tollPolicy: initial.tollPolicy }) };
-    } catch { throw new BadRouteGroupPayloadError('Invalid delivery proof policy'); }
+    } catch (error) {
+      if (error instanceof BadRouteGroupPayloadError) throw error;
+      throw new BadRouteGroupPayloadError('Invalid delivery proof policy');
+    }
   }
   return {
     ...optionalDateField(object, 'planDate'),
