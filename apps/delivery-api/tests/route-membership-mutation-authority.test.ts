@@ -43,7 +43,7 @@ const reviewedMutationInventory = [
   'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.update:1', // Draft policy snapshot only; no membership edits.
   'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.updateMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.createMany:4',
-  'modules/route-plans/route-plan.repository.ts:routePlanStop.deleteMany:4',
+  'modules/route-plans/route-plan.repository.ts:routePlanStop.deleteMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.updateMany:3'
 ];
 
