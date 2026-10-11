@@ -2915,44 +2915,20 @@ async function collapseRouteGroupingSplitAfterChildDelete(
     const remainingRoutePlanIds = [...new Set(currentChildren.map((child) => child.routePlanId).filter((id): id is string => id !== null))];
     if (remainingRoutePlanIds.length > 1) continue;
 
-    const discardedSiblingVersions = remainingRoutePlanIds.length === 0
-      ? []
-      : await tx.routeGroupingChildVersion.findMany({
-          select: { id: true },
-          where: {
-            groupingId,
-            routePlanId: { in: remainingRoutePlanIds },
-            shopId: input.shopId
-          }
-        });
-    if (remainingRoutePlanIds.length > 0) {
-      const remainingRoutes = await tx.routePlan.findMany({
-        select: { id: true, status: true },
-        where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId }
+    // Deleting a child route never touches its siblings. A single remaining route stays as the
+    // group's route with its stops (the office showed a copy losing every route when one of its
+    // routes was deleted, 2026-10-10); only the split branch state of the group is cleared. When
+    // no route plan remains, the empty child slots are archived so the group starts over.
+    if (remainingRoutePlanIds.length === 0) {
+      await releaseRouteVersionOrderOwnership(tx, {
+        routeVersionIds: currentChildren.map(({ id }) => id),
+        shopId: input.shopId
       });
-      if (remainingRoutes.length !== remainingRoutePlanIds.length || remainingRoutes.some((route) => route.status === 'IN_PROGRESS')) {
-        throw new RoutePlanDeleteBlockedError('In-progress split siblings cannot be collapsed.');
-      }
-      const cancelled = await tx.routePlan.updateMany({
-        data: { status: 'CANCELLED' },
-        where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId, status: { not: 'IN_PROGRESS' } }
+      await tx.routeGroupingChildVersion.updateMany({
+        data: { status: 'ARCHIVED', supersededAt: new Date() },
+        where: { groupingId, shopId: input.shopId, status: 'CURRENT', supersededAt: null }
       });
-      if (cancelled.count !== remainingRoutePlanIds.length) {
-        throw new RoutePlanDeleteBlockedError('In-progress split siblings cannot be collapsed.');
-      }
-      await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: remainingRoutePlanIds } } });
     }
-    await releaseRouteVersionOrderOwnership(tx, {
-      routeVersionIds: [
-        ...currentChildren.map(({ id }) => id),
-        ...discardedSiblingVersions.map(({ id }) => id)
-      ],
-      shopId: input.shopId
-    });
-    await tx.routeGroupingChildVersion.updateMany({
-      data: { status: 'ARCHIVED', supersededAt: new Date() },
-      where: { groupingId, shopId: input.shopId, status: 'CURRENT', supersededAt: null }
-    });
     await tx.routeGroupingBranchOrderLock.deleteMany({ where: { groupingId, shopId: input.shopId } });
     await tx.routeGroupingBranch.deleteMany({ where: { groupingId, shopId: input.shopId } });
   }

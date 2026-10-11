@@ -1648,6 +1648,93 @@ describeDatabase('route grouping save database regressions', () => {
     expect(retry!.children).toHaveLength(1);
   });
 
+  test('deleting one of four child routes keeps the other three (K-food copy of 2026-10-10)', async () => {
+    const orders = await seedOrders(6);
+    const grouping = await createGrouping('copy with empty routes', orders.map(({ id }) => id));
+    const saved = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        draftRoute('full', orders.map(({ id }) => id)),
+        draftRoute('empty-1', []),
+        draftRoute('empty-2', []),
+        draftRoute('empty-3', [])
+      ],
+      shopDomain
+    });
+    expect(saved?.children.map(({ stopsCount }) => stopsCount).sort((left, right) => left - right)).toEqual([0, 0, 0, 6]);
+    const emptyChild = saved!.children.find((child) => child.stopsCount === 0)!;
+
+    await routePlans.deleteRoutePlan({ appId, routePlanId: emptyChild.routePlanId!, shopDomain });
+
+    const reloaded = await service.getGrouping({ appId, groupingId: grouping.id, shopDomain });
+    expect(reloaded?.children.map(({ stopsCount }) => stopsCount).sort((left, right) => left - right)).toEqual([0, 0, 6]);
+    expect(reloaded?.children.map(({ displayStatus }) => displayStatus)).toEqual(['READY', 'READY', 'READY']);
+  }, 30_000);
+
+  test('deleting one of two child routes keeps the other as the group route with its stops', async () => {
+    const orders = await seedOrders(6);
+    const grouping = await createGrouping('two-route group', orders.map(({ id }) => id));
+    const saved = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        draftRoute('kept', orders.slice(0, 4).map(({ id }) => id)),
+        draftRoute('deleted', orders.slice(4).map(({ id }) => id))
+      ],
+      shopDomain
+    });
+    const kept = saved!.children.find((child) => child.stopsCount === 4)!;
+    const deleted = saved!.children.find((child) => child.stopsCount === 2)!;
+
+    await routePlans.deleteRoutePlan({ appId, routePlanId: deleted.routePlanId!, shopDomain });
+
+    const reloaded = await service.getGrouping({ appId, groupingId: grouping.id, shopDomain });
+    expect(reloaded?.children.map(({ displayStatus, routePlanId, stopsCount }) => ({ displayStatus, routePlanId, stopsCount })))
+      .toEqual([{ displayStatus: 'READY', routePlanId: kept.routePlanId, stopsCount: 4 }]);
+    await expect(prisma.routePlan.findUniqueOrThrow({
+      select: { status: true, _count: { select: { routeStops: true } } },
+      where: { id: kept.routePlanId! }
+    })).resolves.toEqual({ _count: { routeStops: 4 }, status: 'READY' });
+    await expect(prisma.order.count({ where: { id: { in: orders.slice(4).map(({ id }) => id) }, currentRouteVersionId: null } }))
+      .resolves.toBe(2);
+  }, 30_000);
+
+  test('a draft save that deletes one child route and keeps the others only removes that one', async () => {
+    const orders = await seedOrders(6);
+    const grouping = await createGrouping('route detail delete', orders.map(({ id }) => id));
+    const saved = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        draftRoute('full', orders.map(({ id }) => id)),
+        draftRoute('empty-1', []),
+        draftRoute('empty-2', [])
+      ],
+      shopDomain
+    });
+    const full = saved!.children.find((child) => child.stopsCount === 6)!;
+    const [emptyKept, emptyDeleted] = saved!.children.filter((child) => child.stopsCount === 0);
+
+    const resaved = await service.saveDraft({
+      appId,
+      deletedRoutePlanIds: [emptyDeleted!.routePlanId!],
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        { branchId: null, label: 'full', orderIds: orders.map(({ id }) => id), routeKey: `routePlan:${full.routePlanId}`, routePlanId: full.routePlanId },
+        { branchId: null, label: 'empty-1', orderIds: [], routeKey: `routePlan:${emptyKept!.routePlanId}`, routePlanId: emptyKept!.routePlanId }
+      ],
+      shopDomain
+    });
+
+    expect(resaved?.children.map(({ routePlanId, stopsCount }) => ({ routePlanId, stopsCount })).sort((left, right) => left.stopsCount - right.stopsCount))
+      .toEqual([{ routePlanId: emptyKept!.routePlanId, stopsCount: 0 }, { routePlanId: full.routePlanId, stopsCount: 6 }]);
+  }, 30_000);
+
   function createGrouping(name: string, orderIds: string[]) {
     return service.createGrouping({
       appId,
