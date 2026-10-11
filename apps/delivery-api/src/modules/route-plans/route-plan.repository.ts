@@ -2971,7 +2971,7 @@ function routePlanListSelect() {
     },
     routeGroupingChildVersions: {
       orderBy: { createdAt: 'desc' as const },
-      select: { groupingId: true, status: true, version: true },
+      select: { groupingId: true, publishedAt: true, status: true, version: true },
       take: 1,
       where: { status: 'CURRENT' as const, supersededAt: null }
     },
@@ -3229,6 +3229,9 @@ function toRoutePlanListSummary(routePlan: RoutePlanListRecord): RoutePlanSummar
       ?? routePlan.routeStops.filter(({ deliveryStop }) => deliveryStop.latitude === null || deliveryStop.longitude === null).length,
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate),
+    // The list carries the dispatch time of a grouped route (its current child version) so the
+    // office list can show Dispatched; a standalone route has no publication in the list projection.
+    publishedAt: routePlan.routeGroupingChildVersions[0]?.publishedAt?.toISOString() ?? null,
     routeEndMode: readRouteEndMode(routePlan.constraints),
     deliveryProof: readDeliveryProof(routePlan.constraints),
     tollPolicy: readTollPolicy(routePlan.constraints),

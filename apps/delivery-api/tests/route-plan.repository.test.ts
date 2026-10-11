@@ -706,6 +706,29 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('lists a grouped route with the published time of its current child version', async () => {
+    // The office list shows "Dispatched" for a Ready route with a published time, so the list
+    // query must select it on the child version as the detail query does.
+    const publishedAt = new Date('2026-10-09T20:18:56.136Z');
+    const { prisma } = createPrismaHarness({
+      routePlansForList: [{
+        ...routePlanListRecord(),
+        routeGroupingChildVersions: [{ groupingId: 'group-1', publishedAt, status: 'CURRENT', version: 1 }]
+      }]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const [route] = await repository.listRoutePlans({ shopDomain: 'example.myshopify.com' });
+
+    expect(route?.publishedAt).toBe(publishedAt.toISOString());
+    const query = prisma.routePlan.findMany.mock.calls[0]?.[0] as { select?: Record<string, unknown> };
+    expect(query.select?.routeGroupingChildVersions).toMatchObject({
+      select: { groupingId: true, publishedAt: true, status: true, version: true }
+    });
+  });
+
   test('does not combine route totals across currencies', async () => {
     const mixed = routePlanListRecord();
     mixed.routeStops[1]!.deliveryStop.order.currencyCode = 'USD';
