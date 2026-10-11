@@ -701,8 +701,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         await syncDsvExecutionHook(tx, {
           shopId: shop.id, routePlanId: routePlan.id, commandId: `route-driver:${randomUUID()}`,
         });
-        await refreshPlannedRouteTimes(tx, routePlan.id);
       }
+      // The driver's average Stop time and the ETAs follow every driver change, also when a
+      // grouping child successor carried the change and already synced the DSV execution.
+      if (routePlan.driverId !== driverId) await refreshPlannedRouteTimes(tx, routePlan.id);
 
       return true;
     });
