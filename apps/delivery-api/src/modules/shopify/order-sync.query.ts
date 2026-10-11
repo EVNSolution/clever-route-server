@@ -52,6 +52,7 @@ const ORDER_FIELDS = `#graphql
             name
             variantTitle
             quantity
+            currentQuantity
             sku
           }
         }
