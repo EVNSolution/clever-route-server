@@ -1,3 +1,4 @@
+import { avoidsTolls, type RouteTollPolicy } from './route-toll-policy.js';
 import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 
@@ -76,6 +77,7 @@ export function computeRouteShapeSignature(detail: RoutePlanDetail): string {
   return computeRouteShapeSignatureFromParts({
     depot: routePlan.depot,
     routeEndMode: routePlan.routeEndMode,
+    tollPolicy: routePlan.tollPolicy,
     stops: detail.stops.map((stop) => ({
       coordinates: stop.coordinates,
       deliveryStopId: stop.deliveryStopId,
@@ -88,6 +90,7 @@ export function computeRouteShapeSignature(detail: RoutePlanDetail): string {
 export function computeRouteShapeSignatureFromParts(input: {
   depot: { latitude: number | null; longitude: number | null };
   routeEndMode: string;
+  tollPolicy?: RouteTollPolicy | undefined;
   stops: Array<{
     coordinates: { latitude: number | null; longitude: number | null };
     deliveryStopId: string;
@@ -98,6 +101,8 @@ export function computeRouteShapeSignatureFromParts(input: {
   return stableHash({
     depot: normalizeCoordinatePair(input.depot.latitude, input.depot.longitude),
     routeEndMode: input.routeEndMode,
+    // Keep legacy ALLOW_TOLLS cache identity; avoidance can never reuse its geometry or ETA.
+    ...(avoidsTolls(input.tollPolicy) ? { tollPolicy: 'AVOID_TOLLS' } : {}),
     stops: [...input.stops]
       .sort((left, right) => left.sequence - right.sequence)
       .map((stop) => ({
@@ -131,6 +136,8 @@ export function applyCachedRouteGeometry(detail: RoutePlanDetail, cache: RouteGe
       routeGeometryGeneratedAt: normalizeDateString(cache.generatedAt),
       routeGeometrySource: cache.source,
       routeGeometryStatus: 'stale',
+      // Persisted leg timing may belong to the previous toll policy. Do not derive a new ETA from it.
+      ...(avoidsTolls(detail.routePlan.tollPolicy) ? { stops: detail.stops.map((stop) => ({ ...stop, distanceFromPreviousMeters: null, durationFromPreviousSeconds: null, estimatedArrivalAt: null })) } : {}),
       routeMetrics: null,
       routeShapeSignature: expectedSignature,
       routeStopPoints: []

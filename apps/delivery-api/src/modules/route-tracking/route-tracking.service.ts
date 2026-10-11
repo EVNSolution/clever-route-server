@@ -26,6 +26,8 @@ import type {
   RouteTrackingService,
   RouteTrackingSnapshotV1,
   RouteTrackingStopArrivalV1,
+  RouteTrackingStopCompletionEventType,
+  RouteTrackingStopCompletionV1,
   RouteTrackingStatus
 } from './route-tracking.types.js';
 
@@ -38,6 +40,11 @@ const ROUTE_TRACKING_PROGRESS_EVENT_TYPES: RouteTrackingProgressEventType[] = [
   'ROUTE_PAUSED',
   'ROUTE_COMPLETED',
   'STOP_ARRIVED',
+  'STOP_DELIVERED',
+  'STOP_FAILED'
+];
+
+const ROUTE_TRACKING_STOP_COMPLETION_EVENT_TYPES: RouteTrackingStopCompletionEventType[] = [
   'STOP_DELIVERED',
   'STOP_FAILED'
 ];
@@ -137,7 +144,27 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       }),
       this.prisma.routePlanStop.findMany({
         select: {
-          deliveryStop: { select: { status: true } },
+          deliveryStop: {
+            select: {
+              // Completion times come with the stop status that the snapshot already reads.
+              driverEvents: {
+                orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
+                select: {
+                  createdAt: true,
+                  driverId: true,
+                  eventType: true,
+                  id: true,
+                  occurredAt: true
+                },
+                where: {
+                  driverId: { not: null },
+                  eventType: { in: ROUTE_TRACKING_STOP_COMPLETION_EVENT_TYPES },
+                  routePlanId: input.routePlanId
+                }
+              },
+              status: true
+            }
+          },
           deliveryStopId: true,
           sequence: true
         },
@@ -272,7 +299,8 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       schemaVersion: ROUTE_TRACKING_SCHEMA_VERSION,
       serverTime: serverTime.toISOString(),
       status: getTrackingStatus(latestPosition, serverTime),
-      stopArrivals: buildStopArrivals(arrivalRows, routeStops, [...recentPositions, ...arrivalPositions])
+      stopArrivals: buildStopArrivals(arrivalRows, routeStops, [...recentPositions, ...arrivalPositions]),
+      stopCompletions: buildStopCompletions(routeStops, input.routePlanId)
     };
   }
 
@@ -558,6 +586,65 @@ function buildProgressSnapshot(
       .map((routeStop) => routeStop.deliveryStopId),
     latestEvent
   };
+}
+
+type DriverStopCompletionEventRow = {
+  createdAt: Date;
+  driverId: string | null;
+  eventType: string;
+  id: string;
+  occurredAt: Date;
+};
+
+const COMPLETION_EVENT_TYPE_BY_STOP_STATUS: Record<string, RouteTrackingStopCompletionEventType> = {
+  DELIVERED: 'STOP_DELIVERED',
+  FAILED: 'STOP_FAILED'
+};
+
+/**
+ * One entry per stop that is Delivered or Failed now: the latest driver event
+ * of the matching type. An event that no longer matches the stop status (the
+ * office moved the stop back, or the other outcome came later) is not shown.
+ */
+function buildStopCompletions(
+  routeStops: Array<{
+    deliveryStop: { driverEvents?: DriverStopCompletionEventRow[]; status: string };
+    deliveryStopId: string;
+    sequence: number;
+  }>,
+  routePlanId: string
+): RouteTrackingStopCompletionV1[] {
+  return routeStops.flatMap((routeStop) => {
+    const eventType = COMPLETION_EVENT_TYPE_BY_STOP_STATUS[routeStop.deliveryStop.status];
+    if (eventType === undefined) return [];
+    const event = (routeStop.deliveryStop.driverEvents ?? [])
+      .filter((candidate) => candidate.eventType === eventType && candidate.driverId !== null)
+      .reduce<DriverStopCompletionEventRow | null>((latest, candidate) => (
+        latest === null || isLaterDriverEvent(candidate, latest) ? candidate : latest
+      ), null);
+    if (event === null || event.driverId === null) return [];
+
+    return [{
+      deliveryStopId: routeStop.deliveryStopId,
+      driverId: event.driverId,
+      eventId: event.id,
+      eventType,
+      occurredAt: event.occurredAt.toISOString(),
+      receivedAt: event.createdAt.toISOString(),
+      routePlanId,
+      schemaVersion: 'route_tracking_completion.v1' as const,
+      stopSequence: routeStop.sequence
+    }];
+  }).sort((left, right) => (
+    left.occurredAt.localeCompare(right.occurredAt) || left.stopSequence - right.stopSequence
+  ));
+}
+
+function isLaterDriverEvent(candidate: DriverStopCompletionEventRow, current: DriverStopCompletionEventRow): boolean {
+  return candidate.occurredAt.getTime() > current.occurredAt.getTime()
+    || (candidate.occurredAt.getTime() === current.occurredAt.getTime()
+      && (candidate.createdAt.getTime() > current.createdAt.getTime()
+        || (candidate.createdAt.getTime() === current.createdAt.getTime() && candidate.id > current.id)));
 }
 
 function buildStopArrivals(

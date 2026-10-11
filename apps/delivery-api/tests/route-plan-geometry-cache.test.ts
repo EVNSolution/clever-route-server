@@ -8,6 +8,19 @@ import {
 import type { RoutePlanDetail } from '../src/modules/route-plans/route-plan.types.js';
 
 describe('route geometry cache metadata', () => {
+  test('keeps existing allow-tolls signatures but cannot reuse them for avoidance', () => {
+    const detail = routeDetail(null);
+    const legacy = computeRouteShapeSignature(detail);
+    detail.routePlan.tollPolicy = 'ALLOW_TOLLS';
+    expect(computeRouteShapeSignature(detail)).toBe(legacy);
+    detail.routePlan.tollPolicy = 'AVOID_TOLLS';
+    expect(computeRouteShapeSignature(detail)).not.toBe(legacy);
+    const result = applyCachedRouteGeometry(detail, { generatedAt: '2026-07-16T11:00:00.000Z', geometry: { type: 'LineString', coordinates: [[-79.38, 43.65], [-79.25, 43.77]] }, metrics: { distanceMeters: 10, durationSeconds: 1 }, provider: 'osrm', providerVersion: null, shapeSignature: legacy, source: 'SNAPSHOT', stopPoints: [] });
+    expect(result.routeGeometryStatus).toBe('stale');
+    expect(result.routeGeometry).toBeNull();
+    expect(result.routeMetrics).toBeNull();
+  });
+
   test('marks newly generated OSRM route geometry cache rows as full overview', () => {
     const data = routeGeometryCacheCreateData({
       generatedAt: new Date('2026-06-22T00:00:00.000Z'),

@@ -57,6 +57,7 @@ import {
   assignmentMap
 } from '../dsv/dsv-assignment-command.service.js';
 import { PrismaCompletionAssistanceService } from './completion-assistance.service.js';
+import { PrismaLiveRouteChangeService } from '../route-plans/live-route-change.service.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 365;
 export const DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS = 90;
@@ -67,6 +68,8 @@ export const DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND = 'none';
 export const DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND = 'none';
 
 export type DriverApiRuntimeEnv = Partial<Record<
+  | 'KFOOD_PRIVATE_DEMO_SHOP_ID'
+  | 'KFOOD_PRIVATE_DEMO_ACCOUNT_ID'
   | 'DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS'
   | 'DRIVER_ROUTE_COMPLETION_INVARIANT_MODE'
   | 'DRIVER_ROUTE_COMPLETION_REVIEW_RETENTION_DAYS'
@@ -154,11 +157,16 @@ export function loadDriverApiDependencies(
   const driverRouteMapPreview = loadDriverRouteMapPreviewService({
     assignedRouteService: driverAssignedRouteService,
     env: input.env,
-    jwtSecret
+    jwtSecret,
+    readShopAppId: async (shopId) => {
+      const shop = await input.prisma.shop.findUnique({ select: { appId: true }, where: { id: shopId } });
+      return shop?.appId ?? null;
+    }
   });
 
   const driverSyncHealthService = new PrismaDriverSyncHealthService(input.prisma, input.operationalAlertRepository);
   return {
+    liveRouteChangeService: new PrismaLiveRouteChangeService(input.prisma),
     ...(input.adminNotificationService === undefined
       ? {}
       : { adminNotificationService: input.adminNotificationService }),
@@ -330,6 +338,7 @@ function loadDriverRouteMapPreviewService(input: {
   assignedRouteService: PrismaDriverAssignedRouteRepository;
   env: DriverApiRuntimeEnv;
   jwtSecret: string;
+  readShopAppId: (shopId: string) => Promise<string | null>;
 }): { publicBaseUrl: string; service: DriverRouteMapPreviewService } | undefined {
   if (readOptionalBoolean(input.env.DRIVER_ROUTE_MAP_PREVIEW_ENABLED, 'DRIVER_ROUTE_MAP_PREVIEW_ENABLED') !== true) {
     return undefined;
@@ -344,6 +353,7 @@ function loadDriverRouteMapPreviewService(input: {
     service: new DriverRouteMapPreviewService({
       assignedRouteService: input.assignedRouteService,
       jwtSecret: readOptional(input.env.DRIVER_ROUTE_MAP_PREVIEW_SECRET) ?? input.jwtSecret,
+      readShopAppId: input.readShopAppId,
       ttlSeconds
     })
   };

@@ -16,6 +16,7 @@ describe('shop privacy write inventory', () => {
       'modules/commerce/admin-store-settings.service.ts',
       'modules/commerce/commerce-connection.repository.ts',
       'modules/driver/admin-driver.repository.ts',
+      'modules/driver/private-driver-demo-seed.ts',
       'modules/route-plans/route-plan.repository.ts',
       'modules/shopify/order-sync.repository.ts',
       'modules/shopify/shop-token.repository.ts',

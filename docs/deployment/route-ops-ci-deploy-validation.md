@@ -45,7 +45,7 @@ GitHub의 `Route Ops operations`에서 `operation`을 먼저 선택한다. 다�
 | `deploy` | 변경 image 배포 | `source_ref=main` | `publish_images=true`, `dry_run=false` |
 | `edge_caddy` | Caddy 설정 검증·reload | 없음 | 먼저 `dry_run=true` |
 | `backup_setup` | backup timer 설치·검증 | 없음 | 먼저 `dry_run=true` |
-| `docker_cleanup` | 안전한 dangling image/cache 정리 | 없음 | 먼저 `dry_run=true` |
+| `docker_cleanup` | dangling image, build cache, 미사용 오래된 release image 정리 | 없음 | 먼저 `dry_run=true` |
 | `completion_evidence` | API runtime SHA의 read-only invariant 증거 | `source_ref`, `source_sha` | 배포 직후 |
 | `alarm_canary` | 두 alarm의 실제 subscriber receipt 검증 | `source_sha` | mode 승격 전 |
 | `invariant_mode` | OBSERVE/GUARDED/FULL 전환 | `source_sha`, 승격 시 artifact ID 2개 | evidence와 canary 이후 |

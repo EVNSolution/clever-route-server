@@ -13,6 +13,8 @@ export type ShopifyOrderAttribute = {
 };
 
 export type ShopifyOrderLineItem = {
+  // What is left after a refund with restock or an order edit; `quantity` stays as ordered.
+  currentQuantity?: number | null;
   name?: string | null;
   quantity?: number | null;
   sku?: string | null;
@@ -24,6 +26,12 @@ export type ShopifyOrderNode = {
   cancelledAt?: string | null;
   createdAt?: string | null;
   currentTotalPriceSet: {
+    shopMoney: {
+      amount: string;
+      currencyCode: string;
+    };
+  } | null;
+  totalOutstandingSet?: {
     shopMoney: {
       amount: string;
       currencyCode: string;
@@ -537,9 +545,8 @@ export function mapShopifyLineItemsToOrderItems(
 ): OrderItemDto[] {
   const lineItems = Array.isArray(value) ? value : normalizeLineItems(value);
   return lineItems.flatMap((item) => {
-    const quantity = typeof item.quantity === 'number' && Number.isFinite(item.quantity)
-      ? Math.trunc(item.quantity)
-      : 0;
+    // The current quantity counts; a line fully refunded or removed (0) is left out.
+    const quantity = readLineItemQuantity(item.currentQuantity) ?? readLineItemQuantity(item.quantity) ?? 0;
     const name = normalizeOptionalString(item.name) ?? normalizeOptionalString(item.title);
     if (quantity <= 0 || name === null) return [];
 
@@ -649,15 +656,17 @@ function normalizeLineItems(
 
 function normalizeLineItem(value: ShopifyOrderLineItem): ShopifyOrderLineItem {
   return {
+    currentQuantity: readLineItemQuantity(value.currentQuantity),
     name: normalizeOptionalString(value.name),
-    quantity:
-      typeof value.quantity === 'number' && Number.isFinite(value.quantity)
-        ? value.quantity
-        : null,
+    quantity: readLineItemQuantity(value.quantity),
     sku: normalizeOptionalString(value.sku),
     title: normalizeOptionalString(value.title),
     variantTitle: normalizeOptionalString(value.variantTitle),
   };
+}
+
+function readLineItemQuantity(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null;
 }
 
 function normalizeTags(value: ShopifyOrderNode["tags"]): string[] {

@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
+import { isPrivateDriverDemoAppId } from './private-driver-demo.js';
 
 import {
   DriverProofMediaAccessUnavailableError,
@@ -32,7 +33,7 @@ type DriverProofMediaPrismaClient = Pick<
   'driverProofMedia' | 'routePlan' | 'routePlanStop'
 >;
 
-type PrismaProofMediaSource = 'CAMERA' | 'LIBRARY';
+type PrismaProofMediaSource = 'CAMERA' | 'LIBRARY' | 'SIGNATURE';
 
 export type DriverProofMediaStorageWriteInput = {
   fileBytes: Buffer;
@@ -128,6 +129,7 @@ export class PrismaDriverProofMediaRepository {
     input: CreateDriverProofMediaReadAccessInput
   ): Promise<CreateDriverProofMediaReadAccessResult> {
     const media = await this.prisma.driverProofMedia.findFirst({
+      include: { shop: { select: { appId: true } } },
       where: {
         deletedAt: null,
         driverId: input.driverId,
@@ -138,7 +140,7 @@ export class PrismaDriverProofMediaRepository {
         ...visibleDsvProofWhere(input.shopId)
       }
     });
-    if (media === null) {
+    if (media === null || isPrivateDriverDemoAppId(media.shop.appId)) {
       throw new DriverProofMediaScopeError(`Proof media not found for driver: ${input.mediaId}`);
     }
 
@@ -175,6 +177,7 @@ export class PrismaDriverProofMediaRepository {
         },
         id: true,
         kind: true,
+        shop: { select: { appId: true } },
         sha256: true,
         sizeBytes: true,
         source: true,
@@ -189,7 +192,9 @@ export class PrismaDriverProofMediaRepository {
         ...visibleDsvProofWhere(input.shopId)
       }
     });
-    if (media === null) {
+    // DSV administrator reads retain their existing photo-only contract.
+    if (media === null || media.kind !== 'PHOTO' || (media.source !== 'CAMERA' && media.source !== 'LIBRARY')
+      || isPrivateDriverDemoAppId(media.shop.appId)) {
       throw new DriverProofMediaScopeError(`Proof media not found for DSV administrator: ${input.mediaId}`);
     }
 
@@ -208,7 +213,7 @@ export class PrismaDriverProofMediaRepository {
       contentType: media.contentType,
       deliveryStopIds: media.deliveryStopLinks.map((link) => link.deliveryStopId),
       expiresAt: expiresAt.toISOString(),
-      kind: toProofMediaKind(media.kind),
+      kind: 'photo',
       mediaId: media.id,
       sha256: media.sha256,
       sizeBytes: media.sizeBytes,
@@ -219,6 +224,7 @@ export class PrismaDriverProofMediaRepository {
   }
 
   async storeProofMedia(input: StoreDriverProofMediaInput): Promise<StoreDriverProofMediaResult> {
+    if ((input.kind === 'signature') !== (input.source === 'signature') || (input.kind === 'signature' && input.contentType !== 'image/png')) throw new DriverProofMediaScopeError('Signature kind/source/content type mismatch');
     if (!this.reservationWritesEnabled) {
       throw new DriverProofMediaAccessUnavailableError('Proof media uploads are paused during storage rollout.');
     }
@@ -313,7 +319,7 @@ export class PrismaDriverProofMediaRepository {
         driverId: input.driverId,
         id: mediaId,
         ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
-        kind: 'PHOTO',
+        kind: input.kind === 'signature' ? 'SIGNATURE' : 'PHOTO',
         originalFilename: input.filename,
         routePlanId: input.routePlanId,
         sha256,
@@ -412,7 +418,7 @@ export class PrismaDriverProofMediaRepository {
     return {
       contentType: input.contentType,
       deliveryStopIds,
-      kind: 'photo',
+      kind: input.kind ?? 'photo',
       mediaId,
       sha256,
       sizeBytes: storedFileBytes.byteLength,
@@ -823,10 +829,11 @@ function stripJpegExifApp1Segments(fileBytes: Buffer): Buffer {
 }
 
 function toPrismaSource(source: DriverProofMediaSource): PrismaProofMediaSource {
-  return source === 'camera' ? 'CAMERA' : 'LIBRARY';
+  return source === 'signature' ? 'SIGNATURE' : source === 'camera' ? 'CAMERA' : 'LIBRARY';
 }
 
-function toProofMediaKind(kind: string): 'photo' {
+function toProofMediaKind(kind: string): 'photo' | 'signature' {
+  if (kind === 'SIGNATURE') return 'signature';
   if (kind === 'PHOTO') {
     return 'photo';
   }
@@ -852,7 +859,7 @@ function toStoreProofMediaResult(media: {
     mediaId: media.id,
     sha256: media.sha256,
     sizeBytes: media.sizeBytes,
-    source: media.source === 'CAMERA' ? 'camera' : 'library',
+    source: media.source === 'SIGNATURE' ? 'signature' : media.source === 'CAMERA' ? 'camera' : 'library',
     storageKey: media.storageKey,
     uploadedAt: media.uploadedAt.toISOString()
   };
@@ -860,6 +867,7 @@ function toStoreProofMediaResult(media: {
 
 function assertIdempotentProofMediaIdentity(
   media: {
+    kind: string;
     contentType: string;
     originalFilename: string | null;
     sha256: string;
@@ -871,7 +879,8 @@ function assertIdempotentProofMediaIdentity(
   sizeBytes: number
 ): void {
   if (
-    media.contentType !== input.contentType
+    media.kind !== (input.kind === 'signature' ? 'SIGNATURE' : 'PHOTO')
+    || media.contentType !== input.contentType
     || media.originalFilename !== input.filename
     || media.sha256 !== sha256
     || media.sizeBytes !== sizeBytes

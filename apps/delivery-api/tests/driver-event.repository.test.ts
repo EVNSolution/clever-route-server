@@ -18,6 +18,17 @@ const serverReceivedAt = new Date('2026-06-01T06:00:00.000Z');
 type RoutePlanStopFixture = { id: string } | ReturnType<typeof confirmedTimeConstraintRoutePlanStop>;
 
 describe('PrismaDriverEventRepository', () => {
+  test('rejects event writes when the current child loader observes duplicate versions', async () => {
+    const { prisma } = createPrismaHarness({
+      driverEventRouteVersionColumnExists: true,
+      currentRouteVersions: [{ id: 'current-version' }, { id: 'duplicate-version' }]
+    });
+    await expect(new PrismaDriverEventRepository(prisma as never).recordDriverEvent(baseInput({
+      eventType: 'LOCATION_UPDATED', deliveryStopId: null, routePlanId: 'route-plan-id'
+    }))).rejects.toMatchObject({ code: 'ROUTE_VERSION_MISMATCH' });
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+  });
+
   test('stamps GPS with the locked server assignment and current route version', async () => {
     const { prisma } = createPrismaHarness({ driverEventRouteVersionColumnExists: true, routeEtaInputVersionId: 'current-version' });
     const repository = new PrismaDriverEventRepository(prisma as never);
@@ -140,7 +151,7 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.routeTrackingGeometry.upsert).toHaveBeenCalledOnce();
   });
 
-  test('rejects location updates unless the route is in progress before writing the event', async () => {
+  test('keeps location updates for an owned route that is not started yet and writes its tracking geometry', async () => {
     const { prisma } = createPrismaHarness({ routePlan: { id: 'route-plan-id', status: 'READY' } });
     const repository = new PrismaDriverEventRepository(prisma as never);
 
@@ -148,9 +159,13 @@ describe('PrismaDriverEventRepository', () => {
       deliveryStopId: null,
       eventType: 'LOCATION_UPDATED',
       routePlanId: 'route-plan-id'
-    }))).rejects.toBeInstanceOf(DriverEventRouteNotInProgressError);
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
 
-    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.driverEvent.create.mock.calls[0]?.[0]).toMatchObject({ data: {
+      eventType: 'LOCATION_UPDATED',
+      routePlanId: 'route-plan-id'
+    } });
+    expect(prisma.routeTrackingGeometry.upsert).toHaveBeenCalledOnce();
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
       select: { id: true, status: true },
       where: {
@@ -1866,6 +1881,7 @@ function createPrismaHarness(input: {
   driverEventCreateError?: Error;
   deliveryStopUpdateCount?: number;
   driverEventRouteVersionColumnExists?: boolean;
+  currentRouteVersions?: Array<{ id: string }>;
   etaOwnershipColumnsExist?: boolean;
   existingEvent?: { deliveryStopId: string | null; eventType: string; id: string; payload?: unknown; routePlanId: string | null } | null;
   orderAssignmentVersionId?: string | null;
@@ -1990,6 +2006,7 @@ function createPrismaHarness(input: {
         return Promise.resolve([{ assignmentGeneration: 1n, driverId: 'driver-id' }]);
       }
       if (text.includes('FROM route_grouping_child_versions')) {
+        if (input.currentRouteVersions !== undefined) return Promise.resolve(input.currentRouteVersions);
         return Promise.resolve(input.routeEtaInputVersionId === undefined || input.routeEtaInputVersionId === null
           ? []
           : [{ id: input.routeEtaInputVersionId }]);

@@ -1,3 +1,5 @@
+import { DriverDeliveryProofError } from '../modules/driver/driver-delivery-proof.js';
+import { DriverCashCompletionError } from '../modules/driver/driver-completion.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { MultipartFile, MultipartValue } from '@fastify/multipart';
 import type { Prisma } from '@prisma/client';
@@ -115,8 +117,15 @@ import {
   registerDriverCompletionAssistanceRoutes,
   type CompletionAssistanceServiceApi
 } from './driver-completion-assistance.routes.js';
+import {
+  LiveRouteChangeError,
+  readApplyLiveRouteChangePayload,
+  readLiveRouteChangeRouteId,
+  type PrismaLiveRouteChangeService
+} from '../modules/route-plans/live-route-change.service.js';
 
 export type DriverApiDependencies = {
+  liveRouteChangeService?: Pick<PrismaLiveRouteChangeService, 'getDriverPublication' | 'acknowledgeDriverPublication'>;
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   completionAssistanceService?: CompletionAssistanceServiceApi;
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
@@ -262,6 +271,7 @@ type DriverConsentRequestBody = {
 };
 
 type DriverEventRequestBody = {
+  completion?: unknown;
   appVersion?: unknown;
   assignmentGeneration?: unknown;
   changeRequestId?: unknown;
@@ -326,6 +336,50 @@ export function registerDriverEventRoutes(
   app: FastifyInstance,
   dependencies: DriverApiDependencies
 ): void {
+  app.get<{ Params: { routePlanId: string } }>('/driver/routes/:routePlanId/live-change', async (request, reply) => {
+    reply.header('Cache-Control', 'private, no-store');
+    const auth = await authenticateDriverRequest(request, dependencies);
+    if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
+    let tokenVersion: number;
+    try { tokenVersion = readLiveRouteChangeTokenVersion(request, dependencies); }
+    catch { return reply.code(401).send(driverAuthenticationErrorResponse('invalid')); }
+    if (dependencies.liveRouteChangeService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Live route changes are unavailable'));
+    let routePlanId: string;
+    try { routePlanId = readLiveRouteChangeRouteId(request.params.routePlanId); }
+    catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route ID')); }
+    if (routePlanId !== auth.context.routePlanId) return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver token does not cover this route'));
+    try {
+      const data = await dependencies.liveRouteChangeService.getDriverPublication({ ...auth.context, routePlanId, tokenVersion });
+      return reply.code(200).send({ data, error: null });
+    } catch (error) {
+      if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+      throw error;
+    }
+  });
+
+  app.post<{ Body: unknown; Params: { routePlanId: string } }>(
+    '/driver/routes/:routePlanId/live-change/applied', { bodyLimit: 4_096 }, async (request, reply) => {
+      reply.header('Cache-Control', 'private, no-store');
+      const auth = await authenticateDriverRequest(request, dependencies);
+      if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
+      let tokenVersion: number;
+      try { tokenVersion = readLiveRouteChangeTokenVersion(request, dependencies); }
+      catch { return reply.code(401).send(driverAuthenticationErrorResponse('invalid')); }
+      if (dependencies.liveRouteChangeService === undefined) return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Live route changes are unavailable'));
+      let command;
+      try { command = { routePlanId: readLiveRouteChangeRouteId(request.params.routePlanId), ...readApplyLiveRouteChangePayload(request.body) }; }
+      catch { return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid live route application payload')); }
+      if (command.routePlanId !== auth.context.routePlanId) return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver token does not cover this route'));
+      try {
+        const data = await dependencies.liveRouteChangeService.acknowledgeDriverPublication({ ...auth.context, ...command, tokenVersion });
+        return reply.code(200).send({ data, error: null });
+      } catch (error) {
+        if (error instanceof LiveRouteChangeError) return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+        throw error;
+      }
+    }
+  );
+
   if (dependencies.completionAssistanceService !== undefined) {
     registerDriverCompletionAssistanceRoutes(app, {
       completionAssistanceService: dependencies.completionAssistanceService,
@@ -514,12 +568,12 @@ export function registerDriverEventRoutes(
             ...result,
             route: {
               ...result.route,
-              routeMapPreview: createDriverRouteMapPreview(dependencies, {
+              routeMapPreview: await createDriverRouteMapPreview(dependencies, {
                 driverId: driverContext.driverId,
                 route: result.route,
                 shopDomain: driverContext.shopDomain,
                 shopId: driverContext.shopId
-              }) ?? result.route.routeMapPreview
+              })
             }
           },
           error: null
@@ -840,12 +894,12 @@ export function registerDriverEventRoutes(
             ...result,
             route: {
               ...result.route,
-              routeMapPreview: createDriverRouteMapPreview(dependencies, {
+              routeMapPreview: await createDriverRouteMapPreview(dependencies, {
                 driverId: driverContext.driverId,
                 route: result.route,
                 shopDomain: driverContext.shopDomain,
                 shopId: driverContext.shopId
-              }) ?? result.route.routeMapPreview
+              })
             }
           },
           error: null
@@ -1383,6 +1437,7 @@ export function registerDriverEventRoutes(
           error: null
         });
       } catch (error) {
+        if (error instanceof DriverDeliveryProofError) return reply.code(400).send(errorResponse(error.code, error.message));
         if (error instanceof DriverEventContextError) {
           return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination or stop context'));
         }
@@ -1501,6 +1556,10 @@ export function registerDriverEventRoutes(
         shopId: driverContext.shopId
       });
     } catch (error) {
+      if (error instanceof DriverDeliveryProofError) return reply.code(400).send(errorResponse(error.code, error.message));
+      if (error instanceof DriverCashCompletionError) {
+        return reply.code(error.statusCode).send(errorResponse(error.code, error.message));
+      }
       if (error instanceof DriverRouteCompletionIncompleteError) {
         request.log.warn({
           decision: error.evidence.decision,
@@ -1672,6 +1731,7 @@ export function registerDriverEventRoutes(
     return reply.code(result.duplicate ? 200 : 202).send({
       data: {
         duplicate: result.duplicate,
+        ...(result.completion === undefined ? {} : { completion: result.completion }),
         ...(result.etaSnapshot === undefined ? {} : { etaSnapshot: result.etaSnapshot }),
         ...(result.etaUpdate === undefined ? {} : { etaUpdate: result.etaUpdate }),
         eventId: result.eventId
@@ -1679,6 +1739,15 @@ export function registerDriverEventRoutes(
       error: null
     });
   });
+}
+
+function readLiveRouteChangeTokenVersion(request: FastifyRequest, dependencies: DriverApiDependencies): number {
+  const token = extractBearerToken(request.headers.authorization);
+  if (token === null) throw new Error('Missing driver token');
+  const now = dependencies.now?.();
+  return verifyDriverRouteToken(token, now === undefined
+    ? { secret: dependencies.jwtSecret }
+    : { now, secret: dependencies.jwtSecret }).tokenVersion;
 }
 
 async function authenticateDriverRequest(
@@ -1731,7 +1800,7 @@ function driverAuthenticationErrorResponse(status: DriverAuthenticationResult['s
   );
 }
 
-function createDriverRouteMapPreview(
+async function createDriverRouteMapPreview(
   dependencies: DriverApiDependencies,
   input: {
     driverId: string;
@@ -1739,7 +1808,7 @@ function createDriverRouteMapPreview(
     shopDomain: string;
     shopId: string;
   }
-): DriverRouteMapPreview | null {
+): Promise<DriverRouteMapPreview | null> {
   if (dependencies.driverRouteMapPreviewService === undefined || dependencies.driverRouteMapPreviewBaseUrl === undefined) {
     return null;
   }
@@ -2263,10 +2332,10 @@ async function readDriverProofMediaUpload(
 
   const file = await request.file({
     limits: {
-      fields: 3,
+      fields: 4,
       fileSize: 10 * 1024 * 1024,
       files: 1,
-      parts: 4
+      parts: 5
     }
   });
 
@@ -2277,12 +2346,16 @@ async function readDriverProofMediaUpload(
   const deliveryStopId = readMultipartField(file, 'deliveryStopId');
   const routePlanId = readMultipartField(file, 'routePlanId');
   const source = readProofMediaSource(readMultipartField(file, 'source'));
+  const kind = file.fields.kind === undefined ? 'photo' : readMultipartField(file, 'kind');
+  if (kind !== 'photo' && kind !== 'signature') throw new Error('Invalid proof kind');
+  if ((kind === 'signature') !== (source === 'signature')) throw new Error('Signature source and kind must match');
   const fileBytes = await file.toBuffer();
   if (fileBytes.byteLength === 0) {
     throw new Error('Proof media file is empty');
   }
 
   const contentType = readProofMediaContentType(file.mimetype);
+  if (kind === 'signature' && contentType !== 'image/png') throw new Error('Signature must be PNG');
   if (!hasMatchingProofMediaSignature(contentType, fileBytes)) {
     throw new Error('Proof media file signature does not match its content type');
   }
@@ -2292,6 +2365,7 @@ async function readDriverProofMediaUpload(
     deliveryStopId,
     fileBytes,
     filename: readRequiredString(file.filename),
+    ...(file.fields.kind === undefined ? {} : { kind }),
     routePlanId,
     source
   };
@@ -2345,7 +2419,7 @@ function hasMatchingProofMediaSignature(contentType: string, fileBytes: Buffer):
 }
 
 function readProofMediaSource(value: string): DriverProofMediaSource {
-  if (value === 'camera' || value === 'library') {
+  if (value === 'camera' || value === 'library' || value === 'signature') {
     return value;
   }
 

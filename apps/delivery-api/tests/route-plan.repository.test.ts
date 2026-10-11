@@ -525,6 +525,54 @@ describe('PrismaRoutePlanRepository', () => {
     }));
   });
 
+  test('returns the payment method of Shopify and legacy orders on route detail stops', async () => {
+    const stopFor = (index: number, rawPayload: Record<string, unknown>) => routePlanStopRecord({
+      deliveryStopId: `stop-${index}`,
+      estimatedArrivalAt: null,
+      distanceFromPreviousMeters: null,
+      durationFromPreviousSeconds: null,
+      order: orderRecord({
+        currencyCode: 'CAD',
+        deliveryDate: '2026-05-08',
+        gid: `gid://shopify/Order/90${index}`,
+        id: `order-${index}`,
+        rawPayload,
+        stopId: `stop-${index}`
+      }),
+      sequence: index,
+      serviceMinutes: null
+    });
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        routeStops: [
+          stopFor(1, { paymentGatewayNames: ['Cash on Delivery (COD)'] }),
+          stopFor(2, { paymentGatewayNames: ['manual', 'e-Transfer'] }),
+          stopFor(3, { paymentGatewayNames: ['manual'], cleverManualPaymentMethod: 'ETRANSFER' }),
+          stopFor(4, { paymentGatewayNames: ['PayPal Express Checkout'] }),
+          stopFor(5, { payment_method_title: 'Visa' }),
+          stopFor(6, {})
+        ]
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.stops.map((stop) => stop.paymentMethodTitle)).toEqual([
+      'Cash',
+      'e-Transfer',
+      'e-Transfer',
+      'PayPal Express Checkout',
+      'Visa',
+      null
+    ]);
+  });
+
   test('keeps planned scheduled start time from closing transfer as actual in-progress execution', async () => {
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: routePlanRecord({
@@ -655,6 +703,29 @@ describe('PrismaRoutePlanRepository', () => {
     expect(query.select?.routeGroupingChildVersions).toMatchObject({
       take: 1,
       where: { status: 'CURRENT', supersededAt: null }
+    });
+  });
+
+  test('lists a grouped route with the published time of its current child version', async () => {
+    // The office list shows "Dispatched" for a Ready route with a published time, so the list
+    // query must select it on the child version as the detail query does.
+    const publishedAt = new Date('2026-10-09T20:18:56.136Z');
+    const { prisma } = createPrismaHarness({
+      routePlansForList: [{
+        ...routePlanListRecord(),
+        routeGroupingChildVersions: [{ groupingId: 'group-1', publishedAt, status: 'CURRENT', version: 1 }]
+      }]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const [route] = await repository.listRoutePlans({ shopDomain: 'example.myshopify.com' });
+
+    expect(route?.publishedAt).toBe(publishedAt.toISOString());
+    const query = prisma.routePlan.findMany.mock.calls[0]?.[0] as { select?: Record<string, unknown> };
+    expect(query.select?.routeGroupingChildVersions).toMatchObject({
+      select: { groupingId: true, publishedAt: true, status: true, version: true }
     });
   });
 
@@ -2097,6 +2168,89 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('admin stop override records a changed Stop time as the office choice', async () => {
+    const { prisma } = createPrismaHarness({
+      deliveryStopForId: { serviceMinutes: 5, serviceMinutesSource: null },
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: 9 },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.deliveryStop.updateMany).toHaveBeenCalledWith({
+      data: { serviceMinutes: 9, serviceMinutesSource: 'STOP' },
+      where: { id: 'stop-1', shopId: 'shop-id' }
+    });
+  });
+
+  test('admin stop override leaves the Stop time source alone when the submitted time is the stop time it already has', async () => {
+    for (const source of [null, 'ROUTE', 'DRIVER'] as const) {
+      const { prisma } = createPrismaHarness({
+        deliveryStopForId: { serviceMinutes: 7, serviceMinutesSource: source },
+        routePlanFindFirst: routePlanRecord(),
+        routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+      });
+      const repository = new PrismaRoutePlanRepository(
+        prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+      );
+
+      await repository.updateAdminRouteStopOverride({
+        actor: 'admin-user',
+        deliveryStopId: 'stop-1',
+        payload: { serviceMinutes: 7 },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+
+      expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+      expect(prisma.routePlanGeometryCache.deleteMany).not.toHaveBeenCalled();
+    }
+  });
+
+  test('admin stop override reset clears the office choice, and only the source when the time is already the default', async () => {
+    const reset = async (current: Record<string, unknown>) => {
+      const { prisma } = createPrismaHarness({
+        deliveryStopForId: current,
+        routePlanFindFirst: routePlanRecord(),
+        routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+      });
+      const repository = new PrismaRoutePlanRepository(
+        prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+      );
+      await repository.updateAdminRouteStopOverride({
+        actor: 'admin-user',
+        deliveryStopId: 'stop-1',
+        payload: { serviceMinutes: null },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+      return prisma;
+    };
+
+    const changedTime = await reset({ serviceMinutes: 8, serviceMinutesSource: 'STOP' });
+    expect(changedTime.deliveryStop.updateMany).toHaveBeenCalledWith({
+      data: { serviceMinutes: 5, serviceMinutesSource: null },
+      where: { id: 'stop-1', shopId: 'shop-id' }
+    });
+    expect(changedTime.routePlanGeometryCache.deleteMany).toHaveBeenCalled();
+
+    const sameTime = await reset({ serviceMinutes: 5, serviceMinutesSource: 'STOP' });
+    expect(sameTime.deliveryStop.updateMany).toHaveBeenCalledWith({
+      data: { serviceMinutesSource: null },
+      where: { id: 'stop-1', shopId: 'shop-id' }
+    });
+    expect(sameTime.routePlanGeometryCache.deleteMany).not.toHaveBeenCalled();
+  });
+
   test('admin stop override rejects coordinates outside the stop address region atomically', async () => {
     const { prisma } = createPrismaHarness({
       deliveryStopForId: {
@@ -2595,6 +2749,39 @@ describe('PrismaRoutePlanRepository', () => {
     expect(routePlanStopCreateMany).not.toHaveBeenCalled();
   });
 
+  test('combined delivery options and route-end save claims the original timestamp before writing options', async () => {
+    const { prisma } = createPrismaHarness();
+    const route = routePlanRecord({ driverId: null, status: 'READY', constraints: { routeEndMode: 'LAST_STOP' }, updatedAt: new Date('2026-05-07T12:30:00.000Z') });
+    prisma.routePlan.findFirst.mockResolvedValue(route);
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+    await repository.saveRoutePlan({ routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com', payload: {
+      expectedUpdatedAt: '2026-05-07T12:30:00.000Z', deliveryProof: { photoRequired: false, signatureRequired: false }, tollPolicy: 'ALLOW_TOLLS', routeEndMode: 'RETURN_TO_DEPOT'
+    } });
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expectRoutePlanVersionClaim(prisma, '2026-05-07T12:30:00.000Z');
+    expect(prisma.routePlan.updateMany.mock.invocationCallOrder[0]).toBeLessThan(prisma.routePlan.update.mock.invocationCallOrder[0]!);
+  });
+
+  test('save rejects an AVOID geometry mutation without prepared geometry after acquiring the route lock', async () => {
+    const { prisma } = createPrismaHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRecord({ driverId: null, status: 'READY', constraints: { tollPolicy: 'AVOID_TOLLS', routeEndMode: 'END_AT_LAST_STOP' } }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+    await expect(repository.saveRoutePlan({ routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com', payload: { routeEndMode: 'RETURN_TO_DEPOT' } })).rejects.toBeInstanceOf(RoutePlanConflictError);
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expect(prisma.routePlan.update).not.toHaveBeenCalled();
+  });
+
+  test('delivery-options-only save rejects a stale revision before writing constraints', async () => {
+    const { prisma } = createPrismaHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRecord({ driverId: null, status: 'READY', updatedAt: new Date('2026-05-07T12:30:00.000Z') }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+    await expect(repository.saveRoutePlan({ routePlanId: 'route-plan-id', shopDomain: 'example.myshopify.com', payload: {
+      expectedUpdatedAt: '2026-05-07T12:29:59.000Z', tollPolicy: 'AVOID_TOLLS'
+    } })).rejects.toBeInstanceOf(RoutePlanConflictError);
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expect(prisma.routePlan.update).not.toHaveBeenCalled();
+  });
+
   test('aggregate save does not claim a route version when the payload has no route mutation', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness();
     const assignedRoute = routePlanRecord({
@@ -2750,14 +2937,12 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('collapses a parent grouping split when deleting a child leaves only one child route', async () => {
+  test('keeps the remaining child route with its stops when deleting a child leaves one route', async () => {
+    // The office lost every route of a copied group on 2026-10-10 when one route was deleted:
+    // the single remaining route must stay as the group's route; only the split branch state goes.
     const { prisma } = createPrismaHarness({
       routeGroupingChildVersionCount: 1,
-      routeGroupingCurrentChildrenAfterDelete: [{ id: 'remaining-child-version-id', routePlanId: 'remaining-route-plan-id' }],
-      routeGroupingVersionsForCollapse: [
-        { id: 'remaining-child-version-id' },
-        { id: 'historical-sibling-version-id' }
-      ]
+      routeGroupingCurrentChildrenAfterDelete: [{ id: 'remaining-child-version-id', routePlanId: 'remaining-route-plan-id' }]
     });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
@@ -2768,23 +2953,20 @@ describe('PrismaRoutePlanRepository', () => {
       shopDomain: 'example.myshopify.com'
     });
 
-    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
-      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
-    });
-    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
-      data: { status: 'CANCELLED' },
-      where: { id: { in: ['remaining-route-plan-id'] }, shopId: 'shop-id', status: { not: 'IN_PROGRESS' } }
-    });
-    expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledTimes(1);
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({ where: { routePlanId: 'route-plan-id' } });
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: { status: 'CANCELLED' }
+    }));
+    expect(prisma.routeGroupingChildVersion.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
       where: { groupingId: 'grouping-id', shopId: 'shop-id', status: 'CURRENT', supersededAt: null }
     }));
-    expect(prisma.order.updateMany).toHaveBeenCalledWith({
-      data: { currentRouteVersionId: null },
-      where: {
-        currentRouteVersionId: { in: ['remaining-child-version-id', 'historical-sibling-version-id'] },
-        shopId: 'shop-id'
-      }
-    });
+    // Only the deleted route's versions release their orders; the remaining route keeps its ownership.
+    const releasedVersionIds = (prisma.order.updateMany.mock.calls as Array<[{ where: { currentRouteVersionId: { in: string[] } } }]>)
+      .flatMap(([args]) => args.where.currentRouteVersionId.in);
+    expect(releasedVersionIds).toContain('child-version-1');
+    expect(releasedVersionIds).not.toContain('remaining-child-version-id');
+    expect(releasedVersionIds).not.toContain('historical-sibling-version-id');
     expect(prisma.routeGroupingBranchOrderLock.deleteMany).toHaveBeenCalledWith({
       where: { groupingId: 'grouping-id', shopId: 'shop-id' }
     });
@@ -2793,49 +2975,33 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('fails closed instead of collapsing a split whose remaining sibling is in progress', async () => {
+  test('archives the empty child slots when no route plan remains after the deletion', async () => {
     const { prisma } = createPrismaHarness({
       routeGroupingChildVersionCount: 1,
-      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'remaining-route-plan-id' }],
-      routePlansForCollapse: [{ id: 'remaining-route-plan-id', status: 'IN_PROGRESS' }]
+      routeGroupingCurrentChildrenAfterDelete: [{ id: 'slot-version-id', routePlanId: null }]
     });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
     );
 
-    await expect(repository.deleteRoutePlan({
+    await repository.deleteRoutePlan({
       routePlanId: 'route-plan-id',
       shopDomain: 'example.myshopify.com'
-    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
-
-    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalledWith({
-      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
     });
+
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
       data: { status: 'CANCELLED' }
     }));
-    expect(prisma.routeGroupingBranch.deleteMany).not.toHaveBeenCalled();
-  });
-
-  test('rolls back split collapse when a sibling starts execution during the guarded cancellation', async () => {
-    const { prisma } = createPrismaHarness({
-      routeGroupingChildVersionCount: 1,
-      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'remaining-route-plan-id' }],
-      routePlanUpdateManyCount: 0
+    expect(prisma.order.updateMany).toHaveBeenCalledWith({
+      data: { currentRouteVersionId: null },
+      where: { currentRouteVersionId: { in: ['slot-version-id'] }, shopId: 'shop-id' }
     });
-    const repository = new PrismaRoutePlanRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
-    );
-
-    await expect(repository.deleteRoutePlan({
-      routePlanId: 'route-plan-id',
-      shopDomain: 'example.myshopify.com'
-    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
-
-    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalledWith({
-      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
+    expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id', status: 'CURRENT', supersededAt: null }
+    }));
+    expect(prisma.routeGroupingBranch.deleteMany).toHaveBeenCalledWith({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id' }
     });
-    expect(prisma.routeGroupingBranch.deleteMany).not.toHaveBeenCalled();
   });
 
   test('keeps a parent grouping split when deleting a child still leaves multiple child routes', async () => {

@@ -1,3 +1,4 @@
+import { tollExclusionQuery } from './route-toll-policy.js';
 import type { RoutePlanDetail, RoutePlanDetailStop } from './route-plan.types.js';
 import type {
   RouteOptimizationFailureCode,
@@ -148,7 +149,7 @@ function buildTripUrl(
     .map(([longitude, latitude]) => `${longitude},${latitude}`)
     .join(';');
   const roundtrip = detail.routePlan.routeEndMode === 'RETURN_TO_DEPOT' ? 'true' : 'false';
-  return `${baseUrl}/trip/v1/driving/${coordinatePath}?roundtrip=${roundtrip}&source=first&destination=any&overview=false&steps=false`;
+  return `${baseUrl}/trip/v1/driving/${coordinatePath}?roundtrip=${roundtrip}&source=first&destination=any&overview=false&steps=false${tollExclusionQuery(detail.routePlan.tollPolicy)}`;
 }
 
 function buildOptimizationResult(

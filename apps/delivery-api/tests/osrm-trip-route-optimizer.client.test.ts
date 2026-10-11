@@ -35,6 +35,15 @@ const detail = {
 } satisfies RoutePlanDetail;
 
 describe('OsrmTripRouteOptimizationClient', () => {
+  test('retains the toll exclusion on the alternative OSRM Trip optimizer', async () => {
+    const fetch = vi.fn<TestFetchLike>().mockResolvedValue(Response.json({ code: 'InvalidValue' }, { status: 400 }));
+    const client = new OsrmTripRouteOptimizationClient({ baseUrl: 'http://osrm-ontario:5000', fetch });
+    const result = await client.optimizeStopOrderWithDiagnostics({ detail: { ...detail, routePlan: { ...detail.routePlan, tollPolicy: 'AVOID_TOLLS' } }, shopDomain: 'tenant-a.example.test' });
+    expect(result.ok).toBe(false);
+    expect(fetch.mock.calls[0]?.[0]).toContain('&exclude=toll');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   test('uses Trip with a fixed depot and maps waypoint_index to the optimized stop order', async () => {
     const fetch = vi.fn<TestFetchLike>().mockResolvedValue(Response.json({
       code: 'Ok',

@@ -1,3 +1,5 @@
+import type { OrderPayment } from '../payments/order-payment.js';
+import type { DriverStopCompletion } from '../driver/driver-completion.js';
 import type { OrderItemDto, RouteItemSummary } from '../order-items/order-items.js';
 
 export type InventoryChangeItemDto = OrderItemDto & {
@@ -10,6 +12,7 @@ export type InventoryChangeItemDto = OrderItemDto & {
 };
 
 export type InventoryOrderDto = {
+  completion?: DriverStopCompletion | null;
   address: string | null;
   currencyCode: string | null;
   customerNote: string | null;
@@ -22,6 +25,7 @@ export type InventoryOrderDto = {
   items: OrderItemDto[];
   name: string;
   orderDateLocal: string | null;
+  payment?: OrderPayment;
   paymentGatewayNames: string[];
   paymentMethodTitle: string | null;
   paymentStatus: string | null;

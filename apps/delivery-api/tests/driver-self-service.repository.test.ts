@@ -50,7 +50,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
     });
 
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
-      select: { id: true, shopDomain: true },
+      select: { id: true, appId: true, shopDomain: true },
       where: { id: 'shop-id' }
     });
     expect(prisma.driver.findFirst).toHaveBeenCalledWith({
@@ -129,7 +129,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       driver: { displayName: 'Minji Kim', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' }
     });
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
-      select: { id: true, shopDomain: true },
+      select: { id: true, appId: true, shopDomain: true },
       where: { id: 'shop-id' }
     });
   });

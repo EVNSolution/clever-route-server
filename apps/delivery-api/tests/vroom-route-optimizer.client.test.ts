@@ -38,6 +38,50 @@ const detail = {
 } satisfies RoutePlanDetail;
 
 describe('VroomRouteOptimizationClient', () => {
+  test('uses the toll-avoiding table as a custom matrix with contiguous indexes including return depot', async () => {
+    const matrixFetch = vi.fn().mockResolvedValue(Response.json({ code: 'Ok',
+      durations: [[0, 10.2, 20.6], [11, 0, 33], [22, 34, 0]],
+      distances: [[0, 100, 200], [110, 0, 330], [220, 340, 0]] }));
+    const fetch = vi.fn<TestFetchLike>().mockResolvedValue(Response.json({ code: 0,
+      routes: [{ steps: [{ type: 'start' }, { type: 'job', job: 2 }, { type: 'job', job: 1 }, { type: 'end' }] }], unassigned: [] }));
+    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom:3000', osrmBaseUrl: 'http://osrm-ontario:5000', matrixFetch, fetch });
+    const result = await client.optimizeStopOrder({ detail: { ...detail, routePlan: { ...detail.routePlan, tollPolicy: 'AVOID_TOLLS', routeEndMode: 'RETURN_TO_DEPOT' } }, shopDomain: 'tenant-a.example.test' });
+    expect(matrixFetch.mock.calls[0]?.[0]).toBe('http://osrm-ontario:5000/table/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?annotations=duration,distance&exclude=toll');
+    const request: unknown = JSON.parse(fetch.mock.calls[0]![1].body);
+    expect(request).toMatchObject({
+      matrices: { car: {
+        durations: [[0, 10, 21], [11, 0, 33], [22, 34, 0]],
+        distances: [[0, 100, 200], [110, 0, 330], [220, 340, 0]]
+      } },
+      jobs: [{ location_index: 1 }, { location_index: 2 }],
+      vehicles: [{ start_index: 0, end_index: 0 }]
+    });
+    expect(result?.stops[0]?.deliveryStopId).toBe('stop-2');
+  });
+
+  test.each([
+    { code: 'InvalidValue' },
+    { code: 'Ok', durations: [[0, null, 1], [1, 0, 2], [1, 2, 0]], distances: [[0, 1, 1], [1, 0, 2], [1, 2, 0]] },
+    { code: 'Ok', durations: [[0]], distances: [[0]] },
+    { code: 'Ok', durations: [[0, 1, 2], [1, 0, 2], [1, 2, 0]], distances: [[0, 1, 2], [1, 0, 2], [1, 2, 0]], fallback_speed_cells: [[0, 1]] },
+  ])('never calls VROOM or allows tolls when the constrained matrix is incomplete: %j', async (payload) => {
+    const matrixFetch = vi.fn().mockResolvedValue(Response.json(payload));
+    const fetch = vi.fn<TestFetchLike>();
+    const client = new VroomRouteOptimizationClient({ baseUrl: 'http://vroom:3000', osrmBaseUrl: 'http://osrm-ontario:5000', matrixFetch, fetch });
+    const outcome = await client.optimizeStopOrderWithDiagnostics({ detail: { ...detail, routePlan: { ...detail.routePlan, tollPolicy: 'AVOID_TOLLS' } }, shopDomain: 'tenant-a.example.test' });
+    expect(outcome.ok).toBe(false);
+    expect(matrixFetch).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test('requires the matching OSRM graph when avoiding tolls', async () => {
+    const fetch = vi.fn<TestFetchLike>();
+    const outcome = await new VroomRouteOptimizationClient({ baseUrl: 'http://vroom:3000', fetch }).optimizeStopOrderWithDiagnostics({
+      detail: { ...detail, routePlan: { ...detail.routePlan, tollPolicy: 'AVOID_TOLLS' } }, shopDomain: 'tenant-a.example.test' });
+    expect(outcome).toMatchObject({ ok: false, failure: { code: 'optimizer_unavailable' } });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   test('requires explicit VROOM base URL configuration', () => {
     expect(() => new VroomRouteOptimizationClient({ baseUrl: '' })).toThrow(
       'VROOM base URL must be configured explicitly.',

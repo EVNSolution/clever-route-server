@@ -131,10 +131,10 @@ const route: DriverAssignedRoute = {
 };
 
 describe('Driver route map preview service', () => {
-  test('creates a short-lived signed preview URL without leaking route/customer data in the URL', () => {
+  test('creates a short-lived signed preview URL without leaking route/customer data in the URL', async () => {
     const service = createService();
 
-    const preview = service.createRouteMapPreview({
+    const preview = await service.createRouteMapPreview({
       baseUrl: 'https://delivery.example.com/',
       driverId: 'driver-id',
       route,
@@ -160,7 +160,7 @@ describe('Driver route map preview service', () => {
   test('renders a signed preview image only while the URL is valid and route checksum still matches', async () => {
     const getAssignedRoute = vi.fn(() => Promise.resolve({ status: 'ASSIGNED_ROUTE' as const, route }));
     const service = createService({ getAssignedRoute });
-    const preview = service.createRouteMapPreview({
+    const preview = await service.createRouteMapPreview({
       baseUrl: 'https://delivery.example.com',
       driverId: 'driver-id',
       route,
@@ -204,7 +204,7 @@ describe('Driver route map preview service', () => {
     const service = createService({
       getAssignedRoute: vi.fn(() => Promise.reject(backendFailure))
     });
-    const preview = service.createRouteMapPreview({
+    const preview = await service.createRouteMapPreview({
       baseUrl: 'https://delivery.example.com',
       driverId: 'driver-id',
       route,
@@ -220,9 +220,9 @@ describe('Driver route map preview service', () => {
     })).rejects.toThrow(backendFailure);
   });
 
-  test('returns null instead of fake previews when geometry is missing or degenerate', () => {
+  test('returns null instead of fake previews when geometry is missing or degenerate', async () => {
     const service = createService();
-    expect(service.createRouteMapPreview({
+    expect(await service.createRouteMapPreview({
       baseUrl: 'https://delivery.example.com',
       driverId: 'driver-id',
       route: { ...route, routeGeometry: null },
@@ -265,7 +265,7 @@ describe('Driver route map preview service', () => {
     };
     const getAssignedRoute = vi.fn(() => Promise.resolve({ status: 'ASSIGNED_ROUTE' as const, route: recalculatedRoute }));
     const service = createService({ getAssignedRoute });
-    const preview = service.createRouteMapPreview({
+    const preview = await service.createRouteMapPreview({
       baseUrl: 'https://delivery.example.com',
       driverId: 'driver-id',
       route,
@@ -293,16 +293,75 @@ describe('Driver route map preview service', () => {
 
     expect(createRouteSequenceChecksum(changedRoute)).not.toBe(createRouteSequenceChecksum(route));
   });
+
+  test('does not issue bearer preview URLs for private demo shops or missing shop metadata', async () => {
+    for (const appId of ['clever-route-kfood-private-demo', null]) {
+      const readShopAppId = vi.fn(() => Promise.resolve(appId));
+      const service = createService({ readShopAppId });
+      const geometry = structuredClone(route.routeGeometry);
+
+      await expect(service.createRouteMapPreview({
+        baseUrl: 'https://delivery.example.com', driverId: 'driver-id', route,
+        shopDomain: '7hrud1-xq.myshopify.com', shopId: 'private-shop'
+      })).resolves.toBeNull();
+      expect(readShopAppId).toHaveBeenCalledWith('private-shop');
+      expect(route.routeGeometry).toEqual(geometry);
+    }
+  });
+
+  test('rejects an existing signed preview if its shop is private or no longer exists', async () => {
+    let appId: string | null = 'clever-route-kfood';
+    const getAssignedRoute = vi.fn(() => Promise.resolve({ status: 'ASSIGNED_ROUTE' as const, route }));
+    const service = createService({ getAssignedRoute, readShopAppId: () => Promise.resolve(appId) });
+    const preview = await service.createRouteMapPreview({
+      baseUrl: 'https://delivery.example.com', driverId: 'driver-id', route,
+      shopDomain: '7hrud1-xq.myshopify.com', shopId: 'private-shop'
+    });
+    const url = new URL(preview!.imageUrl);
+    const request = {
+      expires: url.searchParams.get('expires')!, previewId: url.searchParams.get('previewId')!,
+      signature: url.searchParams.get('signature')!
+    };
+
+    for (const unavailableAppId of ['clever-route-kfood-private-demo', null]) {
+      appId = unavailableAppId;
+      await expect(service.readRouteMapPreviewImage(request)).resolves.toBeNull();
+    }
+    expect(getAssignedRoute).not.toHaveBeenCalled();
+  });
+
+  test('does not issue or render previews when shop metadata cannot be read', async () => {
+    const failure = new Error('shop metadata unavailable');
+    const readShopAppId = vi.fn<() => Promise<string | null>>(() => Promise.resolve('clever-route-kfood'));
+    const getAssignedRoute = vi.fn();
+    const service = createService({ readShopAppId, getAssignedRoute });
+    const input = {
+      baseUrl: 'https://delivery.example.com', driverId: 'driver-id', route,
+      shopDomain: '7hrud1-xq.myshopify.com', shopId: 'shop-id'
+    };
+    const preview = await service.createRouteMapPreview(input);
+    const url = new URL(preview!.imageUrl);
+    readShopAppId.mockRejectedValue(failure);
+
+    await expect(service.createRouteMapPreview(input)).rejects.toThrow(failure);
+    await expect(service.readRouteMapPreviewImage({
+      expires: url.searchParams.get('expires')!, previewId: url.searchParams.get('previewId')!,
+      signature: url.searchParams.get('signature')!
+    })).rejects.toThrow(failure);
+    expect(getAssignedRoute).not.toHaveBeenCalled();
+  });
 });
 
 function createService(input: {
   getAssignedRoute?: DriverAssignedRouteServiceContract['getAssignedRoute'];
+  readShopAppId?: (shopId: string) => Promise<string | null>;
 } = {}): DriverRouteMapPreviewService {
   return new DriverRouteMapPreviewService({
     assignedRouteService: {
       getAssignedRoute: input.getAssignedRoute ?? (() => Promise.resolve({ status: 'ASSIGNED_ROUTE', route }))
     },
     jwtSecret: 'driver-secret',
+    readShopAppId: input.readShopAppId ?? (() => Promise.resolve('clever-route-kfood')),
     now: () => now,
     ttlSeconds: 600
   });

@@ -226,6 +226,7 @@ command -v docker >/dev/null
 command -v aws >/dev/null
 command -v python3 >/dev/null
 command -v base64 >/dev/null
+command -v gunzip >/dev/null
 [ -f apps/delivery-api/.env ] || { echo 'missing required runtime env: apps/delivery-api/.env' >&2; exit 65; }
 [ -f .deploy/current-image.env ] || { echo 'proof media S3 rollout blocked: verified rollback manifest is missing' >&2; exit 1; }
 if [ -f .deploy/current-image.env ]; then
@@ -237,10 +238,10 @@ if [ -f .deploy/current-image.env ]; then
 fi
 mkdir -p "$(dirname "$COMPOSE_FILE")" "$(dirname "$VROOM_CONFIG")" "$(dirname "$VROOM_KOREA_CONFIG")"
 mkdir -p scripts infra/systemd
-printf '%s' "$COMPOSE_FILE_B64" | base64 -d > "$COMPOSE_FILE"
+printf '%s' "$COMPOSE_FILE_B64" | base64 -d | gunzip > "$COMPOSE_FILE"
 printf '%s' "$VROOM_CONFIG_B64" | base64 -d > "$VROOM_CONFIG"
 printf '%s' "$VROOM_KOREA_CONFIG_B64" | base64 -d > "$VROOM_KOREA_CONFIG"
-printf '%s' "$DOCKER_CLEANUP_SCRIPT_B64" | base64 -d > .deploy/route-ops-docker-cleanup.sh
+printf '%s' "$DOCKER_CLEANUP_SCRIPT_B64" | base64 -d | gunzip > .deploy/route-ops-docker-cleanup.sh
 chmod 750 .deploy/route-ops-docker-cleanup.sh
 mkdir -p .deploy/retention-rollback .deploy/candidate-retention
 rm -f .deploy/retention-rollback/runner.present .deploy/retention-rollback/service.present .deploy/retention-rollback/timer.present .deploy/retention-rollback/timer.enabled
@@ -970,10 +971,10 @@ if [ "$BUILD_AND_PUSH" = "1" ]; then
   build_and_push
 fi
 
-COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
+COMPOSE_FILE_B64="$(gzip -9n < "$COMPOSE_FILE" | base64 | tr -d '\n')"
 VROOM_CONFIG_B64="$(base64 < "$VROOM_CONFIG" | tr -d '\n')"
 VROOM_KOREA_CONFIG_B64="$(base64 < "$VROOM_KOREA_CONFIG" | tr -d '\n')"
-DOCKER_CLEANUP_SCRIPT_B64="$(base64 < scripts/route-ops-docker-cleanup.sh | tr -d '\n')"
+DOCKER_CLEANUP_SCRIPT_B64="$(gzip -9n < scripts/route-ops-docker-cleanup.sh | base64 | tr -d '\n')"
 RETENTION_RUNNER_B64="$(base64 < scripts/run-driver-event-attempt-retention.sh | tr -d '\n')"
 RETENTION_INSTALLER_B64="$(base64 < scripts/install-driver-event-attempt-retention.sh | tr -d '\n')"
 RETENTION_SERVICE_B64="$(base64 < infra/systemd/clever-driver-event-attempt-retention.service | tr -d '\n')"

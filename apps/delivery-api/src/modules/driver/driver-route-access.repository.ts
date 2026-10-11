@@ -6,8 +6,7 @@ import {
 } from '../route-plans/route-plan-lifecycle.js';
 import {
   hasDeliveryNavigationGraceExpired,
-  KFOOD_DELIVERY_APP_ID,
-  KFOOD_DELIVERY_SHOP_DOMAIN
+  isKfoodDeliveryScope
 } from '../route-plans/kfood-delivery-completion.js';
 import type {
   RouteGroupingChildDto,
@@ -15,6 +14,7 @@ import type {
   RouteGroupingService
 } from '../route-grouping/route-grouping.types.js';
 
+import { isPrivateDriverDemoAppId, isPrivateDriverDemoScope } from './private-driver-demo.js';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import { driverServiceDate, driverServiceDateAsDbDate } from './driver-route-timezone.js';
 import type {
@@ -30,6 +30,13 @@ type DriverRouteAccessPrismaClient = Pick<
 >;
 
 type DriverRoutePlanRecord = {
+  liveChangeState?: {
+    assignmentGeneration: bigint;
+    baselineRouteVersionId: string;
+    driverId: string;
+    latestPublicationId: string;
+    latestSequence: number;
+  } | null;
   assignmentGeneration?: bigint;
   constraints: unknown;
   driver: {
@@ -53,8 +60,9 @@ type DriverRoutePlanRecord = {
   isStoreReviewData?: boolean;
   name: string;
   planDate: Date;
-  routeGroupingChildVersions?: Array<{ id: string; publishedAt: Date | null }>;
+  routeGroupingChildVersions?: Array<{ id: string; driverId: string | null; routePlanId: string | null; publishedAt: Date | null }>;
   shop: {
+    id: string;
     appId: string;
     shopDomain: string;
   };
@@ -62,6 +70,9 @@ type DriverRoutePlanRecord = {
 };
 
 const routePlanSelect = {
+  liveChangeState: {
+    select: { assignmentGeneration: true, baselineRouteVersionId: true, driverId: true, latestPublicationId: true, latestSequence: true }
+  },
   assignmentGeneration: true,
   constraints: true,
   deliveryWorkCompletedAt: true,
@@ -84,11 +95,11 @@ const routePlanSelect = {
   planDate: true,
   routeGroupingChildVersions: {
     orderBy: { updatedAt: 'desc' as const },
-    select: { id: true, publishedAt: true },
-    take: 1,
+    select: { id: true, driverId: true, routePlanId: true, publishedAt: true },
+    take: 2,
     where: { status: 'CURRENT' as const, supersededAt: null }
   },
-  shop: { select: { appId: true, shopDomain: true } },
+  shop: { select: { id: true, appId: true, shopDomain: true } },
   status: true
 } as const;
 
@@ -141,7 +152,7 @@ export class PrismaDriverRouteAccessRepository {
     });
 
     const tenantVisiblePlans = routePlans.filter(plan => (
-      isVisibleDsvRoute({ shopDomain: plan.shop.shopDomain }, plan.id)
+      isVisibleDsvRoute({ shopDomain: plan.shop.shopDomain }, plan.id) && isPrivateRouteVisible(plan, accountId)
     ));
     // An existing excluded route must not cause a presentation read to manufacture a new standby route.
     if (routePlans.length > 0 && tenantVisiblePlans.length === 0) return { status: 'NOT_FOUND' };
@@ -213,7 +224,7 @@ export class PrismaDriverRouteAccessRepository {
       select: {
         id: true,
         isStoreReviewData: true,
-        shop: { select: { id: true, shopDomain: true } }
+        shop: { select: { id: true, appId: true, shopDomain: true } }
       },
       where: {
         accountId,
@@ -223,6 +234,8 @@ export class PrismaDriverRouteAccessRepository {
     });
 
     for (const driver of drivers) {
+      // Private routes never participate in public standby assignment.
+      if (isPrivateDriverDemoAppId(driver.shop.appId)) continue;
       const publicRoute = await this.prisma.routeGroupingChildVersion.findFirst({
         orderBy: [
           { grouping: { planDate: 'desc' } },
@@ -313,7 +326,8 @@ export class PrismaDriverRouteAccessRepository {
           status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
         }
       });
-      const unexpiredPage = page.filter((routePlan) => !hasExpiredKfoodNavigation(routePlan, now));
+      const unexpiredPage = page.filter((routePlan) => isPrivateRouteVisible(routePlan, input.accountId)
+        && !hasExpiredKfoodNavigation(routePlan, now));
       visibleRoutePlans.push(...unexpiredPage.filter(isDriverVisibleRoutePlan).slice(0, 3 - visibleRoutePlans.length));
       expiryPaginationActive ||= unexpiredPage.length !== page.length;
       if (
@@ -354,6 +368,7 @@ function mapRoutePlan(
   input: { accountId: string; routeContext: string }
 ): DriverRouteAccessLookupResult {
   if (
+    !isPrivateRouteVisible(routePlan, input.accountId) ||
     routePlan.driver === null ||
     routePlan.driver.accountId !== input.accountId ||
     routePlan.driver.account?.id !== input.accountId
@@ -405,7 +420,7 @@ function mapRoutePlan(
     routeAccess: {
       assignmentGeneration: routePlan.assignmentGeneration.toString(),
       driverContractVersion: 2,
-      expectedRouteVersionId: currentRouteVersion.id,
+      expectedRouteVersionId: currentLivePublicationId(routePlan) ?? currentRouteVersion.id,
       nextState: 'consent_required',
       routeContext: input.routeContext,
       routePlanId: routePlan.id
@@ -414,9 +429,29 @@ function mapRoutePlan(
   };
 }
 
+function currentLivePublicationId(route: DriverRoutePlanRecord): string | null {
+  const state = route.liveChangeState;
+  return state != null
+    && state.latestSequence > 0
+    && state.driverId === route.driver?.id
+    && state.assignmentGeneration === route.assignmentGeneration
+    && state.baselineRouteVersionId === route.routeGroupingChildVersions?.[0]?.id
+    ? state.latestPublicationId : null;
+}
+
 function isDriverVisibleRoutePlan(routePlan: DriverRoutePlanRecord): boolean {
-  const currentRouteVersion = routePlan.routeGroupingChildVersions?.[0];
-  return currentRouteVersion !== undefined
+  const children = routePlan.routeGroupingChildVersions;
+  const currentRouteVersion = children?.[0];
+  const state = routePlan.liveChangeState;
+  const previousAssignmentState = state != null && routePlan.assignmentGeneration !== undefined
+    && state.assignmentGeneration < routePlan.assignmentGeneration;
+  const liveIdentityValid = state == null || previousAssignmentState
+    || (state.driverId === routePlan.driver?.id && state.assignmentGeneration === routePlan.assignmentGeneration
+      && state.baselineRouteVersionId === currentRouteVersion?.id);
+  return children?.length === 1 && currentRouteVersion !== undefined
+    && currentRouteVersion.driverId === routePlan.driver?.id
+    && currentRouteVersion.routePlanId === routePlan.id
+    && liveIdentityValid
     && (
       currentRouteVersion.publishedAt != null
       || toRouteExecutionStatus(routePlan.status) === 'IN_PROGRESS'
@@ -424,9 +459,15 @@ function isDriverVisibleRoutePlan(routePlan: DriverRoutePlanRecord): boolean {
 }
 
 function hasExpiredKfoodNavigation(routePlan: DriverRoutePlanRecord, now: Date): boolean {
-  return routePlan.shop.appId === KFOOD_DELIVERY_APP_ID
-    && routePlan.shop.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
+  return isKfoodDeliveryScope({ ...routePlan.shop, shopId: routePlan.shop.id, accountId: routePlan.driver?.accountId ?? null })
     && hasDeliveryNavigationGraceExpired(routePlan, now);
+}
+
+function isPrivateRouteVisible(routePlan: DriverRoutePlanRecord, accountId: string): boolean {
+  return !isPrivateDriverDemoAppId(routePlan.shop.appId) || (
+    isPrivateDriverDemoScope({ ...routePlan.shop, shopId: routePlan.shop.id, accountId })
+    && routePlan.driver?.accountId === accountId && routePlan.driver.account?.id === accountId
+  );
 }
 
 function buildCompanyGuidance(routePlan: DriverRoutePlanRecord): DriverRouteAccessCompanyGuidance {

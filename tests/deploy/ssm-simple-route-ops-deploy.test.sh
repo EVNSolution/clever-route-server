@@ -11,6 +11,8 @@ cleanup() { rm -f "$params_path" "$shopify_params_path"; }
 trap cleanup EXIT
 
 python3 - "$params_path" "$shopify_params_path" "$proof_ready_contract_sha" <<'PY'
+import base64
+import gzip
 import json
 import pathlib
 import re
@@ -31,6 +33,13 @@ workflow = pathlib.Path('.github/workflows/route-ops-operations.yml').read_text(
 ci_workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
 web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 compose = pathlib.Path('infra/compose/docker-compose.prod.yml').read_text()
+
+
+def embedded_gzip_blob(name):
+    match = re.search(rf'^{name}=([A-Za-z0-9+/=]+)$', host_script, re.M)
+    return gzip.decompress(base64.b64decode(match.group(1))) if match else None
+
+
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
     '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea',
@@ -77,12 +86,12 @@ for rendered_variable, env_key in presence_cases.items():
     presence_results[rendered_variable] = actual
 
 checks = {
-    'proof_iam_missing_rollback_manifest_blocks_candidate_fallback': '[ -f .deploy/current-image.env ] ||' in command and command.index('verified rollback manifest is missing') < command.index('base64 -d > "$COMPOSE_FILE"') and command.index('verified rollback manifest is missing') < command.index('cp .deploy/simple-candidate-image.env .deploy/simple-rollback-image.env'),
+    'proof_iam_missing_rollback_manifest_blocks_candidate_fallback': '[ -f .deploy/current-image.env ] ||' in command and command.index('verified rollback manifest is missing') < command.index('base64 -d | gunzip > "$COMPOSE_FILE"') and command.index('verified rollback manifest is missing') < command.index('cp .deploy/simple-candidate-image.env .deploy/simple-rollback-image.env'),
     'proof_iam_rollback_contract_before_mutation': all(value in command for value in [
         'DRIVER_PROOF_MEDIA_IAM_ROLE_CAPABILITY_VERSION=1',
         'org.clever-route.proof-media-iam-role-capability',
         'candidate delivery API does not support proof media IAM-role credentials',
-    ]) and command.index('deploy the IAM-role-compatible bridge before switching storage') < command.index('base64 -d > "$COMPOSE_FILE"') and 'LABEL org.clever-route.proof-media-iam-role-capability="1"' in pathlib.Path('apps/delivery-api/Dockerfile').read_text(),
+    ]) and command.index('deploy the IAM-role-compatible bridge before switching storage') < command.index('base64 -d | gunzip > "$COMPOSE_FILE"') and 'LABEL org.clever-route.proof-media-iam-role-capability="1"' in pathlib.Path('apps/delivery-api/Dockerfile').read_text(),
     'uses_run_shell_command': command.startswith('bash -lc '),
     'channel_rendered': 'CHANNEL_TAG=prod-test' in command,
     'digest_runtime_rendered': 'DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111' in command,
@@ -100,8 +109,14 @@ checks = {
         '5555555555555555555555555555555555555555555555555555555555555555',
     ]),
     'explicit_opt_in_keeps_guarded_migration_path': 'RUN_MIGRATIONS=1' in command and 'if [ "$RUN_MIGRATIONS" = "1" ]; then' in command and 'run --rm clever-route-api-migrate' in command,
-    'compose_synced_to_host': 'COMPOSE_FILE_B64=' in command and 'base64 -d > "$COMPOSE_FILE"' in command,
-    'runtime_env_fails_before_synced_file_mutation': 'missing required runtime env: apps/delivery-api/.env' in command and command.index('missing required runtime env: apps/delivery-api/.env') < command.index('base64 -d > "$COMPOSE_FILE"'),
+    'compose_synced_to_host': 'COMPOSE_FILE_B64=' in command and 'base64 -d | gunzip > "$COMPOSE_FILE"' in command,
+    'compose_embedded_as_gzip_round_trips': embedded_gzip_blob('COMPOSE_FILE_B64') == pathlib.Path('infra/compose/docker-compose.prod.yml').read_bytes(),
+    'cleanup_worker_embedded_as_gzip_round_trips': embedded_gzip_blob('DOCKER_CLEANUP_SCRIPT_B64') == pathlib.Path('scripts/route-ops-docker-cleanup.sh').read_bytes(),
+    # AWS limits an SSM document to 64 KB and SendCommand can fail with MaxDocumentSizeExceeded. The
+    # parameters rendered to 62736 bytes at e7a4eabc, before the gzip embeds. Do not grow past that:
+    # compress embedded files the same way instead.
+    'ssm_parameters_stay_within_last_accepted_size': path.stat().st_size <= 62736,
+    'runtime_env_fails_before_synced_file_mutation': 'missing required runtime env: apps/delivery-api/.env' in command and command.index('missing required runtime env: apps/delivery-api/.env') < command.index('base64 -d | gunzip > "$COMPOSE_FILE"'),
     'does_not_mutate_ingress': 'CADDYFILE_B64=' not in command and 'base64 -d > "$CADDYFILE"' not in command and 'caddy reload --config /etc/caddy/Caddyfile' not in command and 'caddy validate --config /etc/caddy/Caddyfile' not in command and '/etc/caddy/Caddyfile' not in command,
     'compose_preflight': 'docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env' in command,
     'smoke_tries_canonical_and_legacy_urls': 'SMOKE_URLS=' in command and 'https://clever-route-api.cleversystem.ai/healthz https://clever-route.cleversystem.ai/healthz' in command and 'smoke_health()' in command,

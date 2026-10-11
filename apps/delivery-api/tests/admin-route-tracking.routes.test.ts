@@ -328,7 +328,18 @@ function trackingSnapshot(positionOverrides: Partial<{
     routePlanId: 'route-plan-id',
     schemaVersion: 'route_tracking.v1' as const,
     serverTime: '2026-05-07T12:00:10.000Z',
-    status: 'LIVE' as const
+    status: 'LIVE' as const,
+    stopCompletions: [{
+      deliveryStopId: 'stop-completed',
+      driverId: 'driver-id',
+      eventId: 'driver-completion-1',
+      eventType: 'STOP_DELIVERED' as const,
+      occurredAt: '2026-05-07T11:58:00.000Z',
+      receivedAt: '2026-05-07T11:58:01.000Z',
+      routePlanId: 'route-plan-id',
+      schemaVersion: 'route_tracking_completion.v1' as const,
+      stopSequence: 1
+    }]
   };
 }
 

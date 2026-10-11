@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { isPrivateDriverDemoAppId } from './private-driver-demo.js';
 
 import type {
   DriverAssignedRoute,
@@ -18,6 +19,7 @@ export const DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS = 10 * 60;
 type DriverRouteMapPreviewServiceOptions = {
   assignedRouteService: DriverAssignedRouteServiceContract;
   jwtSecret: string;
+  readShopAppId: (shopId: string) => Promise<string | null>;
   now?: () => Date;
   ttlSeconds?: number;
 };
@@ -44,14 +46,14 @@ export class DriverRouteMapPreviewService {
     this.signingKey = createPurposeKey(options.jwtSecret, 'driver-route-map-preview-signing');
   }
 
-  createRouteMapPreview(input: {
+  async createRouteMapPreview(input: {
     baseUrl: string;
     driverId: string;
     route: DriverAssignedRoute;
     shopDomain: string;
     shopId: string;
-  }): DriverRouteMapPreview | null {
-    if (!hasRenderableDriverRouteMapPreview(input.route)) {
+  }): Promise<DriverRouteMapPreview | null> {
+    if (!hasRenderableDriverRouteMapPreview(input.route) || !(await this.canSharePreview(input.shopId))) {
       return null;
     }
 
@@ -102,6 +104,9 @@ export class DriverRouteMapPreviewService {
     if (payload === null) {
       return null;
     }
+    if (!(await this.canSharePreview(payload.shopId))) {
+      return null;
+    }
 
     const result = await this.options.assignedRouteService.getAssignedRoute({
       driverId: payload.driverId,
@@ -117,6 +122,11 @@ export class DriverRouteMapPreviewService {
     }
 
     return renderDriverRouteMapPreviewPng(result.route);
+  }
+
+  private async canSharePreview(shopId: string): Promise<boolean> {
+    const appId = await this.options.readShopAppId(shopId);
+    return typeof appId === 'string' && appId.trim() !== '' && !isPrivateDriverDemoAppId(appId);
   }
 
   private encryptPayload(payload: PreviewPayload): string {
