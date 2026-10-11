@@ -6,17 +6,25 @@ import ts from 'typescript';
 const sourceRoot = join(process.cwd(), 'src');
 const authorizedMembershipWriters = [
   'modules/driver/driver-route-order.service.ts',
+  'modules/driver/private-driver-demo-routes.ts', // Reviewed creation of unpublished synthetic routes in the isolated demo tenant; existing memberships are never rewritten.
+  'modules/driver/private-driver-demo-seed.ts', // Reviewed creation of a new isolated tenant; existing memberships are never rewritten.
   'modules/driver/rolling-eta-backfill.ts',
   'modules/dsv/dsv-assignment-command.service.ts',
   'modules/dsv/dsv-dispatch-import.service.ts',
   'modules/dsv/dsv-eta-repair.ts', // Reviewed ETA-only stop update; no membership fields.
   'modules/route-grouping/route-grouping.service.ts',
+  'modules/route-plans/live-route-change.service.ts', // Reviewed future-only geometry/ETA under publication and route locks.
+  'modules/route-plans/live-route-change.ts', // Reviewed future reorder under route/stop locks; immutable publication, same child members.
   'modules/route-plans/route-plan.repository.ts'
 ];
 
 const reviewedMutationInventory = [
   'modules/driver/driver-event.repository.ts:routePlanStop.update:2',
   'modules/driver/driver-route-order.service.ts:routePlanStop.updateMany:1',
+  'modules/driver/private-driver-demo-routes.ts:routeGroupingChildVersion.create:1',
+  'modules/driver/private-driver-demo-routes.ts:routePlanStop.createMany:1',
+  'modules/driver/private-driver-demo-seed.ts:routeGroupingChildVersion.create:1',
+  'modules/driver/private-driver-demo-seed.ts:routePlanStop.createMany:1',
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
   'modules/dsv/dsv-dispatch-import.service.ts:routeGroupingChildVersion.updateMany:1',
@@ -29,13 +37,19 @@ const reviewedMutationInventory = [
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.createMany:5',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.deleteMany:4',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:4',
+  'modules/route-plans/live-route-change.service.ts:routePlanStop.updateMany:1',
+  'modules/route-plans/live-route-change.ts:routePlanStop.update:2',
+  'modules/route-plans/live-route-change.ts:routePlanStop.updateMany:1',
+  'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.update:1', // Draft policy snapshot only; no membership edits.
   'modules/route-plans/route-plan.repository.ts:routeGroupingChildVersion.updateMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.createMany:4',
-  'modules/route-plans/route-plan.repository.ts:routePlanStop.deleteMany:4',
+  'modules/route-plans/route-plan.repository.ts:routePlanStop.deleteMany:3',
   'modules/route-plans/route-plan.repository.ts:routePlanStop.updateMany:3'
 ];
 
 const reviewedAssignmentPointerInventory = [
+  'modules/driver/private-driver-demo-routes.ts:order.updateMany:1',
+  'modules/driver/private-driver-demo-seed.ts:order.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:order.updateMany:3',
   'modules/dsv/dsv-dispatch-import.service.ts:order.updateMany:1',
   'modules/route-grouping/route-grouping.service.ts:order.updateMany:2'
@@ -59,6 +73,24 @@ describe('route membership mutation authority', () => {
     const inventory = mutationInventory(['routeGroupingChildVersion', 'routePlanStop']);
 
     expect(inventory).toEqual(reviewedMutationInventory);
+  });
+
+  test('draft option synchronization changes only the unpublished current policy snapshot', () => {
+    const source = readFileSync(join(sourceRoot, 'modules/route-plans/route-plan.repository.ts'), 'utf8');
+    expect(callSiteInventory(source, 'syncUnpublishedDeliveryOptionsSnapshot')).toEqual([
+      'PrismaRoutePlanRepository.saveRoutePlan', 'PrismaRoutePlanRepository.updateRoutePlanOptions'
+    ]);
+    const body = source.slice(source.indexOf('async function syncUnpublishedDeliveryOptionsSnapshot('), source.indexOf('export async function readRoutePlanGeometryDetail('));
+    expect(body).toContain("where: { routePlanId, status: 'CURRENT', supersededAt: null, publishedAt: null }");
+    expect(body).toContain('data: { snapshot: { ...snapshot');
+    expect(body).toContain('deliveryProof: readDeliveryProof(constraints), tollPolicy: readTollPolicy(constraints)');
+    expect(body).not.toMatch(/routePlanStop\.|currentRouteVersionId|order\.|stops\s*:/u);
+    for (const [start, end] of [['async saveRoutePlan(', 'async createRoutePlanDraft('], ['async updateRoutePlanOptions(', 'async updateRoutePlanStops(']] as const) {
+      const mutation = source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+      expect(mutation.indexOf('FOR UPDATE')).toBeGreaterThanOrEqual(0);
+      expect(mutation.indexOf('FOR UPDATE')).toBeLessThan(mutation.indexOf('syncUnpublishedDeliveryOptionsSnapshot('));
+      expect(mutation.indexOf('assertDeliveryOptionsEditable(')).toBeLessThan(mutation.indexOf('syncUnpublishedDeliveryOptionsSnapshot('));
+    }
   });
 
   test('inventories assignment pointer writes by operation and data payload', () => {
@@ -299,7 +331,9 @@ function callSiteInventory(source: string, calleeName: string): string[] {
   const visit = (node: ts.Node, scope: string | null): void => {
     let nextScope = scope;
     if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
-      nextScope = `PrismaRouteGroupingService.${node.name.text}`;
+      const className = ts.isClassDeclaration(node.parent) ? node.parent.name?.text : undefined;
+      if (className === undefined) throw new Error('Unscoped membership writer method');
+      nextScope = `${className}.${node.name.text}`;
     } else if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
       nextScope = node.name.text;
     }

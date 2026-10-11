@@ -70,3 +70,62 @@ tags in the actual Ontario dataset before enabling the preference.
 
 Real driver navigation in an external maps app is a separate integration; this
 research establishes only the server-side route-generation boundary.
+
+
+## Implementation contract (2026-10-09)
+
+The selected implementation uses the existing OSRM graph. This change does not
+modify Ontario preprocessing, container settings, or the graph.
+
+- Persist `tollPolicy` as `ALLOW_TOLLS` or `AVOID_TOLLS` on the route. Missing
+  policy means `ALLOW_TOLLS`, preserving existing requests and cache signatures.
+- For avoidance, fetch OSRM Table with `annotations=duration,distance&exclude=toll`.
+  Supply the validated integer matrices as `matrices.car` to VROOM. Depot index
+  is zero and each routable job has a contiguous `location_index`. Return-to-depot
+  uses `end_index: 0`; open routes omit an end index.
+- A missing matching OSRM URL, unsupported exclusion, unreachable/null matrix
+  cell, incomplete matrix, or synthetic fallback-speed cell fails the solve.
+  No unrestricted matrix or straight-line fallback is used.
+- OSRM Route and the alternative OSRM Trip path also send `exclude=toll`.
+  Distances, displayed geometry, and leg ETA therefore use the same policy.
+- Avoidance has a distinct geometry signature. An old unrestricted cache cannot
+  supply its geometry, metrics, or derived leg ETA to the avoiding route.
+- Changing policy or the order of an avoiding route requires complete geometry
+  before persistence. The repository receives the original shape signature and
+  commits the mutation, geometry, and ETA atomically after rechecking that guard.
+  Initial avoiding-route creation computes geometry inside the creation
+  transaction; an exception rolls the creation back.
+- Failure does not delete or replace a valid previous cache. The server reports
+  the failure and does not silently change the policy to `ALLOW_TOLLS`.
+
+The driver assignment exposes the same enum. Navigation integrations must pass
+that policy through supported external-map parameters. An external app that
+cannot enforce the preference must show that limitation; a road-number-wide
+407 exclusion is not an acceptable substitute.
+
+Unit tests cover custom-matrix indexes, depot return, integer units, unreachable
+cells, unsupported exclusions, absence of fallback, geometry/Trip consistency,
+legacy cache compatibility, and mutation rejection before persistence.
+These tests do not establish the current production graph or publication state.
+The fixed Ontario route comparison and runtime checks above remain release
+acceptance evidence.
+
+
+### Provider capability recheck — 2026-10-09
+
+Read-only requests against the existing Ontario OSRM v26.5.0 and VROOM 1.15.0
+passed using three fixed public-coordinate pairs. This is provider evidence,
+not evidence that the new server implementation has been deployed.
+
+| Public fixture | Allow tolls | Avoid tolls | Road result |
+| --- | --- | --- | --- |
+| Vaughan–Markham | 39,409.2 m / 2,081 s | 35,040.9 m / 2,851.4 s | Tolled 407 ETR removed |
+| North Toronto–Oshawa | 65,498.3 m / 3,477.9 s | 66,161.1 m / 3,622.8 s | Tolled 407 ETR removed |
+| Highway 407 East | 20,492.5 m / 1,006 s | 20,492.5 m / 1,006 s | Free 407 retained; identical geometry |
+
+All six Route/Table distance and duration comparisons agreed. All six synthetic
+VROOM depot-return calculations exactly matched the supplied integer matrices.
+A syntactically valid unknown exclusion returned HTTP 400 `InvalidValue`.
+No business records, containers, or routing configuration were changed.
+The graph timestamp field was empty; image IDs and metadata-file hashes were
+recorded instead of claiming a known source-data timestamp.

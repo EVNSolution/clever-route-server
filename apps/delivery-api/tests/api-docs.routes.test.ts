@@ -138,6 +138,33 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('OpenAPI keeps live route changes scoped, idempotent and limited to future addresses and order', async () => {
+    const document = await readFile(new URL('../docs/api/openapi.yaml', import.meta.url), 'utf8');
+    execFileSync('ruby', [
+      '-e',
+      [
+        'require "date"',
+        'require "yaml"',
+        'doc = YAML.safe_load(STDIN.read, permitted_classes: [Date])',
+        'paths = doc.fetch("paths")',
+        'admin = "/admin/route-plans/{routePlanId}/live-change"',
+        'driver = "/driver/routes/{routePlanId}/live-change"',
+        '[[admin, "get", "ShopifySessionToken"], [admin, "patch", "ShopifySessionToken"], [admin + "/dispatch", "post", "ShopifySessionToken"], [admin + "/discard", "post", "ShopifySessionToken"], [driver, "get", "DriverAccessToken"], [driver + "/applied", "post", "DriverAccessToken"]].each { |path, method, scheme| operation = paths.fetch(path).fetch(method); raise "live change security missing" unless operation.fetch("security") == [{scheme => []}]; raise "live change conflict missing" unless operation.fetch("responses").key?("409") }',
+        'schemas = doc.dig("components", "schemas")',
+        '%w[LiveRouteChangeSaveRequest LiveRouteChangeDispatchRequest LiveRouteChangeDiscardRequest].each { |name| schema = schemas.fetch(name); raise "live command guards missing" unless %w[commandId expectedAssignmentGeneration expectedRouteVersionId expectedRevision].all? { |field| schema.fetch("required").include?(field) }; raise "unknown command fields accepted" unless schema.fetch("additionalProperties") == false }',
+        'override = schemas.fetch("LiveRouteChangeStopOverride")',
+        'raise "live change write scope expanded" unless override.fetch("properties").keys.sort == %w[deliveryStopId address1 address2 city province postalCode countryCode latitude longitude].sort',
+        'raise "coordinate pairing missing" unless override.fetch("dependentRequired") == {"latitude" => ["longitude"], "longitude" => ["latitude"]}',
+        'snapshot = schemas.fetch("LiveRouteChangeSnapshot")',
+        'raise "snapshot schema version missing" unless snapshot.dig("properties", "schemaVersion", "const") == 1',
+        'raise "legacy child baseline anchor missing" unless snapshot.dig("properties", "initialRouteVersionId", "format") == "uuid"',
+        'raise "snapshot fingerprint fields removed" unless %w[instructions recipientName phone serviceMinutes timeWindowStart timeWindowEnd].all? { |field| schemas.fetch("LiveRouteChangeSnapshotStop").fetch("required").include?(field) }',
+        'raise "exact apply version missing" unless schemas.fetch("LiveRouteChangeApplyRequest").fetch("required").sort == %w[publicationVersionId assignmentGeneration].sort',
+        'raise "unenrolled query null missing" unless schemas.fetch("LiveRouteChangePublicationEnvelope").dig("properties", "data", "oneOf").any? { |branch| branch["type"] == "null" }'
+      ].join('; ')
+    ], { input: document });
+  });
+
   test('GET /docs/openapi.yaml documents route stop location diagnostics and strict override coordinates', async () => {
     const app = await buildApp();
 
@@ -221,6 +248,20 @@ describe('API documentation routes', () => {
     } finally {
       await app.close();
     }
+  });
+
+  test('OpenAPI preserves Cash revision guards and optional proof compatibility', async () => {
+    const document = await readFile(new URL('../docs/api/openapi.yaml', import.meta.url), 'utf8');
+    execFileSync('ruby', ['-e', [
+      'require "date"; require "yaml"; doc = YAML.safe_load(STDIN.read, permitted_classes: [Date]); schemas = doc.dig("components", "schemas"); paths = doc.fetch("paths")',
+      'cash = paths.fetch("/admin/route-plans/{routePlanId}/cash-settlements"); %w[get post].each { |method| raise "Cash tenant auth missing" unless cash.fetch(method).fetch("security") == [{"ShopifySessionToken" => []}] }; raise "Cash conflict missing" unless cash.fetch("post").fetch("responses").key?("409")',
+      'command = schemas.fetch("CashSettlementRequest"); raise "Cash revision missing" unless command.fetch("required").include?("expectedRevision"); raise "Cash command scope expanded" unless command.fetch("additionalProperties") == false; raise "Cash correction reason missing" unless command.fetch("allOf").first.dig("then", "required") == ["reason"]',
+      'raise "Proof defaults changed" unless schemas.fetch("DeliveryProofPolicy").fetch("properties").values.all? { |property| property.fetch("default") == false }; raise "Toll default changed" unless schemas.fetch("TollPolicy").fetch("default") == "ALLOW_TOLLS"',
+      'raise "Options revision missing" unless schemas.fetch("RoutePlanOptionsRequest").fetch("dependentRequired") == {"deliveryProof" => ["expectedUpdatedAt"], "tollPolicy" => ["expectedUpdatedAt"]}',
+      'raise "Capability auth missing" unless paths.fetch("/driver/capabilities").fetch("post").fetch("security") == [{"DriverAccountAccessToken" => []}]; raise "Capability minimum missing" unless schemas.fetch("DriverCapabilityRequest").dig("properties", "versionCode", "minimum") == 43',
+      'event = schemas.fetch("DriverEventRequest"); raise "Required-proof event capability missing" unless event.dig("properties", "deliveryProofCapability", "const") == "delivery-proof-v1"; raise "Proof became mandatory on legacy routes" if event.fetch("required").include?("proof")',
+      'raise "Signature upload missing" unless schemas.fetch("DriverProofMediaUploadRequest").dig("properties", "kind", "enum") == %w[photo signature]; raise "DSV photo-only contract changed" unless schemas.fetch("DsvV1ProofMediaAccessEnvelope").dig("properties", "data", "properties", "kind", "const") == "photo"'
+    ].join('; ')], { input: document });
   });
 
   test('GET /docs/openapi.yaml documents the explicit manual email boundary', async () => {
@@ -692,10 +733,16 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'post', path: '/admin/route-plans' },
     { method: 'delete', path: '/admin/route-plans/:routePlanId' },
     { method: 'get', path: '/admin/route-plans/:routePlanId' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/cash-settlements' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/cash-settlements' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/preview' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/send' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/departure-time' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/driver' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/live-change' },
+    { method: 'patch', path: '/admin/route-plans/:routePlanId/live-change' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/live-change/dispatch' },
+    { method: 'post', path: '/admin/route-plans/:routePlanId/live-change/discard' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/operational-state' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/options' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/publish' },

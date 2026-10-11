@@ -28,6 +28,22 @@ const detail = {
 } satisfies RoutePlanDetail;
 
 describe('OsrmRouteGeometryProvider', () => {
+  test('uses the same toll exclusion for displayed geometry and leg ETA', async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json(routeOkPayload()));
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
+    const result = await provider.buildRoute({ ...detail, routePlan: { ...detail.routePlan, tollPolicy: 'AVOID_TOLLS' } });
+    expect(fetch.mock.calls[0]?.[0]).toContain('&exclude=toll');
+    expect(result.routeGeometry).not.toBeNull();
+    expect(result.routeStopPoints.every((stop) => stop.durationFromPreviousSeconds !== null)).toBe(true);
+  });
+
+  test('does not retry toll-exclusion failures with unrestricted routing', async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({ code: 'InvalidValue' }, { status: 400 }));
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'http://osrm-ontario:5000', fetch });
+    await expect(provider.buildRoute({ ...detail, routePlan: { ...detail.routePlan, tollPolicy: 'AVOID_TOLLS' } })).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   test('requires an explicit OSRM base URL and never falls back to a public router', () => {
     expect(() => new OsrmRouteGeometryProvider({ baseUrl: '' })).toThrow('OSRM base URL must be configured explicitly.');
   });

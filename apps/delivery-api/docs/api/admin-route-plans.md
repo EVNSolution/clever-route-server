@@ -381,6 +381,16 @@ preserve the current geometry cache.
 Passing `null` for `serviceMinutes` resets the CLEVER stop to the database
 default of 5 minutes.
 
+### Unified Stop time at route creation
+
+`POST /admin/route-groups` accepts `initialRoute.serviceMinutes` (integer 0 to
+1440). When it is present, every stop of the new route gets that Stop time in
+the same transaction that creates the route. Without it, each stop keeps its own
+time. The value is part of the request identity, so a retry with the same
+`requestId` and another time (or none) is a conflict, like the other initial
+route options. Later, the office can still change one stop's time with the stop
+override above.
+
 ## GET `/admin/route-plans/:routePlanId/tracking`
 
 Original stored GPS facts have a separate bounded, authenticated read contract:
@@ -420,6 +430,21 @@ default). Entries outside that window remain auditable with
 `positionSource: "unavailable"` and null coordinates; clients must not invent a
 map position for them. `stopSequence` is the route's Stop number at the time the
 snapshot is read.
+
+The snapshot also includes `stopCompletions`, the time a driver finished a stop.
+The KFood single completion flow records one `STOP_DELIVERED` (or `STOP_FAILED`)
+event for a stop and no `STOP_ARRIVED`, so this is the only per-stop time that
+flow produces. There is one entry for every stop whose status is now Delivered
+or Failed and that has a driver event of the matching type on this route plan
+(`STOP_DELIVERED` for Delivered, `STOP_FAILED` for Failed). When a stop has more
+than one such event, the latest by `occurredAt` is returned. An event that no
+longer matches the stop status, for example after the office moved the stop
+back, is not returned, and neither is an event without a driver. Entries are
+ordered by `occurredAt`. `occurredAt` is the driver's recorded time and
+`receivedAt` is when the server stored it. A stop that the office completed
+from the admin app has no driver event and therefore no entry. `stopArrivals`
+and every other field are unchanged, so clients that do not know the field keep
+working.
 
 Road matching splits input at tracking gaps and physically implausible jumps
 before calling the matching provider. This prevents a single corrupted GPS

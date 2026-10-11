@@ -1,5 +1,14 @@
 name: ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}
 
+# Cap json-file logs so one chatty container cannot fill the Docker disk. A changed logging
+# config applies only when a container is recreated. postgres is left out on purpose:
+# `docker compose run` can recreate a changed dependency, so a migration deploy would restart it.
+x-route-ops-logging: &route-ops-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   caddy:
     image: caddy:2-alpine
@@ -9,6 +18,7 @@ services:
       - "80:80"
       - "443:443"
     restart: unless-stopped
+    logging: *route-ops-logging
     volumes:
       - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -31,6 +41,7 @@ services:
         mv "$$staging/public" /route-ops-web/public;
         rmdir "$$staging"
     restart: "no"
+    logging: *route-ops-logging
     volumes:
       - route-ops-web-static:/route-ops-web
 
@@ -96,6 +107,7 @@ services:
       DSV_PRODUCTION_BASELINE_MANIFEST_SHA256: ${DSV_PRODUCTION_BASELINE_MANIFEST_SHA256:-}
     command: ["/app/scripts/dsv-g007-migrate-deploy.sh"]
     restart: "no"
+    logging: *route-ops-logging
 
 
   vroom:
@@ -108,6 +120,7 @@ services:
     profiles:
       - vroom
     restart: unless-stopped
+    logging: *route-ops-logging
     volumes:
       - ../vroom/config.yml:/conf/config.yml:ro
 
@@ -122,6 +135,7 @@ services:
       - korea
       - vroom-korea
     restart: unless-stopped
+    logging: *route-ops-logging
     volumes:
       - ../vroom/config.korea.yml:/conf/config.yml:ro
 
@@ -157,6 +171,7 @@ services:
     profiles:
       - osrm
     restart: unless-stopped
+    logging: *route-ops-logging
     volumes:
       - /srv/clever-route-server/data/osrm/ontario:/data:ro
 
@@ -179,6 +194,7 @@ services:
       - korea
       - osrm-korea
     restart: unless-stopped
+    logging: *route-ops-logging
     volumes:
       - /srv/clever-route-server/data/osrm/korea:/data:ro
 

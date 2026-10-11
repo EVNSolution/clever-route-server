@@ -202,9 +202,11 @@ enum OrderMessageAudience {
 
 enum DriverProofMediaKind {
   PHOTO
+  SIGNATURE
 }
 
 enum DriverProofMediaSource {
+  SIGNATURE
   CAMERA
   LIBRARY
 }
@@ -1207,6 +1209,7 @@ model InventoryEvent {
 }
 
 model DeliveryStop {
+  stopCompletionReceipt         DriverStopCompletionReceipt?
   id                            String                         @id @default(uuid()) @db.Uuid
   shopId                        String                         @db.Uuid
   shop                          Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -1227,6 +1230,7 @@ model DeliveryStop {
   timeWindowStart               DateTime?                      @db.Timestamptz(6)
   timeWindowEnd                 DateTime?                      @db.Timestamptz(6)
   serviceMinutes                Int                            @default(5)
+  serviceMinutesSource          String?                        @db.Text
   priority                      Int                            @default(0)
   instructions                  String?                        @db.Text
   status                        DeliveryStopStatus             @default(PENDING)
@@ -1466,11 +1470,85 @@ model RoutePlan {
   nextDsvAuditEvents              DsvAuditEvent[]                  @relation("DsvAuditEventNextRoutePlan")
   driverSyncSessions              DriverSyncSession[]
   driverRouteSessionLeases        DriverRouteSessionLease[]
+  liveChangeState                 RouteLiveChangeState?
+  liveChangePublications          RouteLiveChangePublication[]
+  liveChangeCommandReceipts       RouteLiveChangeCommandReceipt[]
 
   @@unique([id, shopId])
   @@index([shopId, planDate, status])
   @@index([shopId, driverId, status])
   @@map("route_plans")
+}
+
+// Operational drafts are separate from the live DeliveryStop rows until Dispatch.
+model RouteLiveChangeState {
+  routePlanId             String    @id @db.Uuid
+  shopId                  String    @db.Uuid
+  routePlan               RoutePlan @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  assignmentGeneration    BigInt
+  driverId                String    @db.Uuid
+  baselineRouteVersionId  String    @db.Uuid
+  revision                Int       @default(0)
+  draftSnapshot           Json
+  draftHash               String    @db.Text
+  latestPublicationId     String    @db.Uuid
+  latestSequence          Int       @default(0)
+  appliedPublicationId    String?   @db.Uuid
+  appliedSequence         Int       @default(0)
+  appliedAt               DateTime? @db.Timestamptz(6)
+  createdAt               DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([routePlanId, shopId])
+  @@index([shopId, driverId])
+  @@map("route_live_change_states")
+}
+
+// Identity/content fields are immutable. Only notification delivery state changes.
+model RouteLiveChangePublication {
+  id                      String    @id @default(uuid()) @db.Uuid
+  routePlanId             String    @db.Uuid
+  shopId                  String    @db.Uuid
+  routePlan               RoutePlan @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  assignmentGeneration    BigInt
+  driverId                String    @db.Uuid
+  sequence                Int
+  contentHash             String    @db.Text
+  snapshot                Json
+  publishedAt             DateTime  @default(now()) @db.Timestamptz(6)
+  notificationStatus      String    @default("PENDING") @db.Text
+  leaseToken              String?   @db.Uuid
+  leaseUntil              DateTime? @db.Timestamptz(6)
+  providerId              String?   @db.Text
+  errorCode               String?   @db.Text
+  attemptCount            Int       @default(0)
+  nextAttemptAt           DateTime? @default(now()) @db.Timestamptz(6)
+  sentAt                  DateTime? @db.Timestamptz(6)
+
+  @@unique([routePlanId, shopId, assignmentGeneration, driverId, sequence], map: "route_live_change_publications_identity_key")
+  @@index([shopId, routePlanId, publishedAt])
+  @@index([notificationStatus, nextAttemptAt])
+  @@map("route_live_change_publications")
+}
+
+// Successful commands retain their original response across later edits and retries.
+model RouteLiveChangeCommandReceipt {
+  id                   String    @id @default(uuid()) @db.Uuid
+  shopId               String    @db.Uuid
+  routePlanId          String    @db.Uuid
+  routePlan            RoutePlan @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  assignmentGeneration BigInt
+  driverId             String    @db.Uuid
+  kind                 String    @db.Text
+  commandId            String    @db.Uuid
+  requestHash          String    @db.Text
+  response             Json
+  publicationId        String?   @db.Uuid
+  createdAt            DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([shopId, routePlanId, assignmentGeneration, driverId, kind, commandId], map: "route_live_change_command_receipts_identity_key")
+  @@index([shopId, routePlanId, kind, commandId])
+  @@map("route_live_change_command_receipts")
 }
 
 model RouteTrackingGeometry {
@@ -1632,6 +1710,7 @@ model Driver {
   shop                       Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   displayName                String                           @db.Text
   phone                      String?                          @db.Text
+  averageServiceMinutes      Int?
   status                     DriverStatus                     @default(ACTIVE)
   inviteCode                 String?                          @db.Text
   inviteCodeExpiresAt        DateTime?                        @db.Timestamptz(6)
@@ -1791,6 +1870,12 @@ model DriverAccountSession {
 
   @@index([accountId, expiresAt])
   @@map("driver_account_sessions")
+  deliveryProofCapability String? @db.Text
+  capabilityVersionCode Int?
+  capabilityPackageId String? @db.Text
+  capabilityTokenVersion Int?
+  capabilityReportedAt DateTime? @db.Timestamptz(6)
+
 }
 
 model DriverAccountPasswordResetLink {
@@ -3005,6 +3090,7 @@ model DsvDispatchChangeRequest {
 }
 
 model DriverEvent {
+  stopCompletionReceipt         DriverStopCompletionReceipt?
   id                            String                     @id @default(uuid()) @db.Uuid
   shopId                        String                     @db.Uuid
   shop                          Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
@@ -3031,11 +3117,43 @@ model DriverEvent {
   routeCompletionReview         DriverRouteCompletionReview?
 
   @@unique([driverId, clientEventId])
+  @@unique([id, shopId])
   @@index([completionOwnerAccountId, routePlanId, clientEventId], map: "driver_events_completion_owner_route_client_idx")
   @@index([shopId, routePlanId, occurredAt])
   @@index([shopId, routeVersionId, occurredAt])
   @@index([shopId, deliveryStopId, occurredAt])
   @@map("driver_events")
+}
+
+// First opt-in completion result. Updates are prohibited by the migration trigger.
+model DriverStopCompletionReceipt {
+  id                     String       @id @default(uuid()) @db.Uuid
+  eventId                String       @unique @db.Uuid
+  event                  DriverEvent  @relation(fields: [eventId, shopId], references: [id, shopId], onDelete: Cascade)
+  clientEventId          String       @unique @db.Text
+  shopId                 String       @db.Uuid
+  driverId               String       @db.Uuid
+  routePlanId            String       @db.Uuid
+  deliveryStopId         String       @unique @db.Uuid
+  deliveryStop           DeliveryStop @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: Cascade)
+  assignmentGeneration   BigInt
+  expectedRouteVersionId String       @db.Uuid
+  requestHash            String       @db.VarChar(64)
+  payment                Json
+  expectedAmount         Decimal?     @db.Decimal(18, 2)
+  actualAmount           Decimal?     @db.Decimal(18, 2)
+  differenceAmount       Decimal?     @db.Decimal(18, 2)
+  currencyCode           String?      @db.VarChar(3)
+  occurredAt             DateTime     @db.Timestamptz(6)
+  recordedAt             DateTime     @default(now()) @db.Timestamptz(6)
+  result                 Json
+  settlements            DriverCashSettlement[]
+
+  @@unique([id, shopId])
+  @@index([shopId, routePlanId])
+  @@map("driver_stop_completion_receipts")
+  @@unique([eventId, shopId])
+  @@unique([deliveryStopId, shopId])
 }
 
 model DriverEventAttempt {
@@ -3567,4 +3685,28 @@ model DsvGeofenceEvent {
 
   @@index([shopId, executionContextId, confirmedObservedAt], map: "dsv_geofence_events_context_observed_idx")
   @@map("dsv_geofence_events")
+}
+
+// Office confirmations append decisions without replacing the driver collection receipt.
+model DriverCashSettlement {
+  id                     String @id @default(uuid()) @db.Uuid
+  shopId                 String @db.Uuid
+  routePlanId            String @db.Uuid
+  receiptId              String @db.Uuid
+  receipt                DriverStopCompletionReceipt @relation(fields: [receiptId, shopId], references: [id, shopId], onDelete: Cascade)
+  commandId              String @db.Uuid
+  revision               Int
+  requestHash            String @db.VarChar(64)
+  confirmedAmount        Decimal @db.Decimal(18, 2)
+  currency               String @db.VarChar(3)
+  differenceFromActual   Decimal @db.Decimal(18, 2)
+  differenceFromExpected Decimal? @db.Decimal(18, 2)
+  reason                 String? @db.Text
+  actor                  String @db.Text
+  recordedAt             DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([shopId, commandId])
+  @@unique([receiptId, revision])
+  @@index([shopId, routePlanId])
+  @@map("driver_cash_settlements")
 }

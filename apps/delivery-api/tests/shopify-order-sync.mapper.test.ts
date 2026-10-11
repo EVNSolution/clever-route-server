@@ -35,8 +35,8 @@ describe('buildOrdersUpdatedSinceQuery', () => {
     const mappedFields = [
       'id', 'legacyResourceId', 'name', 'email', 'phone', 'displayFinancialStatus',
       'paymentGatewayNames', 'displayFulfillmentStatus', 'createdAt', 'processedAt',
-      'updatedAt', 'cancelledAt', 'note', 'tags', 'customAttributes', 'lineItems',
-      'currentTotalPriceSet', 'currentShippingPriceSet', 'totalShippingPriceSet', 'shippingAddress', 'address1',
+      'updatedAt', 'cancelledAt', 'note', 'tags', 'customAttributes', 'lineItems', 'currentQuantity',
+      'currentTotalPriceSet', 'totalOutstandingSet', 'currentShippingPriceSet', 'totalShippingPriceSet', 'shippingAddress', 'address1',
       'address2', 'city', 'province', 'provinceCode', 'zip', 'countryCodeV2', 'latitude',
       'longitude', 'coordinatesValidated', 'validationResultSummary',
     ];
@@ -75,6 +75,7 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       legacyResourceId: '123',
       name: '#1001',
       paymentGatewayNames: ['Cash on Delivery (COD)'],
+      totalOutstandingSet: { shopMoney: { amount: '22.25', currencyCode: 'USD' } },
       phone: '+15551234567',
       processedAt: '2026-05-07T04:00:00Z',
       shippingAddress: {
@@ -109,6 +110,7 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       }
     });
     expect(mapped.order.rawPayload.paymentGatewayNames).toEqual(['Cash on Delivery (COD)']);
+    expect(mapped.order.rawPayload.totalOutstandingSet).toEqual({ shopMoney: { amount: '22.25', currencyCode: 'USD' } });
     expect(mapped.order.rawPayload.shippingAddress).toEqual(
       expect.objectContaining({
         coordinatesValidated: false,
@@ -177,6 +179,38 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       sku: 'KIMCHI-L'
     }));
     expect(mapped.orderItems?.[0]?.productId).toBeGreaterThan(0);
+  });
+
+  test('counts the current quantity of a line item and leaves out a line that was refunded or removed', () => {
+    // K-food order #2373 on 2026-10-07: one unit refunded with restock. Shopify keeps `quantity`
+    // as ordered and lowers `currentQuantity`; the office saw 12 items instead of 11.
+    const mapped = mapShopifyOrderNodeToDeliveryInputs({
+      currentTotalPriceSet: null,
+      displayFinancialStatus: 'PARTIALLY_REFUNDED',
+      displayFulfillmentStatus: 'FULFILLED',
+      email: null,
+      id: 'gid://shopify/Order/2373',
+      legacyResourceId: '2373',
+      lineItems: {
+        nodes: [
+          { title: 'Boiled Beef Shank', name: 'Boiled Beef Shank', quantity: 1, currentQuantity: 1, sku: 'BEEF' },
+          { title: 'Slime Eel', name: 'Slime Eel', quantity: 1, currentQuantity: 0, sku: 'EEL' },
+          { title: 'Cabbage Kimchi', name: 'Cabbage Kimchi', quantity: 5, currentQuantity: 3, sku: 'KIMCHI' },
+          { title: 'Legacy snapshot', name: 'Legacy snapshot', quantity: 2, sku: 'LEGACY' }
+        ]
+      },
+      name: '#2373',
+      phone: null,
+      processedAt: '2026-10-05T04:00:00Z',
+      shippingAddress: null,
+      updatedAt: '2026-10-07T18:50:20Z'
+    });
+
+    expect(mapped.orderItems?.map((item) => [item.sku, item.quantity])).toEqual([
+      ['BEEF', 1],
+      ['KIMCHI', 3],
+      ['LEGACY', 2]
+    ]);
   });
 
   test('returns no delivery stop when an order has no shipping address', () => {

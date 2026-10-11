@@ -15,7 +15,10 @@ import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/drive
 import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
 import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 import { PrismaRouteGroupingService, rebindCurrentOrdersToRouteVersion } from '../src/modules/route-grouping/route-grouping.service.js';
+import { PrismaAdminDriverRepository } from '../src/modules/driver/admin-driver.repository.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
+import type { RoutePlanDetail } from '../src/modules/route-plans/route-plan.types.js';
+import type { RouteOptimizationInput } from '../src/modules/route-plans/route-optimization.types.js';
 import { PrismaOrderQueryRepository } from '../src/modules/shopify/order-query.repository.js';
 
 // Bootstrap only a new disposable local database before opting in:
@@ -1353,6 +1356,195 @@ describeDatabase('route grouping save database regressions', () => {
     expect(await prisma.routeGrouping.count({ where: { id: input.initialRoute.requestId } })).toBe(1);
   }, 30_000);
 
+  test('keeps configured initial options through retry, copy and geometry cache reads', async () => {
+    const orders = await seedOrders(2);
+    const buildRoute = vi.fn((detail: RoutePlanDetail) => Promise.resolve({
+      routeGeometry: { coordinates: [[-79.40, 43.60], [-79.39, 43.61]] as Array<[number, number]>, type: 'LineString' as const },
+      routeMetrics: { distanceMeters: 1234, durationSeconds: 240 },
+      routeStopPoints: detail.stops.map(stop => ({ inputCoordinates: [stop.coordinates.longitude!, stop.coordinates.latitude!] as [number, number],
+        snappedCoordinates: [stop.coordinates.longitude!, stop.coordinates.latitude!] as [number, number], name: stop.orderName, shopifyOrderGid: stop.shopifyOrderGid, snapDistanceMeters: 0,
+        deliveryStopId: stop.deliveryStopId, sequence: stop.sequence, distanceFromPreviousMeters: 617, durationFromPreviousSeconds: 120 }))
+    }));
+    const optimizeStopOrder = vi.fn(({ detail }: RouteOptimizationInput) => Promise.resolve({
+      missingCoordinateStops: 0, source: 'vroom' as const,
+      stops: [...detail.stops].reverse().map((stop, index) => ({ deliveryStopId: stop.deliveryStopId, shopifyOrderGid: stop.shopifyOrderGid, sequence: index + 1 }))
+    }));
+    const configured = new PrismaRouteGroupingService(prisma, new FakeDriverPushProvider(), undefined, { optimizeStopOrder }, { buildRoute });
+    const input = { appId, createdBy: 'integration', initialRoute: { requestId: randomUUID(), tollPolicy: 'AVOID_TOLLS' as const,
+      deliveryProof: { photoRequired: true, signatureRequired: true } }, name: 'Configured initial route', orderIds: orders.map(order => order.id), planDate: '2026-09-10', shopDomain };
+    const previousFlag = process.env.KFOOD_DELIVERY_PROOF_ENABLED;
+    process.env.KFOOD_DELIVERY_PROOF_ENABLED = 'true';
+    try {
+      const created = await configured.createGrouping(input);
+      const routeId = created.children[0]!.routePlanId!;
+      expect(created.children[0]?.routePlan).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      expect(created.children[0]?.routeMetrics).toEqual({ distanceMeters: 1234, durationSeconds: 240 });
+      expect(buildRoute.mock.calls[0]![0].routePlan.tollPolicy).toBe('AVOID_TOLLS');
+      const child = await prisma.routeGroupingChildVersion.findFirstOrThrow({ where: { routePlanId: routeId } });
+      expect(child.snapshot).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      expect((await configured.createGrouping(input)).id).toBe(created.id);
+      await expect(configured.createGrouping({ ...input, initialRoute: { ...input.initialRoute, tollPolicy: 'ALLOW_TOLLS' } })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+      const optimized = await configured.reOptimizeRoutes({ actor: 'integration', appId, groupingId: created.id, shopDomain });
+      expect(optimized?.children[0]?.routePlan).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      expect(optimizeStopOrder.mock.calls[0]![0].detail.routePlan.tollPolicy).toBe('AVOID_TOLLS');
+      const beforeFailure = await configured.getGrouping({ appId, groupingId: created.id, shopDomain });
+      buildRoute.mockRejectedValueOnce(new Error('AVOID service unavailable'));
+      await expect(configured.reOptimizeRoutes({ actor: 'integration', appId, groupingId: created.id, shopDomain })).rejects.toThrow('AVOID service unavailable');
+      expect(await configured.getGrouping({ appId, groupingId: created.id, shopDomain })).toEqual(beforeFailure);
+      const restored = await configured.rollback({ actor: 'integration', appId, groupingId: created.id, shopDomain, version: 1 });
+      expect(restored?.children[0]?.routePlan).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      const copy = await configured.copyGrouping({ actor: 'integration', appId, expectedUpdatedAt: restored!.updatedAt, groupingId: created.id, mode: 'VIRTUAL', shopDomain });
+      expect(copy?.children[0]?.routePlan).toMatchObject({ deliveryProof: input.initialRoute.deliveryProof, tollPolicy: 'AVOID_TOLLS' });
+      expect(copy?.children[0]?.routeMetrics).toEqual({ distanceMeters: 1234, durationSeconds: 240 });
+      expect(buildRoute.mock.calls.every(([detail]) => detail.routePlan.tollPolicy === 'AVOID_TOLLS')).toBe(true);
+    } finally {
+      if (previousFlag === undefined) delete process.env.KFOOD_DELIVERY_PROOF_ENABLED;
+      else process.env.KFOOD_DELIVERY_PROOF_ENABLED = previousFlag;
+    }
+  });
+
+  test('gives every stop of a new route the unified Stop time, records its source and keeps the request identity', async () => {
+    const orders = await seedOrders(2);
+    const plain = await seedOrders(1);
+    const requestId = randomUUID();
+    const input = { appId, createdBy: 'integration', initialRoute: { requestId, serviceMinutes: 7 },
+      name: 'Unified Stop time', orderIds: orders.map(order => order.id), planDate: '2026-09-10', shopDomain };
+    const stopTimes = (orderIds: string[]) => prisma.deliveryStop.findMany({
+      orderBy: { orderId: 'asc' }, select: { serviceMinutes: true, serviceMinutesSource: true }, where: { orderId: { in: orderIds } }
+    });
+
+    const created = await service.createGrouping(input);
+    expect(created.children[0]?.routePlan).toMatchObject({ stopsCount: 2 });
+    expect(await stopTimes(input.orderIds)).toEqual([
+      { serviceMinutes: 7, serviceMinutesSource: 'ROUTE' }, { serviceMinutes: 7, serviceMinutesSource: 'ROUTE' }
+    ]);
+    // The same request replays; any other Stop time, or none, under the same request id is a stale write.
+    expect((await service.createGrouping(input)).id).toBe(created.id);
+    await expect(service.createGrouping({ ...input, initialRoute: { requestId, serviceMinutes: 9 } })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+    await expect(service.createGrouping({ ...input, initialRoute: { requestId } })).rejects.toMatchObject({ code: 'ROUTE_GROUPING_STALE_WRITE' });
+    expect(await stopTimes(input.orderIds)).toEqual([
+      { serviceMinutes: 7, serviceMinutesSource: 'ROUTE' }, { serviceMinutes: 7, serviceMinutesSource: 'ROUTE' }
+    ]);
+
+    // Without the option nothing about the stops changes, including a Stop time the office already chose.
+    await prisma.deliveryStop.updateMany({ data: { serviceMinutes: 12, serviceMinutesSource: 'STOP' }, where: { orderId: plain[0]!.id } });
+    await service.createGrouping({ appId, createdBy: 'integration', initialRoute: { requestId: randomUUID() },
+      name: 'No unified Stop time', orderIds: plain.map(order => order.id), planDate: '2026-09-10', shopDomain });
+    expect(await stopTimes(plain.map(order => order.id))).toEqual([{ serviceMinutes: 12, serviceMinutesSource: 'STOP' }]);
+  }, 30_000);
+
+  test('applies the driver average Stop time to the stops nobody chose, keeps chosen times and re-plans the stored ETAs', async () => {
+    const orders = await seedOrders(4);
+    const orderIds = orders.map(order => order.id);
+    const drivers = new PrismaAdminDriverRepository(prisma);
+    const newDriver = async (name: string, averageServiceMinutes: number | null) => {
+      const account = await prisma.driverAccount.create({ data: { phone: `average-${randomUUID()}` } });
+      driverAccountIds.push(account.id);
+      return prisma.driver.create({ data: { accountId: account.id, authSubject: `average-${randomUUID()}`, averageServiceMinutes, displayName: name, shopId } });
+    };
+    const driver = await newDriver('Average driver', 7);
+    const withoutAverage = await newDriver('No average driver', null);
+    const group = await createGrouping('driver average', orderIds);
+    // Stop 2 was set by the office, stop 3 came from the unified time of its route.
+    await prisma.deliveryStop.updateMany({ data: { serviceMinutes: 11, serviceMinutesSource: 'STOP' }, where: { orderId: orderIds[1]! } });
+    await prisma.deliveryStop.updateMany({ data: { serviceMinutes: 9, serviceMinutesSource: 'ROUTE' }, where: { orderId: orderIds[2]! } });
+    const routePlanIdRef: { current: string | null } = { current: null };
+    const save = (driverId: string | null) => service.saveDraft({ appId, groupingId: group.id, mode: 'MANUAL_ORDER', shopDomain,
+      routes: [{ ...draftRoute('Driver average route', orderIds), driverId, routePlanId: routePlanIdRef.current,
+        scheduledStartAt: '2026-09-10T13:00:00.000Z', scheduledStartTimeZone: 'UTC' }] });
+    const assign = (driverId: string | null) => routePlans.assignRoutePlanDriver({ appId, payload: { driverId }, routePlanId: routePlanIdRef.current!, shopDomain });
+    const first = await save(driver.id);
+    routePlanIdRef.current = first!.children[0]!.routePlanId!;
+    const routePlanId = routePlanIdRef.current;
+    const read = async () => (await prisma.routePlanStop.findMany({
+      orderBy: { sequence: 'asc' },
+      select: { deliveryStop: { select: { serviceMinutes: true, serviceMinutesSource: true } }, estimatedArrivalAt: true },
+      where: { routePlanId }
+    })).map(stop => ({
+      eta: stop.estimatedArrivalAt?.toISOString().slice(11, 16) ?? null,
+      minutes: stop.deliveryStop.serviceMinutes, source: stop.deliveryStop.serviceMinutesSource
+    }));
+    const expected = (average: number | null) => {
+      const defaults = average === null ? { minutes: 5, source: null } : { minutes: average, source: 'DRIVER' as const };
+      return [defaults, { minutes: 11, source: 'STOP' }, { minutes: 9, source: 'ROUTE' }, defaults];
+    };
+    // Every leg takes 10 minutes and the route starts at 13:00.
+    const plan = (average: number | null) => {
+      let at = 13 * 60;
+      return expected(average).map(({ minutes }) => { at += 10; const eta = `${String(Math.floor(at / 60))}:${String(at % 60).padStart(2, '0')}`; at += minutes; return eta; });
+    };
+    const expectMinutes = async (average: number | null) => {
+      expect((await read()).map(({ minutes, source }) => ({ minutes, source }))).toEqual(expected(average));
+    };
+    const expectRoute = async (average: number | null, driverAssigned = true) => {
+      await expectMinutes(average);
+      expect((await read()).map(stop => stop.eta)).toEqual(driverAssigned ? plan(average) : [null, null, null, null]);
+    };
+
+    // Saving a route with a driver: only the stops nobody chose take the average (the ETAs come with the geometry).
+    await expectMinutes(7);
+    // Before the legs are stored an average still applies, but no leg or ETA is made up from the missing travel times.
+    await drivers.updateDriverAverageServiceMinutes({ appId, averageServiceMinutes: 8, driverId: driver.id, shopDomain });
+    await expectMinutes(8);
+    const unplanned = await prisma.routePlanStop.findMany({ select: { durationFromPreviousSeconds: true, estimatedArrivalAt: true }, where: { routePlanId } });
+    expect(unplanned.map(stop => [stop.durationFromPreviousSeconds, stop.estimatedArrivalAt])).toEqual(unplanned.map(() => [null, null]));
+    await drivers.updateDriverAverageServiceMinutes({ appId, averageServiceMinutes: 7, driverId: driver.id, shopDomain });
+    await expectMinutes(7);
+    // The geometry job stores the legs and the ETAs, applying the average first.
+    const stops = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, select: { deliveryStop: { select: { order: { select: { name: true, shopifyOrderGid: true } } } }, deliveryStopId: true, sequence: true }, where: { routePlanId } });
+    await routePlans.upsertRouteGeometryCache({
+      geometry: null, metrics: null, provider: 'osrm', routePlanId, shapeSignature: 'driver-average-test', source: 'SNAPSHOT',
+      stopPoints: stops.map(stop => ({ deliveryStopId: stop.deliveryStopId, distanceFromPreviousMeters: 1000, durationFromPreviousSeconds: 600,
+        inputCoordinates: null, name: stop.deliveryStop.order.name, sequence: stop.sequence, shopifyOrderGid: stop.deliveryStop.order.shopifyOrderGid,
+        snapDistanceMeters: null, snappedCoordinates: null }))
+    });
+    await expectRoute(7);
+    // The average changes, then is removed: the same stops follow, the chosen ones never move.
+    await drivers.updateDriverAverageServiceMinutes({ appId, averageServiceMinutes: 3, driverId: driver.id, shopDomain });
+    await expectRoute(3);
+    await drivers.updateDriverAverageServiceMinutes({ appId, averageServiceMinutes: null, driverId: driver.id, shopDomain });
+    await expectRoute(null);
+    await drivers.updateDriverAverageServiceMinutes({ appId, averageServiceMinutes: 0, driverId: driver.id, shopDomain });
+    await expectRoute(0);
+    // Another driver without an average takes the stops back to the default; removing the driver does the same.
+    await drivers.updateDriverAverageServiceMinutes({ appId, averageServiceMinutes: 6, driverId: driver.id, shopDomain });
+    await expectRoute(6);
+    await assign(withoutAverage.id);
+    await expectRoute(null);
+    await assign(driver.id);
+    await expectRoute(6);
+    await assign(null);
+    await expectRoute(null, false);
+    // Saving the draft with another driver changes the Stop times at once, in both directions.
+    await save(withoutAverage.id);
+    await expectMinutes(null);
+    await save(driver.id);
+    await expectMinutes(6);
+    await save(null);
+    await expectMinutes(null);
+    // The average of a driver who has no route changes no route, and a started route keeps its times.
+    await save(driver.id);
+    await drivers.updateDriverAverageServiceMinutes({ appId, averageServiceMinutes: 2, driverId: withoutAverage.id, shopDomain });
+    await expectMinutes(6);
+    await prisma.routePlan.update({ data: { status: 'IN_PROGRESS' }, where: { id: routePlanId } });
+    await drivers.updateDriverAverageServiceMinutes({ appId, averageServiceMinutes: 4, driverId: driver.id, shopDomain });
+    await expectMinutes(6);
+  }, 60_000);
+
+  test('AVOID initial geometry failure rolls back grouping, route and inventory without allowing tolls', async () => {
+    const orders = await seedOrders(2);
+    const buildRoute = vi.fn().mockRejectedValue(new Error('OSRM exclusion unavailable'));
+    const failing = new PrismaRouteGroupingService(prisma, new FakeDriverPushProvider(), undefined, undefined, { buildRoute });
+    const input = { appId, createdBy: 'integration', initialRoute: { requestId: randomUUID(), tollPolicy: 'AVOID_TOLLS' as const },
+      name: 'Avoid failure', orderIds: orders.map(order => order.id), planDate: '2026-09-10', shopDomain };
+    const before = await prisma.routePlan.count({ where: { shopId } });
+    await expect(failing.createGrouping(input)).rejects.toThrow('OSRM exclusion unavailable');
+    expect(await prisma.routeGrouping.count({ where: { id: input.initialRoute.requestId } })).toBe(0);
+    expect(await prisma.routePlan.count({ where: { shopId } })).toBe(before);
+    expect(await prisma.inventory.count({ where: { routeGroupingId: input.initialRoute.requestId } })).toBe(0);
+    expect(buildRoute).toHaveBeenCalledOnce();
+  });
+
   test('initial route failure rolls back the group and can be retried with the same request', async () => {
     const orders = await seedOrders(2);
     const input = { appId, createdBy: 'integration', initialRoute: { requestId: randomUUID() },
@@ -1455,6 +1647,154 @@ describeDatabase('route grouping save database regressions', () => {
       groupingId: source!.id, mode: 'VIRTUAL', shopDomain });
     expect(retry!.children).toHaveLength(1);
   });
+
+  test('deleting one of four child routes keeps the other three (K-food copy of 2026-10-10)', async () => {
+    const orders = await seedOrders(6);
+    const grouping = await createGrouping('copy with empty routes', orders.map(({ id }) => id));
+    const saved = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        draftRoute('full', orders.map(({ id }) => id)),
+        draftRoute('empty-1', []),
+        draftRoute('empty-2', []),
+        draftRoute('empty-3', [])
+      ],
+      shopDomain
+    });
+    expect(saved?.children.map(({ stopsCount }) => stopsCount).sort((left, right) => left - right)).toEqual([0, 0, 0, 6]);
+    const emptyChild = saved!.children.find((child) => child.stopsCount === 0)!;
+
+    await routePlans.deleteRoutePlan({ appId, routePlanId: emptyChild.routePlanId!, shopDomain });
+
+    const reloaded = await service.getGrouping({ appId, groupingId: grouping.id, shopDomain });
+    expect(reloaded?.children.map(({ stopsCount }) => stopsCount).sort((left, right) => left - right)).toEqual([0, 0, 6]);
+    expect(reloaded?.children.map(({ displayStatus }) => displayStatus)).toEqual(['READY', 'READY', 'READY']);
+  }, 30_000);
+
+  test('deleting one of two child routes keeps the other as the group route with its stops', async () => {
+    const orders = await seedOrders(6);
+    const grouping = await createGrouping('two-route group', orders.map(({ id }) => id));
+    const saved = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        draftRoute('kept', orders.slice(0, 4).map(({ id }) => id)),
+        draftRoute('deleted', orders.slice(4).map(({ id }) => id))
+      ],
+      shopDomain
+    });
+    const kept = saved!.children.find((child) => child.stopsCount === 4)!;
+    const deleted = saved!.children.find((child) => child.stopsCount === 2)!;
+
+    await routePlans.deleteRoutePlan({ appId, routePlanId: deleted.routePlanId!, shopDomain });
+
+    const reloaded = await service.getGrouping({ appId, groupingId: grouping.id, shopDomain });
+    expect(reloaded?.children.map(({ displayStatus, routePlanId, stopsCount }) => ({ displayStatus, routePlanId, stopsCount })))
+      .toEqual([{ displayStatus: 'READY', routePlanId: kept.routePlanId, stopsCount: 4 }]);
+    await expect(prisma.routePlan.findUniqueOrThrow({
+      select: { status: true, _count: { select: { routeStops: true } } },
+      where: { id: kept.routePlanId! }
+    })).resolves.toEqual({ _count: { routeStops: 4 }, status: 'READY' });
+    await expect(prisma.order.count({ where: { id: { in: orders.slice(4).map(({ id }) => id) }, currentRouteVersionId: null } }))
+      .resolves.toBe(2);
+  }, 30_000);
+
+  test('a draft save that deletes one child route and keeps the others only removes that one', async () => {
+    const orders = await seedOrders(6);
+    const grouping = await createGrouping('route detail delete', orders.map(({ id }) => id));
+    const saved = await service.saveDraft({
+      appId,
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        draftRoute('full', orders.map(({ id }) => id)),
+        draftRoute('empty-1', []),
+        draftRoute('empty-2', [])
+      ],
+      shopDomain
+    });
+    const full = saved!.children.find((child) => child.stopsCount === 6)!;
+    const [emptyKept, emptyDeleted] = saved!.children.filter((child) => child.stopsCount === 0);
+
+    const resaved = await service.saveDraft({
+      appId,
+      deletedRoutePlanIds: [emptyDeleted!.routePlanId!],
+      groupingId: grouping.id,
+      mode: 'MANUAL_ORDER',
+      routes: [
+        { branchId: null, label: 'full', orderIds: orders.map(({ id }) => id), routeKey: `routePlan:${full.routePlanId}`, routePlanId: full.routePlanId },
+        { branchId: null, label: 'empty-1', orderIds: [], routeKey: `routePlan:${emptyKept!.routePlanId}`, routePlanId: emptyKept!.routePlanId }
+      ],
+      shopDomain
+    });
+
+    expect(resaved?.children.map(({ routePlanId, stopsCount }) => ({ routePlanId, stopsCount })).sort((left, right) => left.stopsCount - right.stopsCount))
+      .toEqual([{ routePlanId: emptyKept!.routePlanId, stopsCount: 0 }, { routePlanId: full.routePlanId, stopsCount: 6 }]);
+  }, 30_000);
+
+  test.each(['list', 'detail'] as const)('office scenario via the %s: 40 orders, copy, four unnamed routes of 10, delete one -> 20 + 10 + 10 with every order kept', async (path) => {
+    const orders = await seedOrders(40);
+    const orderIds = orders.map(({ id }) => id);
+    const source = await createGrouping(`scenario source ${path}`, orderIds);
+    const sourceSaved = await service.saveDraft({ appId, groupingId: source.id, mode: 'MANUAL_ORDER', routes: [draftRoute('all', orderIds)], shopDomain });
+    expect(sourceSaved?.children.map(({ stopsCount }) => stopsCount)).toEqual([40]);
+
+    const copy = await service.copyGrouping({
+      actor: 'integration', appId, expectedUpdatedAt: sourceSaved!.updatedAt, groupingId: source.id, mode: 'REFERENCE', requestId: randomUUID(), shopDomain
+    });
+    expect(copy?.children.map(({ stopsCount }) => stopsCount)).toEqual([40]);
+
+    // The office splits by keeping the copied route as route 1 and adding three unnamed routes.
+    const copiedRoutePlanId = copy!.children[0]!.routePlanId!;
+    const quarters = [0, 10, 20, 30].map((start) => orderIds.slice(start, start + 10));
+    const split = await service.saveDraft({
+      appId, groupingId: copy!.id, mode: 'MANUAL_ORDER',
+      routes: [
+        { branchId: null, orderIds: quarters[0]!, routeKey: `routePlan:${copiedRoutePlanId}`, routePlanId: copiedRoutePlanId },
+        ...quarters.slice(1).map((ids, index) => ({ ...draftRoute(`q${index + 2}`, ids), label: null }))
+      ],
+      shopDomain
+    });
+    const children = [...split!.children].sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0));
+    expect(children.map(({ stopsCount }) => stopsCount)).toEqual([10, 10, 10, 10]);
+    const [first, second, third, fourth] = children;
+    const secondOrderIds = second!.stops.map((stop) => stop.orderId);
+    const firstOrderIds = first!.stops.map((stop) => stop.orderId);
+    const remaining = (merged: string[]) => [
+      { branchId: null, orderIds: merged, routeKey: `routePlan:${first!.routePlanId}`, routePlanId: first!.routePlanId },
+      { branchId: null, orderIds: third!.stops.map((stop) => stop.orderId), routeKey: `routePlan:${third!.routePlanId}`, routePlanId: third!.routePlanId },
+      { branchId: null, orderIds: fourth!.stops.map((stop) => stop.orderId), routeKey: `routePlan:${fourth!.routePlanId}`, routePlanId: fourth!.routePlanId }
+    ];
+
+    if (path === 'list') {
+      // Routes list: DELETE the route, then save the remaining routes with the deleted orders merged into the first one.
+      await routePlans.deleteRoutePlan({ appId, routePlanId: second!.routePlanId!, shopDomain });
+      await service.saveDraft({ appId, groupingId: copy!.id, mode: 'MANUAL_ORDER', routes: remaining([...firstOrderIds, ...secondOrderIds]), shopDomain });
+    } else {
+      // Route Detail: "Delete route" moves the stops to the first other route, then one Save deletes the route.
+      await service.saveDraft({
+        appId, deletedRoutePlanIds: [second!.routePlanId!], groupingId: copy!.id, mode: 'MANUAL_ORDER',
+        routes: remaining([...firstOrderIds, ...secondOrderIds]), shopDomain
+      });
+    }
+
+    const after = await service.getGrouping({ appId, groupingId: copy!.id, shopDomain });
+    const afterChildren = [...after!.children].sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0));
+    expect(afterChildren.map(({ routePlanId, stopsCount }) => ({ routePlanId, stopsCount }))).toEqual([
+      { routePlanId: first!.routePlanId, stopsCount: 20 },
+      { routePlanId: third!.routePlanId, stopsCount: 10 },
+      { routePlanId: fourth!.routePlanId, stopsCount: 10 }
+    ]);
+    expect(new Set(afterChildren[0]!.stops.map((stop) => stop.orderId))).toEqual(new Set([...firstOrderIds, ...secondOrderIds]));
+    await expect(prisma.routeGroupingOrder.count({ where: { groupingId: copy!.id } })).resolves.toBe(40);
+    await expect(prisma.order.count({ where: { id: { in: orderIds }, currentRouteVersionId: { not: null } } })).resolves.toBe(40);
+    await expect(prisma.order.count({ where: { id: { in: orderIds } } })).resolves.toBe(40);
+    // The source group keeps its memberships too.
+    await expect(prisma.routeGroupingOrder.count({ where: { groupingId: source.id } })).resolves.toBe(40);
+  }, 60_000);
 
   function createGrouping(name: string, orderIds: string[]) {
     return service.createGrouping({

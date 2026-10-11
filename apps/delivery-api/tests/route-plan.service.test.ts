@@ -60,6 +60,83 @@ const changedShapeDetail = detailWithComputedSignature({
 });
 
 describe('RoutePlanAdminService route geometry policy', () => {
+  test('adds new orders to an avoiding route using canonical coordinates inside the mutation transaction', async () => {
+    const avoiding: RoutePlanDetail = { ...baseDetail, routePlan: { ...baseDetail.routePlan, tollPolicy: 'AVOID_TOLLS' } };
+    const harness = createHarness(avoiding);
+    const newStop = routeStop({ sequence: 3, latitude: 43.8, longitude: -79.4, order: 103 });
+    harness.routeGeometryProvider.buildRoute.mockRejectedValue(new Error('NoRoute'));
+    harness.updateRoutePlanStops.mockImplementation(async (input) => {
+      expect(input.preparedRouteGeometry).toBeUndefined();
+      expect(input.prepareGeometry).toEqual(expect.any(Function));
+      await input.prepareGeometry!({ ...avoiding, stops: [...avoiding.stops, newStop] });
+      throw new Error('Mutation must roll back after geometry failure');
+    });
+    const service = new RoutePlanAdminService(harness.repository, harness.routeGeometryProvider);
+    await expect(service.updateRoutePlanStops({ routePlanId: baseDetail.routePlan.id, shopDomain: 'example.myshopify.com', payload: {
+      stops: [...baseDetail.stops, newStop].map((stop) => ({ sequence: stop.sequence, shopifyOrderGid: stop.shopifyOrderGid })),
+    } })).rejects.toThrow('Existing route was preserved');
+    expect(harness.routeGeometryProvider.buildRoute).toHaveBeenCalledWith(expect.objectContaining({ stops: [...avoiding.stops, newStop] }));
+    expect(harness.upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('calculates initial avoidance geometry inside the repository creation transaction and propagates failures', async () => {
+    const harness = createHarness(baseDetail);
+    harness.routeGeometryProvider.buildRoute.mockRejectedValue(new Error('NoRoute'));
+    harness.createRoutePlanDraft.mockImplementation(async (input) => {
+      expect(input.prepareGeometry).toEqual(expect.any(Function));
+      await input.prepareGeometry!({ ...baseDetail, routePlan: { ...baseDetail.routePlan, tollPolicy: 'AVOID_TOLLS' } });
+      throw new Error('Creation must not reach a commit after provider failure');
+    });
+    const service = new RoutePlanAdminService(harness.repository, harness.routeGeometryProvider);
+    await expect(service.createRoutePlan({ createdBy: 'admin', shopDomain: 'example.myshopify.com', payload: {
+      depot: { address: null, ...baseDetail.routePlan.depot }, name: 'New route', orders: [], planDate: '2026-05-15', tollPolicy: 'AVOID_TOLLS',
+    } })).rejects.toThrow('Existing route was preserved');
+    expect(harness.findRoutePlanDetail).not.toHaveBeenCalled();
+    expect(harness.upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('prepares avoidance geometry before changing policy and leaves atomic cache commit to the repository', async () => {
+    const harness = createHarness(baseDetail);
+    const service = new RoutePlanAdminService(harness.repository, harness.routeGeometryProvider);
+    await service.updateRoutePlanOptions({ routePlanId: baseDetail.routePlan.id, shopDomain: 'example.myshopify.com', payload: { routeEndMode: 'END_AT_LAST_STOP', tollPolicy: 'AVOID_TOLLS' } });
+    expect(harness.routeGeometryProvider.buildRoute.mock.calls[0]?.[0].routePlan.tollPolicy).toBe('AVOID_TOLLS');
+    expect(harness.updateRoutePlanOptions).toHaveBeenCalledWith(expect.objectContaining({ preparedRouteGeometry: { expectedShapeSignature: computeRouteShapeSignature(baseDetail), result: routeResult } }));
+    expect(harness.routeGeometryProvider.buildRoute.mock.invocationCallOrder[0]).toBeLessThan(harness.updateRoutePlanOptions.mock.invocationCallOrder[0]!);
+    expect(harness.upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('does not mutate options, stops or cache when avoidance cannot be calculated', async () => {
+    const harness = createHarness(baseDetail);
+    harness.routeGeometryProvider.buildRoute.mockRejectedValue(new Error('InvalidValue'));
+    const service = new RoutePlanAdminService(harness.repository, harness.routeGeometryProvider);
+    await expect(service.updateRoutePlanOptions({ routePlanId: baseDetail.routePlan.id, shopDomain: 'example.myshopify.com', payload: { routeEndMode: 'END_AT_LAST_STOP', tollPolicy: 'AVOID_TOLLS' } })).rejects.toThrow('Existing route was preserved');
+    expect(harness.updateRoutePlanOptions).not.toHaveBeenCalled();
+    expect(harness.updateRoutePlanStops).not.toHaveBeenCalled();
+    expect(harness.upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('does not change the order or auto-publish an avoid-tolls route if the replacement geometry fails', async () => {
+    const avoiding: RoutePlanDetail = { ...baseDetail, routePlan: { ...baseDetail.routePlan, tollPolicy: 'AVOID_TOLLS' } };
+    const harness = createHarness(avoiding);
+    harness.routeGeometryProvider.buildRoute.mockRejectedValue(new Error('NoRoute'));
+    const service = new RoutePlanAdminService(harness.repository, harness.routeGeometryProvider);
+    const input = { routePlanId: baseDetail.routePlan.id, shopDomain: 'example.myshopify.com', payload: { stops: changedShapeDetail.stops.map((stop) => ({ deliveryStopId: stop.deliveryStopId, shopifyOrderGid: stop.shopifyOrderGid, sequence: stop.sequence })) } };
+    await expect(service.updateRoutePlanStops(input)).rejects.toThrow('Existing route was preserved');
+    await expect(service.saveRoutePlan(input)).rejects.toThrow('Existing route was preserved');
+    expect(harness.updateRoutePlanStops).not.toHaveBeenCalled();
+    expect(harness.saveRoutePlan).not.toHaveBeenCalled();
+    expect(harness.upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('keeps a previous valid avoidance cache on explicit geometry provider failure', async () => {
+    const avoiding: RoutePlanDetail = { ...baseDetail, routePlan: { ...baseDetail.routePlan, tollPolicy: 'AVOID_TOLLS' }, ...routeResult };
+    const harness = createHarness(avoiding);
+    harness.routeGeometryProvider.buildRoute.mockRejectedValue(new Error('NoRoute'));
+    const service = new RoutePlanAdminService(harness.repository, harness.routeGeometryProvider);
+    await expect(service.refreshRouteGeometryForRoutePlan({ routePlanId: baseDetail.routePlan.id, shopDomain: 'example.myshopify.com' })).rejects.toThrow('Existing geometry was preserved');
+    expect(harness.upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
   test('route detail read returns repository detail without OSRM generation', async () => {
     const { findRoutePlanDetail, repository, routeGeometryProvider } = createHarness(baseDetail);
     const service = new RoutePlanAdminService(repository, routeGeometryProvider);

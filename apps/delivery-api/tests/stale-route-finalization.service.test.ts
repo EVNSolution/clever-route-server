@@ -23,10 +23,10 @@ describe('PrismaStaleRouteFinalizationService', () => {
     });
     expect(harness.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
-        shop: {
+        AND: [{ shop: {
           appId: KFOOD_STALE_ROUTE_APP_ID,
           shopDomain: KFOOD_STALE_ROUTE_SHOP_DOMAIN
-        },
+        } }],
         status: 'IN_PROGRESS'
       }
     }));

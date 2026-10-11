@@ -81,6 +81,43 @@ describe('Admin route group routes', () => {
       await app.close();
     }
   });
+  test('forwards initial delivery options and rejects malformed option values', async () => {
+    const { createGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    const initialRoute = { requestId, deliveryProof: { photoRequired: true, signatureRequired: false }, tollPolicy: 'AVOID_TOLLS' };
+    const payload = { name: 'Configured route', orderIds: ['order-1'], initialRoute };
+    try {
+      expect((await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload, url: '/admin/route-groups' })).statusCode).toBe(201);
+      expect(createGrouping).toHaveBeenCalledWith(expect.objectContaining({ initialRoute }));
+      createGrouping.mockClear();
+      for (const options of [{ tollPolicy: 'avoid' }, { deliveryProof: { photoRequired: 'true', signatureRequired: false } }, { deliveryProof: { photoRequired: true } }, { extra: true }]) {
+        expect((await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { ...payload, initialRoute: { ...initialRoute, ...options } }, url: '/admin/route-groups' })).statusCode).toBe(400);
+      }
+      expect(createGrouping).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+  test('forwards the optional unified Stop time of the initial route and rejects malformed values', async () => {
+    const { createGrouping, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    const post = (initialRoute: unknown) => app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'POST', payload: { name: 'Unified', orderIds: ['order-1'], initialRoute }, url: '/admin/route-groups' });
+    try {
+      for (const serviceMinutes of [0, 7, 1_440]) {
+        createGrouping.mockClear();
+        expect((await post({ requestId, serviceMinutes })).statusCode).toBe(201);
+        expect(createGrouping).toHaveBeenCalledWith(expect.objectContaining({ initialRoute: { requestId, serviceMinutes } }));
+      }
+      createGrouping.mockClear();
+      expect((await post({ requestId })).statusCode).toBe(201);
+      expect(createGrouping.mock.calls[0]?.[0].initialRoute).toEqual({ requestId });
+      createGrouping.mockClear();
+      for (const serviceMinutes of [-1, 1_441, 7.5, '7', null, true]) {
+        expect((await post({ requestId, serviceMinutes })).statusCode).toBe(400);
+      }
+      expect(createGrouping).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
   test('copies a standalone route through the route-plan resource', async () => {
     const { copyStandaloneRoutePlan, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });

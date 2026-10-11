@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
+import { DriverAssignedRouteVersionError, PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
+import { PrismaInventoryService } from '../src/modules/inventory/inventory.service.js';
 import { computeRouteShapeSignature } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 import { dsvCanonicalNoteHash } from '../src/modules/dsv/dsv-time-constraint.js';
@@ -162,6 +163,102 @@ type LooseAssignedRouteStop = Omit<MutableRoutePlanRecord['routeStops'][number],
 };
 
 describe('PrismaDriverAssignedRouteRepository', () => {
+  test.each([
+    { paymentGatewayNames: ['Cash on Delivery (COD)'] },
+    { paymentGatewayNames: ['Email Money Transfer'] },
+    { cleverManualPaymentMethod: 'CASH' },
+    { cleverManualPaymentStatus: 'ETRANSFER' },
+    { payment_method_title: 'Cash' },
+    { paymentGatewayNames: ['unknown gateway'] }
+  ])('projects the same payment contract as office inventory from %j', async (source) => {
+    const rawPayload = { ...source, totalOutstandingSet: { shopMoney: { amount: '22.25', currencyCode: 'CAD' } } };
+    const existingStop = routePlanRecord.routeStops[0]!;
+    const savedCompletion = {
+      id: 'completion-id', eventId: 'event-id', deliveryStopId: 'stop-id', routePlanId: 'route-plan-id',
+      driverId: 'driver-id', assignmentGeneration: '1', expectedRouteVersionId: 'route-version-id', method: 'CASH',
+      payment: { currencyCode: 'CAD', expectedAmount: '122.25', expectedAmountSource: 'UNPAID_ORDER_TOTAL',
+        financialStatus: 'PENDING', gatewayNames: ['Cash'], method: 'CASH', methodTitle: 'Cash', requiresCashInput: true },
+      expectedAmount: '122.25', actualAmount: '122.00', differenceAmount: '-0.25', currencyCode: 'CAD',
+      occurredAt: '2026-10-08T00:00:00.000Z', recordedAt: '2026-10-08T00:00:01.000Z'
+    };
+    const stopCompletionReceipt = { result: { completion: savedCompletion } };
+    const order = { ...existingStop.deliveryStop.order, financialStatus: 'PARTIALLY_PAID', rawPayload,
+      deliveryFacts: [], deliveryStops: [{ stopCompletionReceipt }] };
+    const routePlan = { ...routePlanRecord, routeStops: [{ ...existingStop, deliveryStop: {
+      ...existingStop.deliveryStop, order, stopCompletionReceipt
+    } }] };
+    const { prisma } = createPrismaHarness({ routePlan });
+    const driver = await new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    });
+    const inventory = await new PrismaInventoryService({
+      shop: { findUnique: vi.fn(() => ({ id: 'shop-id' })) },
+      inventory: { findFirst: vi.fn(() => ({
+        createdAt: new Date('2026-10-08T00:00:00Z'), updatedAt: new Date('2026-10-08T00:00:00Z'),
+        id: 'inventory-id', name: 'Inventory', note: null, routeGroupingId: null, events: [],
+        orders: [{ orderId: order.id, order }]
+      })) }
+    } as never).getInventory({ inventoryId: 'inventory-id', shopDomain: 'dev1.tomatonofood.com' });
+    expect(driver.status).toBe('ASSIGNED_ROUTE');
+    if (driver.status !== 'ASSIGNED_ROUTE') throw new Error('Expected assigned route');
+    const stop = driver.route.stops[0]!;
+    expect(stop.payment).toEqual(inventory?.orders[0]?.payment);
+    expect(stop.paymentMethodTitle).toEqual(inventory?.orders[0]?.paymentMethodTitle);
+    expect(stop.payment?.expectedAmount).toBe('22.25');
+    expect(stop.completion).toEqual(savedCompletion);
+    expect(inventory?.orders[0]?.completion).toEqual(savedCompletion);
+  });
+
+  test('rejects duplicate current children before using a matching live publication', async () => {
+    const child = { id: 'child-current', driverId: 'driver-id', routePlanId: 'route-plan-id', status: 'CURRENT', supersededAt: null };
+    const { prisma } = createPrismaHarness({ routePlan: {
+      ...routePlanRecord,
+      assignmentGeneration: 1n,
+      routeGroupingChildVersions: [child, { ...child, id: 'child-duplicate' }],
+      liveChangeState: {
+        assignmentGeneration: 1n, baselineRouteVersionId: child.id, driverId: 'driver-id',
+        latestPublicationId: 'publication-current', latestSequence: 1
+      }
+    } });
+    await expect(new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    })).rejects.toBeInstanceOf(DriverAssignedRouteVersionError);
+    expect(prisma.deliveryCustomerProfile.findMany).not.toHaveBeenCalled();
+  });
+
+  test('rejects same-assignment baseline drift even when the live state only has a draft', async () => {
+    const { prisma } = createPrismaHarness({ routePlan: {
+      ...routePlanRecord,
+      assignmentGeneration: 1n,
+      routeGroupingChildVersions: [{ id: 'child-current', driverId: 'driver-id', routePlanId: 'route-plan-id', status: 'CURRENT', supersededAt: null }],
+      liveChangeState: {
+        assignmentGeneration: 1n, baselineRouteVersionId: 'child-old', driverId: 'driver-id',
+        latestPublicationId: 'publication-baseline', latestSequence: 0
+      }
+    } });
+    await expect(new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    })).rejects.toBeInstanceOf(DriverAssignedRouteVersionError);
+  });
+
+  test.each([
+    ['same generation with another owner', 1n, 'previous-driver'],
+    ['state from a future generation', 2n, 'driver-id']
+  ])('rejects %s instead of ignoring live state', async (_name, generation, stateDriverId) => {
+    const { prisma } = createPrismaHarness({ routePlan: {
+      ...routePlanRecord,
+      assignmentGeneration: 1n,
+      routeGroupingChildVersions: [{ id: 'child-current', driverId: 'driver-id', routePlanId: 'route-plan-id', status: 'CURRENT', supersededAt: null }],
+      liveChangeState: {
+        assignmentGeneration: generation, baselineRouteVersionId: 'child-current', driverId: stateDriverId,
+        latestPublicationId: 'publication-baseline', latestSequence: 0
+      }
+    } });
+    await expect(new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    })).rejects.toBeInstanceOf(DriverAssignedRouteVersionError);
+  });
+
   test('projects a legacy duplicate destination as the oldest canonical id with aggregated notes', async () => {
     const routePlan = structuredClone(routePlanRecord);
     routePlan.routeStops[0]!.deliveryStop.order.destinationId = 'legacy-destination-id';
@@ -226,6 +323,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       status: 'ASSIGNED_ROUTE',
             route: {
         deliveryDate: '2026-05-12',
+        deliveryProof: { photoRequired: false, signatureRequired: false },
+        tollPolicy: 'ALLOW_TOLLS',
         depot: { latitude: 43.6532, longitude: -79.3832 },
         etaSnapshot: {
           calculatedAt: null,
@@ -256,6 +355,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
               postalCode: 'M5X 1A9',
               province: 'ON'
             },
+            completion: null,
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
             navigationTarget: 'COORDINATES',
             currencyCode: 'CAD',
@@ -292,6 +392,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             ],
             normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
             orderName: '#1001',
+            payment: { currencyCode: 'CAD', expectedAmount: null, expectedAmountSource: 'UNKNOWN', financialStatus: 'CASH', gatewayNames: [], method: 'CASH', methodTitle: 'Cash on delivery', requiresCashInput: true },
             paymentMethodTitle: 'Cash on delivery',
             phone: '+14165550123',
             recipientName: 'Recipient One',
@@ -413,6 +514,34 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     if (result.status === 'ASSIGNED_ROUTE') {
       expect(result.route.stops[0]?.navigationTarget).toBe('ADDRESS');
       expect(result.route.stops[0]?.coordinates).toEqual({ latitude: null, longitude: null });
+    }
+  });
+
+  test('returns every required address part as a string so the driver app keeps the route', async () => {
+    const record = structuredClone(routePlanRecord);
+    const stop = record.routeStops[0]!.deliveryStop as unknown as Record<string, unknown>;
+    stop.address1 = null;
+    stop.city = null;
+    stop.province = null;
+    stop.postalCode = null;
+    stop.countryCode = null;
+    const { prisma } = createPrismaHarness({ routePlan: record });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') {
+      const address = result.route.stops[0]!.address;
+      expect(address).toMatchObject({ address1: '', city: '', countryCode: '', postalCode: '', province: '' });
+      for (const part of [address.address1, address.city, address.countryCode, address.postalCode, address.province]) {
+        expect(typeof part).toBe('string');
+      }
     }
   });
 

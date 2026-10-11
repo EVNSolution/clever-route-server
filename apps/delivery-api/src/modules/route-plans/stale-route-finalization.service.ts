@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 
 import { resolveRouteTrackingEventWindow } from '../route-tracking/route-tracking.event-window.js';
-import { reconcileKfoodDeliveryWorkCompletion } from './kfood-delivery-completion.js';
+import { kfoodDeliveryRouteWhere, reconcileKfoodDeliveryWorkCompletion } from './kfood-delivery-completion.js';
 
 export const KFOOD_STALE_ROUTE_APP_ID = 'clever-route-kfood';
 export const KFOOD_STALE_ROUTE_SHOP_DOMAIN = '7hrud1-xq.myshopify.com';
@@ -34,10 +34,7 @@ export class PrismaStaleRouteFinalizationService {
             { id: { gt: this.scanCursor.id }, planDate: this.scanCursor.planDate }
           ]
         }),
-        shop: {
-          appId: KFOOD_STALE_ROUTE_APP_ID,
-          shopDomain: KFOOD_STALE_ROUTE_SHOP_DOMAIN
-        },
+        AND: [kfoodDeliveryRouteWhere()],
         status: 'IN_PROGRESS'
       }
     });
@@ -98,10 +95,7 @@ export class PrismaStaleRouteFinalizationService {
           where: {
             id: routePlanId,
             shopId,
-            shop: {
-              appId: KFOOD_STALE_ROUTE_APP_ID,
-              shopDomain: KFOOD_STALE_ROUTE_SHOP_DOMAIN
-            },
+            ...kfoodDeliveryRouteWhere(),
             status: 'IN_PROGRESS'
           }
         });
@@ -141,10 +135,7 @@ export class PrismaStaleRouteFinalizationService {
         where: {
           id: routePlanId,
           shopId,
-          shop: {
-            appId: KFOOD_STALE_ROUTE_APP_ID,
-            shopDomain: KFOOD_STALE_ROUTE_SHOP_DOMAIN
-          },
+          ...kfoodDeliveryRouteWhere(),
           status: 'IN_PROGRESS'
         }
       });
