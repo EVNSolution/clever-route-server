@@ -751,6 +751,27 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
     }, ['dsv:accounts:write', 'dsv:resources:write']));
 
+  app.get(`${apiRoot}/drivers/:driverId/account`, async (request, reply) =>
+    withDsvSession(request, reply, dependencies, async ({ principal }) => {
+      const driverId = readUuidParam(request, 'driverId');
+      if (driverId === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid driver account request');
+      if (dependencies.driverPasswordResetService === undefined) {
+        return sendError(reply, 503, 'DRIVER_ACCOUNT_LOOKUP_UNAVAILABLE', '배송원 계정 조회 기능을 사용할 수 없습니다.');
+      }
+      await dependencies.storeReviewAccess.assertAccessible(principal, { driverIds: [driverId] });
+      const account = await dependencies.driverPasswordResetService.describeAccount({ driverId, shopId: principal.shopId });
+      return account === null
+        ? sendError(reply, 404, 'DRIVER_ACCOUNT_NOT_FOUND', '연결된 배송원 앱 계정을 찾을 수 없습니다.')
+        : sendData(reply, {
+            account: {
+              lastUsedAt: account.lastUsedAt?.toISOString() ?? null,
+              loginId: account.loginId,
+              sessionExpiresAt: account.sessionExpiresAt?.toISOString() ?? null,
+              status: account.status,
+            },
+          });
+    }, ['dsv:accounts:read', 'dsv:resources:read']));
+
   app.post(`${apiRoot}/drivers/:driverId/password-reset-link`, {
     config: {
       rateLimit: {

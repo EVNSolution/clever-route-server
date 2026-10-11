@@ -33,6 +33,7 @@ describe('DSV Driver app auth routes', () => {
     const logLines: string[] = [];
     const passwordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(() => Promise.resolve()),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
       validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(({ token: candidate }) => Promise.resolve(
         candidate === token
@@ -108,6 +109,7 @@ describe('DSV Driver app auth routes', () => {
   test('rate-limits public password reset token probes', async () => {
     const passwordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
       validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(() => Promise.resolve(null)),
     };
@@ -135,6 +137,7 @@ describe('DSV Driver app auth routes', () => {
   test('rate-limits public password reset completion attempts', async () => {
     const passwordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(() => Promise.resolve()),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
       validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
     };
@@ -201,6 +204,7 @@ describe('DSV Driver app auth routes', () => {
     const logLines: string[] = [];
     const passwordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(() => Promise.reject(new Error(privateMessage))),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
       validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
     };

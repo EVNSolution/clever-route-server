@@ -79,6 +79,11 @@ export class DsvDriverAuthRefreshError extends Error {
 const MAX_FAILED_PASSWORD_ATTEMPTS = 5;
 const PASSWORD_LOCK_MINUTES = 15;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// A refresh token is replaced once a day; the replaced token stays valid for a short grace window so a
+// refresh whose response was lost can be retried, and sessions expired for a week are removed.
+const SESSION_ROTATION_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const SESSION_ROTATION_GRACE_MS = 2 * 60 * 1000;
+const SESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DUMMY_PASSWORD_SALT = 'dsv-driver-account-missing';
 const DUMMY_PASSWORD_HASH = 'CCrdwgxar5IhXbGpEZ_vYVcgujFSmiPgteYGuwjpGvDcRz9GD8gODaO3FeXnVwd-C0xvnFNf1NVmbU7DEdXPWA';
 
@@ -270,16 +275,44 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
         return null;
       }
 
-      await tx.driverAccountSession.update({
-        data: { lastUsedAt: now },
-        where: { id: session.id },
-      });
+      // A used session slides forward: every successful refresh grants another full
+      // session window, so a driver who opens the app every day is never logged out
+      // 30 days after the login that created the session. Unused sessions still expire.
+      const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
+      const rotate = now.getTime() - session.createdAt.getTime() >= SESSION_ROTATION_INTERVAL_MS;
+      let nextRefreshToken = refreshToken;
+      if (rotate) {
+        nextRefreshToken = randomBytes(32).toString('hex');
+        await tx.driverAccountSession.create({
+          data: {
+            accountId: session.accountId,
+            expiresAt,
+            lastUsedAt: now,
+            refreshTokenHash: hashRefreshToken(nextRefreshToken),
+          },
+        });
+        await tx.driverAccountSession.update({
+          data: {
+            expiresAt: new Date(Math.min(session.expiresAt.getTime(), now.getTime() + SESSION_ROTATION_GRACE_MS)),
+            lastUsedAt: now,
+          },
+          where: { id: session.id },
+        });
+        await tx.driverAccountSession.deleteMany({
+          where: { accountId: session.accountId, expiresAt: { lt: new Date(now.getTime() - SESSION_RETENTION_MS) } },
+        });
+      } else {
+        await tx.driverAccountSession.update({
+          data: { expiresAt, lastUsedAt: now },
+          where: { id: session.id },
+        });
+      }
       const account = await this.linkMatchingDriversInTransaction(tx, session.account);
       return {
         account: accountView(account, account.drivers),
         accountId: account.id,
-        expiresAt: session.expiresAt,
-        refreshToken,
+        expiresAt,
+        refreshToken: nextRefreshToken,
         tokenVersion: account.tokenVersion,
       };
     });
