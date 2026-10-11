@@ -37,6 +37,12 @@ readonly run_suffix="$$-${RANDOM}"
 readonly container_name="clever-api-audit-dsv-operational-${run_suffix}"
 
 cleanup() {
+  local status=$?
+  if [[ "$status" -ne 0 ]]; then
+    # A failed run keeps the server-side detail of lock waits and deadlocks (both statements) in the container log.
+    echo "--- dsv operational postgres log (exit ${status}) ---" >&2
+    docker logs --tail 300 "$container_name" >&2 2>&1 || true
+  fi
   docker rm -f "$container_name" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
