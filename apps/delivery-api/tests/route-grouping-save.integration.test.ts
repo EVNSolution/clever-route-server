@@ -1735,6 +1735,67 @@ describeDatabase('route grouping save database regressions', () => {
       .toEqual([{ routePlanId: emptyKept!.routePlanId, stopsCount: 0 }, { routePlanId: full.routePlanId, stopsCount: 6 }]);
   }, 30_000);
 
+  test.each(['list', 'detail'] as const)('office scenario via the %s: 40 orders, copy, four unnamed routes of 10, delete one -> 20 + 10 + 10 with every order kept', async (path) => {
+    const orders = await seedOrders(40);
+    const orderIds = orders.map(({ id }) => id);
+    const source = await createGrouping(`scenario source ${path}`, orderIds);
+    const sourceSaved = await service.saveDraft({ appId, groupingId: source.id, mode: 'MANUAL_ORDER', routes: [draftRoute('all', orderIds)], shopDomain });
+    expect(sourceSaved?.children.map(({ stopsCount }) => stopsCount)).toEqual([40]);
+
+    const copy = await service.copyGrouping({
+      actor: 'integration', appId, expectedUpdatedAt: sourceSaved!.updatedAt, groupingId: source.id, mode: 'REFERENCE', requestId: randomUUID(), shopDomain
+    });
+    expect(copy?.children.map(({ stopsCount }) => stopsCount)).toEqual([40]);
+
+    // The office splits by keeping the copied route as route 1 and adding three unnamed routes.
+    const copiedRoutePlanId = copy!.children[0]!.routePlanId!;
+    const quarters = [0, 10, 20, 30].map((start) => orderIds.slice(start, start + 10));
+    const split = await service.saveDraft({
+      appId, groupingId: copy!.id, mode: 'MANUAL_ORDER',
+      routes: [
+        { branchId: null, orderIds: quarters[0]!, routeKey: `routePlan:${copiedRoutePlanId}`, routePlanId: copiedRoutePlanId },
+        ...quarters.slice(1).map((ids, index) => ({ ...draftRoute(`q${index + 2}`, ids), label: null }))
+      ],
+      shopDomain
+    });
+    const children = [...split!.children].sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0));
+    expect(children.map(({ stopsCount }) => stopsCount)).toEqual([10, 10, 10, 10]);
+    const [first, second, third, fourth] = children;
+    const secondOrderIds = second!.stops.map((stop) => stop.orderId);
+    const firstOrderIds = first!.stops.map((stop) => stop.orderId);
+    const remaining = (merged: string[]) => [
+      { branchId: null, orderIds: merged, routeKey: `routePlan:${first!.routePlanId}`, routePlanId: first!.routePlanId },
+      { branchId: null, orderIds: third!.stops.map((stop) => stop.orderId), routeKey: `routePlan:${third!.routePlanId}`, routePlanId: third!.routePlanId },
+      { branchId: null, orderIds: fourth!.stops.map((stop) => stop.orderId), routeKey: `routePlan:${fourth!.routePlanId}`, routePlanId: fourth!.routePlanId }
+    ];
+
+    if (path === 'list') {
+      // Routes list: DELETE the route, then save the remaining routes with the deleted orders merged into the first one.
+      await routePlans.deleteRoutePlan({ appId, routePlanId: second!.routePlanId!, shopDomain });
+      await service.saveDraft({ appId, groupingId: copy!.id, mode: 'MANUAL_ORDER', routes: remaining([...firstOrderIds, ...secondOrderIds]), shopDomain });
+    } else {
+      // Route Detail: "Delete route" moves the stops to the first other route, then one Save deletes the route.
+      await service.saveDraft({
+        appId, deletedRoutePlanIds: [second!.routePlanId!], groupingId: copy!.id, mode: 'MANUAL_ORDER',
+        routes: remaining([...firstOrderIds, ...secondOrderIds]), shopDomain
+      });
+    }
+
+    const after = await service.getGrouping({ appId, groupingId: copy!.id, shopDomain });
+    const afterChildren = [...after!.children].sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0));
+    expect(afterChildren.map(({ routePlanId, stopsCount }) => ({ routePlanId, stopsCount }))).toEqual([
+      { routePlanId: first!.routePlanId, stopsCount: 20 },
+      { routePlanId: third!.routePlanId, stopsCount: 10 },
+      { routePlanId: fourth!.routePlanId, stopsCount: 10 }
+    ]);
+    expect(new Set(afterChildren[0]!.stops.map((stop) => stop.orderId))).toEqual(new Set([...firstOrderIds, ...secondOrderIds]));
+    await expect(prisma.routeGroupingOrder.count({ where: { groupingId: copy!.id } })).resolves.toBe(40);
+    await expect(prisma.order.count({ where: { id: { in: orderIds }, currentRouteVersionId: { not: null } } })).resolves.toBe(40);
+    await expect(prisma.order.count({ where: { id: { in: orderIds } } })).resolves.toBe(40);
+    // The source group keeps its memberships too.
+    await expect(prisma.routeGroupingOrder.count({ where: { groupingId: source.id } })).resolves.toBe(40);
+  }, 60_000);
+
   function createGrouping(name: string, orderIds: string[]) {
     return service.createGrouping({
       appId,
