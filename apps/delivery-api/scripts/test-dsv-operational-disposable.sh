@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly target_class='safe-local-dsv-operational-disposable'
-readonly host_port='55496'
+readonly host_port='55497'
 readonly database_name='dsv_operational'
 readonly database_user='dsv_operational'
 readonly database_password='dsv_operational'
