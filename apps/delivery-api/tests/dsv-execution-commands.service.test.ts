@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
+import { createHash } from 'node:crypto';
+
 import { describe, expect, test, vi } from 'vitest';
 
 import {
@@ -36,6 +38,7 @@ function harness() {
   const reportRow = {
     acknowledgedAt: null, assignmentEpoch: 4n, createdAt: new Date('2026-10-06T09:05:00.000Z'),
     driverId: ids.driver, executionContextId: ids.context, explanation: '수취인 부재',
+    emailSentAt: null, emailStatus: 'PREPARED',
     id: '99999999-9999-4999-8999-999999999999', reasonCode: 'RECIPIENT_ABSENT', resolvedAt: null,
     routeVersion: 3, shopId: ids.shop, status: 'OPEN', targetStopId: ids.stop, recipientAccountId: ids.account,
   };
@@ -54,10 +57,11 @@ function harness() {
       recipientAccountId: ids.account,
       routePlanId: ids.route,
       routeVersion: 3,
+      serviceDate: new Date('2026-10-06T00:00:00.000Z'),
       status: 'ACTIVE',
     }]);
     }),
-    driver: { findFirst: vi.fn().mockResolvedValue({ id: ids.driver }) },
+    driver: { findFirst: vi.fn().mockResolvedValue({ displayName: '홍길동', id: ids.driver }) },
     driverEvent: { findMany: vi.fn().mockResolvedValue([]) },
     dsvDeliveryException: {
       create: vi.fn().mockResolvedValue({ id: reportRow.id }),
@@ -151,6 +155,65 @@ describe('PrismaDsvExecutionCommandsService', () => {
       data: expect.objectContaining({ audience: 'OPS', kind: 'N07' }),
     }));
     expect(recordDriverEventInTransaction).not.toHaveBeenCalled();
+  });
+
+  test('accepts a required free-text reason without a code or photo and prepares one immutable email job', async () => {
+    const { recordDriverEventInTransaction, service, tx } = harness();
+    const input = { ...startInput, reason: '  진입로 폐쇄로 배송할 수 없습니다.  ', targetStopId: ids.stop };
+    const first = await service.reportDeliveryException(input);
+    expect(first).toMatchObject({ reportStatus: 'ACCEPTED', emailStatus: 'PREPARED' });
+    expect(tx.dsvDeliveryException.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        emailSnapshot: expect.objectContaining({
+          driver: '홍길동', reason: '진입로 폐쇄로 배송할 수 없습니다.',
+          reportedAt: startInput.occurredAt.toISOString(), serviceDate: '2026-10-06',
+        }),
+        emailStatus: 'PREPARED', explanation: '진입로 폐쇄로 배송할 수 없습니다.', reasonCode: 'FREE_TEXT',
+      }),
+    }));
+    const stored = tx.dsvExecutionCommand.create.mock.calls[0]?.[0].data;
+    tx.dsvExecutionCommand.findUnique.mockResolvedValueOnce({ payloadHash: stored.payloadHash, result: stored.result });
+    expect(await service.reportDeliveryException(input)).toEqual({ ...first, duplicate: true });
+    expect(tx.dsvDeliveryException.create).toHaveBeenCalledOnce();
+    expect(tx.dsvOperationalNotification.create).toHaveBeenCalledOnce();
+    expect(recordDriverEventInTransaction).not.toHaveBeenCalled();
+  });
+
+  test('preserves multiline free-text reasons in the report and email snapshot without loosening reason codes', async () => {
+    const { service, tx } = harness();
+    const reason = '진입로 폐쇄\r\n담당자 요청:\t내일 재방문\n오전 연락 필요';
+    await service.reportDeliveryException({ ...startInput, reason, targetStopId: ids.stop });
+    expect(tx.dsvDeliveryException.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ explanation: reason, emailSnapshot: expect.objectContaining({ reason }) }),
+    }));
+    await expect(service.reportDeliveryException({ ...startInput, reason: '진입로\u0000폐쇄', targetStopId: ids.stop }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(service.reportDeliveryException({ ...startInput, reasonCode: 'OTHER\nREASON', targetStopId: ids.stop }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+
+  test('rejects missing or blank free-text reasons', async () => {
+    const { service, tx } = harness();
+    await expect(service.reportDeliveryException({ ...startInput, targetStopId: ids.stop }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(service.reportDeliveryException({ ...startInput, reason: '   ', targetStopId: ids.stop }))
+      .rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(tx.dsvDeliveryException.create).not.toHaveBeenCalled();
+  });
+
+  test('replays receipts created with the legacy fingerprint without creating historical email jobs', async () => {
+    const { service, tx } = harness();
+    const input = { ...startInput, reasonCode: 'RECIPIENT_ABSENT', targetStopId: ids.stop };
+    const payloadHash = createHash('sha256').update('REPORT_DELIVERY_EXCEPTION\n' + JSON.stringify({
+      ...input, explanation: null, reasonCode: input.reasonCode,
+    })).digest('hex');
+    const result = { assignmentEpoch: '4', commandId: ids.command, duplicate: false,
+      exceptionId: 'historical-report', executionContextId: ids.context, notificationId: 'historical-notification', routeVersion: 3 };
+    tx.dsvExecutionCommand.findUnique.mockResolvedValueOnce({ payloadHash, result });
+    expect(await service.reportDeliveryException(input)).toEqual({
+      ...result, duplicate: true, emailStatus: 'NOT_PREPARED', reportStatus: 'ACCEPTED',
+    });
+    expect(tx.dsvDeliveryException.create).not.toHaveBeenCalled();
   });
 
   test('rejects stale assignment fences before business writes', async () => {

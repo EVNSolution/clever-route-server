@@ -754,7 +754,9 @@ async function seedTenant(prisma: PrismaClient, label: string) {
       version: 1,
     },
   });
-  await Promise.all([
+  // These fixture writes share route/order projection locks. Run them on one
+  // transaction connection instead of racing independent seed transactions.
+  await prisma.$transaction([
     prisma.routePlanStop.create({
       data: { deliveryStopId: nextStop.id, etaInputRouteVersionId: child.id, routePlanId: route.id, sequence: 1, shopId: shop.id },
     }),
@@ -794,7 +796,8 @@ async function seedTenant(prisma: PrismaClient, label: string) {
 }
 
 async function runWarehouseCycle(prisma: PrismaClient, fixture: FixtureRecord) {
-  const base = new Date(Date.now() + 5_000);
+  // GPS scenarios use the fixture's business-day morning, independent of wall time.
+  const base = new Date(`${fixture.serviceDate}T08:00:00+09:00`);
   await prepareLiveGeofence(prisma, fixture, base);
   const service = new PrismaDsvGeofenceService(prisma, { policy: geofencePolicy });
   await processGpsObservations(prisma, fixture, service, [
@@ -830,7 +833,7 @@ async function runReminderRepeat(prisma: PrismaClient, fixture: FixtureRecord) {
 }
 
 async function runDestinationArrival(prisma: PrismaClient, fixture: FixtureRecord) {
-  const base = new Date(Date.now() + 900_000);
+  const base = new Date(`${fixture.serviceDate}T08:15:00+09:00`);
   const service = new PrismaDsvGeofenceService(prisma, { policy: geofencePolicy });
   await processGpsObservations(prisma, fixture, service, [
     { at: base, coordinates: ['37.5000000', '127.0000000'] as const },
@@ -855,6 +858,7 @@ async function prepareLiveGeofence(prisma: PrismaClient, fixture: FixtureRecord,
   await prisma.dsvExecutionContext.update({
     data: {
       departureObservedAt: null,
+      effectiveAt: now,
       liveEligibleAt: now,
       monitorEndAt: new Date(now.getTime() + 3_600_000),
       monitorStartAt: now,
@@ -867,6 +871,11 @@ async function prepareLiveGeofence(prisma: PrismaClient, fixture: FixtureRecord,
       warehouseNotifiedAt: null,
     },
     where: { id: fixture.contextId },
+  });
+  // Align only the synthetic mapping with the controlled GPS scenario clock.
+  await prisma.dsvExecutionRouteMapping.updateMany({
+    data: { validFrom: now },
+    where: { executionContextId: fixture.contextId, validUntil: null },
   });
 }
 

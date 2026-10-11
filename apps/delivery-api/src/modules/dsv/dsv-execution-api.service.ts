@@ -159,6 +159,9 @@ export class PrismaDsvExecutionApiService implements DsvExecutionContextApi {
         select: {
           acknowledgedAt: true,
           createdAt: true,
+          emailSentAt: true,
+          emailStatus: true,
+          explanation: true,
           id: true,
           reasonCode: true,
           resolvedAt: true,
@@ -213,7 +216,10 @@ export class PrismaDsvExecutionApiService implements DsvExecutionContextApi {
         items: reportRows.slice(0, 100).map((report) => ({
           acknowledgedAt: report.acknowledgedAt?.toISOString() ?? null,
           createdAt: report.createdAt.toISOString(),
+          emailSentAt: report.emailSentAt?.toISOString() ?? null,
+          emailStatus: report.emailStatus,
           id: report.id,
+          reason: report.explanation ?? report.reasonCode,
           reasonCode: report.reasonCode,
           resolvedAt: report.resolvedAt?.toISOString() ?? null,
           status: report.status,

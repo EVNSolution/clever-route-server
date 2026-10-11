@@ -210,6 +210,45 @@ describe('DSV execution HTTP routes', () => {
     } finally { await app.close(); }
   });
 
+  test('accepts free-text reports without photos or reason codes and rejects an empty reason', async () => {
+    const { app, commands, headers } = setup();
+    try {
+      const response = await app.inject({
+        headers, method: 'POST', payload: { ...startPayload, reason: '진입로 폐쇄', targetStopId: ids.stop },
+        url: `/api/dsv/driver/executions/${ids.context}/delivery-exceptions`,
+      });
+      expect(response.statusCode).toBe(201);
+      expect(commands.reportDeliveryException).toHaveBeenCalledWith(expect.objectContaining({ reason: '진입로 폐쇄' }));
+      for (const extra of [{}, { reason: ' ' }, { reason: 'x'.repeat(1_001) }]) {
+        const invalid = await app.inject({
+          headers, method: 'POST', payload: { ...startPayload, ...extra, targetStopId: ids.stop },
+          url: `/api/dsv/driver/executions/${ids.context}/delivery-exceptions`,
+        });
+        expect(invalid.statusCode).toBe(400);
+      }
+    } finally { await app.close(); }
+  });
+
+  test('accepts textarea line breaks and tabs only for free-text reason', async () => {
+    const { app, commands, headers } = setup();
+    const reason = '진입로 폐쇄\r\n담당자 요청:\t내일 재방문\n오전 연락 필요';
+    try {
+      const response = await app.inject({
+        headers, method: 'POST', payload: { ...startPayload, reason, targetStopId: ids.stop },
+        url: `/api/dsv/driver/executions/${ids.context}/delivery-exceptions`,
+      });
+      expect(response.statusCode).toBe(201);
+      expect(commands.reportDeliveryException).toHaveBeenCalledWith(expect.objectContaining({ reason }));
+      for (const extra of [{ reason: '진입로\u0000폐쇄' }, { reasonCode: 'OTHER\nREASON' }]) {
+        const invalid = await app.inject({
+          headers, method: 'POST', payload: { ...startPayload, ...extra, targetStopId: ids.stop },
+          url: `/api/dsv/driver/executions/${ids.context}/delivery-exceptions`,
+        });
+        expect(invalid.statusCode).toBe(400);
+      }
+    } finally { await app.close(); }
+  });
+
   test('keeps operations report GET pure and requires CSRF plus write scope for state changes', async () => {
     const { adminHeaders, app, commands } = setupAdmin();
     try {

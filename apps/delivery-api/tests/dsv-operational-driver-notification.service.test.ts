@@ -11,7 +11,7 @@ import {
 } from '../src/modules/dsv/dsv-operational-driver-notification.provider.js';
 import { createDsvAdminPrincipal, type DsvDriverPrincipal } from '../src/modules/dsv/dsv-principal.js';
 
-const now = new Date('2026-10-06T03:00:00.000Z');
+const now = new Date('2026-10-06T02:30:00.000Z');
 const accountId = '10000000-0000-4000-8000-000000000001';
 const shopId = '20000000-0000-4000-8000-000000000001';
 const notificationId = '30000000-0000-4000-8000-000000000001';
@@ -399,17 +399,88 @@ describe('PrismaDsvOperationalDriverNotificationService sender', () => {
       body: '배송 시작이 확인되지 않았습니다. 안전한 곳에 정차한 후 시작 버튼을 눌러주세요.',
       collapseKey: `${executionContextId}:N05`,
       payload: {
-        expiresAt: '2026-10-06T04:00:00.000Z',
+        expiresAt: '2026-10-06T02:35:00.000Z',
         kind: 'N05',
         notificationId,
         schemaVersion: '1',
       },
       title: '운행 시작 확인이 필요합니다',
       token: 'push-token',
-      ttlMs: 3_600_000,
+      ttlMs: 300_000,
     });
     expect(JSON.stringify(provider.send.mock.calls[0]?.[0])).not.toContain(routePlanId);
     expect(JSON.stringify(provider.send.mock.calls[0]?.[0])).not.toContain('latitude');
+  });
+
+  test('sends N05 beyond six without a configured business cap', async () => {
+    const { prisma, provider } = createSenderHarness({ ordinal: 8 });
+    provider.send.mockResolvedValue({ status: 'SENT' });
+    const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider,
+      { ...livePolicy, businessReminderCap: null }, { clock: () => now });
+    await expect(service.runOnce(now)).resolves.toMatchObject({ sent: 1 });
+  });
+
+  test.each(['2026-10-06T03:00:00.000Z', '2026-10-07T01:00:00.000Z'])('blocks old queued N05 at %s', async (at) => {
+    const { notification, prisma, provider } = createSenderHarness();
+    const boundary = new Date(at);
+    notification.createdAt = new Date(boundary.getTime() - 60_000);
+    notification.dueAt = notification.createdAt;
+    notification.expiresAt = new Date(boundary.getTime() + 86_400_000);
+    const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider,
+      { ...livePolicy, notificationRetentionMs: 2 * 86_400_000 }, { clock: () => boundary });
+    await expect(service.runOnce(boundary)).resolves.toMatchObject({ sent: 0, skipped: 1 });
+    expect(provider.send).not.toHaveBeenCalled();
+  });
+
+  test('checks noon after the final asynchronous lease lookup', async () => {
+    const { notification, prisma, provider } = createSenderHarness();
+    let clock = new Date('2026-10-06T02:59:59.900Z');
+    notification.createdAt = clock;
+    notification.dueAt = clock;
+    const first: unknown = await prisma.dsvOperationalNotificationAttempt.findFirst();
+    prisma.dsvOperationalNotificationAttempt.findFirst
+      .mockResolvedValueOnce(first)
+      .mockImplementationOnce(() => {
+        clock = new Date('2026-10-06T03:00:00.000Z');
+        return Promise.resolve(first);
+      });
+    const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider, livePolicy, { clock: () => clock });
+    await expect(service.runOnce(clock)).resolves.toMatchObject({ sent: 0, skipped: 1 });
+    expect(provider.send).not.toHaveBeenCalled();
+    expect(prisma.dsvOperationalNotificationAttempt.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ errorCode: 'MISSING_START_EXPIRED', status: 'SKIPPED' }) as unknown,
+    }));
+  });
+
+  test('limits provider TTL to noon and does not schedule a retry across noon', async () => {
+    const { notification, prisma, provider } = createSenderHarness();
+    let clock = new Date('2026-10-06T02:59:59.000Z');
+    notification.createdAt = clock;
+    notification.dueAt = clock;
+    provider.send.mockImplementation(() => {
+      clock = new Date('2026-10-06T03:00:00.000Z');
+      return Promise.resolve({ errorCode: 'TEMPORARY', status: 'FAILED' as const });
+    });
+    const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider, livePolicy, { clock: () => clock });
+    await expect(service.runOnce(clock)).resolves.toMatchObject({ sent: 0, dead: 1 });
+    expect(provider.send).toHaveBeenCalledWith(expect.objectContaining({
+      ttlMs: 1_000, payload: expect.objectContaining({ expiresAt: '2026-10-06T03:00:00.000Z' }) as unknown,
+    }));
+    expect(prisma.dsvOperationalNotificationAttempt.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'DEAD' }) as unknown,
+    }));
+  });
+
+  test.each(['N01', 'N02', 'N04'] as const)('does not apply the N05 noon cutoff to %s', async (kind) => {
+    const { notification, prisma, provider } = createSenderHarness({ kind });
+    const afterNoon = new Date('2026-10-06T04:00:00.000Z');
+    notification.createdAt = afterNoon;
+    notification.dueAt = afterNoon;
+    notification.expiresAt = new Date(afterNoon.getTime() + 3_600_000);
+    provider.send.mockResolvedValue({ status: 'SENT' });
+    const service = new PrismaDsvOperationalDriverNotificationService(prisma as never, provider,
+      { ...livePolicy, allowedKinds: [kind] }, { clock: () => afterNoon });
+    await expect(service.runOnce(afterNoon)).resolves.toMatchObject({ sent: 1 });
   });
 
   test('uses the future execution service date for N01 push instead of the send date', async () => {
@@ -558,7 +629,7 @@ describe('PrismaDsvOperationalDriverNotificationService sender', () => {
     expect(prisma.dsvOperationalNotificationAttempt.updateMany).toHaveBeenLastCalledWith({
       data: expect.objectContaining({
         errorCode: 'TEMPORARY',
-        nextAttemptAt: new Date('2026-10-06T03:01:00.000Z'),
+        nextAttemptAt: new Date(now.getTime() + 60_000),
         status: 'RETRY',
       }) as unknown,
       where: expect.objectContaining({ id: attemptId, status: 'LEASED' }) as unknown,
@@ -753,7 +824,7 @@ function createBaseHarness() {
   return { prisma, provider };
 }
 
-function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N01' | 'N03' | 'N04' | 'N05' | 'N06'; ordinal?: number } = {}) {
+function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N01' | 'N02' | 'N03' | 'N04' | 'N05' | 'N06'; ordinal?: number } = {}) {
   const { prisma, provider } = createBaseHarness();
   const notification = {
     assignmentEpoch: 1n,
@@ -820,7 +891,7 @@ function createSenderHarness(overrides: { attemptCount?: number; kind?: 'N01' | 
     notificationMode: 'LIVE',
     policy: { authorizationId: 'change-control-123', policyVersion: 'synthetic-v1' },
     routePlanId,
-    serviceDate: new Date('2027-01-02T00:00:00.000Z'),
+    serviceDate: new Date(overrides.kind === 'N01' ? '2027-01-02T00:00:00.000Z' : '2026-10-06T00:00:00.000Z'),
     startedAt: null,
     status: 'ACTIVE',
     vehicleId: 'vehicle-1',

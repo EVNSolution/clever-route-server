@@ -55,7 +55,7 @@ export class FirebaseAdminDsvOperationalPushProvider implements DsvOperationalPu
   readonly providerName = 'firebase-admin';
   private initialized = false;
 
-  constructor(private readonly options: { projectId: string }) {}
+  constructor(private readonly options: { clock?: () => Date; projectId: string }) {}
 
   async send(message: DsvOperationalPushMessage): Promise<DsvOperationalPushResult> {
     try {
@@ -67,7 +67,19 @@ export class FirebaseAdminDsvOperationalPushProvider implements DsvOperationalPu
         initializeApp({ credential: applicationDefault(), projectId: this.options.projectId });
         this.initialized = true;
       }
-      const providerMessageId = await getMessaging().send({
+      const messaging = getMessaging();
+      let ttlMs = Math.min(message.ttlMs, FCM_MAX_TTL_MS);
+      if (message.payload.kind === 'N05') {
+        // Dynamic SDK loading and initialization can cross the reminder deadline.
+        // Check after those steps, immediately before calling the SDK transport.
+        const remainingMs = new Date(message.payload.expiresAt).getTime()
+          - (this.options.clock?.() ?? new Date()).getTime();
+        if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+          return { errorCode: 'MISSING_START_EXPIRED', status: 'SKIPPED' };
+        }
+        ttlMs = Math.min(ttlMs, remainingMs);
+      }
+      const providerMessageId = await messaging.send({
         android: {
           ...(message.collapseKey === undefined ? {} : { collapseKey: message.collapseKey }),
           notification: {
@@ -75,7 +87,7 @@ export class FirebaseAdminDsvOperationalPushProvider implements DsvOperationalPu
             ...(message.collapseKey === undefined ? {} : { tag: message.collapseKey }),
           },
           priority: 'high',
-          ttl: Math.min(message.ttlMs, FCM_MAX_TTL_MS),
+          ttl: ttlMs,
         },
         data: message.payload,
         notification: { body: message.body, title: message.title },

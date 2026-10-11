@@ -30,6 +30,15 @@ describe('DSV token-generation channel routing', () => {
     expect(prisma.dsvNotificationCapability.findMany).toHaveBeenCalledOnce();
   });
 
+  test('reserves the operational channel for publication outside the old monitor window', async () => {
+    const prisma = storage();
+    prisma.dsvExecutionContext.findMany.mockResolvedValue([{
+      ...context(), monitorStartAt: new Date(now.getTime() + 3_600_000),
+      monitorEndAt: new Date(now.getTime() + 7_200_000),
+    }]);
+    expect(await legacyDsvNotificationTokens(prisma, policy, input())).toEqual([]);
+  });
+
   test.each(['hash', 'generation', 'installation', 'schema', 'app'] as const)('stale %s capability preserves legacy delivery', async (mutation) => {
     const prisma = storage();
     const candidate = { ...token };
@@ -48,14 +57,11 @@ describe('DSV token-generation channel routing', () => {
     expect(await legacyDsvNotificationTokens(prisma, policy, input())).toEqual([token]);
   });
 
-  test.each(['retention', 'window', 'route', 'account'] as const)('new worker ineligible %s retains legacy delivery', async (reason) => {
+  test.each(['retention', 'route', 'account'] as const)('new worker ineligible %s retains legacy delivery', async (reason) => {
     const prisma = storage();
     if (reason === 'retention') prisma.dsvOperationalNotification.findFirst.mockResolvedValue({
       ...intent(), expiresAt: new Date(now.getTime() + policy.notificationRetentionMs! + 1),
     });
-    if (reason === 'window') prisma.dsvExecutionContext.findMany.mockResolvedValue([{
-      ...context(), monitorEndAt: new Date(now.getTime() + policy.monitorWindowMs! + 1),
-    }]);
     if (reason === 'route') prisma.routePlan.findFirst.mockResolvedValue({ ...route(), driverId: 'new-driver' });
     if (reason === 'account') prisma.driverPushToken.findUnique.mockResolvedValue({ ...currentToken(), account: { status: 'DISABLED' } });
     expect(await legacyDsvNotificationTokens(prisma, policy, input())).toEqual([token]);

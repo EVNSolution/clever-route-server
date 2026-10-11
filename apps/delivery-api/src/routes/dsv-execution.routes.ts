@@ -337,14 +337,16 @@ function parseDeliveryExceptionBody(
 ): DsvReportDeliveryExceptionInput | null {
   const body = exactObject(request.body, [
     'assignmentEpoch', 'assignmentGeneration', 'commandId', 'expectedRouteVersionId', 'explanation', 'occurredAt',
-    'reasonCode', 'routeVersion', 'targetStopId',
+    'reason', 'reasonCode', 'routeVersion', 'targetStopId',
   ]);
   if (!uuid.test(executionContextId) || !isEmptyObject(request.query) || body === null) return null;
   const common = parseCommandFence(body);
-  const reasonCode = requiredString(body.reasonCode, 80);
+  const reasonCode = body.reasonCode === undefined ? undefined : requiredString(body.reasonCode, 80);
+  const reason = body.reason === undefined ? undefined : requiredString(body.reason, 1_000, true);
   const targetStopId = uuidString(body.targetStopId);
   const explanation = optionalText(body.explanation, 1_000);
-  if (common === null || reasonCode === null || targetStopId === null
+  if (common === null || reasonCode === null || reason === null || targetStopId === null
+    || (reason === undefined && reasonCode === undefined && !explanation)
     || (body.explanation !== undefined && explanation === null)) return null;
   return {
     ...common,
@@ -352,7 +354,8 @@ function parseDeliveryExceptionBody(
     driverId: auth.principal.driverId,
     executionContextId,
     ...(explanation === undefined ? {} : { explanation }),
-    reasonCode,
+    ...(reason === undefined ? {} : { reason }),
+    ...(reasonCode === undefined ? {} : { reasonCode }),
     shopDomain: auth.shopDomain,
     shopId: auth.principal.shopId,
     targetStopId,
@@ -471,10 +474,11 @@ function optionalDate(value: unknown): string | null {
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : null;
 }
-function requiredString(value: unknown, max: number): string | null {
+function requiredString(value: unknown, max: number, multiline = false): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim();
-  return normalized !== '' && normalized.length <= max && !containsControlCharacter(normalized) ? normalized : null;
+  const checked = multiline ? normalized.replace(/[\t\n\r]/gu, '') : normalized;
+  return normalized !== '' && normalized.length <= max && !containsControlCharacter(checked) ? normalized : null;
 }
 function optionalString(value: unknown, max: number): string | null {
   return value === undefined ? null : typeof value === 'string' && value !== '' && value.length <= max ? value : null;

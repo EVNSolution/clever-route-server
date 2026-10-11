@@ -46,6 +46,7 @@ export function createDsvGeofenceRuntime(input: {
 
   const iteration = async (): Promise<void> => {
     try {
+      await service.reconcileWarehouseArrivals();
       await service.runOnce();
       await service.tickReminders();
     } catch (error) {

@@ -130,12 +130,13 @@ describe('DSV missing-start schedule and attribution', () => {
     const departure = new Date('2026-10-06T22:30:00.000Z');
     const firstDue = missingStartDueAt(departure);
     expect(firstDue.toISOString()).toBe('2026-10-06T22:35:00.000Z');
-    expect(nextMissingStartReminderAt(new Date('2026-10-06T22:37:10.000Z'), policy).toISOString())
+    expect(nextMissingStartReminderAt(new Date('2026-10-06T22:37:10.000Z')).toISOString())
       .toBe('2026-10-06T22:42:10.000Z');
   });
 
-  it('T07 rejects a LIVE policy without an injected reminder cap', () => {
-    expect(parseDsvGeofencePolicy({ ...policy, mode: 'LIVE', maxReminderCount: undefined })).toBeNull();
+  it('normalizes old caps and intervals to unlimited five-minute reminders', () => {
+    expect(parseDsvGeofencePolicy({ ...policy, mode: 'LIVE', maxReminderCount: 6, reminderIntervalSeconds: 600 }))
+      .toMatchObject({ maxReminderCount: null, reminderIntervalSeconds: 300 });
     expect(parseDsvGeofencePolicy({ ...policy, mode: 'LIVE', maxReminderCount: null }))
       .toMatchObject({ maxReminderCount: null });
   });

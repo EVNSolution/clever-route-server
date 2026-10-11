@@ -13,6 +13,7 @@ import {
   type DsvGeofenceObservation,
   type DsvGeofenceTargetState,
 } from './dsv-geofence-engine.js';
+import { dsvBusinessDayBounds, dsvServiceDateAt, isDsvBusinessDay, isDsvMissingStartWindow } from './dsv-business-time.js';
 import { parseDsvGeofencePolicy, type DsvGeofencePolicy } from './dsv-geofence-policy.js';
 
 const ACTIVE_ROUTE_STATUSES = new Set(['READY', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS']);
@@ -75,6 +76,7 @@ type ExecutionContext = {
   routePlanId: string;
   routeVersion: number;
   shopId: string;
+  serviceDate: Date;
   startedAt: Date | null;
   status: string;
   vehicleId: string | null;
@@ -82,6 +84,7 @@ type ExecutionContext = {
 };
 
 type ServiceOptions = {
+  clock?: () => Date;
   leaseMs?: number;
   policy?: DsvGeofencePolicy | null;
   technicalRetryDelayMs?: number;
@@ -102,11 +105,13 @@ const DEFAULT_TECHNICAL_RETRY_POLICY: TechnicalRetryPolicy = {
 };
 
 export class PrismaDsvGeofenceService {
+  private readonly clock: (() => Date) | undefined;
   private readonly leaseMs: number;
   private readonly policy: DsvGeofencePolicy | null;
   private readonly technicalRetryPolicy: TechnicalRetryPolicy;
 
   constructor(private readonly prisma: PrismaClient, options: ServiceOptions = {}) {
+    this.clock = options.clock;
     this.leaseMs = options.leaseMs ?? 30_000;
     this.policy = options.policy ?? null;
     this.technicalRetryPolicy = {
@@ -127,7 +132,148 @@ export class PrismaDsvGeofenceService {
     return this.processClaimed(job, now);
   }
 
-  async tickReminders(now = new Date()): Promise<number> {
+  /** Publication can occur after the vehicle has already completed its arrival dwell. */
+  async reconcileWarehouseArrivals(now = new Date()): Promise<number> {
+    const candidates = await this.prisma.dsvExecutionContext.findMany({
+      select: { id: true, shopId: true },
+      where: {
+        closedAt: null, effectiveAt: { lte: now }, notificationMode: 'LIVE',
+        serviceDate: dsvServiceDateAt(now), startedAt: null, status: 'ACTIVE',
+        warehouseNotifiedAt: null, vehicleId: { not: null },
+      },
+    });
+    let count = 0;
+    for (const candidate of candidates) {
+      count += await this.prisma.$transaction(async (transaction) => {
+        await lockExecutionContext(transaction, candidate.id);
+        const context = await transaction.dsvExecutionContext.findFirst({
+          where: { id: candidate.id, shopId: candidate.shopId },
+        });
+        if (context === null || context.startedAt !== null || context.warehouseNotifiedAt !== null
+          || context.vehicleId === null || !await hasCurrentNotificationAuthority(transaction, context, now)) return 0;
+        const policy = this.resolvePolicy(context.policy);
+        const depot = parseSnapshot(context.contentSnapshot)?.depot;
+        if (policy === null || policy.mode !== 'LIVE' || depot === null || depot === undefined) return 0;
+        const currentCandidates = await transaction.dsvExecutionContext.findMany({
+          where: { shopId: context.shopId, vehicleId: context.vehicleId, status: 'ACTIVE', closedAt: null,
+            effectiveAt: { lte: now }, OR: [
+              { serviceDate: context.serviceDate },
+              { monitorStartAt: { lte: now }, monitorEndAt: { gt: now } },
+            ] },
+        });
+        const eligible = await filterContextsWithMapping(transaction, currentCandidates, now);
+        const selection = eligible.length <= 1 ? null : await transaction.dsvExecutionSelection.findFirst({
+          where: { shopId: context.shopId, vehicleId: context.vehicleId,
+            executionContextId: { in: eligible.map((item) => item.id) }, validFrom: { lte: now }, validUntil: { gt: now } },
+        });
+        if (resolveDsvExecutionAttribution(eligible, selection?.executionContextId ?? null)?.id !== context.id) return 0;
+        // Only the first assignment can use dwell observed before publication. Reassignment needs fresh evidence.
+        const historySeconds = policy.maxObservationDelaySeconds + policy.arrivalDwellSeconds
+          + policy.maxGapSeconds * policy.arrivalMinSamples;
+        const since = new Date(Math.max(now.getTime() - historySeconds * 1000,
+          context.assignmentEpoch === 1n ? 0 : context.effectiveAt.getTime()));
+        const samples = await transaction.uvisVehicleTelemetrySample.findMany({
+          include: { device: { select: { shopId: true, vehicleId: true } } },
+          orderBy: [{ observedAt: 'asc' }, { id: 'asc' }],
+          where: { shopId: context.shopId, vehicleId: context.vehicleId, sourceKind: 'VEHICLE_GPS',
+            observedAt: { gte: since, lte: now } },
+        });
+        let state = emptyDsvGeofenceState();
+        let firstObservedAt: Date | null = null;
+        let confirmedObservedAt: Date | null = null;
+        let confirmationSampleId: string | null = null;
+        let sourceSample: TelemetrySample | null = null;
+        const validSamples: TelemetrySample[] = [];
+        for (const sample of samples) {
+          if (validateObservationIdentity(sample, { shopId: context.shopId, vehicleId: context.vehicleId }) !== null
+            || validateObservationTiming(sample, policy, sample.receivedAt) !== null) {
+            state = emptyDsvGeofenceState();
+            sourceSample = null;
+            continue;
+          }
+          validSamples.push(sample);
+          if (state.lastObservationAt !== null
+            && sample.observedAt.getTime() - Date.parse(state.lastObservationAt) > policy.maxGapSeconds * 1000) {
+            state = emptyDsvGeofenceState();
+          }
+          const observation = toObservation(sample);
+          const advanced = advanceDsvGeofence(state, observation, {
+            ...depot, entryRadiusMeters: policy.warehouseRadiusMeters, exitRadiusMeters: policy.warehouseExitRadiusMeters,
+          }, policy);
+          if (advanced.transition === 'ARRIVED') {
+            const evidence = dsvGeofenceTransitionEvidence(state, observation);
+            firstObservedAt = evidence.firstObservedAt;
+            confirmedObservedAt = evidence.confirmedObservedAt;
+            confirmationSampleId = sample.id;
+          }
+          state = advanced.state;
+          sourceSample = sample;
+        }
+        if (state.phase !== 'INSIDE' || sourceSample === null || sourceSample.staleAfter <= now
+          || validateObservationTiming(sourceSample, policy, now) !== null
+          || firstObservedAt === null || confirmedObservedAt === null || confirmationSampleId === null) return 0;
+        const coordinateHash = geofenceCoordinateHash(depot, policy.warehouseRadiusMeters, policy.warehouseExitRadiusMeters);
+        const persisted = await transaction.dsvGeofenceState.findUnique({
+          where: { executionContextId_assignmentEpoch_targetKey: {
+            executionContextId: context.id, assignmentEpoch: context.assignmentEpoch, targetKey: 'DEPOT',
+          } },
+        });
+        const stored = parseStoredState(persisted?.state);
+        let arrivalEvidence: { confirmedObservedAt: Date; firstObservedAt: Date; sampleId: string } | null = {
+          confirmedObservedAt, firstObservedAt, sampleId: confirmationSampleId,
+        };
+        if (persisted?.policyVersion === policy.policyVersion && stored?.coordinateHash === coordinateHash) {
+          // The bounded dwell proof must not reset an existing visit or replay its ARRIVED event.
+          state = stored.geofence;
+          arrivalEvidence = null;
+          for (const sample of validSamples) {
+            const observation = toObservation(sample);
+            const advanced = advanceDsvGeofence(state, observation, {
+              ...depot, entryRadiusMeters: policy.warehouseRadiusMeters, exitRadiusMeters: policy.warehouseExitRadiusMeters,
+            }, policy);
+            if (advanced.transition === 'ARRIVED') {
+              arrivalEvidence = { ...dsvGeofenceTransitionEvidence(state, observation), sampleId: sample.id };
+            }
+            state = advanced.state;
+          }
+          if (state.phase !== 'INSIDE' || state.lastObservationAt !== sourceSample.observedAt.toISOString()) return 0;
+        }
+        const created = await createLiveNotification(transaction, context, policy, now, {
+          evidenceObservedAt: sourceSample.observedAt, kind: 'N04', logicalKey: `N04:${context.id}`, ordinal: 1, targetStopId: null,
+        });
+        if (!created) return 0;
+        await transaction.dsvGeofenceState.upsert({
+          create: { assignmentEpoch: context.assignmentEpoch, executionContextId: context.id, policyVersion: policy.policyVersion,
+            shopId: context.shopId, state: { coordinateHash, geofence: state }, targetKey: 'DEPOT' },
+          update: { policyVersion: policy.policyVersion, state: { coordinateHash, geofence: state } },
+          where: { executionContextId_assignmentEpoch_targetKey: {
+            executionContextId: context.id, assignmentEpoch: context.assignmentEpoch, targetKey: 'DEPOT',
+          } },
+        });
+        if (arrivalEvidence !== null) {
+          await transaction.dsvGeofenceEvent.createMany({
+            data: { assignmentEpoch: context.assignmentEpoch, confirmedAt: now,
+              confirmedObservedAt: arrivalEvidence.confirmedObservedAt,
+              executionContextId: context.id, firstObservedAt: arrivalEvidence.firstObservedAt,
+              logicalKey: `${context.id}:${context.assignmentEpoch.toString()}:DEPOT:ARRIVED:${state.visitOrdinal}:${arrivalEvidence.sampleId}`,
+              policyVersion: policy.policyVersion, routeVersion: context.routeVersion, shopId: context.shopId,
+              sourceSampleId: arrivalEvidence.sampleId, targetKey: 'DEPOT', transition: 'ARRIVED', visitOrdinal: state.visitOrdinal },
+            skipDuplicates: true,
+          });
+        }
+        await transaction.dsvExecutionContext.update({
+          data: { warehouseNotifiedAt: sourceSample.observedAt }, where: { id: context.id },
+        });
+        // Reconciliation consumes these samples before the queue can emit ARRIVED.
+        await pauseMissingStartOnWarehouseReturn(transaction, context, now);
+        return 1;
+      });
+    }
+    return count;
+  }
+
+  async tickReminders(at?: Date): Promise<number> {
+    const readNow = this.clock ?? (at === undefined ? () => new Date() : () => at);
     const contexts = await this.prisma.dsvExecutionContext.findMany({
       select: {
         assignmentEpoch: true,
@@ -137,8 +283,7 @@ export class PrismaDsvGeofenceService {
         shopId: true,
       },
       where: {
-        reminderDueAt: { lte: now },
-        reminderStatus: 'REMINDER_ACTIVE',
+        reminderStatus: { in: ['REMINDER_ACTIVE', 'CAP_REACHED'] },
         startedAt: null,
         status: 'ACTIVE',
       },
@@ -147,9 +292,17 @@ export class PrismaDsvGeofenceService {
     for (const candidate of contexts) {
       const inserted = await this.prisma.$transaction(async (transaction) => {
         await lockExecutionContext(transaction, candidate.id);
+        let now = readNow();
         const context = await transaction.dsvExecutionContext.findFirst({ where: { id: candidate.id, shopId: candidate.shopId } });
-        if (context === null || context.reminderStatus !== 'REMINDER_ACTIVE' || context.startedAt !== null) return 0;
-        if (context.reminderDueAt === null || context.reminderDueAt.getTime() > now.getTime()) return 0;
+        if (context === null || !['REMINDER_ACTIVE', 'CAP_REACHED'].includes(context.reminderStatus)) return 0;
+        if (now < dsvBusinessDayBounds(context.serviceDate).start) return 0;
+        if (!isDsvMissingStartWindow(context.serviceDate, now)) {
+          await expireMissingStart(transaction, context.id, now);
+          return 0;
+        }
+        if (context.startedAt !== null || context.closedAt !== null || context.status !== 'ACTIVE') return 0;
+        const resumingLegacyCap = context.reminderStatus === 'CAP_REACHED';
+        if (!resumingLegacyCap && (context.reminderDueAt === null || context.reminderDueAt.getTime() > now.getTime())) return 0;
         const policy = this.resolvePolicy(context.policy);
         if (policy === null || policy.mode !== 'LIVE' || context.notificationMode !== 'LIVE') return 0;
         if (
@@ -164,17 +317,9 @@ export class PrismaDsvGeofenceService {
           });
           return 0;
         }
-        if (policy.maxReminderCount === null) return 0;
         if (context.reminderIncidentId === null) {
           await transaction.dsvExecutionContext.update({
             data: { reminderDueAt: null, reminderStatus: 'INCIDENT_MISSING' },
-            where: { id: context.id },
-          });
-          return 0;
-        }
-        if (context.reminderOrdinal >= policy.maxReminderCount) {
-          await transaction.dsvExecutionContext.update({
-            data: { reminderDueAt: null, reminderStatus: 'CAP_REACHED' },
             where: { id: context.id },
           });
           return 0;
@@ -186,15 +331,32 @@ export class PrismaDsvGeofenceService {
           });
           return 0;
         }
+        if (resumingLegacyCap) {
+          const latest = await transaction.dsvOperationalNotification.findFirst({
+            select: { createdAt: true }, orderBy: { createdAt: 'desc' },
+            where: { executionContextId: context.id, assignmentEpoch: context.assignmentEpoch, kind: 'N05' },
+          });
+          const dueAt = missingStartDueAt(latest?.createdAt ?? context.departureObservedAt);
+          await transaction.dsvExecutionContext.update({
+            data: { reminderStatus: 'REMINDER_ACTIVE', reminderDueAt: dueAt }, where: { id: context.id },
+          });
+          if (dueAt > now) return 0;
+        }
         const ordinal = context.reminderOrdinal + 1;
+        now = readNow();
+        if (!isDsvMissingStartWindow(context.serviceDate, now)) {
+          await expireMissingStart(transaction, context.id, now);
+          return 0;
+        }
         const result = await transaction.dsvOperationalNotification.createMany({
           data: {
             assignmentEpoch: context.assignmentEpoch,
             audience: 'DRIVER',
             businessStatus: 'OPEN',
+            createdAt: now,
             dueAt: now,
             executionContextId: context.id,
-            expiresAt: operationalGeofenceNotificationExpiresAt(context, policy, now),
+            expiresAt: operationalGeofenceNotificationExpiresAt(context, policy, now, 'N05'),
             kind: 'N05',
             logicalKey: `N05:${context.id}:${context.assignmentEpoch.toString()}:${context.reminderIncidentId}:${ordinal}`,
             ordinal,
@@ -207,7 +369,7 @@ export class PrismaDsvGeofenceService {
         });
         await transaction.dsvExecutionContext.update({
           data: {
-            reminderDueAt: nextMissingStartReminderAt(now, policy),
+            reminderDueAt: nextMissingStartReminderAt(now),
             reminderOrdinal: ordinal,
           },
           where: { id: context.id },
@@ -272,14 +434,16 @@ export class PrismaDsvGeofenceService {
           where: {
             closedAt: null,
             effectiveAt: { lte: sample.observedAt },
-            OR: [{ monitorEndAt: null }, { monitorEndAt: { gte: sample.observedAt } }],
+            OR: [
+              { serviceDate: dsvServiceDateAt(sample.observedAt) },
+              { monitorStartAt: { lte: sample.observedAt }, monitorEndAt: { gt: sample.observedAt } },
+            ],
             shopId: sample.shopId,
             status: 'ACTIVE',
             vehicleId: sample.vehicleId,
           },
         }) as ExecutionContext[];
-        const intervalEligible = contexts.filter((context) => context.monitorStartAt === null || context.monitorStartAt.getTime() <= sample.observedAt.getTime());
-        const eligible = await filterContextsWithMapping(transaction, intervalEligible, sample.observedAt);
+        const eligible = await filterContextsWithMapping(transaction, contexts, sample.observedAt);
         const context = await selectExecutionContext(transaction, eligible, sample);
         if (context === null) {
           const reason = eligible.length > 1 ? 'AMBIGUOUS_EXECUTION_CONTEXT' : 'NO_EXECUTION_CONTEXT';
@@ -291,9 +455,9 @@ export class PrismaDsvGeofenceService {
             assignmentEpoch: context.assignmentEpoch, id: context.id, shopId: sample.shopId,
             status: 'ACTIVE', closedAt: null, vehicleId: sample.vehicleId,
             effectiveAt: { lte: sample.observedAt },
-            AND: [
-              { OR: [{ monitorStartAt: null }, { monitorStartAt: { lte: sample.observedAt } }] },
-              { OR: [{ monitorEndAt: null }, { monitorEndAt: { gt: sample.observedAt } }] },
+            OR: [
+              { serviceDate: dsvServiceDateAt(sample.observedAt) },
+              { monitorStartAt: { lte: sample.observedAt }, monitorEndAt: { gt: sample.observedAt } },
             ],
           },
         }) as ExecutionContext | null;
@@ -305,9 +469,9 @@ export class PrismaDsvGeofenceService {
           where: {
             shopId: sample.shopId, status: 'ACTIVE', closedAt: null, vehicleId: sample.vehicleId,
             effectiveAt: { lte: sample.observedAt },
-            AND: [
-              { OR: [{ monitorStartAt: null }, { monitorStartAt: { lte: sample.observedAt } }] },
-              { OR: [{ monitorEndAt: null }, { monitorEndAt: { gt: sample.observedAt } }] },
+            OR: [
+              { serviceDate: dsvServiceDateAt(sample.observedAt) },
+              { monitorStartAt: { lte: sample.observedAt }, monitorEndAt: { gt: sample.observedAt } },
             ],
           },
         }) as ExecutionContext[];
@@ -331,7 +495,8 @@ export class PrismaDsvGeofenceService {
           !TERMINAL_STOP_STATUSES.has(stop.status)
           && haversineMeters(observation, stop) <= effectivePolicy.destinationRadiusMeters);
 
-        if (snapshot.depot !== null) {
+        if (snapshot.depot !== null && isDsvBusinessDay(current.serviceDate, sample.observedAt)
+          && isDsvBusinessDay(current.serviceDate, now)) {
           await this.processTarget(transaction, current, observation, effectivePolicy, {
             key: 'DEPOT',
             point: snapshot.depot,
@@ -340,7 +505,7 @@ export class PrismaDsvGeofenceService {
             stop: null,
           }, now);
         }
-        if (stopMatches.length <= 1) {
+        if (stopMatches.length <= 1 && withinMonitorWindow(current, now) && withinMonitorWindow(current, sample.observedAt)) {
           for (const stop of locatedStops) {
             if (TERMINAL_STOP_STATUSES.has(stop.status)) continue;
             await this.processTarget(transaction, current, observation, effectivePolicy, {
@@ -410,9 +575,7 @@ export class PrismaDsvGeofenceService {
     target: { entryRadiusMeters: number; exitRadiusMeters: number; key: string; point: SnapshotPoint; stop: SnapshotStop | null },
     now: Date,
   ): Promise<void> {
-    const coordinateHash = createHash('sha256')
-      .update(`${target.point.latitude},${target.point.longitude},${target.entryRadiusMeters},${target.exitRadiusMeters}`)
-      .digest('hex');
+    const coordinateHash = geofenceCoordinateHash(target.point, target.entryRadiusMeters, target.exitRadiusMeters);
     const persisted = await transaction.dsvGeofenceState.findUnique({
       where: {
         executionContextId_assignmentEpoch_targetKey: {
@@ -495,21 +658,8 @@ export class PrismaDsvGeofenceService {
             context.warehouseNotifiedAt = observation.observedAt;
           }
         }
-        if (context.startedAt === null && context.departureObservedAt !== null) {
-          await transaction.dsvExecutionContext.update({
-            data: { reminderDueAt: null, reminderStatus: 'PAUSED_WAREHOUSE_RETURN' },
-            where: { id: context.id },
-          });
-          await transaction.dsvOperationalNotification.updateMany({
-            data: { businessStatus: 'RESOLVED', resolutionReason: 'WAREHOUSE_RETURN', resolvedAt: now },
-            where: {
-              businessStatus: 'OPEN',
-              executionContextId: context.id,
-              kind: 'N05',
-            },
-          });
-        }
-      } else if (context.startedAt === null) {
+        await pauseMissingStartOnWarehouseReturn(transaction, context, now);
+      } else if (context.startedAt === null && isDsvMissingStartWindow(context.serviceDate, now)) {
         await transaction.dsvExecutionContext.update({
           data: {
             departureObservedAt: observation.observedAt,
@@ -541,6 +691,22 @@ export class PrismaDsvGeofenceService {
   }
 }
 
+async function pauseMissingStartOnWarehouseReturn(
+  transaction: Prisma.TransactionClient,
+  context: ExecutionContext,
+  now: Date,
+): Promise<void> {
+  if (context.startedAt !== null || context.departureObservedAt === null) return;
+  await transaction.dsvExecutionContext.update({
+    data: { reminderDueAt: null, reminderStatus: 'PAUSED_WAREHOUSE_RETURN' },
+    where: { id: context.id },
+  });
+  await transaction.dsvOperationalNotification.updateMany({
+    data: { businessStatus: 'RESOLVED', resolutionReason: 'WAREHOUSE_RETURN', resolvedAt: now },
+    where: { businessStatus: 'OPEN', executionContextId: context.id, kind: 'N05' },
+  });
+}
+
 async function createLiveNotification(
   transaction: Prisma.TransactionClient,
   context: ExecutionContext,
@@ -552,17 +718,18 @@ async function createLiveNotification(
   if (
     context.liveEligibleAt === null
     || context.liveEligibleAt.getTime() > now.getTime()
-    || input.evidenceObservedAt.getTime() < context.liveEligibleAt.getTime()
+    || (input.kind !== 'N04' && input.evidenceObservedAt.getTime() < context.liveEligibleAt.getTime())
   ) return false;
-  if (!await hasCurrentNotificationAuthority(transaction, context, now)) return false;
+  if (!await hasCurrentNotificationAuthority(transaction, context, now, input.kind)) return false;
   const inserted = await transaction.dsvOperationalNotification.createMany({
     data: {
       assignmentEpoch: context.assignmentEpoch,
       audience: 'DRIVER',
       businessStatus: 'OPEN',
+      createdAt: now,
       dueAt: now,
       executionContextId: context.id,
-      expiresAt: operationalGeofenceNotificationExpiresAt(context, policy, now),
+      expiresAt: operationalGeofenceNotificationExpiresAt(context, policy, now, input.kind),
       kind: input.kind,
       logicalKey: input.logicalKey,
       ordinal: input.ordinal,
@@ -581,25 +748,26 @@ function operationalGeofenceNotificationExpiresAt(
   context: ExecutionContext,
   policy: DsvGeofencePolicy,
   createdAt: Date,
+  kind: string,
 ): Date {
   const policyExpiry = createdAt.getTime() + policy.notificationTtlSeconds * 1000;
-  const nextReminderBoundary = createdAt.getTime() + policy.reminderIntervalSeconds * 1000;
-  const monitorExpiry = context.monitorEndAt?.getTime() ?? Number.POSITIVE_INFINITY;
-  return new Date(Math.min(policyExpiry, nextReminderBoundary, monitorExpiry));
+  const { end, noon } = dsvBusinessDayBounds(context.serviceDate);
+  const expiry = kind === 'N05'
+    ? Math.min(createdAt.getTime() + 300_000, noon.getTime())
+    : kind === 'N04' ? Math.min(createdAt.getTime() + 300_000, end.getTime())
+      : Math.min(createdAt.getTime() + policy.reminderIntervalSeconds * 1000, context.monitorEndAt?.getTime() ?? end.getTime());
+  return new Date(Math.min(policyExpiry, expiry));
 }
 
 async function hasCurrentNotificationAuthority(
   transaction: Prisma.TransactionClient,
   context: ExecutionContext,
   now: Date,
+  kind = 'N04',
 ): Promise<boolean> {
   if (context.driverId === null || context.recipientAccountId === null || context.vehicleId === null) return false;
-  if (
-    context.monitorStartAt === null
-    || context.monitorEndAt === null
-    || context.monitorStartAt.getTime() > now.getTime()
-    || context.monitorEndAt.getTime() <= now.getTime()
-  ) return false;
+  if (context.status !== 'ACTIVE' || context.closedAt !== null) return false;
+  if (kind === 'N06' ? !withinMonitorWindow(context, now) : !isDsvBusinessDay(context.serviceDate, now)) return false;
   const route = await transaction.routePlan.findFirst({
     select: { driverId: true, status: true, vehicleId: true },
     where: { id: context.routePlanId, shopId: context.shopId },
@@ -708,7 +876,7 @@ async function lockExecutionContext(transaction: Prisma.TransactionClient, execu
 
 function validateObservationIdentity(
   sample: TelemetrySample,
-  job: GeofenceJob,
+  job: Pick<GeofenceJob, 'shopId' | 'vehicleId'>,
 ): string | null {
   if (sample.sourceKind !== 'VEHICLE_GPS') return 'NOT_VEHICLE_GPS';
   if (
@@ -854,8 +1022,9 @@ function deferredTerminalReason(
   if (sample.staleAfter.getTime() <= now.getTime()) return 'SAMPLE_EXPIRED';
   if (
     contexts.length > 0
-    && contexts.every((context) => context.monitorEndAt !== null && context.monitorEndAt.getTime() <= now.getTime())
-  ) return 'MONITOR_WINDOW_EXPIRED';
+    && contexts.every((context) => dsvBusinessDayBounds(context.serviceDate).end <= now
+      && (context.monitorEndAt === null || context.monitorEndAt <= now))
+  ) return 'BUSINESS_DAY_EXPIRED';
   return technicalRetryTerminalReason(job, now, policy);
 }
 
@@ -885,4 +1054,23 @@ async function finishJob(
     where: { id: job.id, leaseToken: job.leaseToken, status: 'PROCESSING' },
   });
   if (updated.count !== 1) throw new Error('DSV geofence lease was lost before commit');
+}
+
+function withinMonitorWindow(context: ExecutionContext, now: Date): boolean {
+  return context.monitorStartAt !== null && context.monitorEndAt !== null
+    && now >= context.monitorStartAt && now < context.monitorEndAt;
+}
+
+function geofenceCoordinateHash(point: SnapshotPoint, entryRadiusMeters: number, exitRadiusMeters: number): string {
+  return createHash('sha256').update(`${point.latitude},${point.longitude},${entryRadiusMeters},${exitRadiusMeters}`).digest('hex');
+}
+
+async function expireMissingStart(transaction: Prisma.TransactionClient, executionContextId: string, now: Date): Promise<void> {
+  await transaction.dsvExecutionContext.update({
+    data: { reminderDueAt: null, reminderStatus: 'EXPIRED_NOON' }, where: { id: executionContextId },
+  });
+  await transaction.dsvOperationalNotification.updateMany({
+    data: { businessStatus: 'EXPIRED', resolvedAt: now, resolutionReason: 'MISSING_START_NOON' },
+    where: { executionContextId, kind: 'N05', businessStatus: 'OPEN' },
+  });
 }
