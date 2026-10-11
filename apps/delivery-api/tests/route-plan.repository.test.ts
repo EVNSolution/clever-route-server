@@ -2879,14 +2879,12 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('collapses a parent grouping split when deleting a child leaves only one child route', async () => {
+  test('keeps the remaining child route with its stops when deleting a child leaves one route', async () => {
+    // The office lost every route of a copied group on 2026-10-10 when one route was deleted:
+    // the single remaining route must stay as the group's route; only the split branch state goes.
     const { prisma } = createPrismaHarness({
       routeGroupingChildVersionCount: 1,
-      routeGroupingCurrentChildrenAfterDelete: [{ id: 'remaining-child-version-id', routePlanId: 'remaining-route-plan-id' }],
-      routeGroupingVersionsForCollapse: [
-        { id: 'remaining-child-version-id' },
-        { id: 'historical-sibling-version-id' }
-      ]
+      routeGroupingCurrentChildrenAfterDelete: [{ id: 'remaining-child-version-id', routePlanId: 'remaining-route-plan-id' }]
     });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
@@ -2897,23 +2895,20 @@ describe('PrismaRoutePlanRepository', () => {
       shopDomain: 'example.myshopify.com'
     });
 
-    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
-      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
-    });
-    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
-      data: { status: 'CANCELLED' },
-      where: { id: { in: ['remaining-route-plan-id'] }, shopId: 'shop-id', status: { not: 'IN_PROGRESS' } }
-    });
-    expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledTimes(1);
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({ where: { routePlanId: 'route-plan-id' } });
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: { status: 'CANCELLED' }
+    }));
+    expect(prisma.routeGroupingChildVersion.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
       where: { groupingId: 'grouping-id', shopId: 'shop-id', status: 'CURRENT', supersededAt: null }
     }));
-    expect(prisma.order.updateMany).toHaveBeenCalledWith({
-      data: { currentRouteVersionId: null },
-      where: {
-        currentRouteVersionId: { in: ['remaining-child-version-id', 'historical-sibling-version-id'] },
-        shopId: 'shop-id'
-      }
-    });
+    // Only the deleted route's versions release their orders; the remaining route keeps its ownership.
+    const releasedVersionIds = (prisma.order.updateMany.mock.calls as Array<[{ where: { currentRouteVersionId: { in: string[] } } }]>)
+      .flatMap(([args]) => args.where.currentRouteVersionId.in);
+    expect(releasedVersionIds).toContain('child-version-1');
+    expect(releasedVersionIds).not.toContain('remaining-child-version-id');
+    expect(releasedVersionIds).not.toContain('historical-sibling-version-id');
     expect(prisma.routeGroupingBranchOrderLock.deleteMany).toHaveBeenCalledWith({
       where: { groupingId: 'grouping-id', shopId: 'shop-id' }
     });
@@ -2922,49 +2917,33 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('fails closed instead of collapsing a split whose remaining sibling is in progress', async () => {
+  test('archives the empty child slots when no route plan remains after the deletion', async () => {
     const { prisma } = createPrismaHarness({
       routeGroupingChildVersionCount: 1,
-      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'remaining-route-plan-id' }],
-      routePlansForCollapse: [{ id: 'remaining-route-plan-id', status: 'IN_PROGRESS' }]
+      routeGroupingCurrentChildrenAfterDelete: [{ id: 'slot-version-id', routePlanId: null }]
     });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
     );
 
-    await expect(repository.deleteRoutePlan({
+    await repository.deleteRoutePlan({
       routePlanId: 'route-plan-id',
       shopDomain: 'example.myshopify.com'
-    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
-
-    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalledWith({
-      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
     });
+
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
       data: { status: 'CANCELLED' }
     }));
-    expect(prisma.routeGroupingBranch.deleteMany).not.toHaveBeenCalled();
-  });
-
-  test('rolls back split collapse when a sibling starts execution during the guarded cancellation', async () => {
-    const { prisma } = createPrismaHarness({
-      routeGroupingChildVersionCount: 1,
-      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'remaining-route-plan-id' }],
-      routePlanUpdateManyCount: 0
+    expect(prisma.order.updateMany).toHaveBeenCalledWith({
+      data: { currentRouteVersionId: null },
+      where: { currentRouteVersionId: { in: ['slot-version-id'] }, shopId: 'shop-id' }
     });
-    const repository = new PrismaRoutePlanRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
-    );
-
-    await expect(repository.deleteRoutePlan({
-      routePlanId: 'route-plan-id',
-      shopDomain: 'example.myshopify.com'
-    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
-
-    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalledWith({
-      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
+    expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id', status: 'CURRENT', supersededAt: null }
+    }));
+    expect(prisma.routeGroupingBranch.deleteMany).toHaveBeenCalledWith({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id' }
     });
-    expect(prisma.routeGroupingBranch.deleteMany).not.toHaveBeenCalled();
   });
 
   test('keeps a parent grouping split when deleting a child still leaves multiple child routes', async () => {
