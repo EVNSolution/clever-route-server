@@ -175,17 +175,21 @@ describe('Prisma DSV driver auth repository', () => {
       where: { refreshTokenHash: string };
     };
     const updateInput = transaction.driverAccountSession.update.mock.calls[0]?.[0] as {
-      data: { lastUsedAt: Date };
+      data: { expiresAt: Date; lastUsedAt: Date };
       where: { id: string };
     };
     expect(findInput.where.refreshTokenHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(transaction.$queryRaw).toHaveBeenCalledTimes(1);
     expect(updateInput.data.lastUsedAt).toBeInstanceOf(Date);
     expect(updateInput.where).toEqual({ id: 'session-id' });
+    // The refresh slides the session forward by a full window instead of keeping the login-time expiry.
+    const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+    expect(updateInput.data.expiresAt.getTime() - updateInput.data.lastUsedAt.getTime()).toBe(thirtyDays);
+    expect(updateInput.data.expiresAt.getTime()).toBeGreaterThan(expiresAt.getTime());
     expect(result).toMatchObject({
       account: { connectionStatus: 'LINKED', loginId: 'woojin' },
       accountId: 'account-id',
-      expiresAt,
+      expiresAt: updateInput.data.expiresAt,
       refreshToken: 'refresh-token',
       tokenVersion: 1,
     });

@@ -270,15 +270,19 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
         return null;
       }
 
+      // A used session slides forward: every successful refresh grants another full
+      // session window, so a driver who opens the app every day is never logged out
+      // 30 days after the login that created the session. Unused sessions still expire.
+      const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
       await tx.driverAccountSession.update({
-        data: { lastUsedAt: now },
+        data: { expiresAt, lastUsedAt: now },
         where: { id: session.id },
       });
       const account = await this.linkMatchingDriversInTransaction(tx, session.account);
       return {
         account: accountView(account, account.drivers),
         accountId: account.id,
-        expiresAt: session.expiresAt,
+        expiresAt,
         refreshToken,
         tokenVersion: account.tokenVersion,
       };
