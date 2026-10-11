@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { PrismaOrderQueryRepository } from '../src/modules/shopify/order-query.repository.js';
 import {
   prepareOrdersV2Filters,
+  readOrdersV2Filters,
   V2_PROGRESS,
   v2ProgressForRecord,
 } from '../src/modules/shopify/order-filters-v2.js';
@@ -49,6 +50,9 @@ database('orders v2 actual PostgreSQL cohort parity', () => {
         noStop?: boolean;
         processedAt?: string;
         area?: string | null;
+        phone?: string | null;
+        sourceOrderNumber?: string | null;
+        stopAddress?: string | null;
       } = {},
     ) => {
       const order = await prisma.order.create({
@@ -56,6 +60,10 @@ database('orders v2 actual PostgreSQL cohort parity', () => {
           shopId,
           shopifyOrderGid: `gid://shopify/Order/${name}`,
           name,
+          ...(options.phone === undefined ? {} : { phone: options.phone }),
+          ...(options.sourceOrderNumber === undefined
+            ? {}
+            : { sourceOrderNumber: options.sourceOrderNumber }),
           sourcePlatform: 'SHOPIFY',
           displayOrderSequence: BigInt(Object.keys(ids).length + 1),
           processedAt: new Date(options.processedAt ?? '2026-10-01T05:00:00Z'),
@@ -94,6 +102,9 @@ database('orders v2 actual PostgreSQL cohort parity', () => {
             : {
                 deliveryStops: {
                   create: {
+                    ...(options.stopAddress === undefined
+                      ? {}
+                      : { address1: options.stopAddress }),
                     latitude: 43.65,
                     longitude: -79.38,
                     status: options.status ?? 'PENDING',
@@ -152,6 +163,21 @@ database('orders v2 actual PostgreSQL cohort parity', () => {
     await seed('dst-first', { processedAt: '2026-03-08T05:00:00Z' });
     await seed('dst-last', { processedAt: '2026-03-09T03:59:59Z' });
     await seed('dst-next', { processedAt: '2026-03-09T04:00:00Z' });
+    await seed('#2335');
+    await seed('##2335');
+    await seed('233-merchant');
+    await seed('#12335');
+    await seed('#9999', {
+      phone: '233-555-0100',
+      sourceOrderNumber: '233-external',
+      stopAddress: '233 Hidden Street',
+    });
+    await seed('WEB_100');
+    await seed('WEBX100');
+    await seed('SALE%20');
+    await seed('SALEX20');
+    await seed('PATH\\100');
+    await seed('PATHX100');
   });
   afterAll(async () => {
     if (shopId) await prisma.shop.delete({ where: { id: shopId } });
@@ -243,6 +269,30 @@ database('orders v2 actual PostgreSQL cohort parity', () => {
         .map((row) => row.name)
         .sort(),
     ).toEqual(['dst-first', 'dst-last']);
+  });
+  test('order number prefix uses only the displayed name and treats LIKE metacharacters literally', async () => {
+    const prefix = (value: string) =>
+      readOrdersV2Filters({
+        filterVersion: '2',
+        orderedDateTimeZone: 'America/Toronto',
+        orderNumberPrefix: value,
+      });
+    expect(
+      (await cohort(prefix('  #233  ')))
+        .map((row) => row.name)
+        .sort(),
+    ).toEqual(['#2335', '233-merchant']);
+    expect(
+      (await cohort(prefix('WEB_'))).map((row) => row.name),
+    ).toEqual(['WEB_100']);
+    expect(
+      (await cohort(prefix('SALE%'))).map((row) => row.name),
+    ).toEqual(['SALE%20']);
+    expect(
+      (await cohort(prefix('PATH\\'))).map((row) => row.name),
+    ).toEqual(['PATH\\100']);
+    expect(() => prefix('##233')).toThrow('invalid order number prefix');
+    expect(() => prefix('##')).toThrow('invalid order number prefix');
   });
   test('numeric page, count, facets, map and frozen selection use the same cohort', async () => {
     const filters = query({

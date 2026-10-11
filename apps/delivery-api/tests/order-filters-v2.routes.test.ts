@@ -50,6 +50,7 @@ describe('authenticated v2 Orders resource boundary', () => {
       scheduledWeekdays: ['FRIDAY'],
       orderedDateTimeZone: 'America/Toronto',
       cancelled: 'false',
+      orderNumberPrefix: '  #233  ',
     };
     const query = new URLSearchParams();
     for (const [key, values] of Object.entries(filters))
@@ -83,6 +84,7 @@ describe('authenticated v2 Orders resource boundary', () => {
           serviceTypes: ['DELIVERY', 'PICKUP'],
           paymentStatuses: ['PAID', 'PENDING'],
           cancelled: false,
+          orderNumberPrefix: '233',
         });
       }
       expect(calls.length).toBe(4);
@@ -123,6 +125,60 @@ describe('authenticated v2 Orders resource boundary', () => {
         deliveryWeekday: 'MONDAY',
         serviceCategory: 'PICKUP',
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('accepts and normalizes the dedicated legacy order number prefix', async () => {
+    const list = vi.fn<AdminOrdersDependencies['orderSyncService']['listCanonicalOrders']>(() =>
+      Promise.resolve([]),
+    );
+    const app = await buildApp({
+      adminOrders: {
+        sessionTokenVerifier: {
+          verify: () => ({ shopDomain: 'fixture.example.test', subject: 'synthetic-user' }),
+        },
+        orderSyncService: {
+          listCanonicalOrders: list,
+          syncOrdersSnapshot: () => Promise.reject(new Error('not invoked')),
+        },
+      },
+    });
+    try {
+      const response = await app.inject({
+        url: '/admin/orders?orderNumberPrefix=%20%23WEB_100%20',
+        headers: { authorization: 'Bearer synthetic-token' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(list.mock.calls[0]?.[0].filters).toEqual({ orderNumberPrefix: 'WEB_100' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each(['%23', '%23%23', '%23%23233'])('rejects invalid legacy hash prefixes without issuing an order query: %s', async (orderNumberPrefix) => {
+    const list = vi.fn<AdminOrdersDependencies['orderSyncService']['listCanonicalOrders']>(() =>
+      Promise.resolve([]),
+    );
+    const app = await buildApp({
+      adminOrders: {
+        sessionTokenVerifier: {
+          verify: () => ({ shopDomain: 'fixture.example.test', subject: 'synthetic-user' }),
+        },
+        orderSyncService: {
+          listCanonicalOrders: list,
+          syncOrdersSnapshot: () => Promise.reject(new Error('not invoked')),
+        },
+      },
+    });
+    try {
+      const response = await app.inject({
+        url: `/admin/orders?orderNumberPrefix=${orderNumberPrefix}`,
+        headers: { authorization: 'Bearer synthetic-token' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(list).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

@@ -1,3 +1,5 @@
+import { avoidsTolls } from './route-toll-policy.js';
+import { fetchAvoidTollsMatrix, type OsrmMatrixFetch, type OsrmTollMatrix } from './osrm-toll-matrix.client.js';
 import type { RoutePlanDetail } from './route-plan.types.js';
 import type {
   RouteOptimizationFailure,
@@ -24,6 +26,8 @@ type VroomRouteOptimizationClientOptions = {
   baseUrl: string;
   fetch?: FetchLike | undefined;
   timeoutMs?: number | undefined;
+  osrmBaseUrl?: string | undefined;
+  matrixFetch?: OsrmMatrixFetch | undefined;
 };
 
 type RoutableStop = {
@@ -32,18 +36,22 @@ type RoutableStop = {
 };
 
 type VroomSolveRequest = {
+  matrices?: { car: OsrmTollMatrix };
   jobs: Array<{
     delivery: [number];
     id: number;
     location: [number, number];
+    location_index?: number;
     service: number;
   }>;
   vehicles: Array<{
     capacity: [number];
     end?: [number, number];
+    end_index?: number;
     id: number;
     profile: 'car';
     start: [number, number];
+    start_index?: number;
   }>;
 };
 
@@ -66,11 +74,15 @@ export class VroomRouteOptimizationClient implements RouteOptimizationService {
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
   private readonly timeoutMs: number;
+  private readonly osrmBaseUrl: string | undefined;
+  private readonly matrixFetch: OsrmMatrixFetch;
 
   constructor(options: VroomRouteOptimizationClientOptions) {
     this.baseUrl = normalizeRouteEngineBaseUrl('VROOM', options.baseUrl);
     this.fetch = options.fetch ?? fetch;
     this.timeoutMs = normalizeTimeoutMs(options.timeoutMs);
+    this.osrmBaseUrl = options.osrmBaseUrl === undefined ? undefined : normalizeRouteEngineBaseUrl('OSRM', options.osrmBaseUrl);
+    this.matrixFetch = options.matrixFetch ?? fetch;
   }
 
   async optimizeStopOrder(input: RouteOptimizationInput): Promise<RouteOptimizationResult | null> {
@@ -89,10 +101,26 @@ export class VroomRouteOptimizationClient implements RouteOptimizationService {
       });
     }
 
+    if (avoidsTolls(input.detail.routePlan.tollPolicy) && this.osrmBaseUrl === undefined) {
+      return failureOutcome({ code: 'optimizer_unavailable', elapsedMs: elapsedSince(startedAt),
+        message: 'Toll-avoiding optimization requires the matching OSRM Table service. No route was changed.' });
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
     try {
+      if (avoidsTolls(input.detail.routePlan.tollPolicy)) {
+        const vehicle = request.body.vehicles[0]!;
+        const matrix = await fetchAvoidTollsMatrix({
+          baseUrl: this.osrmBaseUrl!, coordinates: [vehicle.start, ...request.body.jobs.map((job) => job.location)],
+          fetch: this.matrixFetch, signal: controller.signal,
+        });
+        request.body.matrices = { car: matrix };
+        request.body.jobs.forEach((job, index) => { job.location_index = index + 1; });
+        vehicle.start_index = 0;
+        if (vehicle.end !== undefined) vehicle.end_index = 0;
+      }
       response = await this.fetch(`${this.baseUrl}/`, {
         body: JSON.stringify(request.body),
         headers: {
@@ -107,7 +135,7 @@ export class VroomRouteOptimizationClient implements RouteOptimizationService {
       return failureOutcome({
         code: isAbortError(error) ? 'solver_timeout' : 'network_error',
         elapsedMs: elapsedSince(startedAt),
-        message: isAbortError(error) ? 'VROOM request timed out.' : 'VROOM request failed before a response was received.',
+        message: isAbortError(error) ? 'Route optimization request timed out.' : 'Route optimization failed before a complete compliant result was received.',
       });
     } finally {
       clearTimeout(timeout);

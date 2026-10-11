@@ -12,13 +12,59 @@ requires the reviewed GPS source to remain unchanged. An appended GPS tail requi
 a new dry-run.
 OSRM calls happen before that transaction.
 
+## Continuous policy (route tracking, since 2026-10-11)
+
+The office decided that a route's tracking path must be continuous and that a
+plain connector is better than a gap ("경로가 끊기면 안 된다", change control
+#344). The `bounded-per-leg` provider therefore works like this; the
+`legacy-whole-match` provider used by UVIS vehicle trails is unchanged.
+
+- The OSRM match request keeps `tidy=true` and sends a per-sample search
+  radius between 25 m and 50 m. With the phone accuracy (3-4 m) as radius
+  OSRM returned null tracepoints for 25-60 % of the points; the null
+  tracepoints that tidy itself produces at stops are joined by the pairing
+  rule below. `tidy=false` was tried on 2026-10-11 and dropped: with every
+  fix of a stop in the request, noisy 80-point matches ran past the 30 s
+  worker budget. The 50 m cap came the same day: OSRM searches three times
+  the radius and its matcher cost grows with the square of the candidates,
+  so 80-point chunks with 100-200 m fixes in a dense grid (2026.09.03 South,
+  2026.09.11 저녁배송) took 34 s and 113 s with their accuracy as radius and
+  about 2 s with the cap, at the same null tracepoints. Fixes up to 200 m
+  stay in the request as waypoints; above that they are left out (below).
+- OSRM's whole-trace `confidence` is recorded but does not gate a leg. It is a
+  length ratio over the whole trace and falls on long delivery traces with
+  stops; a leg is accepted on its own distance, speed and snap checks.
+- Consecutive non-null tracepoints of one matching are paired even across null
+  tracepoints. Every skipped fix must lie inside a corridor around the leg
+  (60 m plus its accuracy, at most 160 m); such a leg is level 1 with reason
+  `NO_MATCH`, or `LOW_ACCURACY` when a skipped fix is above 100 m.
+- A fix above 200 m, or a single implausible spike (> 55 m/s), is left out so
+  its neighbours can still be joined; real gaps (> 180 s, another driver,
+  outside coverage) still split the trace. Missing accuracy is treated as 25 m
+  and can only reach level 1.
+- The road-distance cap per leg is 2,500 m.
+- After the existing supplements, every span still left between two accepted
+  lines of the same driver gets one bounded OSRM route bridge: at most 20
+  minutes and 10 km straight, road distance at most 2.2 x straight + 200 m
+  (15 km), average speed at most 45 m/s, the fastest road even when a similar
+  alternative exists. Level 1 with reason `GPS_GAP`, `LOW_ACCURACY` or
+  `NO_MATCH`.
+- What even the bridge cannot join is drawn by the office map as a plain
+  connector through the recorded fixes (shopify-clever#374). Inferred and
+  connector geometry is still never completion evidence.
+
+Existing caches are not refreshed by the deploy; re-queue the routes you want
+recomputed (`enqueueRouteTrackingRoadMatch` per route; no schema change).
+
 ## Interpolation levels
 
 Quality policy v4 with cache schema v5 preserves the recorded GPS order and
 classifies derived road legs internally. It never runs VROOM visit-order
 optimization on the GPS trace. The cache schema changed so existing v4 results
 are recomputed by the durable worker; the API remains `gps_quality.v4` for the
-deployed client contract.
+deployed client contract. The rows below describe the conservative rules that
+still apply to the raw-evidence rebuild passes and to the legacy provider; the
+continuous policy above overrides the confidence gates for route tracking.
 
 | Level | Meaning | Map behavior |
 | --- | --- | --- |

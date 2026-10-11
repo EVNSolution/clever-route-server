@@ -1,3 +1,4 @@
+import type { DeliveryProofPolicy, TollPolicy } from './delivery-options.js';
 import type { NormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 import type { OrderItemDto, RouteItemSummary } from "../order-items/order-items.js";
 import type { RouteStopLocationDiagnostic } from './route-stop-location-diagnostic.js';
@@ -62,6 +63,8 @@ export type RoutePlanOrderInput = {
 };
 
 export type CreateRoutePlanPayload = {
+  deliveryProof?: DeliveryProofPolicy;
+  tollPolicy?: TollPolicy;
   depot: RoutePlanDepotInput;
   name: string;
   orders: RoutePlanOrderInput[];
@@ -77,6 +80,8 @@ export type CreateRoutePlanInput = {
 };
 
 export type CreateRoutePlanFromOrderIdsPayload = {
+  deliveryProof?: DeliveryProofPolicy;
+  tollPolicy?: TollPolicy;
   depot: RoutePlanDepotInput;
   name: string;
   orderIds: string[];
@@ -91,6 +96,9 @@ export type CreateRoutePlanFromOrderIdsInput = {
 };
 
 export type RoutePlanSummary = {
+  cashSettlementSummary?: Array<{ currency: string; expectedAmount: string | null; actualAmount: string; confirmedAmount: string | null; receiptCount: number; confirmedCount: number }>;
+  deliveryProof?: DeliveryProofPolicy;
+  tollPolicy?: TollPolicy;
   createdAt: string;
   deliveryDate?: string | null;
   deliveryAreas: string[];
@@ -241,6 +249,8 @@ export type RoutePlanMutationContext =
   | { source: 'user' };
 
 export type UpdateRoutePlanStopsInput = {
+  prepareGeometry?: (candidate: RoutePlanDetail) => Promise<RoutePlanRouteResult>;
+  preparedRouteGeometry?: { expectedShapeSignature: string; result: RoutePlanRouteResult };
   routePlanId: string;
   appId?: string | undefined;
   shopDomain: string;
@@ -310,6 +320,7 @@ export type AdminRouteStopOverridePayload = {
 };
 
 export type AdminRouteStopOverrideInput = {
+  prepareGeometry?: (candidate: RoutePlanDetail) => Promise<RoutePlanRouteResult>;
   actor: string;
   appId?: string | undefined;
   deliveryStopId: string;
@@ -320,7 +331,7 @@ export type AdminRouteStopOverrideInput = {
 
 export type AdminRouteStopOverrideResult = {
   geometry: {
-    status: 'preserved' | 'stale';
+    status: 'preserved' | 'stale' | 'fresh';
   };
   routePlan: RoutePlanDetail;
 };
@@ -350,10 +361,14 @@ export type UpdateRoutePlanDriverInput = {
 };
 
 export type UpdateRoutePlanOptionsPayload = {
-  routeEndMode: RoutePlanEndMode;
+  deliveryProof?: DeliveryProofPolicy;
+  tollPolicy?: TollPolicy;
+  expectedUpdatedAt?: string;
+  routeEndMode?: RoutePlanEndMode;
 };
 
 export type UpdateRoutePlanOptionsInput = {
+  preparedRouteGeometry?: { expectedShapeSignature: string; result: RoutePlanRouteResult };
   routePlanId: string;
   appId?: string | undefined;
   shopDomain: string;
@@ -361,6 +376,8 @@ export type UpdateRoutePlanOptionsInput = {
 };
 
 export type SaveRoutePlanPayload = {
+  deliveryProof?: DeliveryProofPolicy;
+  tollPolicy?: TollPolicy;
   /**
    * Aggregate Route Builder save payload.
    *
@@ -377,6 +394,8 @@ export type SaveRoutePlanPayload = {
 };
 
 export type SaveRoutePlanInput = {
+  prepareGeometry?: (candidate: RoutePlanDetail) => Promise<RoutePlanRouteResult>;
+  preparedRouteGeometry?: { expectedShapeSignature: string; result: RoutePlanRouteResult };
   routePlanId: string;
   appId?: string | undefined;
   shopDomain: string;

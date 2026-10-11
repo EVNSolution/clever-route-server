@@ -1,3 +1,4 @@
+import { PrismaCashSettlementService } from '../payments/cash-settlement.service.js';
 import type { PrismaClient } from '@prisma/client';
 
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../shopify/shopify-app-credentials.js';
@@ -22,8 +23,10 @@ import { PrismaDriverSyncHealthService } from '../driver/driver-sync-health.serv
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
 import { PrismaRouteOperationalStateService } from '../route-tracking/route-operational-state.service.js';
 import type { RouteGroupingService } from '../route-grouping/route-grouping.types.js';
+import { loadDriverPushProvider } from '../route-grouping/driver-push.provider.js';
+import { PrismaLiveRouteChangeService } from './live-route-change.service.js';
 
-export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>;
+export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS' | 'FIREBASE_PROJECT_ID' | 'GOOGLE_APPLICATION_CREDENTIALS', string>>;
 
 export function loadAdminRoutePlanDependencies(input: {
   env: AdminRoutePlanRuntimeEnv;
@@ -45,6 +48,10 @@ export function loadAdminRoutePlanDependencies(input: {
   );
   const syncHealthService = new PrismaDriverSyncHealthService(input.prisma, input.operationalAlertRepository);
   return {
+    cashSettlementService: new PrismaCashSettlementService(input.prisma),
+    liveRouteChangeService: new PrismaLiveRouteChangeService(input.prisma, loadDriverPushProvider(input.env), {
+      ...(routeGeometryProvider === undefined ? {} : { geometryProvider: routeGeometryProvider })
+    }),
     routePlanService: new RoutePlanAdminService(
       repository,
       routeGeometryProvider,

@@ -108,6 +108,12 @@ const dispatchGroupingBackfillMigrationPath = new URL(
   `../prisma/migrations/${dispatchGroupingBackfillMigrationName}/migration.sql`,
   import.meta.url
 );
+const kfoodDeliveryOptionsMigrationName = '20261009090000_kfood_delivery_options_settlement';
+const driverAverageStopTimeMigrationName = '20261010120000_driver_average_stop_time';
+const kfoodDeliveryOptionsMigrationPath = new URL(
+  `../prisma/migrations/${kfoodDeliveryOptionsMigrationName}/migration.sql`,
+  import.meta.url
+);
 const schemaPath = new URL('../prisma/schema.prisma', import.meta.url);
 
 const legacySingleColumnConstraints = [
@@ -163,7 +169,13 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(114);
+    expect(migrations).toHaveLength(119);
+    expect(migrations[117]).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations[118]).toBe(driverAverageStopTimeMigrationName);
+    expect(migrations).toContain('20261008090000_driver_stop_completion_receipts');
+    expect(migrations).toContain('20261007140000_kfood_live_route_draft_discard');
+    expect(migrations).toContain('20261007120000_kfood_live_route_changes');
+    expect(migrations).toContain('20261006060000_dsv_operational_server');
     expect(migrations).toContain('20261008010000_add_driver_event_completion_owner');
     expect(migrations).toContain('20261002140000_kfood_delivery_navigation_grace');
     expect(migrations).toContain('20261002120000_driver_runtime_diagnostics');
@@ -418,13 +430,24 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20260922155500_add_route_tracking_road_match_jobs')).toBeLessThan(
       migrations.indexOf('20260929120000_add_incomplete_route_plan_status')
     );
-    expect(migrations.at(-1)).toBe('20261008010000_add_driver_event_completion_owner');
-    expect(migrations.indexOf('20261008010000_add_driver_event_completion_owner')).toBeGreaterThan(
+    expect(migrations.indexOf('20261002140000_kfood_delivery_navigation_grace')).toBeLessThan(
       migrations.indexOf('20261006060000_dsv_operational_server')
     );
-    expect(migrations.indexOf('20261006060000_dsv_operational_server')).toBeGreaterThan(
-      migrations.indexOf('20261002140000_kfood_delivery_navigation_grace')
+    expect(migrations.indexOf('20261006060000_dsv_operational_server')).toBeLessThan(
+      migrations.indexOf('20261007120000_kfood_live_route_changes')
     );
+    expect(migrations.indexOf('20261007120000_kfood_live_route_changes')).toBeLessThan(
+      migrations.indexOf('20261007140000_kfood_live_route_draft_discard')
+    );
+    expect(migrations.indexOf('20261007140000_kfood_live_route_draft_discard')).toBeLessThan(
+      migrations.indexOf('20261008010000_add_driver_event_completion_owner')
+    );
+    expect(migrations.indexOf('20261008010000_add_driver_event_completion_owner')).toBeLessThan(
+      migrations.indexOf('20261008090000_driver_stop_completion_receipts')
+    );
+    expect(migrations.slice(0, 117).at(-1)).toBe('20261008090000_driver_stop_completion_receipts');
+    expect(migrations.slice(0, 118).at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations.at(-1)).toBe(driverAverageStopTimeMigrationName);
   });
 
   test('adds immutable destination completion ownership without a payload backfill or mutable account link', async () => {
@@ -559,6 +582,52 @@ describe('G007 DSV Prisma migration history', () => {
     expect(stripSqlLineComments(migration)).not.toMatch(/\bDROP\s+(?:TABLE|INDEX|SCHEMA|TYPE)\b|\bDELETE\s+FROM\b|\bTRUNCATE\b/iu);
   });
 
+  test('adds KFood signature proof and nullable session capability without rewriting existing data', async () => {
+    const migration = await readFile(kfoodDeliveryOptionsMigrationPath, 'utf8');
+
+    expect(migration).toContain(`ALTER TYPE "DriverProofMediaKind" ADD VALUE 'SIGNATURE';`);
+    expect(migration).toContain(`ALTER TYPE "DriverProofMediaSource" ADD VALUE 'SIGNATURE';`);
+    expect(migration).toContain('ALTER TABLE "driver_account_sessions"');
+    for (const column of [
+      '"deliveryProofCapability" TEXT',
+      '"capabilityVersionCode" INTEGER',
+      '"capabilityPackageId" TEXT',
+      '"capabilityTokenVersion" INTEGER',
+      '"capabilityReportedAt" TIMESTAMPTZ(6)'
+    ]) {
+      expect(migration).toContain(`ADD COLUMN ${column}`);
+      expect(migration).not.toContain(`ADD COLUMN ${column} NOT NULL`);
+      expect(migration).not.toContain(`ADD COLUMN ${column} DEFAULT`);
+    }
+    expect(stripSqlLineComments(migration)).not.toMatch(/\bDROP\b|\bDELETE\s+FROM\b|\bTRUNCATE\b|\bUPDATE\s+"|\bINSERT\s+INTO\b/iu);
+  });
+
+  test('enforces tenant-safe append-only cash settlement revisions and amount constraints', async () => {
+    const migration = await readFile(kfoodDeliveryOptionsMigrationPath, 'utf8');
+
+    expect(migration).toContain('CREATE TABLE "driver_cash_settlements"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "driver_stop_completion_receipts_id_shopId_key" ON "driver_stop_completion_receipts"("id", "shopId")');
+    expect(migration).toContain('FOREIGN KEY ("receiptId", "shopId") REFERENCES "driver_stop_completion_receipts"("id", "shopId")');
+    expect(migration).toContain('CREATE UNIQUE INDEX "driver_cash_settlements_shopId_commandId_key" ON "driver_cash_settlements"("shopId", "commandId")');
+    expect(migration).toContain('CREATE UNIQUE INDEX "driver_cash_settlements_receiptId_revision_key" ON "driver_cash_settlements"("receiptId", "revision")');
+    expect(migration).toContain('CHECK ("confirmedAmount" >= 0 AND "revision" > 0 AND ("revision" = 1 OR ("reason" IS NOT NULL AND length(trim("reason")) > 0)))');
+    expect(migration).toContain('CREATE FUNCTION reject_driver_cash_settlement_update() RETURNS trigger LANGUAGE plpgsql');
+    expect(migration).toContain(`RAISE EXCEPTION 'Cash settlement records are append-only'`);
+    expect(migration).toContain('CREATE TRIGGER driver_cash_settlements_immutable BEFORE UPDATE ON driver_cash_settlements FOR EACH ROW EXECUTE FUNCTION reject_driver_cash_settlement_update();');
+  });
+
+  test('adds the driver average and the Stop time source without taking any existing time for a default', async () => {
+    const migration = await readFile(new URL(`../prisma/migrations/${driverAverageStopTimeMigrationName}/migration.sql`, import.meta.url), 'utf8');
+    const sql = stripSqlLineComments(migration);
+
+    expect(sql).toContain('ALTER TABLE "drivers" ADD COLUMN "averageServiceMinutes" INTEGER;');
+    expect(sql).toContain('CHECK ("averageServiceMinutes" IS NULL OR ("averageServiceMinutes" >= 0 AND "averageServiceMinutes" <= 1440))');
+    expect(sql).toContain('ALTER TABLE "delivery_stops" ADD COLUMN "serviceMinutesSource" TEXT;');
+    expect(sql).toContain(`CHECK ("serviceMinutesSource" IS NULL OR "serviceMinutesSource" IN ('STOP', 'ROUTE', 'DRIVER'))`);
+    expect(sql).toContain(`UPDATE "delivery_stops" SET "serviceMinutesSource" = 'STOP' WHERE "serviceMinutes" <> 5;`);
+    expect(sql).not.toMatch(/\bNOT NULL\b|\bDEFAULT\b|\bDROP\b|\bDELETE\s+FROM\b|\bTRUNCATE\b|\bINSERT\s+INTO\b/iu);
+  });
+
   test('documents the baseline, G004 tenant-composite replacement, and G007 cleanup transition', async () => {
     const [baseline, g004, cleanup] = await Promise.all([
       readFile(baselineMigrationPath, 'utf8'),
@@ -616,7 +685,7 @@ describe('G007 DSV Prisma migration history', () => {
     const schema = await readFile(schemaPath, 'utf8');
 
     expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(65);
-    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(26);
+    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(27);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });
 });

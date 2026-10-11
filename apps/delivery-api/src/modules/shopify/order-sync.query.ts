@@ -52,10 +52,17 @@ const ORDER_FIELDS = `#graphql
             name
             variantTitle
             quantity
+            currentQuantity
             sku
           }
         }
         currentTotalPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
+        totalOutstandingSet {
           shopMoney {
             amount
             currencyCode

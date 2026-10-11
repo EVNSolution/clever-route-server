@@ -1,3 +1,4 @@
+import { DriverDeliveryProofError } from '../src/modules/driver/driver-delivery-proof.js';
 import { describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 
@@ -806,6 +807,17 @@ describe('Driver events route', () => {
     } finally {
       await app.close();
     }
+  });
+
+  test.each(['DELIVERY_PROOF_REQUIRED', 'DELIVERY_PROOF_INVALID', 'DELIVERY_PROOF_APP_UPDATE_REQUIRED'] as const)('returns typed %s without a retryable server error', async code => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverDeliveryProofError(code, 'Proof rejected'));
+    const app = await buildApp({ driverApi: dependencies });
+    try {
+      const response = await app.inject({ headers: { authorization: `Bearer ${driverToken()}` }, method: 'POST', payload: eventPayload(), url: '/driver/events' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({ data: null, error: { code, message: 'Proof rejected' } });
+    } finally { await app.close(); }
   });
 
   test('maps missing terminal route/stop context to a deterministic bad request response', async () => {

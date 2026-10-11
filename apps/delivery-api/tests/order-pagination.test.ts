@@ -12,6 +12,12 @@ const secret = 'test-orders-cursor-secret-with-sufficient-entropy';
 const now = new Date('2026-08-04T00:00:00.000Z');
 
 describe('orders cursor', () => {
+  test('binds the dedicated order number prefix into filter hashes', () => {
+    expect(createOrdersFilterHash({ orderNumberPrefix: '233' }, secret)).not.toBe(
+      createOrdersFilterHash({ orderNumberPrefix: '234' }, secret),
+    );
+  });
+
   test('round-trips canonical decimal BigInt tuples without JSON number loss', () => {
     const filterHash = createOrdersFilterHash({ deliveryArea: 'Toronto', search: 'private' }, secret);
     const cursor = encodeOrdersCursor({

@@ -1,8 +1,11 @@
 import type { PrismaClient } from '@prisma/client';
+import type { RecordDriverEventResult } from './driver-event.repository.js';
+import { getPrivateDriverDemoConfig, privateDriverDemoVisibilityWhere } from './private-driver-demo.js';
 
 export type DriverEventReceipt = {
   assignmentGeneration: string | null;
   clientEventId: string;
+  completion?: RecordDriverEventResult['completion'];
   errorCode: string | null;
   expectedRouteVersionId: string | null;
   routePlanId: string;
@@ -112,11 +115,16 @@ export class PrismaDriverEventReceiptRepository {
     clientEventId: string;
     routePlanId: string;
   }): Promise<DriverEventReceipt> {
+    // Historical event ownership alone must not grant another account access to
+    // a private route after its driver record or assignment changes.
+    const privateConfig = getPrivateDriverDemoConfig();
+    const routeVisibility = privateDriverDemoVisibilityWhere(privateConfig?.accountId === input.accountId ? process.env : {});
     const committed = await this.prisma.driverEvent.findFirst({
       orderBy: { createdAt: 'desc' },
       select: {
         assignmentGeneration: true,
         clientEventId: true,
+        stopCompletionReceipt: { select: { result: true } },
         expectedRouteVersionId: true,
         routePlan: { select: { status: true } },
         routePlanId: true
@@ -124,13 +132,16 @@ export class PrismaDriverEventReceiptRepository {
       where: {
         clientEventId: input.clientEventId,
         driver: { accountId: input.accountId },
+        routePlan: { is: routeVisibility },
         routePlanId: input.routePlanId
       }
     });
     if (committed !== null && committed.clientEventId !== null && committed.routePlanId !== null && committed.routePlan !== null) {
+      const completion = readStoredCompletion(committed.stopCompletionReceipt?.result);
       return {
         assignmentGeneration: committed.assignmentGeneration?.toString() ?? null,
         clientEventId: committed.clientEventId,
+        ...(completion === undefined ? {} : { completion }),
         errorCode: null,
         expectedRouteVersionId: committed.expectedRouteVersionId,
         routePlanId: committed.routePlanId,
@@ -154,6 +165,7 @@ export class PrismaDriverEventReceiptRepository {
       where: {
         clientEventId: input.clientEventId,
         driver: { accountId: input.accountId },
+        routePlan: { is: routeVisibility },
         routePlanId: input.routePlanId
       }
     });
@@ -172,7 +184,7 @@ export class PrismaDriverEventReceiptRepository {
 
     const route = await this.prisma.routePlan.findFirst({
       select: { status: true },
-      where: { driver: { accountId: input.accountId }, id: input.routePlanId }
+      where: { driver: { accountId: input.accountId }, id: input.routePlanId, AND: [routeVisibility] }
     });
     if (route === null) throw new DriverEventReceiptScopeError();
     return {
@@ -185,6 +197,13 @@ export class PrismaDriverEventReceiptRepository {
       status: 'UNKNOWN'
     };
   }
+}
+
+function readStoredCompletion(result: unknown): RecordDriverEventResult['completion'] {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return undefined;
+  const completion = (result as Record<string, unknown>).completion;
+  if (completion === null || typeof completion !== 'object' || Array.isArray(completion)) return undefined;
+  return completion as NonNullable<RecordDriverEventResult['completion']>;
 }
 
 function matchesDestinationCompletionPayload(
