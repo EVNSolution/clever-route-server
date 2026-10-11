@@ -39,7 +39,7 @@ import { PrismaDsvDriverExecutionPrincipalResolver } from '../src/routes/dsv-exe
 import { FakeDriverPushProvider } from './support/fake-driver-push-provider.js';
 
 const safeTargetClass = 'safe-local-dsv-operational-disposable';
-const exactDatabaseUrl = 'postgresql://dsv_operational:dsv_operational@127.0.0.1:55496/dsv_operational?schema=public';
+const exactDatabaseUrl = 'postgresql://dsv_operational:dsv_operational@127.0.0.1:55497/dsv_operational?schema=public';
 const databaseUrl = process.env.DSV_OPERATIONAL_DATABASE_URL ?? '';
 const targetClass = process.env.DSV_OPERATIONAL_DATABASE_TARGET_CLASS ?? '';
 const enabled = targetClass === safeTargetClass;

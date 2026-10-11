@@ -45,8 +45,8 @@ start_cluster() {
   "$pg_bin/createdb" -h 127.0.0.1 -p "$port" -U "$name" "$name"
 }
 
-readonly operational_url='postgresql://dsv_operational:dsv_operational@127.0.0.1:55496/dsv_operational?schema=public'
-start_cluster 55496 dsv_operational
+readonly operational_url='postgresql://dsv_operational:dsv_operational@127.0.0.1:55497/dsv_operational?schema=public'
+start_cluster 55497 dsv_operational
 DATABASE_URL="$operational_url" npm run prisma:migrate:deploy
 
 if [[ "${DSV_OPERATIONAL_INCLUDE_G002:-0}" == '1' ]]; then

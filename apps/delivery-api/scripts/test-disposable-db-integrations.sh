@@ -15,7 +15,7 @@ if [[ "${1:-}" == "--plan" ]]; then
     'Driver password reset: 127.0.0.1:55494 / driver_password_reset' \
     'Completion Assistance: 127.0.0.1:55495 / cc295_disposable' \
     'Private driver demo: 127.0.0.1:55496 / clever_private_demo_test' \
-    'DSV operational P1-P3: 127.0.0.1:55496 / dsv_operational' \
+    'DSV operational P1-P3: 127.0.0.1:55497 / dsv_operational' \
     'Deletion lifecycle populated upgrade: 127.0.0.1:55492 / clever_deletion_upgrade'
   exit 0
 fi
