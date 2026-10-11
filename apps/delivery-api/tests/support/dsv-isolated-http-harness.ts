@@ -32,7 +32,7 @@ import { PrismaDsvDriverExecutionPrincipalResolver } from '../../src/routes/dsv-
 import { FakeDriverPushProvider } from './fake-driver-push-provider.js';
 
 export const DSV_ISOLATED_DATABASE_URL =
-  'postgresql://dsv_operational:dsv_operational@127.0.0.1:55496/dsv_operational?schema=public';
+  'postgresql://dsv_operational:dsv_operational@127.0.0.1:55497/dsv_operational?schema=public';
 export const DSV_ISOLATED_TARGET_CLASS = 'safe-local-dsv-operational-disposable';
 export const DSV_ISOLATED_PORT = 4908;
 export const DSV_ISOLATED_SERVICE_DATE = '2026-10-07';
