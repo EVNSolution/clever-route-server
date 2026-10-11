@@ -169,13 +169,14 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(118);
-    expect(migrations[116]).toBe(kfoodDeliveryOptionsMigrationName);
-    expect(migrations[117]).toBe(driverAverageStopTimeMigrationName);
+    expect(migrations).toHaveLength(119);
+    expect(migrations[117]).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations[118]).toBe(driverAverageStopTimeMigrationName);
     expect(migrations).toContain('20261008090000_driver_stop_completion_receipts');
     expect(migrations).toContain('20261007140000_kfood_live_route_draft_discard');
     expect(migrations).toContain('20261007120000_kfood_live_route_changes');
     expect(migrations).toContain('20261006060000_dsv_operational_server');
+    expect(migrations).toContain('20261008010000_add_driver_event_completion_owner');
     expect(migrations).toContain('20261002140000_kfood_delivery_navigation_grace');
     expect(migrations).toContain('20261002120000_driver_runtime_diagnostics');
     expect(migrations).toContain('20260929120000_add_incomplete_route_plan_status');
@@ -439,11 +440,26 @@ describe('G007 DSV Prisma migration history', () => {
       migrations.indexOf('20261007140000_kfood_live_route_draft_discard')
     );
     expect(migrations.indexOf('20261007140000_kfood_live_route_draft_discard')).toBeLessThan(
+      migrations.indexOf('20261008010000_add_driver_event_completion_owner')
+    );
+    expect(migrations.indexOf('20261008010000_add_driver_event_completion_owner')).toBeLessThan(
       migrations.indexOf('20261008090000_driver_stop_completion_receipts')
     );
-    expect(migrations.slice(0, 116).at(-1)).toBe('20261008090000_driver_stop_completion_receipts');
-    expect(migrations.slice(0, 117).at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations.slice(0, 117).at(-1)).toBe('20261008090000_driver_stop_completion_receipts');
+    expect(migrations.slice(0, 118).at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
     expect(migrations.at(-1)).toBe(driverAverageStopTimeMigrationName);
+  });
+
+  test('adds immutable destination completion ownership without a payload backfill or mutable account link', async () => {
+    const migration = await readFile(new URL(
+      '20261008010000_add_driver_event_completion_owner/migration.sql',
+      migrationsDir
+    ), 'utf8');
+    expect(migration).toContain('ADD COLUMN "completionOwnerAccountId" UUID');
+    expect(migration).toContain('driver_events_completion_owner_route_client_idx');
+    expect(migration).not.toContain('UPDATE');
+    expect(migration).not.toContain('FOREIGN KEY');
+    expect(migration).not.toContain('REFERENCES');
   });
 
   test('keeps completion rollout gate outcomes after tenant graph deletion', async () => {
