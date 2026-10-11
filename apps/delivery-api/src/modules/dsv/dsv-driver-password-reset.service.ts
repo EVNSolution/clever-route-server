@@ -9,8 +9,16 @@ export type DsvDriverPasswordResetLink = {
   setupUrl: string;
 };
 
+export type DsvDriverAccountSummary = {
+  lastUsedAt: Date | null;
+  loginId: string | null;
+  sessionExpiresAt: Date | null;
+  status: string;
+};
+
 export type DsvDriverPasswordResetService = {
   complete(input: { password: string; requestId: string; token: string }): Promise<void>;
+  describeAccount(input: { driverId: string; shopId: string }): Promise<DsvDriverAccountSummary | null>;
   issueLink(input: { actorId: string | null; driverId: string; requestId: string; shopId: string }): Promise<DsvDriverPasswordResetLink | null>;
   validateLink(input: { token: string }): Promise<{ expiresAt: Date; method: 'ADMIN_LINK' } | null>;
 };
@@ -29,6 +37,39 @@ export class PrismaDsvDriverPasswordResetService implements DsvDriverPasswordRes
       webPublicOrigin: string;
     },
   ) {}
+
+  // Lets an administrator read the login id a driver has forgotten, together with the state of the
+  // app session, without exposing credentials. The reset link stays the only way to change the password.
+  async describeAccount(input: { driverId: string; shopId: string }): Promise<DsvDriverAccountSummary | null> {
+    const driver = await this.prisma.driver.findFirst({
+      select: { accountId: true },
+      where: { accountId: { not: null }, dsvProfile: { isNot: null }, id: input.driverId, shopId: input.shopId },
+    });
+    if (driver?.accountId === null || driver?.accountId === undefined) return null;
+    const account = await this.prisma.driverAccount.findUnique({
+      select: { loginId: true, status: true },
+      where: { id: driver.accountId },
+    });
+    if (account === null) return null;
+    const [latest, lastUsed] = await Promise.all([
+      this.prisma.driverAccountSession.findFirst({
+        orderBy: { expiresAt: 'desc' },
+        select: { expiresAt: true },
+        where: { accountId: driver.accountId, revokedAt: null },
+      }),
+      this.prisma.driverAccountSession.findFirst({
+        orderBy: { lastUsedAt: 'desc' },
+        select: { lastUsedAt: true },
+        where: { accountId: driver.accountId, lastUsedAt: { not: null } },
+      }),
+    ]);
+    return {
+      lastUsedAt: lastUsed?.lastUsedAt ?? null,
+      loginId: account.loginId,
+      sessionExpiresAt: latest?.expiresAt ?? null,
+      status: account.status,
+    };
+  }
 
   async issueLink(input: { actorId: string | null; driverId: string; requestId: string; shopId: string }): Promise<DsvDriverPasswordResetLink | null> {
     const driver = await this.prisma.driver.findFirst({

@@ -2239,6 +2239,7 @@ describe('DSV control routes', () => {
     const logLines: string[] = [];
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(() => Promise.resolve({
         expiresAt: new Date('2026-09-10T06:30:00.000Z'),
         method: 'ADMIN_LINK',
@@ -2294,6 +2295,7 @@ describe('DSV control routes', () => {
     const { app } = await createHarness({
       driverPasswordResetService: {
         complete: vi.fn(),
+        describeAccount: vi.fn(),
         issueLink,
         validateLink: vi.fn(),
       },
@@ -2320,9 +2322,54 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('lets an administrator read the login id and session state of a driver account', async () => {
+    const describeAccount = vi.fn<DsvDriverPasswordResetService['describeAccount']>().mockResolvedValue({
+      lastUsedAt: new Date('2026-10-10T02:13:16.894Z'),
+      loginId: 'sambongkim',
+      sessionExpiresAt: new Date('2026-10-10T04:42:02.928Z'),
+      status: 'ACTIVE',
+    });
+    const assertAccessible = vi.fn().mockResolvedValue(undefined);
+    const customerAccountService = createCustomerAccountService();
+    const { app } = await createHarness({
+      customerAccountService,
+      driverPasswordResetService: { complete: vi.fn(), describeAccount, issueLink: vi.fn(), validateLink: vi.fn() },
+      storeReviewAccess: { assertAccessible },
+    });
+    try {
+      const url = `/api/dsv/drivers/${targetDriverId}/account`;
+      expect((await app.inject({ method: 'GET', url })).statusCode).toBe(401);
+
+      const login = await loginToDsv(app);
+      const response = await app.inject({ headers: { cookie: login.cookie }, method: 'GET', url });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: {
+          account: {
+            lastUsedAt: '2026-10-10T02:13:16.894Z',
+            loginId: 'sambongkim',
+            sessionExpiresAt: '2026-10-10T04:42:02.928Z',
+            status: 'ACTIVE',
+          },
+        },
+        error: null,
+      });
+      expect(assertAccessible).toHaveBeenCalledWith(expect.objectContaining({ shopId }), { driverIds: [targetDriverId] });
+      expect(describeAccount).toHaveBeenCalledWith({ driverId: targetDriverId, shopId });
+
+      describeAccount.mockResolvedValueOnce(null);
+      const missing = await app.inject({ headers: { cookie: login.cookie }, method: 'GET', url });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toMatchObject({ error: { code: 'DRIVER_ACCOUNT_NOT_FOUND' } });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('requires administrator authentication, CSRF, and both reset scopes without accepting a temporary password', async () => {
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
       validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
     };
@@ -2395,6 +2442,7 @@ describe('DSV control routes', () => {
   test('maps scoped reset misses and account issue throttling without exposing a link', async () => {
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>()
         .mockResolvedValueOnce(null)
         .mockRejectedValueOnce(new DsvDriverPasswordResetError('RATE_LIMITED', 'private account issue limit')),
@@ -2425,6 +2473,7 @@ describe('DSV control routes', () => {
   test('rate-limits administrator reset-link issuance by client address', async () => {
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(() => Promise.resolve({
         expiresAt: new Date('2026-09-10T06:30:00.000Z'),
         method: 'ADMIN_LINK',
