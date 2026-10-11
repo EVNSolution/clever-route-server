@@ -15,6 +15,7 @@ import {
   occurredAtWithinRouteTrackingEventWindow
 } from '../route-tracking/route-tracking.event-window.js';
 import { persistAutomaticCustomerEmailFacts } from '../customer-email/customer-email-automatic-fact.js';
+import { syncDsvExecutionHook, closeDsvExecutionHook, resolveDsvStopNotificationsHook } from '../dsv/dsv-execution-hooks.js';
 import { deriveDsvTimeConstraintState, dsvTimeConstraintAuditEvents } from '../dsv/dsv-time-constraint.js';
 import {
   buildDriverRouteEtaSnapshot,
@@ -121,7 +122,7 @@ type DriverEventPrismaClient = Pick<
   'driverStopCompletionReceipt' | '$queryRaw' | '$transaction' | 'customerRouteNotificationFact' | 'deliveryStop' | 'driverEvent' | 'driverEventAttempt' | 'driverRouteCompletionReview' | 'dsvDispatchChangeRequest' | 'order' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry' | 'shop'
 >;
 
-type DriverEventTransactionClient = Prisma.TransactionClient;
+export type DriverEventTransactionClient = Prisma.TransactionClient;
 
 type DriverEventSchemaCapabilities = {
   driverEventRouteVersionColumnExists: boolean;
@@ -232,6 +233,7 @@ export class PrismaDriverEventRepository {
     recordWouldReject(input: { decision: 'PERMITTED' | 'REJECTED'; mode: DriverRouteCompletionInvariantMode; receiptAware: boolean; totalStopCount: number; unresolvedStopCount: number }): void;
   };
   private readonly now: () => Date;
+  private readonly skipDsvExecutionSync: boolean;
   private readonly finalizationMonitor: {
     recordFailure(input: { attemptId: string; errorCode: string }): void;
   };
@@ -245,6 +247,7 @@ export class PrismaDriverEventRepository {
       completionInvariantMonitor?: { recordWouldReject(input: { decision: 'PERMITTED' | 'REJECTED'; mode: DriverRouteCompletionInvariantMode; receiptAware: boolean; totalStopCount: number; unresolvedStopCount: number }): void };
       finalizationMonitor?: { recordFailure(input: { attemptId: string; errorCode: string }): void };
       now?: () => Date;
+      skipDsvExecutionSync?: boolean;
     } = {}
   ) {
     this.schemaCapabilityLoader = schemaCapabilityLoaderFor(prisma);
@@ -259,6 +262,7 @@ export class PrismaDriverEventRepository {
       })}\n`)
     };
     this.now = options.now ?? (() => new Date());
+    this.skipDsvExecutionSync = options.skipDsvExecutionSync ?? false;
     this.finalizationMonitor = options.finalizationMonitor ?? {
       recordFailure: (evidence) => process.stderr.write(`${JSON.stringify({
         ...evidence,
@@ -446,6 +450,22 @@ export class PrismaDriverEventRepository {
           routeVersionId,
           event.id
         );
+        if (!this.skipDsvExecutionSync && !deferCompletionForNavigation && input.routePlanId !== null) {
+          if (input.eventType === 'ROUTE_COMPLETED') {
+            await closeDsvExecutionHook(transaction, {
+              shopId: input.shopId, routePlanId: input.routePlanId, reason: 'COMPLETED', now: event.createdAt
+            });
+          } else if (input.eventType === 'ROUTE_STARTED' || input.eventType === 'PICKUP_COMPLETED') {
+            await syncDsvExecutionHook(transaction, {
+              shopId: input.shopId, routePlanId: input.routePlanId, commandId: `driver-event:${event.id}`, now: event.createdAt
+            });
+          }
+        }
+        if (input.deliveryStopId !== null && (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED')) {
+          await resolveDsvStopNotificationsHook(transaction, {
+            shopId: input.shopId, deliveryStopId: input.deliveryStopId, now: event.createdAt,
+          });
+        }
         if (input.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
           && (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED')) {
           await reconcileKfoodDeliveryWorkCompletion(transaction, {
@@ -538,6 +558,37 @@ export class PrismaDriverEventRepository {
 
       throw error;
     }
+  }
+
+  /**
+   * Applies the established driver-event transition inside a caller-owned
+   * transaction. The caller owns command receipt and related domain writes.
+   * Driver-event admission is intentionally disabled because it cannot commit
+   * before the caller-owned transaction.
+   */
+  async recordDriverEventInTransaction(
+    transaction: DriverEventTransactionClient,
+    input: RecordDriverEventInput,
+    options: { skipDsvExecutionSync?: boolean } = {},
+  ): Promise<RecordDriverEventResult> {
+    const transactionalPrisma = new Proxy(transaction, {
+      get: (target, property, receiver): unknown => {
+        if (property === '$transaction') {
+          return async <T>(operation: (client: DriverEventTransactionClient) => Promise<T>): Promise<T> => operation(transaction);
+        }
+        const value: unknown = Reflect.get(target, property, receiver);
+        return value;
+      }
+    }) as unknown as DriverEventPrismaClient;
+    return new PrismaDriverEventRepository(transactionalPrisma, {
+      attemptRetentionDays: this.attemptRetentionDays,
+      completionInvariantMode: this.completionInvariantMode,
+      completionInvariantMonitor: this.completionInvariantMonitor,
+      completionReviewRetentionDays: this.completionReviewRetentionDays,
+      finalizationMonitor: this.finalizationMonitor,
+      now: this.now,
+      skipDsvExecutionSync: options.skipDsvExecutionSync ?? false,
+    }).recordDriverEvent({ ...input, attemptId: null });
   }
 
   private reviewRetainedUntil(): Date {

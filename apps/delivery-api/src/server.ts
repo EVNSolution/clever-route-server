@@ -31,6 +31,14 @@ import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.
 import { createRouteTrackingRoadMatchRuntime } from './modules/route-tracking/route-tracking-road-match.runtime.js';
 import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
 import { loadDsvV1ReadDependencies } from './modules/dsv/dsv-v1-read.dependencies.js';
+import { PrismaDsvExecutionCommandsService } from './modules/dsv/dsv-execution-commands.service.js';
+import { PrismaDsvExecutionApiService } from './modules/dsv/dsv-execution-api.service.js';
+import { createDsvGeofenceRuntime } from './modules/dsv/dsv-geofence-runtime.js';
+import { loadDsvOperationalSendPolicy } from './modules/dsv/dsv-operational-send-policy.js';
+import { createDsvOperationalDriverNotificationRuntime } from './modules/dsv/dsv-operational-driver-notification.runtime.js';
+import { PrismaDsvDriverExecutionPrincipalResolver } from './routes/dsv-execution.routes.js';
+import { PrismaDriverEventRepository } from './modules/driver/driver-event.repository.js';
+import { loadDriverRouteCompletionInvariantMode, loadDriverRouteCompletionReviewRetentionDays } from './modules/driver/driver-route-completion-invariant.js';
 import { loadDsvDriverAuthDependencies } from './modules/dsv/dsv-driver-auth.dependencies.js';
 import { PrismaDsvDriverAppReleaseRepository } from './modules/dsv/dsv-driver-app-release.repository.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
@@ -108,6 +116,19 @@ const driverApi = loadDriverApiDependencies({
   routeTrackingStreamHub
 });
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });
+// The new operational sender is OFF until a complete reviewed policy is injected.
+const dsvOperationalNotificationRuntime = createDsvOperationalDriverNotificationRuntime({ env: process.env, prisma, policy: () => loadDsvOperationalSendPolicy(process.env) });
+const dsvExecution = driverApi === undefined || dsvV1Read === undefined ? undefined : {
+  driverJwtSecret: driverApi.jwtSecret,
+  driverPrincipalResolver: new PrismaDsvDriverExecutionPrincipalResolver(prisma),
+  commands: new PrismaDsvExecutionCommandsService(prisma, new PrismaDriverEventRepository(prisma, {
+    completionInvariantMode: loadDriverRouteCompletionInvariantMode(process.env),
+    completionReviewRetentionDays: loadDriverRouteCompletionReviewRetentionDays(process.env),
+  })),
+  contexts: new PrismaDsvExecutionApiService(prisma),
+  notifications: dsvOperationalNotificationRuntime.service,
+  admin: { cookieName: dsvV1Read.cookieName, sessionSecret: dsvV1Read.sessionSecret, sessionResolver: dsvV1Read.sessionResolver },
+};
 const shopifyAuth = loadShopifyAuthDependencies({
   env: process.env,
   ...(adminOrdersRuntime?.reconciliationService === undefined
@@ -133,6 +154,7 @@ const trustedProxyAddresses = process.env.CLEVER_TRUST_CADDY_PROXY === 'true'
   : [];
 const app = await buildApp({
   trustedProxyAddresses,
+  ...(dsvExecution === undefined ? {} : { dsvExecution }),
   ...createBuildAppOptions({
     adminCommerceConnections,
     adminCommerceConnectionsUi,
@@ -197,6 +219,7 @@ const uvisTelemetryRuntime = createUvisTelemetryRuntime({
   logger: app.log,
   prisma
 });
+const dsvGeofenceRuntime = createDsvGeofenceRuntime({ env: process.env, logger: app.log, prisma });
 
 try {
   await app.listen({ host: '0.0.0.0', port: env.port });
@@ -208,6 +231,8 @@ try {
   driverOperationalHealthRuntime?.start();
   completionAssistanceRuntime?.start();
   await dsvV1Read?.driverNotificationRuntime?.start();
+  await dsvOperationalNotificationRuntime.start();
+  dsvGeofenceRuntime.start();
   uvisTelemetryRuntime.start();
   shopifyWebhookRuntime?.worker?.start();
   adminOrdersRuntime?.reconciliationWorker?.start();
@@ -225,6 +250,8 @@ try {
     completionAssistanceRuntime?.close() ?? Promise.resolve(),
     dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
     uvisTelemetryRuntime.close(),
+    dsvOperationalNotificationRuntime.close(),
+    dsvGeofenceRuntime.close(),
     shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
     adminOrdersRuntime?.reconciliationWorker?.close() ?? Promise.resolve(),
     prisma.$disconnect()
@@ -245,6 +272,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         completionAssistanceRuntime?.close() ?? Promise.resolve(),
         dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
         uvisTelemetryRuntime.close(),
+        dsvOperationalNotificationRuntime.close(),
+        dsvGeofenceRuntime.close(),
         shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
         adminOrdersRuntime?.reconciliationWorker?.close() ?? Promise.resolve()
       ]).finally(() => {

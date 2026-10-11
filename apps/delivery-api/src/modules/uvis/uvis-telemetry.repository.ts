@@ -40,12 +40,12 @@ type DeviceRecord = {
 
 type UvisTelemetryPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'dsvVehicleTelematicsDevice' | 'uvisVehicleTelemetryCurrent' | 'uvisVehicleTelemetrySample'
+  '$transaction' | 'dsvExecutionContext' | 'dsvExecutionRouteMapping' | 'dsvGeofenceJob' | 'dsvVehicleTelematicsDevice' | 'uvisVehicleTelemetryCurrent' | 'uvisVehicleTelemetrySample'
 >;
 
 type UvisTelemetryTransactionClient = Pick<
   Prisma.TransactionClient,
-  'dsvVehicleTelematicsDevice' | 'uvisVehicleTelemetryCurrent' | 'uvisVehicleTelemetrySample'
+  'dsvExecutionContext' | 'dsvExecutionRouteMapping' | 'dsvGeofenceJob' | 'dsvVehicleTelematicsDevice' | 'uvisVehicleTelemetryCurrent' | 'uvisVehicleTelemetrySample'
 >;
 
 const MAX_OBSERVED_AT_FUTURE_SKEW_MS = 5 * 60 * 1000;
@@ -94,6 +94,20 @@ async function recordSampleInTransaction(
   const plateStatus = resolvePlateStatus(device.vehicle.licensePlate, input.sourcePlate);
   const sampleData = telemetryData(device, input, plateStatus);
   const sample = await createSample(transaction, input, sampleData);
+  // Source history is unconditional. Queue work only when a durable DSV execution can own the observation.
+  if (
+    input.sourceKind === 'VEHICLE_GPS'
+    && await hasEligibleDsvExecution(transaction, device, input.observedAt)
+  ) {
+    await transaction.dsvGeofenceJob.createMany({
+      data: {
+        sampleId: sample.id,
+        shopId: device.shopId,
+        vehicleId: device.vehicleId,
+      },
+      skipDuplicates: true,
+    });
+  }
   if (sample.duplicate) {
     return {
       currentStatus: 'UNCHANGED',
@@ -185,6 +199,39 @@ async function recordSampleInTransaction(
       vehicleId: device.vehicleId,
     };
   }
+}
+
+async function hasEligibleDsvExecution(
+  transaction: UvisTelemetryTransactionClient,
+  device: DeviceRecord,
+  observedAt: Date,
+): Promise<boolean> {
+  const contexts = await transaction.dsvExecutionContext.findMany({
+    select: { id: true },
+    where: {
+      closedAt: null,
+      effectiveAt: { lte: observedAt },
+      notificationMode: { in: ['SHADOW', 'LIVE'] },
+      shopId: device.shopId,
+      status: 'ACTIVE',
+      vehicleId: device.vehicleId,
+      AND: [
+        { OR: [{ monitorStartAt: null }, { monitorStartAt: { lte: observedAt } }] },
+        { OR: [{ monitorEndAt: null }, { monitorEndAt: { gt: observedAt } }] },
+      ],
+    },
+  });
+  if (contexts.length === 0) return false;
+  const mapping = await transaction.dsvExecutionRouteMapping.findFirst({
+    select: { id: true },
+    where: {
+      executionContextId: { in: contexts.map((context) => context.id) },
+      shopId: device.shopId,
+      validFrom: { lte: observedAt },
+      OR: [{ validUntil: null }, { validUntil: { gt: observedAt } }],
+    },
+  });
+  return mapping !== null;
 }
 
 async function createSample(

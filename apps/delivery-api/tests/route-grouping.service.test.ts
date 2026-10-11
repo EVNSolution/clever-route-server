@@ -14,6 +14,7 @@ import {
   resetReorderedActiveRouteEta,
   resolveNewChildRouteIdx,
   resolveNextGlobalRouteIdx,
+  syncPublishedRouteGroupingChildExecution,
   syncRoutePlanStopsPreservingRows
 } from '../src/modules/route-grouping/route-grouping.service.js';
 import {
@@ -1206,6 +1207,64 @@ describe('route grouping contracts', () => {
     expect(prisma.order.updateMany).not.toHaveBeenCalled();
   });
 
+  test('does not create execution state for an unpublished child successor', async () => {
+    const queryRaw = vi.fn(() => Promise.resolve([]));
+    const commandCreate = vi.fn();
+    const commandFindUnique = vi.fn(() => Promise.resolve(null));
+    const contextFindFirst = vi.fn();
+    const contextFindMany = vi.fn();
+    const tx = {
+      $queryRaw: queryRaw,
+      dsvExecutionCommand: { create: commandCreate, findUnique: commandFindUnique },
+      dsvExecutionContext: { findFirst: contextFindFirst, findMany: contextFindMany }
+    };
+
+    await expect(syncPublishedRouteGroupingChildExecution(tx as never, {
+      childId: 'child-unpublished',
+      publishedAt: null,
+      routePlanId: 'route-unpublished',
+      shopId: 'shop-a'
+    })).resolves.toBeUndefined();
+    expect(queryRaw).not.toHaveBeenCalled();
+    expect(commandCreate).not.toHaveBeenCalled();
+    expect(commandFindUnique).not.toHaveBeenCalled();
+    expect(contextFindFirst).not.toHaveBeenCalled();
+    expect(contextFindMany).not.toHaveBeenCalled();
+  });
+
+  test('syncs published draft successors only after every draft projection is complete', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const replacementBody = source.slice(
+      source.indexOf('export async function replaceCurrentRouteGroupingChildVersion'),
+      source.indexOf('export async function syncPublishedRouteGroupingChildExecution')
+    );
+    const publicDraftBody = source.slice(
+      source.indexOf('async saveDraft('),
+      source.indexOf('async saveDraftInTransaction(')
+    );
+    const transactionalDraftBody = source.slice(
+      source.indexOf('async saveDraftInTransaction('),
+      source.indexOf('private async prepareDraftRouteOptimizations(')
+    );
+
+    expect(replacementBody).not.toContain('syncDsvExecutionHook');
+    for (const draftBody of [publicDraftBody, transactionalDraftBody]) {
+      expect(draftBody).toContain('const executionSyncTargets:');
+      expect(draftBody).toContain('targetChild.publishedAt !== null');
+      expect(draftBody).toContain('executionSyncTargets.sort(compareExecutionSyncTargets)');
+      const recomputeIndex = draftBody.indexOf('await recomputeAssignments(tx, group.id)');
+      const readyIndex = draftBody.indexOf("await tx.routeGrouping.update({ data: { status: 'READY' }");
+      const projectionIndex = draftBody.lastIndexOf('await claimRouteExecutionProjection(tx, {');
+      const syncIndex = draftBody.indexOf('await syncPublishedRouteGroupingChildExecution(tx, {');
+      for (const index of [recomputeIndex, readyIndex, projectionIndex, syncIndex]) {
+        expect(index).toBeGreaterThanOrEqual(0);
+      }
+      expect(recomputeIndex).toBeLessThan(syncIndex);
+      expect(readyIndex).toBeLessThan(syncIndex);
+      expect(projectionIndex).toBeLessThan(syncIndex);
+    }
+  });
+
   test('archives the prior child snapshot before creating and rebinding its immutable successor', async () => {
     const calls: string[] = [];
     const oldSnapshot = { stops: [{ orderId: 'order-old' }] };
@@ -1702,7 +1761,7 @@ describe('route grouping contracts', () => {
     expect('driverEvent' in prisma).toBe(false);
   });
 
-  test('publishes a child once per version and reports the persisted publication and push receipt', async () => {
+  test('publishes a child atomically, preserves parent Ready, and sends once per version', async () => {
     const provider = new FakeDriverPushProvider();
     const child = {
       grouping: { shop: { shopDomain: 'tenant.example' } },
@@ -1716,6 +1775,7 @@ describe('route grouping contracts', () => {
       routeGrouping: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       routeGroupingChildVersion: {
         findFirst: vi.fn().mockResolvedValue(child),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         update: vi.fn((input: { data: { publishedAt?: Date; notificationStatus?: string }; where: { id: string } }) => Promise.resolve({ ...child, ...input.data }))
       },
       driverPushToken: { findMany: vi.fn().mockResolvedValue([{ devicePushToken: 'token-1', id: 'token-1' }]) },
@@ -1736,8 +1796,11 @@ describe('route grouping contracts', () => {
     };
     const service = new PrismaRouteGroupingService(prisma as never, provider);
     const receipt = await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
-    const publishedWrite = prisma.routeGroupingChildVersion.update.mock.calls[0]?.[0] as unknown as { data: { publishedAt: Date } };
+    const publishedWrite = prisma.routeGroupingChildVersion.updateMany.mock.calls[0]?.[0] as unknown as { data: { publishedAt: Date } };
     expect(receipt.publishedAt).toBe(publishedWrite.data.publishedAt.toISOString());
+    expect(prisma.routeGrouping.updateMany).toHaveBeenCalledWith({
+      data: { status: 'READY' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } }
+    });
     expect(receipt.status).toBe('SENT');
     const repeat = await service.recordChildRoutePublished({ routePlanId: 'route-1', shopDomain: 'tenant.example' });
     expect(repeat.providerMessageId).toBe(receipt.providerMessageId);

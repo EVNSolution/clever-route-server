@@ -169,12 +169,13 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(117);
-    expect(migrations[115]).toBe(kfoodDeliveryOptionsMigrationName);
-    expect(migrations[116]).toBe(driverAverageStopTimeMigrationName);
+    expect(migrations).toHaveLength(118);
+    expect(migrations[116]).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations[117]).toBe(driverAverageStopTimeMigrationName);
     expect(migrations).toContain('20261008090000_driver_stop_completion_receipts');
     expect(migrations).toContain('20261007140000_kfood_live_route_draft_discard');
     expect(migrations).toContain('20261007120000_kfood_live_route_changes');
+    expect(migrations).toContain('20261006060000_dsv_operational_server');
     expect(migrations).toContain('20261002140000_kfood_delivery_navigation_grace');
     expect(migrations).toContain('20261002120000_driver_runtime_diagnostics');
     expect(migrations).toContain('20260929120000_add_incomplete_route_plan_status');
@@ -429,6 +430,9 @@ describe('G007 DSV Prisma migration history', () => {
       migrations.indexOf('20260929120000_add_incomplete_route_plan_status')
     );
     expect(migrations.indexOf('20261002140000_kfood_delivery_navigation_grace')).toBeLessThan(
+      migrations.indexOf('20261006060000_dsv_operational_server')
+    );
+    expect(migrations.indexOf('20261006060000_dsv_operational_server')).toBeLessThan(
       migrations.indexOf('20261007120000_kfood_live_route_changes')
     );
     expect(migrations.indexOf('20261007120000_kfood_live_route_changes')).toBeLessThan(
@@ -437,8 +441,8 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf('20261007140000_kfood_live_route_draft_discard')).toBeLessThan(
       migrations.indexOf('20261008090000_driver_stop_completion_receipts')
     );
-    expect(migrations.slice(0, 115).at(-1)).toBe('20261008090000_driver_stop_completion_receipts');
-    expect(migrations.slice(0, 116).at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
+    expect(migrations.slice(0, 116).at(-1)).toBe('20261008090000_driver_stop_completion_receipts');
+    expect(migrations.slice(0, 117).at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
     expect(migrations.at(-1)).toBe(driverAverageStopTimeMigrationName);
   });
 

@@ -7,6 +7,7 @@ import {
   type DsvDriverAuthRepository,
   type DsvDriverAuthSession,
 } from '../modules/dsv/dsv-driver-auth.repository.js';
+import { DsvDriverAttributionConflictError } from '../modules/dsv/dsv-driver-attribution-lock.js';
 import {
   normalizeDsvDriverLoginId,
   normalizeDsvDriverPhone,
@@ -56,6 +57,7 @@ export function registerDsvDriverAuthRoutes(
       const session = await dependencies.repository.register(input);
       return reply.code(201).send(buildSessionResponse(session, dependencies.jwtSecret));
     } catch (error) {
+      if (error instanceof DsvDriverAttributionConflictError) return attributionChanged(reply, error);
       if (error instanceof DsvDriverAuthConflictError) {
         return reply.code(409).send({
           data: null,
@@ -90,6 +92,7 @@ export function registerDsvDriverAuthRoutes(
       const session = await dependencies.repository.login(input);
       return reply.code(200).send(buildSessionResponse(session, dependencies.jwtSecret));
     } catch (error) {
+      if (error instanceof DsvDriverAttributionConflictError) return attributionChanged(reply, error);
       if (error instanceof DsvDriverAuthCredentialsError) {
         return reply.code(401).send({
           data: null,
@@ -124,6 +127,7 @@ export function registerDsvDriverAuthRoutes(
       const session = await dependencies.repository.refresh(input);
       return reply.code(200).send(buildSessionResponse(session, dependencies.jwtSecret));
     } catch (error) {
+      if (error instanceof DsvDriverAttributionConflictError) return attributionChanged(reply, error);
       if (error instanceof DsvDriverAuthRefreshError) {
         return reply.code(401).send({
           data: null,
@@ -203,6 +207,13 @@ export function registerDsvDriverAuthRoutes(
         error: { code: 'INTERNAL_SERVER_ERROR', message: 'Password reset could not be completed' },
       });
     }
+  });
+}
+
+function attributionChanged(reply: FastifyReply, error: DsvDriverAttributionConflictError) {
+  return reply.code(409).send({
+    data: null,
+    error: { code: error.code, message: error.message },
   });
 }
 
