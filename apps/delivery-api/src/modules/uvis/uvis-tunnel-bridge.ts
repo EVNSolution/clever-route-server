@@ -27,6 +27,23 @@ export type TunnelRoadAnchor = {
 
 type Corridor = (typeof REVIEWED_TUNNEL_CORRIDORS)[number];
 
+export type RoutedGapBridge = {
+  coordinates: Array<[number, number]>;
+  fromObservedAt: string;
+  source: 'OSRM_GAP_ROUTE';
+  toObservedAt: string;
+  type: 'LineString';
+};
+
+export type GapRouteSignature = {
+  after: TunnelSample | undefined;
+  before: TunnelSample | undefined;
+  from: TunnelSample;
+  to: TunnelSample;
+};
+
+export const ROUTED_GAP_MIN_METERS = 500;
+
 export type InferredTunnelBridge = {
   confirmedByObservedAt: string;
   corridorId: string;
@@ -71,19 +88,7 @@ export function inferRoutedTunnelBridge(
   const first = route.coordinates[0];
   if (first === undefined || distanceMeters(entry, toPoint(first)) > 60
     || distanceMeters(before, entry) < 50 || distanceMeters(exit, witness) < 50) return null;
-  let roadMeters = 0;
-  let exitIndex = -1;
-  let exitRoadMeters = 0;
-  let nearestExitMeters = Infinity;
-  for (let index = 0; index < route.coordinates.length; index += 1) {
-    if (index > 0) roadMeters += distanceMeters(toPoint(route.coordinates[index - 1]!), toPoint(route.coordinates[index]!));
-    const toExit = distanceMeters(exit, toPoint(route.coordinates[index]!));
-    if (toExit < nearestExitMeters) {
-      nearestExitMeters = toExit;
-      exitIndex = index;
-      exitRoadMeters = roadMeters;
-    }
-  }
+  const { exitIndex, exitRoadMeters, nearestExitMeters } = routeToFix(route, exit);
   const directMeters = distanceMeters(entry, exit);
   if (
     exitIndex < 1 || nearestExitMeters > 60
@@ -105,6 +110,78 @@ export function inferRoutedTunnelBridge(
     toObservedAt: exit.observedAt,
     type: 'LineString',
   };
+}
+
+export function gapRouteWaypoints(signature: GapRouteSignature): [
+  { bearingDegrees: number; coordinate: [number, number] },
+  { bearingDegrees: number; coordinate: [number, number] },
+] {
+  const { after, before, from, to } = signature;
+  const entryBearing = before !== undefined && distanceMeters(before, from) >= 20
+    ? bearingDegrees(before, from)
+    : bearingDegrees(from, to);
+  const exitBearing = after !== undefined && distanceMeters(to, after) >= 20
+    ? bearingDegrees(to, after)
+    : bearingDegrees(from, to);
+  return [
+    { bearingDegrees: entryBearing, coordinate: [from.longitude, from.latitude] },
+    { bearingDegrees: exitBearing, coordinate: [to.longitude, to.latitude] },
+  ];
+}
+
+/**
+ * Fills a long raw chord (unmatched road, or a stale GPS gap) with the engine's route between the two
+ * fixes, when that route is a plausible drive: it starts at the first fix, passes the second, and is
+ * not a detour. Covers every road the engine knows without curation.
+ */
+export function inferRoutedGapBridge(
+  signature: GapRouteSignature,
+  route: { coordinates: Array<[number, number]> },
+): RoutedGapBridge | null {
+  const { from, to } = signature;
+  const first = route.coordinates[0];
+  if (first === undefined || distanceMeters(from, toPoint(first)) > 60) return null;
+  const { exitIndex, exitRoadMeters, nearestExitMeters } = routeToFix(route, to);
+  const directMeters = distanceMeters(from, to);
+  const elapsedSeconds = (to.observedAtMs - from.observedAtMs) / 1000;
+  if (
+    exitIndex < 1 || nearestExitMeters > 60
+    || directMeters < ROUTED_GAP_MIN_METERS
+    || exitRoadMeters < directMeters * 0.95
+    || exitRoadMeters > directMeters * 1.5 + 300
+    || elapsedSeconds <= 0 || exitRoadMeters / elapsedSeconds > 40
+  ) return null;
+  return {
+    coordinates: deduplicate([
+      [from.longitude, from.latitude],
+      ...route.coordinates.slice(0, exitIndex + 1),
+      [to.longitude, to.latitude],
+    ]),
+    fromObservedAt: from.observedAt,
+    source: 'OSRM_GAP_ROUTE',
+    toObservedAt: to.observedAt,
+    type: 'LineString',
+  };
+}
+
+function routeToFix(
+  route: { coordinates: Array<[number, number]> },
+  fix: { latitude: number; longitude: number },
+): { exitIndex: number; exitRoadMeters: number; nearestExitMeters: number } {
+  let roadMeters = 0;
+  let exitIndex = -1;
+  let exitRoadMeters = 0;
+  let nearestExitMeters = Infinity;
+  for (let index = 0; index < route.coordinates.length; index += 1) {
+    if (index > 0) roadMeters += distanceMeters(toPoint(route.coordinates[index - 1]!), toPoint(route.coordinates[index]!));
+    const toExit = distanceMeters(fix, toPoint(route.coordinates[index]!));
+    if (toExit < nearestExitMeters) {
+      nearestExitMeters = toExit;
+      exitIndex = index;
+      exitRoadMeters = roadMeters;
+    }
+  }
+  return { exitIndex, exitRoadMeters, nearestExitMeters };
 }
 
 // A later observed, road-anchored position resolves the exit choice before inference.

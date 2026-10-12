@@ -755,7 +755,18 @@ function dailyRouteLineForSessions(
     return observedAt >= from && observedAt <= to;
   });
   if (inWindow.length < 2) return null;
-  return dailyRoute.coordinates.slice(inWindow[0]!.coordinateIndex, inWindow.at(-1)!.coordinateIndex + 1);
+  // Admin control draws inferred tunnels as separate lines; the customer trail is one line, so splice them in.
+  const tunnels = new Map(dailyRoute.bridges.flatMap((bridge) => (
+    bridge.inferredTunnel === undefined ? [] : [[`${bridge.fromObservedAt}|${bridge.toObservedAt}`, bridge.inferredTunnel.coordinates] as const]
+  )));
+  const line: DsvV1LngLat[] = [dailyRoute.coordinates[inWindow[0]!.coordinateIndex]!];
+  for (let index = 1; index < inWindow.length; index += 1) {
+    const from = inWindow[index - 1]!;
+    const to = inWindow[index]!;
+    line.push(...(tunnels.get(`${from.observedAt}|${to.observedAt}`) ?? []));
+    line.push(...dailyRoute.coordinates.slice(from.coordinateIndex + 1, to.coordinateIndex + 1));
+  }
+  return line;
 }
 
 type RoadLineProjection = {
