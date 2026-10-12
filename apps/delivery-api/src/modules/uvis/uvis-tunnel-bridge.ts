@@ -1,4 +1,4 @@
-import { distanceMeters, hasImplausibleGpsJump } from './uvis-vehicle-trail-evidence.js';
+import { distanceMeters, hasImplausibleGpsJump, MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND } from './uvis-vehicle-trail-evidence.js';
 import { REVIEWED_TUNNEL_CORRIDORS } from './uvis-tunnel-corridor.js';
 
 export type TunnelSample = {
@@ -112,11 +112,14 @@ export function inferRoutedTunnelBridge(
   };
 }
 
-export function gapRouteWaypoints(signature: GapRouteSignature): [
-  { bearingDegrees: number; coordinate: [number, number] },
-  { bearingDegrees: number; coordinate: [number, number] },
+export function gapRouteWaypoints(signature: GapRouteSignature, options: { bearings: boolean } = { bearings: true }): [
+  { bearingDegrees?: number; coordinate: [number, number] },
+  { bearingDegrees?: number; coordinate: [number, number] },
 ] {
   const { after, before, from, to } = signature;
+  if (!options.bearings) {
+    return [{ coordinate: [from.longitude, from.latitude] }, { coordinate: [to.longitude, to.latitude] }];
+  }
   const entryBearing = before !== undefined && distanceMeters(before, from) >= 20
     ? bearingDegrees(before, from)
     : bearingDegrees(from, to);
@@ -132,7 +135,8 @@ export function gapRouteWaypoints(signature: GapRouteSignature): [
 /**
  * Fills a long raw chord (unmatched road, or a stale GPS gap) with the engine's route between the two
  * fixes, when that route is a plausible drive: it starts at the first fix, passes the second, and is
- * not a detour. Covers every road the engine knows without curation.
+ * not a detour. Faster than the jump threshold is already an implausible jump, never a chord.
+ * Covers every road the engine knows without curation.
  */
 export function inferRoutedGapBridge(
   signature: GapRouteSignature,
@@ -149,7 +153,7 @@ export function inferRoutedGapBridge(
     || directMeters < ROUTED_GAP_MIN_METERS
     || exitRoadMeters < directMeters * 0.95
     || exitRoadMeters > directMeters * 1.5 + 300
-    || elapsedSeconds <= 0 || exitRoadMeters / elapsedSeconds > 40
+    || elapsedSeconds <= 0 || exitRoadMeters / elapsedSeconds > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
   ) return null;
   return {
     coordinates: deduplicate([

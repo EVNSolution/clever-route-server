@@ -229,7 +229,13 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
       ...(tunnelBridges.length === 0 ? {} : { tunnelBridges }),
       vehicleId: input.vehicleId,
     };
-    const { misses: routedGapMisses, routedGaps } = await routeGapBridges(points, base, previousDocument, input.roadMatchProvider);
+    const { misses: routedGapMisses, routedGaps } = await routeGapBridges(
+      points,
+      base,
+      previousDocument,
+      input.roadMatchProvider,
+      input.finalizing === true,
+    );
     const document: UvisVehicleTrailDocumentV1 = {
       ...base,
       ...(routedGapMisses.length === 0 ? {} : { routedGapMisses }),
@@ -926,12 +932,15 @@ async function routeGapBridges(
   document: UvisVehicleTrailDocumentV1,
   previousDocument: UvisVehicleTrailDocumentV1 | null,
   provider: RouteTrackingRoadMatchProvider | undefined,
+  finalizing: boolean,
 ): Promise<{ misses: string[]; routedGaps: RoutedGapBridge[] }> {
   const dailyRoute = buildUvisVehicleDailyRoute(points, document);
   if (dailyRoute === null) return { misses: [], routedGaps: [] };
   const samples = points.map((point) => ({ ...point, observedAtMs: point.observedAtDate.getTime() }));
   const indexByObservedAt = new Map(samples.map((sample, index) => [sample.observedAt, index]));
-  const previousMisses = new Set(previousDocument?.routedGapMisses ?? []);
+  const anchorIndexByObservedAt = new Map(dailyRoute.anchors.map((anchor) => [anchor.observedAt, anchor.coordinateIndex]));
+  // The finalizing run asks every miss once more, so a transient engine failure gets a second chance.
+  const previousMisses = new Set(finalizing ? [] : previousDocument?.routedGapMisses ?? []);
   const misses: string[] = [];
   const routedGaps: RoutedGapBridge[] = [];
   let routed = 0;
@@ -940,8 +949,13 @@ async function routeGapBridges(
     const fromIndex = indexByObservedAt.get(bridge.fromObservedAt);
     const toIndex = indexByObservedAt.get(bridge.toObservedAt);
     if (fromIndex === undefined || toIndex === undefined) continue;
-    const from = samples[fromIndex]!;
-    const to = samples[toIndex]!;
+    // Route between the drawn endpoints: a snapped anchor can sit well away from its raw fix.
+    const drawn = (observedAt: string, fallback: TrailPoint & { observedAtMs: number }) => {
+      const coordinate = dailyRoute.coordinates[anchorIndexByObservedAt.get(observedAt) ?? -1];
+      return coordinate === undefined ? fallback : { ...fallback, latitude: coordinate[1], longitude: coordinate[0] };
+    };
+    const from = drawn(bridge.fromObservedAt, samples[fromIndex]!);
+    const to = drawn(bridge.toObservedAt, samples[toIndex]!);
     if (distanceMeters(from, to) < ROUTED_GAP_MIN_METERS) continue;
     const key = `${from.observedAt}|${to.observedAt}`;
     const reused = previousDocument?.routedGaps?.find((candidate) => (
@@ -958,10 +972,15 @@ async function routeGapBridges(
     if (provider?.routeBetween === undefined || routed >= ROUTED_GAP_MAX_NEW_ROUTES) continue;
     routed += 1;
     const signature = { after: samples[toIndex + 1], before: samples[fromIndex - 1], from, to };
-    const route = await provider.routeBetween(...gapRouteWaypoints(signature));
-    // A failed engine call (null) is retried next run; a rejected route is remembered as a miss.
-    if (route === null || route === undefined) continue;
-    const inferred = inferRoutedGapBridge(signature, route);
+    // Travel bearings keep the route on the vehicle's carriageway, but next to a ramp or an overpass they
+    // can force a long detour; a detoured result is retried once without them.
+    let inferred: RoutedGapBridge | null = null;
+    for (const bearings of [true, false]) {
+      const route = await provider.routeBetween(...gapRouteWaypoints(signature, { bearings }));
+      inferred = route === null || route === undefined ? null : inferRoutedGapBridge(signature, route);
+      if (inferred !== null || route === null || route === undefined) break;
+    }
+    // No route or a rejected route is remembered as a miss so the engine is not asked every run.
     if (inferred === null) misses.push(key);
     else routedGaps.push(inferred);
   }

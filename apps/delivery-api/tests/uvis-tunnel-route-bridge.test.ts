@@ -245,6 +245,14 @@ describe('routed gap bridge', () => {
     expect(bridge!.coordinates.length).toBeGreaterThan(4);
   });
 
+  test('drops the travel bearings on request so a detoured bearing route can be retried', () => {
+    const samples = chordSamples();
+    const signature = { after: samples[3], before: samples[0], from: samples[1]!, to: samples[2]! };
+    const [entry, exit] = gapRouteWaypoints(signature, { bearings: false });
+    expect(entry).toEqual({ coordinate: [127.134, 37.453] });
+    expect(exit).toEqual({ coordinate: [127.14, 37.443] });
+  });
+
   test('rejects a detour, a route that starts away from the fix, and a short chord', () => {
     const samples = chordSamples();
     const signature = { after: samples[3], before: samples[0], from: samples[1]!, to: samples[2]! };
@@ -283,21 +291,40 @@ describe('routed gap bridge', () => {
 
     const first = await repository.materializeVehicleDay(input);
     expect(routeBetween).toHaveBeenCalledTimes(3);
+    expect(routeBetween.mock.calls[0]?.[0]).toMatchObject({ bearingDegrees: expect.any(Number) as number });
     expect(first.routedGaps).toHaveLength(3);
     expect(first.routedGaps?.[0]).toMatchObject({ fromObservedAt: CHORD_RUN[0]![0], source: 'OSRM_GAP_ROUTE', toObservedAt: CHORD_RUN[1]![0] });
 
     await repository.materializeVehicleDay(input);
     expect(routeBetween).toHaveBeenCalledTimes(3);
 
-    // A rejected route is remembered as a miss and not asked again.
+    // A bearing route that detours is retried once without bearings and then accepted.
+    stored = null;
+    routeBetween.mockImplementation((from: { bearingDegrees?: number; coordinate: [number, number] }, to: { coordinate: [number, number] }) =>
+      Promise.resolve({ ...straightRoute(from.coordinate, to.coordinate, 20, from.bearingDegrees === undefined ? 0 : 0.02), distanceMeters: 0 }));
+    const retried = await repository.materializeVehicleDay(input);
+    expect(routeBetween).toHaveBeenCalledTimes(9);
+    expect(routeBetween.mock.calls[4]?.[0]).not.toHaveProperty('bearingDegrees');
+    expect(retried.routedGaps).toHaveLength(3);
+
+    // A route that detours either way is remembered as a miss and not asked again.
     stored = null;
     routeBetween.mockImplementation((from: { coordinate: [number, number] }, to: { coordinate: [number, number] }) =>
       Promise.resolve({ ...straightRoute(from.coordinate, to.coordinate, 20, 0.02), distanceMeters: 0 }));
     const rejected = await repository.materializeVehicleDay(input);
+    expect(routeBetween).toHaveBeenCalledTimes(15);
     expect(rejected.routedGaps).toBeUndefined();
     expect(rejected.routedGapMisses).toHaveLength(3);
     await repository.materializeVehicleDay(input);
-    expect(routeBetween).toHaveBeenCalledTimes(6);
+    expect(routeBetween).toHaveBeenCalledTimes(15);
+    // No route at all is a miss too; the finalizing run asks once more.
+    routeBetween.mockResolvedValue(null as never);
+    stored = null;
+    await repository.materializeVehicleDay(input);
+    await repository.materializeVehicleDay(input);
+    expect(routeBetween).toHaveBeenCalledTimes(18);
+    await repository.materializeVehicleDay({ ...input, finalizing: true });
+    expect(routeBetween).toHaveBeenCalledTimes(21);
 
     const route = buildUvisVehicleDailyRoute(chordSamples(), first);
     expect(route?.bridges).toEqual([]);
