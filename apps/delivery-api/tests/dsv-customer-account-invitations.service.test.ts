@@ -5,9 +5,6 @@ import {
   DsvCustomerAccountServiceError,
   PrismaDsvCustomerAccountService,
 } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
-import { defaultDsvOperationalSettings } from '../src/modules/dsv/dsv-operational-settings.js';
-import { defaultRouteOpsUiSettings } from '../src/modules/route-ops/route-ops-ui-settings.js';
-import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-config.js';
 
 const shopId = '99999999-9999-4999-8999-999999999999';
 const customerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -227,7 +224,6 @@ describe('PrismaDsvCustomerAccountService', () => {
     expect(issuedToken).not.toBe('');
     expect(result.invitation.setupUrl).toContain('https://dsv.example.com/customer/account/setup#token=');
     expect(result.account).toMatchObject({ displayName: null, email: null, loginId: null });
-    expect(harness.manualEmailService.send).not.toHaveBeenCalled();
     const accountCreateCalls = harness.tx.customerAccount.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>;
     expect(accountCreateCalls[0]?.[0].data).not.toHaveProperty('email');
     expect(accountCreateCalls[0]?.[0].data).not.toHaveProperty('loginId');
@@ -258,7 +254,6 @@ describe('PrismaDsvCustomerAccountService', () => {
       requestId: 'req-invite',
       shopDomain: 'tomatonofood.com',
     })).rejects.toBeInstanceOf(DsvCustomerAccountServiceError);
-    expect(harness.manualEmailService.send).not.toHaveBeenCalled();
   });
 
   test('leaves signup identity fields unclaimed until link completion', async () => {
@@ -277,9 +272,6 @@ describe('PrismaDsvCustomerAccountService', () => {
     expect(result.account.loginId).toBeNull();
     const accountCreateCalls = harness.tx.customerAccount.create.mock.calls as unknown as Array<[{ data: { loginId: string } }]>;
     expect(accountCreateCalls[0]?.[0].data.loginId).toBeUndefined();
-    const sendCalls = harness.manualEmailService.send.mock.calls as unknown as Array<[{ textContent: string }]>;
-    const emailBody = sendCalls[0]?.[0].textContent ?? '';
-    expect(emailBody).toBe('');
   });
 
   test('rejects a duplicate login ID while completing signup', async () => {
@@ -487,6 +479,119 @@ describe('PrismaDsvCustomerAccountService', () => {
       where: { issuer: 'CLEVER_DSV' },
     });
   });
+
+  test('revokes unused links under the account lock when an activated account is disabled', async () => {
+    const harness = createHarness();
+    harness.prisma.customerAccount.findFirst.mockResolvedValueOnce(activatedAccount());
+    harness.tx.customerAccount.update.mockResolvedValueOnce(accountWithInvite({ invites: [], passwordHash: 'password-hash', shopId, customerId }));
+
+    await expect(harness.service.setStatus({
+      accountId,
+      actorId: 'admin-1',
+      requestId: 'req-disable',
+      shopDomain: 'tomatonofood.com',
+      status: 'DISABLED',
+    })).resolves.toMatchObject({ account: { status: 'DISABLED' } });
+    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(harness.tx.dsvCustomerAccountInvite.updateMany).toHaveBeenCalledWith({
+      data: { revokedAt: expect.any(Date) as Date },
+      where: { accountId, consumedAt: null, revokedAt: null },
+    });
+    expect(harness.tx.customerAccount.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { activeSessionId: null, status: 'INACTIVE' },
+    }));
+
+    harness.prisma.customerAccount.findFirst.mockResolvedValueOnce({ ...activatedAccount(), status: 'INACTIVE' });
+    harness.tx.customerAccount.update.mockResolvedValueOnce(accountWithInvite({ invites: [], passwordHash: 'password-hash', status: 'ACTIVE' }));
+    harness.tx.dsvCustomerAccountInvite.updateMany.mockClear();
+    await harness.service.setStatus({
+      accountId,
+      actorId: 'admin-1',
+      requestId: 'req-enable',
+      shopDomain: 'tomatonofood.com',
+      status: 'ACTIVE',
+    });
+    expect(harness.tx.dsvCustomerAccountInvite.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('rejects a leftover password reset link of a disabled account so it cannot reactivate itself', async () => {
+    const harness = createHarness();
+    const disabledReset = invite({
+      account: { ...invite().account, passwordHash: 'password-hash', passwordSalt: 'password-salt', status: 'INACTIVE' },
+      purpose: 'PASSWORD_RESET',
+    });
+    harness.prisma.dsvCustomerAccountInvite.findUnique.mockResolvedValue(disabledReset);
+
+    await expect(harness.service.validateInvitation({ shopDomain: 'tomatonofood.com', token })).resolves.toBeNull();
+    await expect(harness.service.complete({
+      password: 'FreshStrongPassw0rd!',
+      requestId: 'req-reactivate',
+      shopDomain: 'tomatonofood.com',
+      token,
+    })).rejects.toMatchObject({ code: 'INVALID_TOKEN' });
+    expect(harness.tx.customerAccount.update).not.toHaveBeenCalled();
+  });
+
+  test('returns a password reset link for an activated account without an email', async () => {
+    const harness = createHarness();
+    harness.prisma.customerAccount.findFirst.mockResolvedValueOnce({ ...activatedAccount(), email: null });
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ id: shopId, shopDomain: 'tomatonofood.com' });
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ customers: [{ displayName: '토마토물류', id: customerId }] });
+    harness.tx.customerAccount.findUnique.mockResolvedValueOnce({ customerId, issuer: 'CLEVER_DSV', passwordHash: 'password-hash', shopId });
+    harness.tx.customerAccount.findUniqueOrThrow.mockResolvedValue(accountWithInvite({ email: null, invites: [], passwordHash: 'password-hash', status: 'ACTIVE' }));
+
+    const result = await harness.service.requestPasswordReset({
+      accountId,
+      actorId: 'admin-1',
+      requestId: 'req-reset',
+      shopDomain: 'tomatonofood.com',
+    });
+
+    expect(result.invitation.setupUrl).toContain('https://dsv.example.com/customer/account/setup#token=');
+    expect(result.account).toMatchObject({ email: null, status: 'ACTIVE' });
+    const inviteCreateCalls = harness.tx.dsvCustomerAccountInvite.create.mock.calls as unknown as Array<[{ data: { purpose: string } }]>;
+    expect(inviteCreateCalls[0]?.[0].data.purpose).toBe('PASSWORD_RESET');
+  });
+
+  test('discards only unclaimed accounts after revoking their links, with an audit event', async () => {
+    const harness = createHarness();
+    harness.prisma.customerAccount.findFirst.mockResolvedValueOnce({ ...activatedAccount(), loginId: null, passwordHash: null, passwordSalt: null, status: 'INACTIVE' });
+    harness.tx.customerAccount.findUnique.mockResolvedValueOnce({ passwordHash: null });
+
+    await expect(harness.service.discardUnclaimed({
+      accountId,
+      actorId: 'admin-1',
+      requestId: 'req-discard',
+      shopDomain: 'tomatonofood.com',
+    })).resolves.toEqual({ accountId });
+    expect(harness.tx.dsvCustomerAccountInvite.updateMany).toHaveBeenCalledWith({
+      data: { revokedAt: expect.any(Date) as Date },
+      where: { accountId, consumedAt: null, revokedAt: null },
+    });
+    expect(harness.tx.customerAccount.delete).toHaveBeenCalledWith({ where: { id: accountId } });
+    expect(harness.tx.dsvAuditEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ entityId: accountId, eventType: 'CUSTOMER_ACCOUNT_DISCARDED' }) as unknown,
+    });
+
+    harness.prisma.customerAccount.findFirst.mockResolvedValueOnce(activatedAccount());
+    await expect(harness.service.discardUnclaimed({
+      accountId,
+      actorId: 'admin-1',
+      requestId: 'req-discard-active',
+      shopDomain: 'tomatonofood.com',
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+    harness.prisma.customerAccount.findFirst.mockResolvedValueOnce({ ...activatedAccount(), passwordHash: null });
+    harness.tx.customerAccount.findUnique.mockResolvedValueOnce({ passwordHash: 'claimed-during-lock-wait' });
+    harness.tx.customerAccount.delete.mockClear();
+    await expect(harness.service.discardUnclaimed({
+      accountId,
+      actorId: 'admin-1',
+      requestId: 'req-discard-race',
+      shopDomain: 'tomatonofood.com',
+    })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(harness.tx.customerAccount.delete).not.toHaveBeenCalled();
+  });
 });
 
 function createHarness(options: { webPublicOrigin?: string | undefined } = {}) {
@@ -494,6 +599,7 @@ function createHarness(options: { webPublicOrigin?: string | undefined } = {}) {
     $queryRaw: vi.fn<(query: unknown) => Promise<Array<{ lock: string }>>>(() => Promise.resolve([{ lock: '' }])),
     customerAccount: {
       create: vi.fn(() => Promise.resolve({ id: accountId })),
+      delete: vi.fn(() => Promise.resolve({ id: accountId })),
       findFirst: vi.fn(),
       findUnique: vi.fn<(input: unknown) => Promise<unknown>>(() => Promise.resolve(null)),
       findUniqueOrThrow: vi.fn(),
@@ -517,33 +623,9 @@ function createHarness(options: { webPublicOrigin?: string | undefined } = {}) {
     dsvCustomerAccountInvite: { findUnique: vi.fn<(input: unknown) => Promise<unknown>>() },
     shop: { findUnique: vi.fn<(input: unknown) => Promise<unknown>>() },
   };
-  const manualEmailService = {
-    getConfig: vi.fn(),
-    send: vi.fn(() => Promise.resolve({ messageId: 'message-1', recipientCount: 1, sentAt: '2026-08-09T01:00:00.000Z' })),
-  };
-  const settings = defaultDsvOperationalSettings();
-  const settingsService = {
-    getSettings: vi.fn(() => Promise.resolve({
-      defaultDepotAddress: null,
-      defaultDepotLatitude: null,
-      defaultDepotLongitude: null,
-      dsvOperationalSettings: {
-        ...settings,
-        manualEmailSenderEmail: 'sender@example.com',
-        manualEmailSubject: '[CLEVER DSV] 기존 제목',
-      },
-      locale: 'ko-KR',
-      routeOpsUiSettings: defaultRouteOpsUiSettings(),
-      routeScopeConfig: defaultRouteScopeConfig(),
-      shopDomain: 'tomatonofood.com',
-    })),
-  };
   return {
-    manualEmailService,
     prisma,
     service: new PrismaDsvCustomerAccountService(prisma as never, {
-      manualEmailService,
-      settingsService,
       ...(options.webPublicOrigin === undefined && Object.hasOwn(options, 'webPublicOrigin')
         ? {}
         : { webPublicOrigin: options.webPublicOrigin ?? 'https://dsv.example.com' }),
@@ -608,6 +690,21 @@ function invite(overrides: Record<string, unknown> = {}) {
     shop: { id: shopId, shopDomain: 'tomatonofood.com' },
     shopId,
     ...overrides,
+  };
+}
+
+function activatedAccount() {
+  return {
+    customerId,
+    email: 'customer@example.com',
+    id: accountId,
+    issuer: 'CLEVER_DSV',
+    loginId: 'customer-login',
+    passwordHash: 'password-hash',
+    passwordSalt: 'password-salt',
+    shop: { id: shopId, shopDomain: 'tomatonofood.com' },
+    shopId,
+    status: 'ACTIVE',
   };
 }
 

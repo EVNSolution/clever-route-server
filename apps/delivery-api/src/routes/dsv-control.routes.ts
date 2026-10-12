@@ -482,6 +482,23 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
     }, ['dsv:customers:write']));
 
+  app.delete<{ Params: { accountId: string } }>(`${apiRoot}/customer-accounts/:accountId`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, principal, shopDomain }) => {
+      const service = requireCustomerAccountService(dependencies);
+      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', 'accountId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { customerAccountIds: [request.params.accountId] });
+      try {
+        return sendData(reply, await service.discardUnclaimed({
+          accountId: request.params.accountId,
+          actorId: actor,
+          requestId: request.id,
+          shopDomain,
+        }));
+      } catch (error) {
+        return sendCustomerAccountServiceError(reply, error);
+      }
+    }, ['dsv:customers:write']));
+
   app.patch<{ Params: { accountId: string } }>(`${apiRoot}/customer-accounts/:accountId/status`, (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ actor, principal, shopDomain }) => {
       const service = requireCustomerAccountService(dependencies);
