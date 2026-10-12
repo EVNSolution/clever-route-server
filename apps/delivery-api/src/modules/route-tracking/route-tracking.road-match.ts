@@ -69,7 +69,8 @@ export type RouteTrackingRoadMatchProvider = {
 };
 
 export type RouteTrackingRouteWaypoint = {
-  bearingDegrees: number;
+  // Omitted on a retry when the bearing-constrained route detoured (wrong carriageway or ramp).
+  bearingDegrees?: number;
   coordinate: [number, number];
 };
 
@@ -443,7 +444,9 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     const bearing = (value: number) => `${Math.round(((value % 360) + 360) % 360)},60`;
     const params = new URLSearchParams({
       alternatives: 'false',
-      bearings: `${bearing(from.bearingDegrees)};${bearing(to.bearingDegrees)}`,
+      ...(from.bearingDegrees === undefined || to.bearingDegrees === undefined
+        ? {}
+        : { bearings: `${bearing(from.bearingDegrees)};${bearing(to.bearingDegrees)}` }),
       geometries: 'geojson',
       overview: 'full',
       radiuses: '60;60',
