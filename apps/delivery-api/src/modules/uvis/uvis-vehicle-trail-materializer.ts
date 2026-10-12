@@ -15,10 +15,15 @@ import {
 } from './uvis-vehicle-trail-evidence.js';
 import {
   findTunnelSignature,
+  gapRouteWaypoints,
+  inferRoutedGapBridge,
   inferRoutedTunnelBridge,
+  ROUTED_GAP_MIN_METERS,
   tunnelRouteWaypoints,
   type InferredTunnelBridge,
+  type RoutedGapBridge,
 } from './uvis-tunnel-bridge.js';
+import { buildUvisVehicleDailyRoute } from './uvis-vehicle-daily-route.js';
 
 export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as const;
 export const UVIS_ROAD_MATCH_POLICY_VERSION = 'uvis_road_match.v2' as const;
@@ -68,6 +73,10 @@ export type UvisVehicleTrailDocumentV1 = {
   sourceSampleCount: number;
   sourceWatermark: string;
   timezone: typeof SERVICE_TIMEZONE;
+  // Chords the engine could not route plausibly ("from|to"), so they are asked once, not on every run.
+  routedGapMisses?: string[];
+  // Routed road for long raw chords (unmatched road or stale GPS gap), computed here for the same reason.
+  routedGaps?: RoutedGapBridge[];
   // Routed bridges over GPS loss in tunnels, computed here so reads never call the routing engine.
   tunnelBridges?: InferredTunnelBridge[];
   vehicleId: string;
@@ -208,7 +217,7 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
 
     const tunnelBridges = await routeTunnelBridges(points, previousDocument, input.roadMatchProvider);
     const sourceWatermark = sourceWatermarkFor(sourceRows);
-    const document: UvisVehicleTrailDocumentV1 = {
+    const base: UvisVehicleTrailDocumentV1 = {
       generatedAt: now.toISOString(),
       retryable,
       schemaVersion: UVIS_VEHICLE_TRAIL_SCHEMA_VERSION,
@@ -219,6 +228,12 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
       timezone: SERVICE_TIMEZONE,
       ...(tunnelBridges.length === 0 ? {} : { tunnelBridges }),
       vehicleId: input.vehicleId,
+    };
+    const { misses: routedGapMisses, routedGaps } = await routeGapBridges(points, base, previousDocument, input.roadMatchProvider);
+    const document: UvisVehicleTrailDocumentV1 = {
+      ...base,
+      ...(routedGapMisses.length === 0 ? {} : { routedGapMisses }),
+      ...(routedGaps.length === 0 ? {} : { routedGaps }),
     };
 
     const finalizedAt = input.finalizing === true
@@ -901,6 +916,56 @@ async function routeTunnelBridges(
     if (bridge !== null) bridges.push(bridge);
   }
   return bridges;
+}
+
+// ponytail: at most 60 new route calls per materialization; the rest are picked up on the next run.
+const ROUTED_GAP_MAX_NEW_ROUTES = 60;
+
+async function routeGapBridges(
+  points: TrailPoint[],
+  document: UvisVehicleTrailDocumentV1,
+  previousDocument: UvisVehicleTrailDocumentV1 | null,
+  provider: RouteTrackingRoadMatchProvider | undefined,
+): Promise<{ misses: string[]; routedGaps: RoutedGapBridge[] }> {
+  const dailyRoute = buildUvisVehicleDailyRoute(points, document);
+  if (dailyRoute === null) return { misses: [], routedGaps: [] };
+  const samples = points.map((point) => ({ ...point, observedAtMs: point.observedAtDate.getTime() }));
+  const indexByObservedAt = new Map(samples.map((sample, index) => [sample.observedAt, index]));
+  const previousMisses = new Set(previousDocument?.routedGapMisses ?? []);
+  const misses: string[] = [];
+  const routedGaps: RoutedGapBridge[] = [];
+  let routed = 0;
+  for (const bridge of dailyRoute.bridges) {
+    if (bridge.reason === 'IMPLAUSIBLE_JUMP') continue;
+    const fromIndex = indexByObservedAt.get(bridge.fromObservedAt);
+    const toIndex = indexByObservedAt.get(bridge.toObservedAt);
+    if (fromIndex === undefined || toIndex === undefined) continue;
+    const from = samples[fromIndex]!;
+    const to = samples[toIndex]!;
+    if (distanceMeters(from, to) < ROUTED_GAP_MIN_METERS) continue;
+    const key = `${from.observedAt}|${to.observedAt}`;
+    const reused = previousDocument?.routedGaps?.find((candidate) => (
+      candidate.fromObservedAt === from.observedAt && candidate.toObservedAt === to.observedAt
+    ));
+    if (reused !== undefined) {
+      routedGaps.push(reused);
+      continue;
+    }
+    if (previousMisses.has(key)) {
+      misses.push(key);
+      continue;
+    }
+    if (provider?.routeBetween === undefined || routed >= ROUTED_GAP_MAX_NEW_ROUTES) continue;
+    routed += 1;
+    const signature = { after: samples[toIndex + 1], before: samples[fromIndex - 1], from, to };
+    const route = await provider.routeBetween(...gapRouteWaypoints(signature));
+    // A failed engine call (null) is retried next run; a rejected route is remembered as a miss.
+    if (route === null || route === undefined) continue;
+    const inferred = inferRoutedGapBridge(signature, route);
+    if (inferred === null) misses.push(key);
+    else routedGaps.push(inferred);
+  }
+  return { misses, routedGaps };
 }
 
 function readTrailDocument(value: unknown, filterRoadAnchors: boolean): UvisVehicleTrailDocumentV1 | null {

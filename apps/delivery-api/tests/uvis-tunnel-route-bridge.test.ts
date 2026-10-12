@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, test, vi } from 'vitest';
 
 import { OsrmRouteTrackingRoadMatchProvider } from '../src/modules/route-tracking/route-tracking.road-match.js';
-import { findTunnelSignature, inferRoutedTunnelBridge, tunnelRouteWaypoints } from '../src/modules/uvis/uvis-tunnel-bridge.js';
+import { findTunnelSignature, gapRouteWaypoints, inferRoutedGapBridge, inferRoutedTunnelBridge, tunnelRouteWaypoints } from '../src/modules/uvis/uvis-tunnel-bridge.js';
 import { buildUvisVehicleDailyRoute } from '../src/modules/uvis/uvis-vehicle-daily-route.js';
 import { PrismaUvisVehicleTrailMaterializationRepository } from '../src/modules/uvis/uvis-vehicle-trail-materializer.js';
 
@@ -117,8 +117,11 @@ describe('routed tunnel bridge', () => {
     const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
     const input = { roadMatchProvider, serviceDate: '2026-10-12', shopId: 'shop-a', vehicleId: 'vehicle-a' };
 
+    // Without any matched road every 1km chord is also a routed-gap candidate; count only the tunnel call.
+    const tunnelCalls = () => routeBetween.mock.calls
+      .filter((call) => (call[0] as { coordinate: [number, number] }).coordinate[0] === 126.998984).length;
     const first = await repository.materializeVehicleDay(input);
-    expect(routeBetween).toHaveBeenCalledTimes(1);
+    expect(tunnelCalls()).toBe(1);
     expect(routeBetween).toHaveBeenCalledWith(
       expect.objectContaining({ coordinate: [126.998984, 37.60876] }),
       expect.objectContaining({ coordinate: [126.940552, 37.590968] }),
@@ -126,7 +129,7 @@ describe('routed tunnel bridge', () => {
     expect(first.tunnelBridges).toHaveLength(1);
 
     await repository.materializeVehicleDay(input);
-    expect(routeBetween).toHaveBeenCalledTimes(1);
+    expect(tunnelCalls()).toBe(1);
 
     const route = buildUvisVehicleDailyRoute(samples(), first);
     const bridge = route?.bridges.find((item) => item.toObservedAt === '2026-10-11T18:47:47.000Z');
@@ -189,6 +192,117 @@ describe('routed tunnel bridge with a missed poll inside the frozen run', () => 
       source: 'OSRM_TUNNEL_ROUTE',
       toObservedAt: '2026-10-12T01:10:25.000Z',
     });
+  });
+});
+
+// 경기88바9580 2026-10-12 03:16-03:21Z: six 60-second fixes on the expressway that road matching left as raw chords.
+const CHORD_RUN: Array<[string, number, number, number]> = [
+  ['2026-10-12T03:15:25.000Z', 37.4595, 127.1290, 52],
+  ['2026-10-12T03:16:25.000Z', 37.4530, 127.1340, 75],
+  ['2026-10-12T03:17:25.000Z', 37.4430, 127.1400, 76],
+  ['2026-10-12T03:18:25.000Z', 37.4320, 127.1450, 85],
+];
+
+function chordSamples() {
+  return CHORD_RUN.map(([observedAt, latitude, longitude, speedKph]) => ({
+    ignitionOn: true,
+    latitude,
+    longitude,
+    observedAt,
+    observedAtMs: Date.parse(observedAt),
+    speedKph,
+    staleAfter: new Date(Date.parse(observedAt) + 120_000).toISOString(),
+  }));
+}
+
+function straightRoute(from: [number, number], to: [number, number], points = 6, detour = 0) {
+  return {
+    coordinates: Array.from({ length: points }, (_, index): [number, number] => {
+      const ratio = index / (points - 1);
+      const bulge = detour * Math.sin(ratio * Math.PI);
+      return [from[0] + (to[0] - from[0]) * ratio + bulge, from[1] + (to[1] - from[1]) * ratio];
+    }),
+  };
+}
+
+describe('routed gap bridge', () => {
+  test('fills a long unmatched chord with a plausible engine route and keeps the travel bearings', () => {
+    const samples = chordSamples();
+    const signature = { after: samples[3], before: samples[0], from: samples[1]!, to: samples[2]! };
+    const [entry, exit] = gapRouteWaypoints(signature);
+    expect(entry.coordinate).toEqual([127.134, 37.453]);
+    expect(exit.coordinate).toEqual([127.14, 37.443]);
+    expect(entry.bearingDegrees).toBeGreaterThan(140);
+    expect(entry.bearingDegrees).toBeLessThan(160);
+    const bridge = inferRoutedGapBridge(signature, straightRoute(entry.coordinate, exit.coordinate));
+    expect(bridge).toMatchObject({
+      fromObservedAt: '2026-10-12T03:16:25.000Z',
+      source: 'OSRM_GAP_ROUTE',
+      toObservedAt: '2026-10-12T03:17:25.000Z',
+    });
+    expect(bridge!.coordinates[0]).toEqual([127.134, 37.453]);
+    expect(bridge!.coordinates.at(-1)).toEqual([127.14, 37.443]);
+    expect(bridge!.coordinates.length).toBeGreaterThan(4);
+  });
+
+  test('rejects a detour, a route that starts away from the fix, and a short chord', () => {
+    const samples = chordSamples();
+    const signature = { after: samples[3], before: samples[0], from: samples[1]!, to: samples[2]! };
+    const [entry, exit] = gapRouteWaypoints(signature);
+    expect(inferRoutedGapBridge(signature, straightRoute(entry.coordinate, exit.coordinate, 20, 0.02))).toBeNull();
+    expect(inferRoutedGapBridge(signature, straightRoute([entry.coordinate[0] + 0.002, entry.coordinate[1]], exit.coordinate))).toBeNull();
+    const near = { ...samples[2]!, latitude: samples[1]!.latitude - 0.003, longitude: samples[1]!.longitude };
+    const short = { ...signature, to: near };
+    expect(inferRoutedGapBridge(short, straightRoute(entry.coordinate, [near.longitude, near.latitude]))).toBeNull();
+  });
+
+  test('routes long raw chords once at materialization, reuses them, and the daily route draws the road', async () => {
+    const rows = CHORD_RUN.map(([observedAt, latitude, longitude, speedKph], index) => ({
+      distanceTodayKm: null,
+      id: `chord-${index}`,
+      ignitionOn: true,
+      latitude: latitude.toFixed(7),
+      longitude: longitude.toFixed(7),
+      observedAt: new Date(observedAt),
+      speedKph: speedKph.toFixed(2),
+      staleAfter: new Date(Date.parse(observedAt) + 120_000),
+    }));
+    let stored: unknown = null;
+    const prisma = {
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve(rows)) },
+      uvisVehicleTrailMaterialization: {
+        findUnique: vi.fn(() => Promise.resolve(stored === null ? null : { document: stored })),
+        upsert: vi.fn((input: { create: { document: unknown } }) => { stored = input.create.document; return Promise.resolve(input); }),
+      },
+    };
+    const routeBetween = vi.fn((from: { coordinate: [number, number] }, to: { coordinate: [number, number] }) =>
+      Promise.resolve({ ...straightRoute(from.coordinate, to.coordinate), distanceMeters: 0 }));
+    const roadMatchProvider = { match: vi.fn().mockResolvedValue(null), routeBetween };
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+    const input = { roadMatchProvider, serviceDate: '2026-10-12', shopId: 'shop-a', vehicleId: 'vehicle-a' };
+
+    const first = await repository.materializeVehicleDay(input);
+    expect(routeBetween).toHaveBeenCalledTimes(3);
+    expect(first.routedGaps).toHaveLength(3);
+    expect(first.routedGaps?.[0]).toMatchObject({ fromObservedAt: CHORD_RUN[0]![0], source: 'OSRM_GAP_ROUTE', toObservedAt: CHORD_RUN[1]![0] });
+
+    await repository.materializeVehicleDay(input);
+    expect(routeBetween).toHaveBeenCalledTimes(3);
+
+    // A rejected route is remembered as a miss and not asked again.
+    stored = null;
+    routeBetween.mockImplementation((from: { coordinate: [number, number] }, to: { coordinate: [number, number] }) =>
+      Promise.resolve({ ...straightRoute(from.coordinate, to.coordinate, 20, 0.02), distanceMeters: 0 }));
+    const rejected = await repository.materializeVehicleDay(input);
+    expect(rejected.routedGaps).toBeUndefined();
+    expect(rejected.routedGapMisses).toHaveLength(3);
+    await repository.materializeVehicleDay(input);
+    expect(routeBetween).toHaveBeenCalledTimes(6);
+
+    const route = buildUvisVehicleDailyRoute(chordSamples(), first);
+    expect(route?.bridges).toEqual([]);
+    expect(route?.coordinates.length).toBeGreaterThan(CHORD_RUN.length * 3);
+    expect(route?.anchors.map((anchor) => anchor.observedAt)).toEqual(CHORD_RUN.map(([observedAt]) => observedAt));
   });
 });
 

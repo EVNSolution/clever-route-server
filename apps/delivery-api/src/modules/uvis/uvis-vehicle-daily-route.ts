@@ -7,7 +7,7 @@ import {
   impliedSpeedMetersPerSecond,
   MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND,
 } from './uvis-vehicle-trail-evidence.js';
-import { inferReviewedTunnelBridge, type InferredTunnelBridge } from './uvis-tunnel-bridge.js';
+import { inferReviewedTunnelBridge, type InferredTunnelBridge, type RoutedGapBridge } from './uvis-tunnel-bridge.js';
 
 type DailyRouteSample = {
   ignitionOn?: boolean | null;
@@ -75,6 +75,7 @@ export function buildUvisVehicleDailyRoute(
       && previousTrusted.coordinateIndex <= currentTrusted.coordinateIndex;
 
     let coordinateIndex: number;
+    let routedGap: RoutedGapBridge | undefined;
     if (followsMatchedRoad) {
       const rangeStart = coordinates.length;
       let validRange = true;
@@ -97,6 +98,12 @@ export function buildUvisVehicleDailyRoute(
         coordinateIndex = appendCoordinate(coordinates, rawCoordinate(current));
         bridges.push(toBridge(previous, current));
       }
+    } else if ((routedGap = routedGapFor(trailDocument, previous, current)) !== undefined) {
+      // The engine's route between the two fixes replaces the raw chord; no bridge is reported.
+      for (const coordinate of routedGap.coordinates) {
+        if (isValidCoordinate(coordinate)) appendCoordinate(coordinates, coordinate);
+      }
+      coordinateIndex = appendCoordinate(coordinates, readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current));
     } else {
       const endpoint = implausibleJump ? rawCoordinate(current) : readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current);
       coordinateIndex = appendCoordinate(coordinates, endpoint);
@@ -213,6 +220,17 @@ function appendCoordinate(coordinates: Array<[number, number]>, coordinate: [num
 
 function distinctCoordinateCount(samples: DailyRouteSample[]): number {
   return new Set(samples.map((sample) => `${sample.longitude},${sample.latitude}`)).size;
+}
+
+function routedGapFor(
+  trailDocument: UvisVehicleTrailDocumentV1 | null,
+  previous: PreparedSample,
+  current: PreparedSample,
+): RoutedGapBridge | undefined {
+  if (toBridge(previous, current).reason === 'IMPLAUSIBLE_JUMP') return undefined;
+  return trailDocument?.routedGaps?.find((candidate) => (
+    candidate.fromObservedAt === previous.observedAt && candidate.toObservedAt === current.observedAt
+  ));
 }
 
 function toBridge(

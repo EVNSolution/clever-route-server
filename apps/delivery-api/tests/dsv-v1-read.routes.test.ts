@@ -1699,7 +1699,7 @@ describe('DSV v1 read routes', () => {
     }
   });
 
-  test('draws the customer trail from the admin daily route so unmatched GPS does not leave holes', async () => {
+  test('draws the customer trail from the admin daily route with inferred tunnels spliced in', async () => {
     const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
     const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
@@ -1722,7 +1722,20 @@ describe('DSV v1 read routes', () => {
             { coordinateIndex: 3, observedAt: '2026-08-09T01:02:00.000Z' },
             { coordinateIndex: 4, observedAt: '2026-08-09T01:03:00.000Z' },
           ],
-          bridges: [],
+          bridges: [{
+            fromObservedAt: '2026-08-09T01:01:00.000Z',
+            inferredTunnel: {
+              confirmedByObservedAt: '2026-08-09T01:03:00.000Z',
+              coordinates: [[126.915, 37.5], [126.9165, 37.501], [126.918, 37.5]],
+              corridorId: 'osrm-route',
+              fromObservedAt: '2026-08-09T01:01:00.000Z',
+              source: 'OSRM_TUNNEL_ROUTE',
+              toObservedAt: '2026-08-09T01:02:00.000Z',
+              type: 'LineString',
+            },
+            reason: 'IMPLAUSIBLE_JUMP',
+            toObservedAt: '2026-08-09T01:02:00.000Z',
+          }],
           coordinates: [[126.8, 37.5], [126.905, 37.5], [126.915, 37.5], [126.918, 37.5], [126.94, 37.5]],
           sourceSampleCount: 5,
           type: 'LineString',
@@ -1786,7 +1799,7 @@ describe('DSV v1 read routes', () => {
       expect(expectDsvV1Metadata(response).data).toMatchObject({
         routes: [],
         trails: [{
-          segments: [{ coordinates: [[126.905, 37.5], [126.915, 37.5], [126.918, 37.5], [126.93, 37.5]] }],
+          segments: [{ coordinates: [[126.905, 37.5], [126.915, 37.5], [126.9165, 37.501], [126.918, 37.5], [126.93, 37.5]] }],
           vehicleId: 'vehicle-1',
         }],
       });
