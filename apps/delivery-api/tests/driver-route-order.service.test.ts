@@ -43,7 +43,7 @@ describe('PrismaDriverRouteOrderService', () => {
     expect(syncStops).toHaveBeenCalledWith(prisma, 'shop-1', 'route-1', [routeStops[1], routeStops[0]]);
     expect(replaceVersion).toHaveBeenCalledTimes(1);
     expect(syncExecution).toHaveBeenCalledWith(prisma, {
-      childId: 'version-new', publishedAt: null, routePlanId: 'route-1', shopId: 'shop-1'
+      childId: 'version-new', initiatedByAssignedDriver: true, publishedAt: null, routePlanId: 'route-1', shopId: 'shop-1'
     });
     expect(prisma.dsvCommandReceipt.updateMany.mock.invocationCallOrder[0])
       .toBeLessThan(syncExecution.mock.invocationCallOrder[0]!);

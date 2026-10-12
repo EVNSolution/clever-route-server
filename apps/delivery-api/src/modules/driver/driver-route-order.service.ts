@@ -264,6 +264,7 @@ export class PrismaDriverRouteOrderService implements DriverRouteOrderServiceCon
       if (completed.count !== 1) throw new DriverRouteOrderError('VERSION_CONFLICT');
       await syncPublishedRouteGroupingChildExecution(tx, {
         childId: nextVersionId,
+        initiatedByAssignedDriver: true,
         publishedAt: currentChild.publishedAt,
         routePlanId: input.routePlanId,
         shopId: input.shopId

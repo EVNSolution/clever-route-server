@@ -523,6 +523,29 @@ describe('PrismaDsvExecutionContextService D03 transition contract', () => {
     expect(harness.contexts[0]!.contentSnapshot.stops[0].status).toBe('ARRIVED');
   });
 
+  test('moves an undelivered assignment notice to the new version instead of replacing it with a change notice', async () => {
+    const harness = createHarness({ deliverNotifications: false, stopCount: 2 });
+    await harness.service.syncForRoute(baseSync('create-undelivered'));
+    harness.routes['route-am']!.stops.reverse();
+    harness.routes['route-am']!.stops.forEach((item, index) => { item.sequence = index + 1; });
+    const result = await harness.service.syncForRoute({ ...baseSync('resequence-undelivered'), firstPublication: false });
+    expect(result).toMatchObject({ notificationKinds: ['N01'], routeVersion: 2 });
+    expect(harness.notifications).toHaveLength(1);
+    expect(harness.notifications[0]).toMatchObject({ businessStatus: 'OPEN', kind: 'N01', routeVersion: 2 });
+  });
+
+  test('sends no change notice for a reorder that the assigned driver made', async () => {
+    const harness = createHarness({ stopCount: 2 });
+    await harness.service.syncForRoute(baseSync('create-driver-reorder'));
+    harness.routes['route-am']!.stops.reverse();
+    harness.routes['route-am']!.stops.forEach((item, index) => { item.sequence = index + 1; });
+    const result = await harness.service.syncForRoute({
+      ...baseSync('driver-reorder'), firstPublication: false, initiatedByAssignedDriver: true,
+    });
+    expect(result).toMatchObject({ notificationKinds: [], routeVersion: 2 });
+    expect(harness.notifications.map((item) => item.kind)).toEqual(['N01']);
+  });
+
   test('uses a finite positive context notification TTL and keeps the storage fallback for OFF contexts', async () => {
     const configured = createHarness();
     await configured.service.syncForRoute(baseSync('create-ttl'));
@@ -630,7 +653,14 @@ describe('PrismaDsvExecutionContextService operator activation', () => {
   });
 });
 
-function createHarness(options: { routes?: string[]; startedAt?: Date | null; stopCount?: number } = {}) {
+function createHarness(options: {
+  // The D03 fixture timeline assumes the worker already delivered each intent before the next edit.
+  deliverNotifications?: boolean;
+  routes?: string[];
+  startedAt?: Date | null;
+  stopCount?: number;
+} = {}) {
+  const attempts: Array<Record<string, any>> = [];
   const contexts: Array<Record<string, any>> = [];
   const mappings: Array<Record<string, any>> = [];
   const selections: Array<Record<string, any>> = [];
@@ -722,16 +752,24 @@ function createHarness(options: { routes?: string[]; startedAt?: Date | null; st
       updateMany: vi.fn(async ({ data, where }: any) => updateMany(selections, where, data)),
     },
     dsvOperationalNotification: {
+      findFirst: vi.fn(async ({ where }: any) => notifications.find((item) => matches(item, where)) ?? null),
+      update: vi.fn(async ({ data, where }: any) => Object.assign(notifications.find((item) => item.id === where.id)!, data)),
       updateMany: vi.fn(async ({ data, where }: any) => updateMany(notifications, where, data)),
       upsert: vi.fn(async ({ create, where }: any) => {
         const existing = notifications.find((item) => item.logicalKey === where.logicalKey);
         if (existing !== undefined) return existing;
-        const row = { id: nextId('notification'), businessStatus: 'OPEN', ...create }; notifications.push(row); return row;
+        const row = { id: nextId('notification'), businessStatus: 'OPEN', ...create }; notifications.push(row);
+        if (options.deliverNotifications !== false) attempts.push({ notificationId: row.id, shopId: row.shopId, status: 'SENT' });
+        return row;
       }),
+    },
+    dsvOperationalNotificationAck: { findFirst: vi.fn(async () => null) },
+    dsvOperationalNotificationAttempt: {
+      findFirst: vi.fn(async ({ where }: any) => attempts.find((item) => matches(item, where)) ?? null),
     },
   };
   return {
-    commands, contexts, defaultVehicleDriverId: 'driver-a', driverAccounts, mappings, notifications, routes, selections,
+    attempts, commands, contexts, defaultVehicleDriverId: 'driver-a', driverAccounts, mappings, notifications, routes, selections,
     service: new PrismaDsvExecutionContextService(tx as never), tx,
   };
 }
