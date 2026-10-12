@@ -1192,6 +1192,97 @@ live('DSV operational server PostgreSQL integration', () => {
     })).resolves.toBe(1);
   });
 
+  test('a first publication under operator switches creates a LIVE context whose N01 is sent once', async () => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'operator-activation');
+    await prisma.dsvExecutionContext.delete({ where: { id: fixture.contextId } });
+    const now = new Date('2026-10-06T00:00:00.000Z');
+    const sendPolicy: DsvOperationalNotificationSendPolicy = {
+      allowedAccountIds: [fixture.accountId],
+      allowedKinds: ['N01', 'N04', 'N05', 'N06'],
+      allowedShopIds: [fixture.shopId],
+      approvedAuthorizationId: 'synthetic-authorization',
+      approvedGeofencePolicyVersion: 'synthetic-v1',
+      businessReminderCap: null,
+      liveSendingEnabled: true,
+      maxProviderAttempts: 3,
+      monitorWindowMs: 86_400_000,
+      notificationRetentionMs: 86_400_000,
+      retryDelayMs: 30_000,
+    };
+    const env = {
+      DSV_GEOFENCE_ENABLED: 'true',
+      DSV_GEOFENCE_POLICY_JSON: JSON.stringify({ ...baseGeofencePolicy, mode: 'LIVE' }),
+      DSV_OPERATIONAL_SEND_ENABLED: 'true',
+      DSV_OPERATIONAL_SEND_POLICY_JSON: JSON.stringify(sendPolicy),
+    };
+
+    const published = await prisma.$transaction((transaction) => (
+      new PrismaDsvExecutionContextService(transaction, env).syncForRoute({
+        commandId: randomUUID(),
+        firstPublication: true,
+        now,
+        previousPublishedAt: null,
+        routePlanId: fixture.routePlanId,
+        shopId: fixture.shopId,
+        tripIntent: 'INITIAL_EXECUTION',
+      })
+    ));
+
+    const context = await prisma.dsvExecutionContext.findUniqueOrThrow({ where: { id: published.executionContextId! } });
+    expect(context).toMatchObject({
+      liveEligibleAt: now,
+      monitorEndAt: new Date('2026-10-06T15:00:00.000Z'),
+      monitorStartAt: new Date('2026-10-05T15:00:00.000Z'),
+      notificationMode: 'LIVE',
+    });
+    expect(context.policy).toMatchObject({ authorizationId: 'synthetic-authorization', policyVersion: 'synthetic-v1' });
+    const intent = await prisma.dsvOperationalNotification.findFirstOrThrow({
+      where: { executionContextId: context.id, kind: 'N01' },
+    });
+    // The intent must not predate liveEligibleAt, otherwise the worker would refuse to send it.
+    expect(intent.createdAt.getTime()).toBe(now.getTime());
+
+    const token = await prisma.driverPushToken.create({
+      data: {
+        accountId: fixture.accountId,
+        appId: DSV_OPERATIONAL_DRIVER_APP_ID,
+        deviceId: `activation-install-${fixture.deviceId}`,
+        devicePushToken: `activation-token-${fixture.deviceId}`,
+        platform: 'android',
+        status: 'ACTIVE',
+        tokenHash: `activation-hash-${fixture.deviceId}`,
+      },
+    });
+    await new PrismaDsvOperationalDriverNotificationService(
+      prisma,
+      { providerName: 'synthetic-registration', send: () => Promise.resolve({ status: 'SKIPPED' }) },
+    ).registerCapability({
+      installationId: `activation-install-${fixture.deviceId}`,
+      kinds: ['N01'],
+      now,
+      principal: driverPrincipal(fixture),
+      schemaVersion: 1,
+      tokenId: token.id,
+    });
+    const titles: string[] = [];
+    const worker = new PrismaDsvOperationalDriverNotificationService(
+      prisma,
+      {
+        providerName: 'synthetic-activation',
+        send: (message) => {
+          titles.push(message.title);
+          return Promise.resolve({ providerMessageId: 'synthetic-activation-1', status: 'SENT' });
+        },
+      },
+      sendPolicy,
+      { clock: () => now },
+    );
+
+    await expect(worker.runOnce(now)).resolves.toMatchObject({ attempted: 1, sent: 1 });
+    await expect(worker.runOnce(now)).resolves.toMatchObject({ attempted: 0, sent: 0 });
+    expect(titles).toEqual(['10월 6일 배차가 등록되었습니다.']);
+  });
+
   test('serializes implicit first publications for one vehicle and requires an explicit new execution', async () => {
     const fixture = await createOperationalFixture(prisma, createdShopIds, 'vehicle-first-publication');
     const sibling = await createSiblingPublishedRoute(prisma, fixture, 'vehicle-first-publication-sibling');
