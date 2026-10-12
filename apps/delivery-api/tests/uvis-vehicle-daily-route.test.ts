@@ -272,9 +272,11 @@ describe('buildUvisVehicleDailyRoute', () => {
     const slowHeartbeatDocument = trailDocument(slowFrozenHeartbeat, [
       [before, [126.8820994, 37.3693881]], [exitAnchor, witness],
     ], anchors.map((anchor, index) => ({ ...anchor, observedAt: slowFrozenHeartbeat[[0, 1, 5, 6, 7][index]!]!.observedAt })));
+    // One missed poll inside the frozen run is still fresh (staleAfter covers two polls), as on the
+    // 2026-10-12 Seobu underground pass; the tunnel is still inferred.
     expect(buildUvisVehicleDailyRoute(slowFrozenHeartbeat, slowHeartbeatDocument)?.bridges.find((item) =>
       item.reason === 'IMPLAUSIBLE_JUMP'
-    )?.inferredTunnel).toBeUndefined();
+    )?.inferredTunnel).toMatchObject({ corridorId: 'seoul-suam-suri-eastbound' });
 
     const nearWitness: [number, number] = [126.93565, 37.3764];
     const nearAnchor: [number, number] = [126.9356057, 37.3763838];

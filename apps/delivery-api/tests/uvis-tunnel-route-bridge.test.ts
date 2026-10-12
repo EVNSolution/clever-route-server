@@ -134,6 +134,64 @@ describe('routed tunnel bridge', () => {
   });
 });
 
+// Production pass of 경기88바9580 northbound through the Seobu underground expressway on 2026-10-12 10:02 KST.
+// The unit missed one 60-second poll (01:08:25Z) inside the frozen run, which is routine: that day had
+// 45 missed polls. staleAfter is recordedAt + 2 polls, so a single missed poll is still a fresh sample.
+const SEOBU_PASS: Array<[string, number, number, number]> = [
+  ['2026-10-12T00:59:25.000Z', 37.4468, 126.89763, 9],
+  ['2026-10-12T01:00:25.000Z', 37.45256, 126.89507, 58],
+  ['2026-10-12T01:01:25.000Z', 37.45884, 126.89177, 51],
+  ['2026-10-12T01:02:25.000Z', 37.46539, 126.8865, 47],
+  ['2026-10-12T01:03:25.000Z', 37.46539, 126.8865, 255],
+  ['2026-10-12T01:04:25.000Z', 37.46539, 126.8865, 255],
+  ['2026-10-12T01:05:25.000Z', 37.46539, 126.8865, 255],
+  ['2026-10-12T01:06:25.000Z', 37.46539, 126.8865, 255],
+  ['2026-10-12T01:07:25.000Z', 37.46539, 126.8865, 255],
+  ['2026-10-12T01:09:25.000Z', 37.46539, 126.8865, 255],
+  ['2026-10-12T01:10:25.000Z', 37.54457, 126.88733, 36],
+  ['2026-10-12T01:11:25.000Z', 37.54196, 126.89438, 50],
+  ['2026-10-12T01:12:25.000Z', 37.53748, 126.90012, 37],
+  ['2026-10-12T01:13:25.000Z', 37.54379, 126.90474, 56],
+];
+const SEOBU_EXIT_INDEX = 10;
+
+function seobuSamples() {
+  return SEOBU_PASS.map(([observedAt, latitude, longitude, speedKph]) => ({
+    ignitionOn: true,
+    latitude,
+    longitude,
+    observedAt,
+    observedAtMs: Date.parse(observedAt),
+    speedKph,
+    staleAfter: new Date(Date.parse(observedAt) + 120_000).toISOString(),
+  }));
+}
+
+describe('routed tunnel bridge with a missed poll inside the frozen run', () => {
+  test('still recognizes the Seobu underground pass and accepts a plausible route', () => {
+    const signature = findTunnelSignature(seobuSamples(), SEOBU_EXIT_INDEX);
+    expect(signature).toMatchObject({
+      elapsedMs: 480_000,
+      entry: { observedAt: '2026-10-12T01:02:25.000Z' },
+      exit: { observedAt: '2026-10-12T01:10:25.000Z' },
+    });
+    // A straight-line stand-in for the engine's underground route: same length as the direct distance.
+    const entry: [number, number] = [126.8865, 37.46539];
+    const exit: [number, number] = [126.88733, 37.54457];
+    const route = {
+      coordinates: Array.from({ length: 12 }, (_, index): [number, number] => [
+        entry[0] + (exit[0] - entry[0]) * index / 11,
+        entry[1] + (exit[1] - entry[1]) * index / 11,
+      ]),
+    };
+    expect(inferRoutedTunnelBridge(signature!, route)).toMatchObject({
+      fromObservedAt: '2026-10-12T01:02:25.000Z',
+      source: 'OSRM_TUNNEL_ROUTE',
+      toObservedAt: '2026-10-12T01:10:25.000Z',
+    });
+  });
+});
+
 describe('OSRM routeBetween', () => {
   test('sends both travel bearings and returns the route geometry', async () => {
     const urls: string[] = [];

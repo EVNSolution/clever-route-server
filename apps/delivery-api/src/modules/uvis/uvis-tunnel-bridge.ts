@@ -118,7 +118,7 @@ export type TunnelSignature = {
 
 /**
  * Recognizes the telematics pattern of a vehicle driving through a tunnel: the last fix repeats with a
- * no-fix speed (>= 200 km/h) for 3 to 10 minutes, then the next fresh fix jumps ahead and keeps moving.
+ * no-fix speed (>= 200 km/h) for 3 to 15 minutes, then the next fresh fix jumps ahead and keeps moving.
  */
 export function findTunnelSignature(samples: readonly TunnelSample[], jumpIndex: number): TunnelSignature | null {
   const exit = samples[jumpIndex];
@@ -130,7 +130,7 @@ export function findTunnelSignature(samples: readonly TunnelSample[], jumpIndex:
   while (firstFrozenIndex > 0) {
     const earlier = samples[firstFrozenIndex - 1]!;
     const later = samples[firstFrozenIndex]!;
-    if (!freshCadence(earlier, later, 90_000) || distanceMeters(earlier, frozen) > 10) break;
+    if (!freshCadence(earlier, later) || distanceMeters(earlier, frozen) > 10) break;
     firstFrozenIndex -= 1;
   }
   const firstFrozen = samples[firstFrozenIndex]!;
@@ -138,7 +138,7 @@ export function findTunnelSignature(samples: readonly TunnelSample[], jumpIndex:
   const frozenRun = samples.slice(firstFrozenIndex, jumpIndex);
   const elapsedMs = exit.observedAtMs - firstFrozen.observedAtMs;
   const witness = downstreamWitness(samples, jumpIndex);
-  if (before === undefined || frozenRun.length < 4 || elapsedMs < 180_000 || elapsedMs > 600_000
+  if (before === undefined || frozenRun.length < 3 || elapsedMs < 180_000 || elapsedMs > 900_000
     || witness === null
     || frozenRun.some((sample) => sample.ignitionOn !== true)
     || frozenRun.slice(1).filter((sample) => (sample.speedKph ?? 0) >= 200).length < 2
@@ -265,11 +265,12 @@ function progressesOnMatchedLine(before: TunnelRoadAnchor, after: TunnelRoadAnch
     && after.coordinateIndex > before.coordinateIndex;
 }
 
-function freshCadence(before: TunnelSample, after: TunnelSample, maximumMs = 120_000): boolean {
+// The collector defines freshness: staleAfter is recordedAt + 2 polls, so one missed poll is still fresh.
+// A fixed cap tighter than that broke the Seobu underground pass on 2026-10-12 after a single missed poll.
+function freshCadence(before: TunnelSample, after: TunnelSample): boolean {
   const elapsedMs = after.observedAtMs - before.observedAtMs;
   const staleAfterMs = Date.parse(before.staleAfter);
-  return elapsedMs >= 30_000 && elapsedMs <= maximumMs
-    && Number.isFinite(staleAfterMs) && staleAfterMs >= after.observedAtMs;
+  return elapsedMs >= 30_000 && Number.isFinite(staleAfterMs) && staleAfterMs >= after.observedAtMs;
 }
 
 function project(point: [number, number], corridor: Corridor, cumulativeMeters: number[]): Projection {
