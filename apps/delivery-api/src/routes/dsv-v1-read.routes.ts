@@ -721,20 +721,41 @@ async function buildCustomerScopedRoutes(input: {
   };
 }
 
-// Join every session of this route plan, then cut by GPS position: drivers often complete many stops at once.
+// Use the same daily line as the admin GPS trail (road-matched where possible, raw GPS and bridges
+// elsewhere), limited to this route plan's sessions, then cut by GPS position.
 function customerScopedTrailSegments(
   history: DsvV1VehicleGpsTrailHistoryResult,
   routePlanId: string,
   depot: DsvV1LngLat | null,
   end: DsvV1LngLat | null,
 ): DsvV1CustomerTrailDto['segments'] {
-  const lines = history.sessions
+  const sessions = history.sessions
     .filter((session) => session.routePlanId === routePlanId)
-    .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
-    .flatMap((session) => session.segments.flatMap((segment) =>
-      filterDistantRoadMatchedAnchors(segment.roadMatchedGeometry ?? null, segment.samples)?.coordinates ?? []
-    ));
+    .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  const dailyLine = dailyRouteLineForSessions(history.dailyRoute ?? null, sessions);
+  const lines = dailyLine === null
+    ? sessions.flatMap((session) => session.segments.flatMap((segment) =>
+        filterDistantRoadMatchedAnchors(segment.roadMatchedGeometry ?? null, segment.samples)?.coordinates ?? []
+      ))
+    : [dailyLine];
   return clipCustomerTrailLines(lines, depot, end);
+}
+
+function dailyRouteLineForSessions(
+  dailyRoute: DsvV1VehicleGpsTrailHistoryResult['dailyRoute'] | null,
+  sessions: DsvV1VehicleGpsTrailHistoryResult['sessions'],
+): DsvV1LngLat[] | null {
+  if (dailyRoute === null || dailyRoute === undefined || sessions.length === 0) return null;
+  const from = Date.parse(sessions[0]!.startedAt);
+  const to = Math.max(...sessions.map((session) => Date.parse(
+    session.endpoint.endedAt ?? session.segments.at(-1)?.samples.at(-1)?.observedAt ?? session.startedAt,
+  )));
+  const inWindow = dailyRoute.anchors.filter((anchor) => {
+    const observedAt = Date.parse(anchor.observedAt);
+    return observedAt >= from && observedAt <= to;
+  });
+  if (inWindow.length < 2) return null;
+  return dailyRoute.coordinates.slice(inWindow[0]!.coordinateIndex, inWindow.at(-1)!.coordinateIndex + 1);
 }
 
 type RoadLineProjection = {
