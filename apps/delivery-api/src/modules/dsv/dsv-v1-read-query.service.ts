@@ -1759,7 +1759,7 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
   const routePlanId = currentRouteStop?.routePlanId ?? eta?.routePlanId ?? row.currentRouteVersion?.routePlanId ?? null;
   return {
     customerDisplayName: row.customer?.displayName ?? null,
-    deliveryStatus: row.deliveryStatus,
+    deliveryStatus: stopDeliveryStatus(stop, row.deliveryStatus),
     destinationAddress: deliveryStopAddressLabel(stop),
     destinationDisplayName: row.destination?.canonicalName ?? '',
     destinationId: requireOrderDestinationId(row.destinationId, row.id),
@@ -1995,7 +1995,7 @@ function toRecordRow(stop: RecordStopRow): RecordCursorRow {
   return {
     cursorStopId: stop.id,
     cursorUpdatedAt: stop.updatedAt,
-    deliveryStatus: recordDeliveryStatus(stop),
+    deliveryStatus: stopDeliveryStatus(stop, stop.order.deliveryStatus),
     destinationAddress: sourceAddress === undefined || sourceAddress === ''
       ? deliveryStopAddressLabel(stop)
       : sourceAddress,
@@ -2013,14 +2013,19 @@ function toRecordRow(stop: RecordStopRow): RecordCursorRow {
   };
 }
 
-function recordDeliveryStatus(stop: RecordStopRow): string {
+// Driver events write the stop status only, so the order status stays PENDING after delivery.
+// `driverEvents` must be ordered newest first.
+function stopDeliveryStatus(
+  stop: { driverEvents: ReadonlyArray<{ eventType: string }>; status: string },
+  orderDeliveryStatus: string,
+): string {
   const latestTerminalEvent = stop.driverEvents.find(({ eventType }) =>
     eventType === 'STOP_DELIVERED' || eventType === 'STOP_FAILED');
   if (latestTerminalEvent?.eventType === 'STOP_DELIVERED') return 'DELIVERED';
   if (latestTerminalEvent?.eventType === 'STOP_FAILED') return 'FAILED';
   if (stop.status === 'DELIVERED') return 'DELIVERED';
   if (stop.status === 'FAILED') return 'FAILED';
-  return stop.order.deliveryStatus;
+  return orderDeliveryStatus;
 }
 
 function etaFields(eta: (DsvV1EtaReadRow & { etaStatus: DsvV1EtaStatus }) | null): Partial<DsvV1RoutePlanStopEtaInput> {
