@@ -189,6 +189,22 @@ describe('PrismaDsvV1ReadQueryService', () => {
       .resolves.toMatchObject({ items: [{ vehicleLatitude: null, vehicleLongitude: null }] });
   });
 
+  test('reports a delivered customer stop as DELIVERED while the order status is still PENDING', async () => {
+    const row = {
+      ...customerDeliveryOrderRow({
+        driverEvents: [{ eventType: 'STOP_DELIVERED', id: 'event-delivered', occurredAt: new Date('2026-07-22T03:41:00.000Z') }],
+      }),
+      deliveryStatus: 'PENDING',
+    };
+    const service = new PrismaDsvV1ReadQueryService(prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([row])) },
+    }) as never, () => new Date('2026-07-22T05:00:00.000Z'));
+
+    await expect(service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-07-22' }))
+      .resolves.toMatchObject({ items: [{ deliveryStatus: 'DELIVERED' }] });
+  });
+
   test('keeps delayed-route coordinates inside the route-start anchored window', async () => {
     const prisma = prismaMock({
       order: { findMany: vi.fn(() => Promise.resolve([{

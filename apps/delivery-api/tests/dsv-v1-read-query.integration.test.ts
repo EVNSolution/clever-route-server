@@ -116,7 +116,7 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(result.items).toHaveLength(2);
     expect(result.items).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        deliveryStatus: 'PENDING',
+        deliveryStatus: 'DELIVERED',
         destinationId: fixture.sharedDestinationId,
         sellerOrderId: fixture.orderAId,
         sellerOrderKey: fixture.orderAKey,

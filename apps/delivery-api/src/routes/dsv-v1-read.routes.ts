@@ -681,11 +681,19 @@ async function buildCustomerScopedRoutes(input: {
       .filter((stop) => customerOrderIds.has(stop.orderId))
       .sort((left, right) => left.sequence - right.sequence);
     const lastCustomerStop = customerStops.at(-1) ?? null;
-    const firstCustomerStop = customerStops[0] ?? null;
     const end = routeStopEndpoint(detail.routeStopPoints, lastCustomerStop?.deliveryStopId ?? null)
       ?? stopCoordinates(lastCustomerStop);
-    const start = routeKey.vehiclePosition ?? depot;
     if (end === null) continue;
+    const customerStopsDone = customerStops.length > 0
+      && customerStops.every((stop) => stop.status === 'DELIVERED' || stop.status === 'FAILED');
+    const history = input.trailHistories?.find((item) => item.vehicleId === routeKey.vehicleId);
+    const segments = history === undefined
+      ? []
+      : customerScopedTrailSegments(history, routeKey.routePlanId, depot, customerStopsDone ? end : null);
+    if (segments.length > 0) trails.push({ segments, vehicleId: routeKey.vehicleId });
+    // Like admin control: the driven part is the GPS trail, so the planned route covers only what is left.
+    if (customerStopsDone && segments.length > 0) continue;
+    const start = routeKey.vehiclePosition ?? segments.at(-1)?.coordinates.at(-1) ?? depot;
     if (start === null) continue;
     const coordinates = detail.routeGeometry === null
       ? await rebuildCustomerScopedRouteGeometry({
@@ -704,15 +712,6 @@ async function buildCustomerScopedRoutes(input: {
           provider: input.routeGeometryProvider,
           start,
         });
-    const trailStart = routeStopEndpoint(detail.routeStopPoints, firstCustomerStop?.deliveryStopId ?? null)
-      ?? stopCoordinates(firstCustomerStop);
-    const trailEnd = routeStopEndpoint(detail.routeStopPoints, lastCustomerStop?.deliveryStopId ?? null)
-      ?? stopCoordinates(lastCustomerStop);
-    const history = input.trailHistories?.find((item) => item.vehicleId === routeKey.vehicleId);
-    if (history !== undefined && trailStart !== null && trailEnd !== null) {
-      const segments = customerScopedTrailSegments(history, routeKey.routePlanId, trailStart, trailEnd);
-      if (segments.length > 0) trails.push({ segments, vehicleId: routeKey.vehicleId });
-    }
     if (coordinates !== null) routes.push({ coordinates, vehicleId: routeKey.vehicleId });
   }
   return {
@@ -722,26 +721,20 @@ async function buildCustomerScopedRoutes(input: {
   };
 }
 
+// Join every session of this route plan, then cut by GPS position: drivers often complete many stops at once.
 function customerScopedTrailSegments(
   history: DsvV1VehicleGpsTrailHistoryResult,
   routePlanId: string,
-  start: DsvV1LngLat,
-  end: DsvV1LngLat,
+  depot: DsvV1LngLat | null,
+  end: DsvV1LngLat | null,
 ): DsvV1CustomerTrailDto['segments'] {
-  return history.sessions
+  const lines = history.sessions
     .filter((session) => session.routePlanId === routePlanId)
-    .flatMap((session) => clipTrailSession(session.segments, start, end));
-}
-
-function clipTrailSession(
-  segments: DsvV1VehicleGpsTrailHistoryResult['sessions'][number]['segments'],
-  start: DsvV1LngLat,
-  end: DsvV1LngLat,
-): DsvV1CustomerTrailDto['segments'] {
-  const roadMatchedLines = segments.flatMap((segment) =>
-    filterDistantRoadMatchedAnchors(segment.roadMatchedGeometry ?? null, segment.samples)?.coordinates ?? []
-  );
-  return clipRoadMatchedTrailLines(roadMatchedLines, start, end);
+    .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+    .flatMap((session) => session.segments.flatMap((segment) =>
+      filterDistantRoadMatchedAnchors(segment.roadMatchedGeometry ?? null, segment.samples)?.coordinates ?? []
+    ));
+  return clipCustomerTrailLines(lines, depot, end);
 }
 
 type RoadLineProjection = {
@@ -753,24 +746,71 @@ type RoadLineProjection = {
   segmentIndex: number;
 };
 
-function clipRoadMatchedTrailLines(
+const CUSTOMER_TRAIL_RADIUS_METERS = 1_000;
+const CUSTOMER_TRAIL_CLOSE_VISIT_TOLERANCE_METERS = 100;
+
+// A visit is a run of segments within 1km of a target. The chosen visit is the first one that comes
+// within 100m of the best visit, so a drive-by is skipped and a later revisit or depot return is not used.
+// Start: the chosen depot visit, else the first GPS point. End: the chosen last-stop visit after the start,
+// or the latest GPS point when `end` is null (deliveries still in progress).
+export function clipCustomerTrailLines(
   lines: Array<Array<[number, number]>>,
-  start: DsvV1LngLat,
-  end: DsvV1LngLat,
+  depot: DsvV1LngLat | null,
+  end: DsvV1LngLat | null,
 ): DsvV1CustomerTrailDto['segments'] {
   const usableLines = lines.filter((line) => line.length >= 2);
   if (usableLines.length === 0) return [];
-  const startProjection = nearestRoadLineProjection(usableLines, start);
-  const endProjection = nearestRoadLineProjection(usableLines, end);
-  if (startProjection === null || endProjection === null) return [];
-  if (startProjection.distanceMeters > 1_000 || endProjection.distanceMeters > 1_000) return [];
-  if (endProjection.order <= startProjection.order) return [];
+  const startProjection = (depot === null ? null : closeVisitProjection(usableLines, depot, -1))
+    ?? { coordinate: usableLines[0]![0]!, distanceMeters: 0, lineIndex: 0, order: 0, ratio: 0, segmentIndex: 0 };
+  const lastLine = usableLines.at(-1)!;
+  const endProjection = end === null
+    ? {
+        coordinate: lastLine.at(-1)!,
+        distanceMeters: 0,
+        lineIndex: usableLines.length - 1,
+        order: Number.POSITIVE_INFINITY,
+        ratio: 1,
+        segmentIndex: lastLine.length - 2,
+      }
+    : closeVisitProjection(usableLines, end, startProjection.order);
+  if (endProjection === null) return [];
 
   return usableLines.flatMap((line, lineIndex) => {
     if (lineIndex < startProjection.lineIndex || lineIndex > endProjection.lineIndex) return [];
     const coordinates = clippedRoadLine(line, lineIndex, startProjection, endProjection);
     return coordinates.length >= 2 ? [{ coordinates }] : [];
   });
+}
+
+function closeVisitProjection(
+  lines: DsvV1LngLat[][],
+  target: DsvV1LngLat,
+  afterOrder: number,
+): RoadLineProjection | null {
+  const visits: RoadLineProjection[] = [];
+  let current: RoadLineProjection | null = null;
+  let orderBase = 0;
+  for (const [lineIndex, line] of lines.entries()) {
+    for (let segmentIndex = 0; segmentIndex < line.length - 1; segmentIndex += 1) {
+      const projection = projectCoordinateToSegment(target, line[segmentIndex]!, line[segmentIndex + 1]!);
+      const order = orderBase + segmentIndex + projection.ratio;
+      if (order <= afterOrder) continue;
+      const distanceMeters = coordinateDistanceMeters(projection.coordinate, target);
+      if (distanceMeters > CUSTOMER_TRAIL_RADIUS_METERS) {
+        current = null;
+        continue;
+      }
+      if (current === null) {
+        current = { ...projection, distanceMeters, lineIndex, order, segmentIndex };
+        visits.push(current);
+      } else if (distanceMeters < current.distanceMeters) {
+        Object.assign(current, { ...projection, distanceMeters, lineIndex, order, segmentIndex });
+      }
+    }
+    orderBase += line.length;
+  }
+  const best = Math.min(...visits.map((visit) => visit.distanceMeters));
+  return visits.find((visit) => visit.distanceMeters <= best + CUSTOMER_TRAIL_CLOSE_VISIT_TOLERANCE_METERS) ?? null;
 }
 
 function clippedRoadLine(
@@ -789,33 +829,6 @@ function clippedRoadLine(
     ...(to === null ? [] : [to.coordinate]),
   ];
   return dedupeAdjacentCoordinates(coordinates);
-}
-
-function nearestRoadLineProjection(
-  lines: DsvV1LngLat[][],
-  target: DsvV1LngLat,
-): RoadLineProjection | null {
-  let nearest: RoadLineProjection | null = null;
-  let nearestDistance = Number.POSITIVE_INFINITY;
-  let orderBase = 0;
-  lines.forEach((line, lineIndex) => {
-    for (let segmentIndex = 0; segmentIndex < line.length - 1; segmentIndex += 1) {
-      const projection = projectCoordinateToSegment(target, line[segmentIndex]!, line[segmentIndex + 1]!);
-      const distance = coordinateDistanceMeters(projection.coordinate, target);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearest = {
-          ...projection,
-          distanceMeters: distance,
-          lineIndex,
-          order: orderBase + segmentIndex + projection.ratio,
-          segmentIndex,
-        };
-      }
-    }
-    orderBase += line.length;
-  });
-  return nearest;
 }
 
 function projectCoordinateToSegment(
