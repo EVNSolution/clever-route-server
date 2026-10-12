@@ -3,9 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
+import { PrismaDriverEventRepository } from '../src/modules/driver/driver-event.repository.js';
 import {
   PrismaDriverRouteOrderService
 } from '../src/modules/driver/driver-route-order.service.js';
+import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
+import { RoutePlanAdminService } from '../src/modules/route-plans/route-plan.service.js';
+import type { RoutePlanDetail, RoutePlanRouteResult } from '../src/modules/route-plans/route-plan.types.js';
 
 const safeTargetClass = 'safe-local-driver-route-order-temp-cluster';
 const exactDatabaseUrl = 'postgresql://clever_route_order:clever_route_order@127.0.0.1:55467/clever_route_order?schema=public';
@@ -84,9 +88,98 @@ describeDisposable('driver route order PostgreSQL integration', () => {
     expect(afterConflicts.stopIds).toEqual(input.orderedStopIds);
     expect(afterConflicts.orderVersionIds).toEqual([first.routeVersionId, first.routeVersionId]);
   });
+
+  test('rebuilds the legs of the driver order so the planned ETA and the route-start ETA are READY', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'READY');
+    const builtOrders: string[][] = [];
+    const service = new PrismaDriverRouteOrderService(prisma, new RoutePlanAdminService(
+      new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true }),
+      { buildRoute: (detail) => {
+        builtOrders.push(detail.stops.map((stop) => stop.deliveryStopId));
+        return Promise.resolve(syntheticRoute(detail));
+      } }
+    ));
+    const orderedStopIds = [fixture.stopIds[1]!, fixture.stopIds[0]!];
+
+    const reordered = await service.reorder({
+      commandId: 'route-order-ready', driverId: fixture.driverId, expectedVersion: fixture.childVersionId,
+      orderedStopIds, routePlanId: fixture.routePlanId, shopId: fixture.shopId
+    });
+
+    expect(builtOrders).toEqual([orderedStopIds]);
+    const planned = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    expect(planned.map(({ deliveryStopId }) => deliveryStopId)).toEqual(orderedStopIds);
+    for (const stop of planned) {
+      expect(stop).toMatchObject({ durationFromPreviousSeconds: 600, etaInputRouteVersionId: reordered.routeVersionId, etaStatus: 'READY' });
+      expect(stop.estimatedArrivalAt).toBeInstanceOf(Date);
+    }
+
+    await new PrismaDriverEventRepository(prisma).recordDriverEvent({
+      attemptId: null, clientEventId: randomUUID(), deliveryStopId: null, driverId: fixture.driverId, eventType: 'ROUTE_STARTED',
+      latitude: null, longitude: null, occurredAt: new Date('2026-09-07T00:00:00.000Z'), payload: {},
+      routePlanId: fixture.routePlanId, shopDomain: fixture.shopDomain, shopId: fixture.shopId
+    });
+    const started = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    expect(started.map(({ etaFailureCode, etaSource, etaStatus }) => ({ etaFailureCode, etaSource, etaStatus })))
+      .toEqual([0, 1].map(() => ({ etaFailureCode: null, etaSource: 'ROUTE_STARTED', etaStatus: 'READY' })));
+  });
+
+  test('lets the next driver event of a started route take the legs of the driver order from the rebuilt geometry', async () => {
+    const fixture = await createFixture(prisma, createdShopIds);
+    const events = new PrismaDriverEventRepository(prisma);
+    const eventInput = (eventType: string, deliveryStopId: string | null, occurredAt: string) => ({
+      attemptId: null, clientEventId: randomUUID(), deliveryStopId, driverId: fixture.driverId, eventType,
+      latitude: null, longitude: null, occurredAt: new Date(occurredAt), payload: {},
+      routePlanId: fixture.routePlanId, shopDomain: fixture.shopDomain, shopId: fixture.shopId
+    });
+    await events.recordDriverEvent(eventInput('ROUTE_STARTED', null, '2026-09-07T00:00:00.000Z'));
+    const service = new PrismaDriverRouteOrderService(prisma, new RoutePlanAdminService(
+      new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true }),
+      { buildRoute: (detail) => Promise.resolve(syntheticRoute(detail)) }
+    ));
+    const orderedStopIds = [fixture.stopIds[1]!, fixture.stopIds[0]!];
+
+    await service.reorder({
+      commandId: 'route-order-started', driverId: fixture.driverId, expectedVersion: fixture.childVersionId,
+      orderedStopIds, routePlanId: fixture.routePlanId, shopId: fixture.shopId
+    });
+    await events.recordDriverEvent(eventInput('STOP_ARRIVED', orderedStopIds[0]!, '2026-09-07T00:10:00.000Z'));
+
+    const stops = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    expect(stops.map(({ deliveryStopId }) => deliveryStopId)).toEqual(orderedStopIds);
+    expect(stops.map(({ durationFromPreviousSeconds }) => durationFromPreviousSeconds)).toEqual([600, 600]);
+    expect(stops[1]).toMatchObject({ etaFailureCode: null, etaStatus: 'READY' });
+    expect(stops[1]?.estimatedArrivalAt).toBeInstanceOf(Date);
+  });
+
+  test('keeps a committed reorder when the geometry refresh fails', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'READY');
+    const service = new PrismaDriverRouteOrderService(prisma, {
+      refreshRouteGeometryForRoutePlan: () => Promise.reject(new Error('routing engine unavailable'))
+    });
+    const orderedStopIds = [fixture.stopIds[1]!, fixture.stopIds[0]!];
+
+    await expect(service.reorder({
+      commandId: 'route-order-refresh-failed', driverId: fixture.driverId, expectedVersion: fixture.childVersionId,
+      orderedStopIds, routePlanId: fixture.routePlanId, shopId: fixture.shopId
+    })).resolves.toMatchObject({ routePlanId: fixture.routePlanId });
+    await expect(readAuthority(prisma, fixture)).resolves.toMatchObject({ stopIds: orderedStopIds });
+  });
 });
 
-async function createFixture(prisma: PrismaClient, createdShopIds: string[]) {
+function syntheticRoute(detail: RoutePlanDetail): RoutePlanRouteResult {
+  return {
+    routeGeometry: { coordinates: [[127, 37], [127.1, 37.1]], type: 'LineString' },
+    routeMetrics: { distanceMeters: detail.stops.length * 1000, durationSeconds: detail.stops.length * 600 },
+    routeStopPoints: detail.stops.map((stop) => ({
+      deliveryStopId: stop.deliveryStopId, distanceFromPreviousMeters: 1000, durationFromPreviousSeconds: 600,
+      inputCoordinates: [127, 37], name: null, sequence: stop.sequence, shopifyOrderGid: stop.shopifyOrderGid,
+      snapDistanceMeters: 0, snappedCoordinates: [127, 37]
+    }))
+  };
+}
+
+async function createFixture(prisma: PrismaClient, createdShopIds: string[], status: 'IN_PROGRESS' | 'READY' = 'IN_PROGRESS') {
   const suffix = randomUUID();
   const shop = await prisma.shop.create({ data: { shopDomain: `route-order-${suffix}.example.com` } });
   createdShopIds.push(shop.id);
@@ -100,7 +193,7 @@ async function createFixture(prisma: PrismaClient, createdShopIds: string[]) {
     }
   })));
   const stops = await Promise.all(orders.map((order, index) => prisma.deliveryStop.create({
-    data: { address1: `${index + 1} Integration Road`, countryCode: 'KR', orderId: order.id, shopId: shop.id }
+    data: { address1: `${index + 1} Integration Road`, countryCode: 'KR', latitude: 37.5 + index / 100, longitude: 127 + index / 100, orderId: order.id, shopId: shop.id }
   })));
   const grouping = await prisma.routeGrouping.create({
     data: { name: 'Route order integration', planDate: new Date('2026-09-07T00:00:00.000Z'), shopId: shop.id }
@@ -110,8 +203,8 @@ async function createFixture(prisma: PrismaClient, createdShopIds: string[]) {
   });
   const routePlan = await prisma.routePlan.create({
     data: {
-      constraints: {}, driverId: driver.id, metrics: {}, name: 'Route order integration', optimizerVersion: 'integration',
-      planDate: new Date('2026-09-07T00:00:00.000Z'), shopId: shop.id, status: 'IN_PROGRESS'
+      constraints: {}, depotLatitude: 37.4, depotLongitude: 126.9, driverId: driver.id, metrics: {}, name: 'Route order integration',
+      optimizerVersion: 'integration', planDate: new Date('2026-09-07T00:00:00.000Z'), shopId: shop.id, status
     }
   });
   await prisma.routeGroupingOrder.createMany({
@@ -140,7 +233,7 @@ async function createFixture(prisma: PrismaClient, createdShopIds: string[]) {
       shapeSignature: `route-order-${suffix}`, source: 'integration', stopPoints: stops.map(({ id }) => ({ deliveryStopId: id }))
     } })
   ]);
-  return { childVersionId: child.id, driverId: driver.id, orderIds: orders.map(({ id }) => id), routePlanId: routePlan.id, shopId: shop.id, stopIds: stops.map(({ id }) => id) };
+  return { childVersionId: child.id, driverId: driver.id, shopDomain: shop.shopDomain, orderIds: orders.map(({ id }) => id), routePlanId: routePlan.id, shopId: shop.id, stopIds: stops.map(({ id }) => id) };
 }
 
 async function readAuthority(prisma: PrismaClient, fixture: Awaited<ReturnType<typeof createFixture>>) {

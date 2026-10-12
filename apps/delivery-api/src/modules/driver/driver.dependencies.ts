@@ -58,6 +58,9 @@ import {
 } from '../dsv/dsv-assignment-command.service.js';
 import { PrismaCompletionAssistanceService } from './completion-assistance.service.js';
 import { PrismaLiveRouteChangeService } from '../route-plans/live-route-change.service.js';
+import { createAdminRouteGeometryProvider, type AdminRoutePlanRuntimeEnv } from '../route-plans/route-plan.dependencies.js';
+import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
+import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 365;
 export const DEFAULT_DRIVER_EVENT_ATTEMPT_RETENTION_DAYS = 90;
@@ -124,7 +127,7 @@ type DriverProofMediaRepositorySafetyOptions = {
 type LoadDriverApiDependenciesInput = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   driverNotificationDispatcher?: Pick<PrismaDsvDriverNotificationDispatcher, 'dispatchByIdempotencyKey'>;
-  env: DriverApiRuntimeEnv;
+  env: DriverApiRuntimeEnv & AdminRoutePlanRuntimeEnv;
   prisma: PrismaClient;
   orderMessageService?: Pick<DsvOrderMessageService, 'markDriverMessageRead'>;
   operationalAlertRepository?: PrismaOperationalAlertRepository;
@@ -165,6 +168,10 @@ export function loadDriverApiDependencies(
   });
 
   const driverSyncHealthService = new PrismaDriverSyncHealthService(input.prisma, input.operationalAlertRepository);
+  const routeGeometryProvider = createAdminRouteGeometryProvider(input.env);
+  const routeGeometryRefresher = routeGeometryProvider === undefined
+    ? undefined
+    : new RoutePlanAdminService(new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }), routeGeometryProvider);
   return {
     liveRouteChangeService: new PrismaLiveRouteChangeService(input.prisma),
     ...(input.adminNotificationService === undefined
@@ -172,7 +179,7 @@ export function loadDriverApiDependencies(
       : { adminNotificationService: input.adminNotificationService }),
     driverAssignedRouteService,
     completionAssistanceService: new PrismaCompletionAssistanceService(input.prisma, { env: input.env }),
-    driverRouteOrderService: new PrismaDriverRouteOrderService(input.prisma),
+    driverRouteOrderService: new PrismaDriverRouteOrderService(input.prisma, routeGeometryRefresher),
     driverDestinationNotesService: new PrismaDriverDestinationNotesRepository(input.prisma),
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma, {
