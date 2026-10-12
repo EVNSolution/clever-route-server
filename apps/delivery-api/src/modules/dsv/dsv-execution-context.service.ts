@@ -13,6 +13,7 @@ import type {
   DsvExecutionSyncResult,
 } from './dsv-execution-context.types.js';
 import { DsvExecutionContextError } from './dsv-execution-context.types.js';
+import { resolveDsvContextActivation, type DsvContextActivationEnv } from './dsv-context-activation.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -58,7 +59,7 @@ const OPEN_NOTIFICATION_STATUSES = ['OPEN', 'PENDING'] as const;
 const NOTIFICATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export class PrismaDsvExecutionContextService {
-  constructor(private readonly tx: Tx) {}
+  constructor(private readonly tx: Tx, private readonly env: DsvContextActivationEnv = process.env) {}
 
   async syncForRoute(input: DsvExecutionSyncInput): Promise<DsvExecutionSyncResult> {
     if (!hasExecutionDelegates(this.tx)) return unavailableSync(input.routePlanId);
@@ -278,6 +279,13 @@ export class PrismaDsvExecutionContextService {
   }
 
   private async createContext(route: RouteSnapshot, now: Date): Promise<DsvExecutionSyncResult> {
+    // Operator runtime switches decide the starting mode. Without them the context stays OFF.
+    const activation = resolveDsvContextActivation(this.env, {
+      now,
+      recipientAccountId: route.recipientAccountId,
+      serviceDate: route.planDate,
+      shopId: route.shopId,
+    });
     const context = await this.tx.dsvExecutionContext.create({
       data: {
         assignmentEpoch: 1n,
@@ -285,7 +293,13 @@ export class PrismaDsvExecutionContextService {
         contentSnapshot: route.content,
         driverId: route.driverId,
         effectiveAt: now,
-        notificationMode: 'OFF',
+        notificationMode: activation?.notificationMode ?? 'OFF',
+        ...(activation === null ? {} : {
+          liveEligibleAt: activation.liveEligibleAt,
+          monitorEndAt: activation.monitorEndAt,
+          monitorStartAt: activation.monitorStartAt,
+          policy: activation.policy,
+        }),
         recipientAccountId: route.recipientAccountId,
         reminderStatus: 'AWAITING_DEPARTURE',
         routePlanId: route.routePlanId,
@@ -724,6 +738,8 @@ async function createNotification(
     create: {
       assignmentEpoch: context.assignmentEpoch,
       audience: 'DRIVER',
+      // The database default would use transaction start, which can precede liveEligibleAt (`now`).
+      createdAt: now,
       dueAt: now,
       executionContextId: context.id,
       expiresAt: new Date(now.getTime() + notificationRetentionMs(context.policy)),

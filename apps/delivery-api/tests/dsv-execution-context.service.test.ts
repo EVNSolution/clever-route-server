@@ -591,6 +591,45 @@ type Route = {
 };
 type Harness = ReturnType<typeof createHarness>;
 
+describe('PrismaDsvExecutionContextService operator activation', () => {
+  const geofenceEnv = {
+    DSV_GEOFENCE_ENABLED: 'true',
+    DSV_GEOFENCE_POLICY_JSON: JSON.stringify({
+      arrivalDwellSeconds: 60, arrivalMinSamples: 2, destinationExitRadiusMeters: 200, destinationRadiusMeters: 100,
+      exitDwellSeconds: 0, exitMinSamples: 1, futureToleranceSeconds: 30, maxGapSeconds: 360,
+      maxObservationDelaySeconds: 300, maxSpeedKph: 150, mode: 'SHADOW', notificationTtlSeconds: 604_800,
+      policyVersion: 'fleet-v1', warehouseExitRadiusMeters: 300, warehouseRadiusMeters: 150,
+    }),
+  };
+
+  test('a SHADOW operator policy starts a new context in SHADOW with its snapshot and monitor window', async () => {
+    const harness = createHarness();
+    const service = new PrismaDsvExecutionContextService(harness.tx as never, geofenceEnv);
+    await service.syncForRoute(baseSync('shadow-activation'));
+    expect(harness.contexts[0]).toMatchObject({
+      liveEligibleAt: null,
+      monitorEndAt: new Date('2026-10-05T15:00:00.000Z'),
+      monitorStartAt: new Date('2026-10-04T15:00:00.000Z'),
+      notificationMode: 'SHADOW',
+      policy: { mode: 'SHADOW', policyVersion: 'fleet-v1' },
+    });
+    // Intent expiry follows the policy snapshot instead of the 30-day default, and starts at `now`.
+    expect(harness.notifications[0]).toMatchObject({
+      createdAt: NOW,
+      expiresAt: new Date(NOW.getTime() + 604_800_000),
+      kind: 'N01',
+    });
+  });
+
+  test('without operator switches a new context stays OFF', async () => {
+    const harness = createHarness();
+    const service = new PrismaDsvExecutionContextService(harness.tx as never, {});
+    await service.syncForRoute(baseSync('no-activation'));
+    expect(harness.contexts[0]).toMatchObject({ notificationMode: 'OFF' });
+    expect(harness.contexts[0]).not.toHaveProperty('policy');
+  });
+});
+
 function createHarness(options: { routes?: string[]; startedAt?: Date | null; stopCount?: number } = {}) {
   const contexts: Array<Record<string, any>> = [];
   const mappings: Array<Record<string, any>> = [];
