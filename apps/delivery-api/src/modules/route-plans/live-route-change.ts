@@ -543,7 +543,7 @@ export async function publishLiveRouteChange(prisma: Client, input: PublishLiveR
     await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: route.id } });
     await tx.routePlanStop.updateMany({ where: { routePlanId: route.id, shopId: input.shopId, deliveryStopId: { in: [...editable] }, deliveryStop: { status: { in: ['PENDING', 'ASSIGNED'] } } },
       data: { estimatedArrivalAt: null, distanceFromPreviousMeters: null, durationFromPreviousSeconds: null, etaCalculatedAt: null,
-        etaFailureCode: null, etaFailureMessage: null, etaInputRouteVersionId: null, etaSource: 'LIVE_ROUTE_CHANGE', etaStatus: 'STALE' } });
+        etaFailureCode: null, etaFailureMessage: null, etaInputRouteVersionId: route.routeGroupingChildVersions[0]?.id ?? null, etaSource: 'LIVE_ROUTE_CHANGE', etaStatus: 'STALE' } });
     const publication = await tx.routeLiveChangePublication.create({ data: { ...inputIdentity(input), id: randomUUID(), driverId: state.driverId,
       assignmentGeneration: state.assignmentGeneration, sequence: state.latestSequence + 1, contentHash: state.draftHash,
       snapshot: draft, notificationStatus: 'PENDING' } });

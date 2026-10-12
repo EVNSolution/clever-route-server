@@ -26,7 +26,7 @@ const reviewedMutationInventory = [
   'modules/driver/private-driver-demo-seed.ts:routeGroupingChildVersion.create:1',
   'modules/driver/private-driver-demo-seed.ts:routePlanStop.createMany:1',
   'modules/driver/rolling-eta-backfill.ts:routePlanStop.updateMany:1',
-  'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:1',
+  'modules/dsv/dsv-assignment-command.service.ts:routePlanStop.updateMany:2', // Finished stops keep their ETA; open stops reset.
   'modules/dsv/dsv-dispatch-import.service.ts:routeGroupingChildVersion.updateMany:1',
   'modules/dsv/dsv-dispatch-import.service.ts:routePlanStop.updateMany:2',
   'modules/dsv/dsv-eta-repair.ts:routePlanStop.updateMany:1',
@@ -36,7 +36,7 @@ const reviewedMutationInventory = [
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.create:1',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.createMany:5',
   'modules/route-grouping/route-grouping.service.ts:routePlanStop.deleteMany:4',
-  'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:4',
+  'modules/route-grouping/route-grouping.service.ts:routePlanStop.updateMany:5', // ETA rows follow a replaced child version.
   'modules/route-plans/live-route-change.service.ts:routePlanStop.updateMany:1',
   'modules/route-plans/live-route-change.ts:routePlanStop.update:2',
   'modules/route-plans/live-route-change.ts:routePlanStop.updateMany:1',

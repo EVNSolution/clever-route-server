@@ -1963,6 +1963,8 @@ async function persistEtaUpdate(
   routePlanId: string,
   etaUpdate: DriverRouteEtaUpdate
 ): Promise<void> {
+  // A missing leg only fails the stops after it; the stops before it keep a usable ETA.
+  const stopEtaStatus = (stop: { estimatedArrivalAt: string | null }) => stop.estimatedArrivalAt === null ? 'FAILED' : 'READY';
   if (schemaCapabilities.routePlanStopEtaOwnershipColumnsExist) {
     if (etaUpdate.updatedStops.length === 0) {
       return;
@@ -1973,12 +1975,12 @@ async function persistEtaUpdate(
           UPDATE route_plan_stops
           SET
             "estimatedArrivalAt" = ${stop.estimatedArrivalAt === null ? null : new Date(stop.estimatedArrivalAt)},
-            "etaStatus" = ${etaUpdate.etaStatus}::"DsvEtaStatus",
+            "etaStatus" = ${stopEtaStatus(stop)}::"DsvEtaStatus",
             "etaInputRouteVersionId" = NULL,
             "etaSource" = ${etaUpdate.etaSource},
             "etaCalculatedAt" = ${new Date(etaUpdate.etaCalculatedAt)},
-            "etaFailureCode" = ${etaUpdate.etaFailureCode},
-            "etaFailureMessage" = ${etaUpdate.etaFailureMessage}
+            "etaFailureCode" = ${stop.estimatedArrivalAt === null ? etaUpdate.etaFailureCode : null},
+            "etaFailureMessage" = ${stop.estimatedArrivalAt === null ? etaUpdate.etaFailureMessage : null}
           WHERE
             "shopId" = ${shopId}::uuid
             AND
@@ -2006,12 +2008,12 @@ async function persistEtaUpdate(
         UPDATE route_plan_stops
         SET
           "estimatedArrivalAt" = ${stop.estimatedArrivalAt === null ? null : new Date(stop.estimatedArrivalAt)},
-          "etaStatus" = ${etaUpdate.etaStatus}::"DsvEtaStatus",
+          "etaStatus" = ${stopEtaStatus(stop)}::"DsvEtaStatus",
           "etaInputRouteVersionId" = ${etaUpdate.inputRouteVersionId}::uuid,
           "etaSource" = ${etaUpdate.etaSource},
           "etaCalculatedAt" = ${new Date(etaUpdate.etaCalculatedAt)},
-          "etaFailureCode" = ${etaUpdate.etaFailureCode},
-          "etaFailureMessage" = ${etaUpdate.etaFailureMessage}
+          "etaFailureCode" = ${stop.estimatedArrivalAt === null ? etaUpdate.etaFailureCode : null},
+          "etaFailureMessage" = ${stop.estimatedArrivalAt === null ? etaUpdate.etaFailureMessage : null}
         WHERE
           "shopId" = ${shopId}::uuid
           AND

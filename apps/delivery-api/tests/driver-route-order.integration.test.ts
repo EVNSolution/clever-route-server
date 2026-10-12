@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, type Prisma } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 import { PrismaDriverEventRepository } from '../src/modules/driver/driver-event.repository.js';
 import {
   PrismaDriverRouteOrderService
 } from '../src/modules/driver/driver-route-order.service.js';
+import { replaceCurrentRouteGroupingChildVersion } from '../src/modules/route-grouping/route-grouping.service.js';
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import { RoutePlanAdminService } from '../src/modules/route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../src/modules/route-plans/route-plan.types.js';
@@ -152,6 +153,40 @@ describeDisposable('driver route order PostgreSQL integration', () => {
     expect(stops[1]?.estimatedArrivalAt).toBeInstanceOf(Date);
   });
 
+  test('keeps the ETA rows on the current route version so a started route accepts driver events after a version change', async () => {
+    const fixture = await createFixture(prisma, createdShopIds);
+    const events = new PrismaDriverEventRepository(prisma);
+    await events.recordDriverEvent(driverEvent(fixture, 'ROUTE_STARTED', null, '2026-09-07T00:00:00.000Z'));
+    const child = await prisma.routeGroupingChildVersion.findUniqueOrThrow({ where: { id: fixture.childVersionId } });
+
+    const nextVersionId = await prisma.$transaction((tx) => replaceCurrentRouteGroupingChildVersion(tx, {
+      currentChildId: child.id, driverId: child.driverId, groupingId: child.groupingId, groupingVersionId: child.groupingVersionId,
+      notificationStatus: child.notificationStatus, orderIds: fixture.orderIds, publishedAt: child.publishedAt,
+      routePlanId: fixture.routePlanId, shopId: fixture.shopId, snapshot: child.snapshot as Prisma.InputJsonValue, version: child.version
+    }));
+    await events.recordDriverEvent(driverEvent(fixture, 'STOP_ARRIVED', fixture.stopIds[0]!, '2026-09-07T00:10:00.000Z'));
+
+    const stops = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    expect(stops.map(({ etaInputRouteVersionId }) => etaInputRouteVersionId)).toEqual([nextVersionId, nextVersionId]);
+    expect(stops[1]).toMatchObject({ etaSource: 'STOP_ARRIVED', etaStatus: 'READY' });
+  });
+
+  test('fails only the stops after a missing leg when the route starts', async () => {
+    const fixture = await createFixture(prisma, createdShopIds);
+    await prisma.routePlanStop.update({
+      data: { durationFromPreviousSeconds: null },
+      where: { routePlanId_deliveryStopId: { deliveryStopId: fixture.stopIds[1]!, routePlanId: fixture.routePlanId } }
+    });
+    await prisma.routePlanGeometryCache.deleteMany({ where: { routePlanId: fixture.routePlanId } });
+
+    await new PrismaDriverEventRepository(prisma).recordDriverEvent(driverEvent(fixture, 'ROUTE_STARTED', null, '2026-09-07T00:00:00.000Z'));
+
+    const [first, second] = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    expect(first).toMatchObject({ etaFailureCode: null, etaSource: 'ROUTE_STARTED', etaStatus: 'READY' });
+    expect(first?.estimatedArrivalAt).toBeInstanceOf(Date);
+    expect(second).toMatchObject({ estimatedArrivalAt: null, etaFailureCode: 'ETA_INPUT_DURATION_UNAVAILABLE', etaStatus: 'FAILED' });
+  });
+
   test('keeps a committed reorder when the geometry refresh fails', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'READY');
     const service = new PrismaDriverRouteOrderService(prisma, {
@@ -166,6 +201,16 @@ describeDisposable('driver route order PostgreSQL integration', () => {
     await expect(readAuthority(prisma, fixture)).resolves.toMatchObject({ stopIds: orderedStopIds });
   });
 });
+
+function driverEvent(
+  fixture: Awaited<ReturnType<typeof createFixture>>, eventType: string, deliveryStopId: string | null, occurredAt: string
+) {
+  return {
+    attemptId: null, clientEventId: randomUUID(), deliveryStopId, driverId: fixture.driverId, eventType,
+    latitude: null, longitude: null, occurredAt: new Date(occurredAt), payload: {},
+    routePlanId: fixture.routePlanId, shopDomain: fixture.shopDomain, shopId: fixture.shopId
+  };
+}
 
 function syntheticRoute(detail: RoutePlanDetail): RoutePlanRouteResult {
   return {
