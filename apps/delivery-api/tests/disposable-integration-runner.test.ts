@@ -5,9 +5,10 @@ const packageRoot = new URL('../', import.meta.url);
 
 describe('disposable DB integration runner', () => {
   test('exposes a guarded command for every otherwise skipped DB suite', async () => {
-    const [packageJsonText, script] = await Promise.all([
+    const [packageJsonText, script, operationalScript] = await Promise.all([
       readFile(new URL('package.json', packageRoot), 'utf8'),
-      readFile(new URL('scripts/test-disposable-db-integrations.sh', packageRoot), 'utf8')
+      readFile(new URL('scripts/test-disposable-db-integrations.sh', packageRoot), 'utf8'),
+      readFile(new URL('scripts/test-dsv-operational-disposable.sh', packageRoot), 'utf8'),
     ]);
     const packageJson = JSON.parse(packageJsonText) as { scripts?: Record<string, string> };
 
@@ -42,6 +43,7 @@ describe('disposable DB integration runner', () => {
     expect(script).toContain('DUPLICATE_MIGRATION_RECONCILED');
     expect(script).toContain("psql -U \"$database_user\" -d \"$database_name\" -Atqc 'SELECT 1'");
     expect(script).toContain('trap cleanup EXIT');
+    expect(operationalScript).toContain('dsv-operational-server.integration.test.ts dsv-isolated-client-http.integration.test.ts --maxWorkers=1');
     expect(script).not.toContain(':55444');
     expect(script).not.toContain(':55455');
   });

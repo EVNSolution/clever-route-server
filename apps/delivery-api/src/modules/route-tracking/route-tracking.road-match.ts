@@ -64,6 +64,18 @@ type FetchLike = (url: string, init: { method: 'GET'; redirect: 'error'; signal?
 
 export type RouteTrackingRoadMatchProvider = {
   match(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchedPathV1 | null>;
+  /** Driving route between two raw GPS points, used to bridge GPS loss such as tunnels. */
+  routeBetween?(from: RouteTrackingRouteWaypoint, to: RouteTrackingRouteWaypoint): Promise<RouteTrackingRoutedLine | null>;
+};
+
+export type RouteTrackingRouteWaypoint = {
+  bearingDegrees: number;
+  coordinate: [number, number];
+};
+
+export type RouteTrackingRoutedLine = {
+  coordinates: Array<[number, number]>;
+  distanceMeters: number;
 };
 
 export type RouteTrackingRoadMatchOutcome = {
@@ -420,6 +432,43 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       )),
       retryable,
     };
+  }
+
+  async routeBetween(from: RouteTrackingRouteWaypoint, to: RouteTrackingRouteWaypoint): Promise<RouteTrackingRoutedLine | null> {
+    const coverage = selectCoverageForGps([from.coordinate, to.coordinate], Object.keys(this.baseUrls) as RouteEngineCoverage[]);
+    const baseUrl = coverage === null ? undefined : this.baseUrls[coverage];
+    if (baseUrl === undefined) return null;
+    // Bearings keep both ends on the carriageway the vehicle was driving; without them a fix next to a
+    // parallel road snaps there and the route detours.
+    const bearing = (value: number) => `${Math.round(((value % 360) + 360) % 360)},60`;
+    const params = new URLSearchParams({
+      alternatives: 'false',
+      bearings: `${bearing(from.bearingDegrees)};${bearing(to.bearingDegrees)}`,
+      geometries: 'geojson',
+      overview: 'full',
+      radiuses: '60;60',
+    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetch(
+        `${baseUrl}/route/v1/driving/${from.coordinate.join(',')};${to.coordinate.join(',')}?${params.toString()}`,
+        { method: 'GET', redirect: 'error', signal: controller.signal },
+      );
+      if (!response.ok) return null;
+      const route = objectOrNull((objectOrNull(await response.json()) as { routes?: unknown[] } | null)?.routes?.[0]);
+      const geometry = objectOrNull(route?.geometry);
+      const distanceMeters = route?.distance;
+      if (typeof distanceMeters !== 'number' || !Number.isFinite(distanceMeters) || !Array.isArray(geometry?.coordinates)) return null;
+      const coordinates = geometry.coordinates.map(readCoordinatePair);
+      return coordinates.length >= 2 && coordinates.every((coordinate): coordinate is [number, number] => coordinate !== null)
+        ? { coordinates, distanceMeters }
+        : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async routeGapSupplement(

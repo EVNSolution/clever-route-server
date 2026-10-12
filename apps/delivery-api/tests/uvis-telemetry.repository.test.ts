@@ -16,7 +16,7 @@ const staleAfter = new Date('2026-08-04T01:20:00.000Z');
 
 describe('PrismaUvisTelemetryRepository', () => {
   test('records normalized telemetry history and creates the first current row without raw payload storage', async () => {
-    const { current, prisma, sample } = createHarness({
+    const { current, geofenceJob, prisma, sample } = createHarness({
       currentUpdateCount: 0,
       existingCurrent: null,
       sampleId: 'sample-id',
@@ -77,10 +77,14 @@ describe('PrismaUvisTelemetryRepository', () => {
         lastSampleId: 'sample-id',
       },
     });
+    expect(geofenceJob.createMany).toHaveBeenCalledWith({
+      data: { sampleId: 'sample-id', shopId, vehicleId },
+      skipDuplicates: true,
+    });
   });
 
   test('keeps a late-arriving sample in history without overwriting current state', async () => {
-    const { current, prisma, sample } = createHarness({
+    const { current, geofenceJob, prisma, sample } = createHarness({
       currentUpdateCount: 0,
       existingCurrent: { id: 'current-id', observedAt: new Date('2026-08-04T01:30:00.000Z') },
       sampleId: 'late-sample-id',
@@ -109,6 +113,7 @@ describe('PrismaUvisTelemetryRepository', () => {
 
     expect(sample.createMany).toHaveBeenCalledOnce();
     expect(current.create).not.toHaveBeenCalled();
+    expect(geofenceJob.createMany).not.toHaveBeenCalled();
     const currentUpdateInput = current.updateMany.mock.calls[0]?.[0] as {
       data: Record<string, unknown>;
       where: Record<string, unknown>;
@@ -127,7 +132,7 @@ describe('PrismaUvisTelemetryRepository', () => {
   });
 
   test('treats device source kind observedAt conflicts as duplicate samples and leaves current unchanged', async () => {
-    const { current, prisma, sample } = createHarness({
+    const { current, geofenceJob, prisma, sample } = createHarness({
       sampleInsertCount: 0,
       existingSampleId: 'existing-sample-id',
       vehiclePlate: '21사 6101',
@@ -162,6 +167,10 @@ describe('PrismaUvisTelemetryRepository', () => {
     });
     expect(current.updateMany).not.toHaveBeenCalled();
     expect(current.create).not.toHaveBeenCalled();
+    expect(geofenceJob.createMany).toHaveBeenCalledWith({
+      data: { sampleId: 'existing-sample-id', shopId, vehicleId },
+      skipDuplicates: true,
+    });
   });
 
   test('returns plate mismatch without remapping the device vehicle', async () => {
@@ -198,6 +207,55 @@ describe('PrismaUvisTelemetryRepository', () => {
       plateMatched: false,
       vehicleId,
     });
+  });
+
+  test('preserves GPS history without creating a geofence job when no active DSV execution is eligible', async () => {
+    const { executionContext, geofenceJob, prisma, sample } = createHarness({
+      executionContext: null,
+      sampleId: 'unscoped-sample-id',
+      vehiclePlate: '21사 6101',
+    });
+    const repository = new PrismaUvisTelemetryRepository(prisma as never);
+
+    await expect(repository.recordSample({
+      deviceId,
+      latitude: '37.5665000',
+      longitude: '126.9780000',
+      observedAt,
+      receivedAt,
+      sourceDeviceIdentifier,
+      sourceKind: 'VEHICLE_GPS',
+      sourcePlate: '21사 6101',
+      staleAfter,
+    })).resolves.toMatchObject({ sampleId: 'unscoped-sample-id', sampleStatus: 'RECORDED' });
+
+    expect(sample.createMany).toHaveBeenCalledOnce();
+    expect(executionContext.findMany).toHaveBeenCalledOnce();
+    expect(geofenceJob.createMany).not.toHaveBeenCalled();
+  });
+
+  test('does not queue an active context without an effective route mapping', async () => {
+    const { executionMapping, geofenceJob, prisma } = createHarness({
+      executionMapping: null,
+      sampleId: 'unmapped-sample-id',
+      vehiclePlate: '21사 6101',
+    });
+    const repository = new PrismaUvisTelemetryRepository(prisma as never);
+
+    await repository.recordSample({
+      deviceId,
+      latitude: '37.5665000',
+      longitude: '126.9780000',
+      observedAt,
+      receivedAt,
+      sourceDeviceIdentifier,
+      sourceKind: 'VEHICLE_GPS',
+      sourcePlate: '21사 6101',
+      staleAfter,
+    });
+
+    expect(executionMapping.findFirst).toHaveBeenCalledOnce();
+    expect(geofenceJob.createMany).not.toHaveBeenCalled();
   });
 
   test('throws a scoped not-found error for unknown devices', async () => {
@@ -239,6 +297,8 @@ function createHarness(input: {
   device?: { id: string; shopId: string; vehicleId: string; vehicle: { licensePlate: string | null } } | null;
   existingCurrent?: { id: string; observedAt: Date } | null;
   existingSampleId?: string;
+  executionContext?: { id: string } | null;
+  executionMapping?: { id: string } | null;
   sampleInsertCount?: number;
   sampleId?: string;
   vehiclePlate?: string | null;
@@ -280,7 +340,29 @@ function createHarness(input: {
         : input.device);
     }),
   };
+  const geofenceJob = {
+    createMany: vi.fn((args: unknown) => {
+      void args;
+      return Promise.resolve({ count: 1 });
+    }),
+  };
+  const executionContext = {
+    findMany: vi.fn((args: unknown) => {
+      void args;
+      const context = input.executionContext === undefined ? { id: 'execution-context-id' } : input.executionContext;
+      return Promise.resolve(context === null ? [] : [context]);
+    }),
+  };
+  const executionMapping = {
+    findFirst: vi.fn((args: unknown) => {
+      void args;
+      return Promise.resolve(input.executionMapping === undefined ? { id: 'execution-mapping-id' } : input.executionMapping);
+    }),
+  };
   const transaction = {
+    dsvExecutionContext: executionContext,
+    dsvExecutionRouteMapping: executionMapping,
+    dsvGeofenceJob: geofenceJob,
     dsvVehicleTelematicsDevice: device,
     uvisVehicleTelemetryCurrent: current,
     uvisVehicleTelemetrySample: sample,
@@ -289,5 +371,5 @@ function createHarness(input: {
     $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
     ...transaction,
   };
-  return { current, device, prisma, sample };
+  return { current, device, executionContext, executionMapping, geofenceJob, prisma, sample };
 }

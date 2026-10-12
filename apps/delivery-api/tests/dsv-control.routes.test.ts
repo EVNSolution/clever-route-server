@@ -17,6 +17,7 @@ import { DsvForbiddenError, dsvAdminScopes, dsvOperatorScopes, type DsvPrincipal
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
 import { DsvResourceConflictError } from '../src/modules/dsv/dsv-resource.service.js';
+import { DsvResourceInUseError } from '../src/modules/dsv/dsv-resource-deletion-guard.js';
 import type { DsvResourceService } from '../src/modules/dsv/dsv-resource.service.js';
 import { defaultRouteOpsUiSettings } from '../src/modules/route-ops/route-ops-ui-settings.js';
 import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-config.js';
@@ -26,6 +27,7 @@ import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-can
 import { DsvCustomerAccountServiceError, type DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
 import type { DsvAdminOperatorInvitationService } from '../src/modules/dsv/dsv-admin-account-invitations.service.js';
 import type { DsvDriverAccountLinkService } from '../src/modules/dsv/dsv-driver-account-link.service.js';
+import { DsvDriverAttributionConflictError } from '../src/modules/dsv/dsv-driver-attribution-lock.js';
 import { DsvDriverPasswordResetError, type DsvDriverPasswordResetService } from '../src/modules/dsv/dsv-driver-password-reset.service.js';
 import type { DsvStoreReviewAccess } from '../src/modules/dsv/dsv-store-review-access.js';
 
@@ -2247,10 +2249,33 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('returns account-link attribution topology exhaustion as 409', async () => {
+    const driverAccountLinkService = createDriverAccountLinkService();
+    driverAccountLinkService.approve.mockRejectedValue(new DsvDriverAttributionConflictError());
+    const { app } = await createHarness({ driverAccountLinkService });
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { accountId: customerAccountId },
+        url: `/api/dsv/driver-account-links/${targetDriverId}/approve`,
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        data: null,
+        error: { code: 'ATTRIBUTION_CHANGED', message: 'Driver attribution changed. Retry the request.' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('issues a shop-scoped administrator password reset link without returning driver identity', async () => {
     const logLines: string[] = [];
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(() => Promise.resolve({
         expiresAt: new Date('2026-09-10T06:30:00.000Z'),
         method: 'ADMIN_LINK',
@@ -2306,6 +2331,7 @@ describe('DSV control routes', () => {
     const { app } = await createHarness({
       driverPasswordResetService: {
         complete: vi.fn(),
+        describeAccount: vi.fn(),
         issueLink,
         validateLink: vi.fn(),
       },
@@ -2332,9 +2358,54 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('lets an administrator read the login id and session state of a driver account', async () => {
+    const describeAccount = vi.fn<DsvDriverPasswordResetService['describeAccount']>().mockResolvedValue({
+      lastUsedAt: new Date('2026-10-10T02:13:16.894Z'),
+      loginId: 'sambongkim',
+      sessionExpiresAt: new Date('2026-10-10T04:42:02.928Z'),
+      status: 'ACTIVE',
+    });
+    const assertAccessible = vi.fn().mockResolvedValue(undefined);
+    const customerAccountService = createCustomerAccountService();
+    const { app } = await createHarness({
+      customerAccountService,
+      driverPasswordResetService: { complete: vi.fn(), describeAccount, issueLink: vi.fn(), validateLink: vi.fn() },
+      storeReviewAccess: { assertAccessible },
+    });
+    try {
+      const url = `/api/dsv/drivers/${targetDriverId}/account`;
+      expect((await app.inject({ method: 'GET', url })).statusCode).toBe(401);
+
+      const login = await loginToDsv(app);
+      const response = await app.inject({ headers: { cookie: login.cookie }, method: 'GET', url });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: {
+          account: {
+            lastUsedAt: '2026-10-10T02:13:16.894Z',
+            loginId: 'sambongkim',
+            sessionExpiresAt: '2026-10-10T04:42:02.928Z',
+            status: 'ACTIVE',
+          },
+        },
+        error: null,
+      });
+      expect(assertAccessible).toHaveBeenCalledWith(expect.objectContaining({ shopId }), { driverIds: [targetDriverId] });
+      expect(describeAccount).toHaveBeenCalledWith({ driverId: targetDriverId, shopId });
+
+      describeAccount.mockResolvedValueOnce(null);
+      const missing = await app.inject({ headers: { cookie: login.cookie }, method: 'GET', url });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toMatchObject({ error: { code: 'DRIVER_ACCOUNT_NOT_FOUND' } });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('requires administrator authentication, CSRF, and both reset scopes without accepting a temporary password', async () => {
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(),
       validateLink: vi.fn<DsvDriverPasswordResetService['validateLink']>(),
     };
@@ -2407,6 +2478,7 @@ describe('DSV control routes', () => {
   test('maps scoped reset misses and account issue throttling without exposing a link', async () => {
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>()
         .mockResolvedValueOnce(null)
         .mockRejectedValueOnce(new DsvDriverPasswordResetError('RATE_LIMITED', 'private account issue limit')),
@@ -2437,6 +2509,7 @@ describe('DSV control routes', () => {
   test('rate-limits administrator reset-link issuance by client address', async () => {
     const driverPasswordResetService = {
       complete: vi.fn<DsvDriverPasswordResetService['complete']>(),
+      describeAccount: vi.fn(),
       issueLink: vi.fn<DsvDriverPasswordResetService['issueLink']>(() => Promise.resolve({
         expiresAt: new Date('2026-09-10T06:30:00.000Z'),
         method: 'ADMIN_LINK',
@@ -2529,6 +2602,24 @@ describe('DSV control routes', () => {
         data: null,
         error: { code: 'VEHICLE_ASSIGNMENT_EXISTS' },
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns resource-in-use conflict for protected DSV resource deletion', async () => {
+    const { app, resourceService } = await createHarness();
+    try {
+      resourceService.deleteVehicle.mockRejectedValueOnce(new DsvResourceInUseError('vehicle'));
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: '/api/dsv/vehicles/77777777-7777-4777-8777-777777777777',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ data: null, error: { code: 'RESOURCE_IN_USE' } });
     } finally {
       await app.close();
     }

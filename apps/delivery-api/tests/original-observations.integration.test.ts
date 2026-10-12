@@ -84,8 +84,16 @@ disposable('original observation PostgreSQL read contract', () => {
 
   test('late stored arrivals do not enter an already-started traversal', async () => {
     const first = (await service.get({ ...scope, query }))!;
-    await prisma.driverEvent.create({ data: { shopId, driverId, routePlanId, assignmentGeneration: 2n,
+    const inserted = await prisma.driverEvent.create({ data: { shopId, driverId, routePlanId, assignmentGeneration: 2n,
       eventType: 'LOCATION_UPDATED', occurredAt: new Date('2026-09-01T05:00:00Z'), payload: {} } });
+    // Derive the stored time from the DB cursor to avoid host/VM clock skew.
+    await prisma.$executeRaw`UPDATE driver_events
+      SET "createdAt" = ${first.page.snapshotAt}::timestamptz + interval '1 microsecond'
+      WHERE id = ${inserted.id}::uuid`;
+    const storedRows = await prisma.$queryRaw<{ storedAfterSnapshot: boolean }[]>`
+      SELECT "createdAt" > ${first.page.snapshotAt}::timestamptz AS "storedAfterSnapshot"
+      FROM driver_events WHERE id = ${inserted.id}::uuid`;
+    expect(storedRows).toEqual([{ storedAfterSnapshot: true }]);
     const second = (await service.get({ ...scope, query: { ...query, cursor: first.page.nextCursor! } }))!;
     expect(second.page.hasMore).toBe(false);
     expect(second.observations.map(({ eventId }) => eventId)).toEqual(ids.slice(2, 4));

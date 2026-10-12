@@ -9,9 +9,16 @@ import type {
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 import {
   distanceMeters,
+  hasImplausibleGpsJump,
   impliedSpeedMetersPerSecond,
   MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND,
 } from './uvis-vehicle-trail-evidence.js';
+import {
+  findTunnelSignature,
+  inferRoutedTunnelBridge,
+  tunnelRouteWaypoints,
+  type InferredTunnelBridge,
+} from './uvis-tunnel-bridge.js';
 
 export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as const;
 export const UVIS_ROAD_MATCH_POLICY_VERSION = 'uvis_road_match.v2' as const;
@@ -61,6 +68,8 @@ export type UvisVehicleTrailDocumentV1 = {
   sourceSampleCount: number;
   sourceWatermark: string;
   timezone: typeof SERVICE_TIMEZONE;
+  // Routed bridges over GPS loss in tunnels, computed here so reads never call the routing engine.
+  tunnelBridges?: InferredTunnelBridge[];
   vehicleId: string;
 };
 
@@ -197,6 +206,7 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
       });
     }
 
+    const tunnelBridges = await routeTunnelBridges(points, previousDocument, input.roadMatchProvider);
     const sourceWatermark = sourceWatermarkFor(sourceRows);
     const document: UvisVehicleTrailDocumentV1 = {
       generatedAt: now.toISOString(),
@@ -207,6 +217,7 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
       sourceSampleCount: sourceRows.length,
       sourceWatermark,
       timezone: SERVICE_TIMEZONE,
+      ...(tunnelBridges.length === 0 ? {} : { tunnelBridges }),
       vehicleId: input.vehicleId,
     };
 
@@ -864,6 +875,32 @@ function toDocumentSample(sample: TrailPoint): UvisVehicleTrailSampleV1 {
     speedKph: sample.speedKph,
     staleAfter: sample.staleAfter,
   };
+}
+
+async function routeTunnelBridges(
+  points: TrailPoint[],
+  previousDocument: UvisVehicleTrailDocumentV1 | null,
+  provider: RouteTrackingRoadMatchProvider | undefined,
+): Promise<InferredTunnelBridge[]> {
+  const samples = points.map((point) => ({ ...point, observedAtMs: point.observedAtDate.getTime() }));
+  const bridges: InferredTunnelBridge[] = [];
+  for (let index = 1; index < samples.length; index += 1) {
+    if (!hasImplausibleGpsJump(samples[index - 1]!, samples[index]!)) continue;
+    const signature = findTunnelSignature(samples, index);
+    if (signature === null) continue;
+    const reused = previousDocument?.tunnelBridges?.find((bridge) => (
+      bridge.fromObservedAt === signature.entry.observedAt && bridge.toObservedAt === signature.exit.observedAt
+    ));
+    if (reused !== undefined) {
+      bridges.push(reused);
+      continue;
+    }
+    // ponytail: one routing call per new tunnel pass; a failed call is retried on the next materialization.
+    const route = await provider?.routeBetween?.(...tunnelRouteWaypoints(signature));
+    const bridge = route === null || route === undefined ? null : inferRoutedTunnelBridge(signature, route);
+    if (bridge !== null) bridges.push(bridge);
+  }
+  return bridges;
 }
 
 function readTrailDocument(value: unknown, filterRoadAnchors: boolean): UvisVehicleTrailDocumentV1 | null {

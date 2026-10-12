@@ -1,7 +1,7 @@
 import { distanceMeters, hasImplausibleGpsJump } from './uvis-vehicle-trail-evidence.js';
 import { REVIEWED_TUNNEL_CORRIDORS } from './uvis-tunnel-corridor.js';
 
-type TunnelSample = {
+export type TunnelSample = {
   ignitionOn?: boolean | null;
   latitude: number;
   longitude: number;
@@ -32,7 +32,7 @@ export type InferredTunnelBridge = {
   corridorId: string;
   coordinates: Array<[number, number]>;
   fromObservedAt: string;
-  source: 'CURATED_OSM_TUNNEL_CORRIDOR';
+  source: 'CURATED_OSM_TUNNEL_CORRIDOR' | 'OSRM_TUNNEL_ROUTE';
   toObservedAt: string;
   type: 'LineString';
 };
@@ -47,12 +47,80 @@ const corridors = REVIEWED_TUNNEL_CORRIDORS.map((corridor) => {
   return { corridor, cumulativeMeters };
 });
 
-// A later observed, road-anchored position resolves the exit choice before inference.
-export function inferReviewedTunnelBridge(
-  samples: readonly TunnelSample[],
-  jumpIndex: number,
-  anchorFor: (sample: TunnelSample) => TunnelRoadAnchor | null,
+/** Waypoints for a driving route from the tunnel entry to the first fix after the exit, with travel bearings. */
+export function tunnelRouteWaypoints(signature: TunnelSignature): [
+  { bearingDegrees: number; coordinate: [number, number] },
+  { bearingDegrees: number; coordinate: [number, number] },
+] {
+  const { before, entry, exit, witness } = signature;
+  return [
+    { bearingDegrees: bearingDegrees(before, entry), coordinate: [entry.longitude, entry.latitude] },
+    { bearingDegrees: bearingDegrees(exit, witness), coordinate: [witness.longitude, witness.latitude] },
+  ];
+}
+
+/**
+ * Accepts the routed path only when it passes the exit fix and is a plausible drive for the frozen interval.
+ * The path is cut at the exit fix. This covers every tunnel the routing engine knows, without curation.
+ */
+export function inferRoutedTunnelBridge(
+  signature: TunnelSignature,
+  route: { coordinates: Array<[number, number]> },
 ): InferredTunnelBridge | null {
+  const { before, elapsedMs, entry, exit, witness } = signature;
+  const first = route.coordinates[0];
+  if (first === undefined || distanceMeters(entry, toPoint(first)) > 60
+    || distanceMeters(before, entry) < 50 || distanceMeters(exit, witness) < 50) return null;
+  let roadMeters = 0;
+  let exitIndex = -1;
+  let exitRoadMeters = 0;
+  let nearestExitMeters = Infinity;
+  for (let index = 0; index < route.coordinates.length; index += 1) {
+    if (index > 0) roadMeters += distanceMeters(toPoint(route.coordinates[index - 1]!), toPoint(route.coordinates[index]!));
+    const toExit = distanceMeters(exit, toPoint(route.coordinates[index]!));
+    if (toExit < nearestExitMeters) {
+      nearestExitMeters = toExit;
+      exitIndex = index;
+      exitRoadMeters = roadMeters;
+    }
+  }
+  const directMeters = distanceMeters(entry, exit);
+  if (
+    exitIndex < 1 || nearestExitMeters > 60
+    || directMeters < 500
+    || exitRoadMeters < directMeters * 0.95
+    || exitRoadMeters > directMeters * 1.35 + 300
+    || exitRoadMeters / (elapsedMs / 1000) > 35
+  ) return null;
+  return {
+    confirmedByObservedAt: witness.observedAt,
+    coordinates: deduplicate([
+      [entry.longitude, entry.latitude],
+      ...route.coordinates.slice(0, exitIndex + 1),
+      [exit.longitude, exit.latitude],
+    ]),
+    corridorId: 'osrm-route',
+    fromObservedAt: entry.observedAt,
+    source: 'OSRM_TUNNEL_ROUTE',
+    toObservedAt: exit.observedAt,
+    type: 'LineString',
+  };
+}
+
+// A later observed, road-anchored position resolves the exit choice before inference.
+export type TunnelSignature = {
+  before: TunnelSample;
+  elapsedMs: number;
+  entry: TunnelSample;
+  exit: TunnelSample;
+  witness: TunnelSample;
+};
+
+/**
+ * Recognizes the telematics pattern of a vehicle driving through a tunnel: the last fix repeats with a
+ * no-fix speed (>= 200 km/h) for 3 to 10 minutes, then the next fresh fix jumps ahead and keeps moving.
+ */
+export function findTunnelSignature(samples: readonly TunnelSample[], jumpIndex: number): TunnelSignature | null {
   const exit = samples[jumpIndex];
   const frozen = samples[jumpIndex - 1];
   if (exit === undefined || frozen === undefined || exit.ignitionOn !== true
@@ -76,6 +144,17 @@ export function inferReviewedTunnelBridge(
     || frozenRun.slice(1).filter((sample) => (sample.speedKph ?? 0) >= 200).length < 2
     || !freshCadence(before, firstFrozen) || !freshCadence(frozen, exit)
     || hasImplausibleGpsJump(before, firstFrozen)) return null;
+  return { before, elapsedMs, entry: firstFrozen, exit, witness };
+}
+
+export function inferReviewedTunnelBridge(
+  samples: readonly TunnelSample[],
+  jumpIndex: number,
+  anchorFor: (sample: TunnelSample) => TunnelRoadAnchor | null,
+): InferredTunnelBridge | null {
+  const signature = findTunnelSignature(samples, jumpIndex);
+  if (signature === null) return null;
+  const { before, elapsedMs, entry: firstFrozen, exit, witness } = signature;
 
   const beforeAnchor = anchorFor(before);
   const entryAnchor = anchorFor(firstFrozen);
@@ -220,6 +299,14 @@ function project(point: [number, number], corridor: Corridor, cumulativeMeters: 
     }
   }
   return nearest!;
+}
+
+function bearingDegrees(from: { latitude: number; longitude: number }, to: { latitude: number; longitude: number }): number {
+  const radians = Math.PI / 180;
+  const y = Math.sin((to.longitude - from.longitude) * radians) * Math.cos(to.latitude * radians);
+  const x = Math.cos(from.latitude * radians) * Math.sin(to.latitude * radians)
+    - Math.sin(from.latitude * radians) * Math.cos(to.latitude * radians) * Math.cos((to.longitude - from.longitude) * radians);
+  return (Math.atan2(y, x) / radians + 360) % 360;
 }
 
 function toPoint(coordinate: [number, number]): { latitude: number; longitude: number } {

@@ -64,10 +64,12 @@ import type {
   DsvResourceService,
   DsvVehicleInput,
 } from '../modules/dsv/dsv-resource.service.js';
+import { DsvResourceInUseError } from '../modules/dsv/dsv-resource-deletion-guard.js';
 import {
   DsvDriverAccountLinkCandidateError,
   type DsvDriverAccountLinkService,
 } from '../modules/dsv/dsv-driver-account-link.service.js';
+import { DsvDriverAttributionConflictError } from '../modules/dsv/dsv-driver-attribution-lock.js';
 import {
   DsvDriverPasswordResetError,
   type DsvDriverPasswordResetService,
@@ -759,6 +761,9 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         });
         return sendData(reply, { linked });
       } catch (error) {
+        if (error instanceof DsvDriverAttributionConflictError) {
+          return sendError(reply, 409, error.code, error.message);
+        }
         if (error instanceof DsvDriverAccountLinkCandidateError) {
           return error.code === 'NOT_FOUND'
             ? sendError(reply, 404, 'DRIVER_ACCOUNT_LINK_NOT_FOUND', error.message)
@@ -767,6 +772,27 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         throw error;
       }
     }, ['dsv:accounts:write', 'dsv:resources:write']));
+
+  app.get(`${apiRoot}/drivers/:driverId/account`, async (request, reply) =>
+    withDsvSession(request, reply, dependencies, async ({ principal }) => {
+      const driverId = readUuidParam(request, 'driverId');
+      if (driverId === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid driver account request');
+      if (dependencies.driverPasswordResetService === undefined) {
+        return sendError(reply, 503, 'DRIVER_ACCOUNT_LOOKUP_UNAVAILABLE', '배송원 계정 조회 기능을 사용할 수 없습니다.');
+      }
+      await dependencies.storeReviewAccess.assertAccessible(principal, { driverIds: [driverId] });
+      const account = await dependencies.driverPasswordResetService.describeAccount({ driverId, shopId: principal.shopId });
+      return account === null
+        ? sendError(reply, 404, 'DRIVER_ACCOUNT_NOT_FOUND', '연결된 배송원 앱 계정을 찾을 수 없습니다.')
+        : sendData(reply, {
+            account: {
+              lastUsedAt: account.lastUsedAt?.toISOString() ?? null,
+              loginId: account.loginId,
+              sessionExpiresAt: account.sessionExpiresAt?.toISOString() ?? null,
+              status: account.status,
+            },
+          });
+    }, ['dsv:accounts:read', 'dsv:resources:read']));
 
   app.post(`${apiRoot}/drivers/:driverId/password-reset-link`, {
     config: {
@@ -2208,6 +2234,9 @@ function sendResourceError(reply: FastifyReply, error: unknown): unknown {
     return sendError(reply, 404, 'NOT_FOUND', error.message);
   }
   if (error instanceof DsvResourceConflictError) {
+    return sendError(reply, 409, error.code, error.message);
+  }
+  if (error instanceof DsvResourceInUseError) {
     return sendError(reply, 409, error.code, error.message);
   }
   throw error;

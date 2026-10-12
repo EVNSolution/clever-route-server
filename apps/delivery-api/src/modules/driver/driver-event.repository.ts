@@ -15,6 +15,7 @@ import {
   occurredAtWithinRouteTrackingEventWindow
 } from '../route-tracking/route-tracking.event-window.js';
 import { persistAutomaticCustomerEmailFacts } from '../customer-email/customer-email-automatic-fact.js';
+import { syncDsvExecutionHook, closeDsvExecutionHook, resolveDsvStopNotificationsHook } from '../dsv/dsv-execution-hooks.js';
 import { deriveDsvTimeConstraintState, dsvTimeConstraintAuditEvents } from '../dsv/dsv-time-constraint.js';
 import {
   buildDriverRouteEtaSnapshot,
@@ -41,6 +42,7 @@ export type RecordDriverEventInput = {
   assignmentGeneration?: string | null;
   changeRequestId?: string | null;
   clientEventId: string | null;
+  completionOwnerAccountId?: string | null;
   deliveryStopId: string | null;
   driverId: string;
   driverContractVersion?: number | null;
@@ -99,6 +101,7 @@ export type RecordDriverEventResult = {
 
 export type CompleteDriverDeliveryDestinationInput = {
   clientEventId: string;
+  completionOwnerAccountId: string;
   deliveryStopIds: string[];
   destinationId: string;
   driverId: string;
@@ -108,6 +111,16 @@ export type CompleteDriverDeliveryDestinationInput = {
   shopDomain: string;
   shopId: string;
 };
+
+const DRIVER_EVENT_DEFINITELY_NOT_COMMITTED = Symbol('driver-event-definitely-not-committed');
+const DRIVER_DESTINATION_COMPLETION_NOT_APPLIED = Symbol('driver-destination-completion-not-applied');
+
+export function isDriverDestinationCompletionNotAppliedError(error: unknown): boolean {
+  return error instanceof Error
+    && (error as Error & { [DRIVER_DESTINATION_COMPLETION_NOT_APPLIED]?: boolean })[
+      DRIVER_DESTINATION_COMPLETION_NOT_APPLIED
+    ] === true;
+}
 
 export type DriverStopSequenceDeviation = {
   expectedDeliveryStopId: string;
@@ -121,7 +134,7 @@ type DriverEventPrismaClient = Pick<
   'driverStopCompletionReceipt' | '$queryRaw' | '$transaction' | 'customerRouteNotificationFact' | 'deliveryStop' | 'driverEvent' | 'driverEventAttempt' | 'driverRouteCompletionReview' | 'dsvDispatchChangeRequest' | 'order' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry' | 'shop'
 >;
 
-type DriverEventTransactionClient = Prisma.TransactionClient;
+export type DriverEventTransactionClient = Prisma.TransactionClient;
 
 type DriverEventSchemaCapabilities = {
   driverEventRouteVersionColumnExists: boolean;
@@ -133,10 +146,12 @@ type DriverEventSchemaCapabilityLoader = {
 };
 
 type ExistingDriverEventContext = {
+  completionOwnerAccountId?: string | null;
   createdAt?: Date;
   deliveryStopId: string | null;
   eventType: string;
   id: string;
+  occurredAt?: Date;
   payload?: unknown;
   routePlanId: string | null;
 };
@@ -152,6 +167,13 @@ export class DriverEventContextError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'DriverEventContextError';
+  }
+}
+
+export class DriverDestinationCompletionCollisionError extends Error {
+  constructor() {
+    super('Destination completion clientEventId conflicts with existing completion evidence');
+    this.name = 'DriverDestinationCompletionCollisionError';
   }
 }
 
@@ -232,6 +254,7 @@ export class PrismaDriverEventRepository {
     recordWouldReject(input: { decision: 'PERMITTED' | 'REJECTED'; mode: DriverRouteCompletionInvariantMode; receiptAware: boolean; totalStopCount: number; unresolvedStopCount: number }): void;
   };
   private readonly now: () => Date;
+  private readonly skipDsvExecutionSync: boolean;
   private readonly finalizationMonitor: {
     recordFailure(input: { attemptId: string; errorCode: string }): void;
   };
@@ -245,6 +268,7 @@ export class PrismaDriverEventRepository {
       completionInvariantMonitor?: { recordWouldReject(input: { decision: 'PERMITTED' | 'REJECTED'; mode: DriverRouteCompletionInvariantMode; receiptAware: boolean; totalStopCount: number; unresolvedStopCount: number }): void };
       finalizationMonitor?: { recordFailure(input: { attemptId: string; errorCode: string }): void };
       now?: () => Date;
+      skipDsvExecutionSync?: boolean;
     } = {}
   ) {
     this.schemaCapabilityLoader = schemaCapabilityLoaderFor(prisma);
@@ -259,6 +283,7 @@ export class PrismaDriverEventRepository {
       })}\n`)
     };
     this.now = options.now ?? (() => new Date());
+    this.skipDsvExecutionSync = options.skipDsvExecutionSync ?? false;
     this.finalizationMonitor = options.finalizationMonitor ?? {
       recordFailure: (evidence) => process.stderr.write(`${JSON.stringify({
         ...evidence,
@@ -276,7 +301,9 @@ export class PrismaDriverEventRepository {
       || deliveryStopIds.length !== input.deliveryStopIds.length
       || deliveryStopIds.length > 50
     ) {
-      throw new DriverEventContextError('Destination completion requires 1 to 50 unique delivery stops');
+      throw markDestinationCompletionNotApplied(
+        new DriverEventContextError('Destination completion requires 1 to 50 unique delivery stops')
+      );
     }
     const eligibleStops = await this.prisma.deliveryStop.findMany({
       select: { id: true },
@@ -289,24 +316,36 @@ export class PrismaDriverEventRepository {
     });
     const eligibleStopIds = new Set(eligibleStops.map(({ id }) => id));
     if (deliveryStopIds.some((deliveryStopId) => !eligibleStopIds.has(deliveryStopId))) {
-      throw new DriverEventScopeError('All delivery stops must belong to the selected destination and route');
+      throw markDestinationCompletionNotApplied(
+        new DriverEventScopeError('All delivery stops must belong to the selected destination and route')
+      );
     }
 
     const results: RecordDriverEventResult[] = [];
     for (const deliveryStopId of deliveryStopIds) {
-      results.push(await this.recordDriverEvent({
-        clientEventId: `${input.clientEventId}:${deliveryStopId}`,
-        deliveryStopId,
-        driverId: input.driverId,
-        eventType: 'STOP_DELIVERED',
-        latitude: null,
-        longitude: null,
-        occurredAt: input.occurredAt,
-        payload: input.payload,
-        routePlanId: input.routePlanId,
-        shopDomain: input.shopDomain,
-        shopId: input.shopId
-      }));
+      try {
+        results.push(await this.recordDriverEvent({
+          clientEventId: `${input.clientEventId}:${deliveryStopId}`,
+          completionOwnerAccountId: input.completionOwnerAccountId,
+          deliveryStopId,
+          driverId: input.driverId,
+          eventType: 'STOP_DELIVERED',
+          latitude: null,
+          longitude: null,
+          occurredAt: input.occurredAt,
+          payload: destinationCompletionPayload(input),
+          routePlanId: input.routePlanId,
+          shopDomain: input.shopDomain,
+          shopId: input.shopId
+        }));
+      } catch (error) {
+        if (
+          results.length === 0
+          && isKnownDestinationCompletionBusinessRejection(error)
+          && isDriverEventDefinitelyNotCommitted(error)
+        ) throw markDestinationCompletionNotApplied(error);
+        throw error;
+      }
     }
     return results;
   }
@@ -318,6 +357,7 @@ export class PrismaDriverEventRepository {
       ? await this.admitVersionedAttempt(input)
       : input.attemptId === null ? null : { attemptId: input.attemptId, attemptNumber: 0 };
     const attemptId = admission?.attemptId ?? null;
+    let eventTransactionCommitted = false;
     try {
       completionInput = readDriverCompletion(input);
       const result = await this.prisma.$transaction(async (transaction) => {
@@ -395,6 +435,9 @@ export class PrismaDriverEventRepository {
         const event = await transaction.driverEvent.create({
           data: {
             clientEventId: input.clientEventId,
+            ...(input.completionOwnerAccountId === undefined
+              ? {}
+              : { completionOwnerAccountId: input.completionOwnerAccountId }),
             deliveryStopId: input.deliveryStopId,
             driverId: input.driverId,
             eventType: (deferCompletionForNavigation ? 'NOTE_ADDED' : input.eventType) as never,
@@ -446,6 +489,22 @@ export class PrismaDriverEventRepository {
           routeVersionId,
           event.id
         );
+        if (!this.skipDsvExecutionSync && !deferCompletionForNavigation && input.routePlanId !== null) {
+          if (input.eventType === 'ROUTE_COMPLETED') {
+            await closeDsvExecutionHook(transaction, {
+              shopId: input.shopId, routePlanId: input.routePlanId, reason: 'COMPLETED', now: event.createdAt
+            });
+          } else if (input.eventType === 'ROUTE_STARTED' || input.eventType === 'PICKUP_COMPLETED') {
+            await syncDsvExecutionHook(transaction, {
+              shopId: input.shopId, routePlanId: input.routePlanId, commandId: `driver-event:${event.id}`, now: event.createdAt
+            });
+          }
+        }
+        if (input.deliveryStopId !== null && (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED')) {
+          await resolveDsvStopNotificationsHook(transaction, {
+            shopId: input.shopId, deliveryStopId: input.deliveryStopId, now: event.createdAt,
+          });
+        }
         if (input.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
           && (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED')) {
           await reconcileKfoodDeliveryWorkCompletion(transaction, {
@@ -474,6 +533,7 @@ export class PrismaDriverEventRepository {
         return { completionInvariant, ...(preparedCompletion === null ? eventResult
           : await saveDriverCompletion(transaction, input, preparedCompletion, event, eventResult)) };
       });
+      eventTransactionCommitted = true;
       const committedCompletionEvidence = 'completionRejected' in result
         ? result.completionRejected
         : 'completionInvariant' in result ? result.completionInvariant : null;
@@ -535,9 +595,40 @@ export class PrismaDriverEventRepository {
       }
 
       await this.finalizeAttempt(attemptId, attemptFailureFor(error));
-
+      if (!eventTransactionCommitted) markDriverEventDefinitelyNotCommitted(error);
       throw error;
     }
+  }
+
+  /**
+   * Applies the established driver-event transition inside a caller-owned
+   * transaction. The caller owns command receipt and related domain writes.
+   * Driver-event admission is intentionally disabled because it cannot commit
+   * before the caller-owned transaction.
+   */
+  async recordDriverEventInTransaction(
+    transaction: DriverEventTransactionClient,
+    input: RecordDriverEventInput,
+    options: { skipDsvExecutionSync?: boolean } = {},
+  ): Promise<RecordDriverEventResult> {
+    const transactionalPrisma = new Proxy(transaction, {
+      get: (target, property, receiver): unknown => {
+        if (property === '$transaction') {
+          return async <T>(operation: (client: DriverEventTransactionClient) => Promise<T>): Promise<T> => operation(transaction);
+        }
+        const value: unknown = Reflect.get(target, property, receiver);
+        return value;
+      }
+    }) as unknown as DriverEventPrismaClient;
+    return new PrismaDriverEventRepository(transactionalPrisma, {
+      attemptRetentionDays: this.attemptRetentionDays,
+      completionInvariantMode: this.completionInvariantMode,
+      completionInvariantMonitor: this.completionInvariantMonitor,
+      completionReviewRetentionDays: this.completionReviewRetentionDays,
+      finalizationMonitor: this.finalizationMonitor,
+      now: this.now,
+      skipDsvExecutionSync: options.skipDsvExecutionSync ?? false,
+    }).recordDriverEvent({ ...input, attemptId: null });
   }
 
   private reviewRetainedUntil(): Date {
@@ -652,6 +743,46 @@ export class PrismaDriverEventRepository {
     }
   }
 
+}
+
+function destinationCompletionPayload(input: CompleteDriverDeliveryDestinationInput): Record<string, unknown> {
+  const clientPayload = typeof input.payload === 'object' && input.payload !== null && !Array.isArray(input.payload)
+    ? input.payload as Record<string, unknown>
+    : {};
+  return {
+    ...clientPayload,
+    clientEventId: input.clientEventId,
+    completionOwnerAccountId: input.completionOwnerAccountId,
+    deliveryStopIds: input.deliveryStopIds,
+    destinationId: input.destinationId,
+    occurredAt: input.occurredAt.toISOString(),
+    routePlanId: input.routePlanId
+  };
+}
+
+function isKnownDestinationCompletionBusinessRejection(error: unknown): error is Error {
+  return error instanceof DriverEventContextError
+    || error instanceof DriverEventRouteNotInProgressError
+    || error instanceof DriverEventExecutionConflictError
+    || error instanceof DriverEventEtaStaleConflictError
+    || error instanceof DriverEventScopeError
+    || error instanceof DriverEventStopTransitionConflictError;
+}
+
+function markDriverEventDefinitelyNotCommitted(error: unknown): void {
+  if (error instanceof Error) Object.defineProperty(error, DRIVER_EVENT_DEFINITELY_NOT_COMMITTED, { value: true });
+}
+
+function isDriverEventDefinitelyNotCommitted(error: unknown): boolean {
+  return error instanceof Error
+    && (error as Error & { [DRIVER_EVENT_DEFINITELY_NOT_COMMITTED]?: boolean })[
+      DRIVER_EVENT_DEFINITELY_NOT_COMMITTED
+    ] === true;
+}
+
+function markDestinationCompletionNotApplied<T extends Error>(error: T): T {
+  Object.defineProperty(error, DRIVER_DESTINATION_COMPLETION_NOT_APPLIED, { value: true });
+  return error;
 }
 
 function publicRecordDriverEventResult(result: RecordDriverEventResult): RecordDriverEventResult {
@@ -1032,7 +1163,7 @@ async function findMatchingDriverEvent(
   if (input.eventType === 'PICKUP_COMPLETED') {
     if (input.clientEventId !== null) {
       const event = await prisma.driverEvent.findUnique({
-        select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
+        select: { completionOwnerAccountId: true, createdAt: true, deliveryStopId: true, eventType: true, id: true, occurredAt: true, payload: true, routePlanId: true },
         where: {
           driverId_clientEventId: {
             clientEventId: input.clientEventId,
@@ -1042,7 +1173,7 @@ async function findMatchingDriverEvent(
       });
       if (event !== null) {
         if (!driverEventContextMatchesInput(event, input)) {
-          throw new DriverEventContextError('clientEventId is already used by a different driver event');
+          throw duplicateDriverEventMismatchError(input);
         }
         return { createdAt: event.createdAt, id: event.id };
       }
@@ -1073,7 +1204,7 @@ async function findMatchingDriverEvent(
 
   if ((input.eventType === 'TIME_CONSTRAINT_ACKNOWLEDGED' || input.eventType === 'DISPATCH_CHANGE_ACKNOWLEDGED') && input.clientEventId !== null) {
     const event = await prisma.driverEvent.findUnique({
-      select: { deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
+      select: { completionOwnerAccountId: true, deliveryStopId: true, eventType: true, id: true, occurredAt: true, payload: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: input.clientEventId,
@@ -1085,7 +1216,7 @@ async function findMatchingDriverEvent(
       return null;
     }
     if (!driverEventContextMatchesInput(event, input)) {
-      throw new DriverEventContextError('clientEventId is already used by a different driver event');
+      throw duplicateDriverEventMismatchError(input);
     }
 
     return { id: event.id };
@@ -1099,7 +1230,7 @@ async function findMatchingDriverEvent(
   }
 
   const event = await prisma.driverEvent.findUnique({
-    select: { deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
+    select: { completionOwnerAccountId: true, deliveryStopId: true, eventType: true, id: true, occurredAt: true, payload: true, routePlanId: true },
     where: {
       driverId_clientEventId: {
         clientEventId: input.clientEventId,
@@ -1111,7 +1242,7 @@ async function findMatchingDriverEvent(
     return null;
   }
   if (!driverEventContextMatchesInput(event, input)) {
-    throw new DriverEventContextError('clientEventId is already used by a different driver event');
+    throw duplicateDriverEventMismatchError(input);
   }
 
   return { id: event.id };
@@ -1126,7 +1257,7 @@ async function findDuplicateDriverEventAfterUniqueConstraint(
   }
 
   const event = await prisma.driverEvent.findUnique({
-    select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
+    select: { completionOwnerAccountId: true, createdAt: true, deliveryStopId: true, eventType: true, id: true, occurredAt: true, payload: true, routePlanId: true },
     where: {
       driverId_clientEventId: {
         clientEventId: input.clientEventId,
@@ -1135,7 +1266,7 @@ async function findDuplicateDriverEventAfterUniqueConstraint(
     }
   });
   if (event !== null && !driverEventContextMatchesInput(event, input)) {
-    throw new DriverEventContextError('clientEventId is already used by a different driver event');
+    throw duplicateDriverEventMismatchError(input);
   }
 
   if (event !== null) {
@@ -1167,8 +1298,57 @@ function driverEventContextMatchesInput(
     && event.deliveryStopId === input.deliveryStopId
   );
   if (!baseContextMatches) return false;
+  if (typeof input.completionOwnerAccountId === 'string') {
+    return destinationCompletionDuplicateMatches(event, input);
+  }
   if (input.eventType !== 'DISPATCH_CHANGE_ACKNOWLEDGED') return true;
   return driverEventPayloadChangeRequestId(event.payload) === input.changeRequestId;
+}
+
+function duplicateDriverEventMismatchError(input: RecordDriverEventInput): Error {
+  return typeof input.completionOwnerAccountId === 'string'
+    ? new DriverDestinationCompletionCollisionError()
+    : new DriverEventContextError('clientEventId is already used by a different driver event');
+}
+
+function destinationCompletionDuplicateMatches(
+  event: ExistingDriverEventContext,
+  input: RecordDriverEventInput
+): boolean {
+  if (
+    event.completionOwnerAccountId !== input.completionOwnerAccountId
+    || event.occurredAt?.getTime() !== input.occurredAt.getTime()
+  ) return false;
+  const stored = objectRecord(event.payload);
+  const expected = objectRecord(input.payload);
+  if (stored === null || expected === null) return false;
+  if (
+    expected.routePlanId !== input.routePlanId
+    || expected.occurredAt !== input.occurredAt.toISOString()
+    || typeof expected.clientEventId !== 'string'
+    || input.deliveryStopId === null
+    || input.clientEventId !== `${expected.clientEventId}:${input.deliveryStopId}`
+    || !Array.isArray(expected.deliveryStopIds)
+    || !expected.deliveryStopIds.includes(input.deliveryStopId)
+  ) return false;
+  return stored.clientEventId === expected.clientEventId
+    && stored.destinationId === expected.destinationId
+    && stored.occurredAt === expected.occurredAt
+    && stored.routePlanId === expected.routePlanId
+    && stringArraysEqual(stored.deliveryStopIds, expected.deliveryStopIds);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringArraysEqual(left: unknown, right: unknown): boolean {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => typeof value === 'string' && value === right[index]);
 }
 
 function isReturnNavigationCompletionAck(event: ExistingDriverEventContext, input: RecordDriverEventInput): boolean {

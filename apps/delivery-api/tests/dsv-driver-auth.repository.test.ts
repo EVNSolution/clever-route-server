@@ -147,6 +147,7 @@ describe('Prisma DSV driver auth repository', () => {
           return Promise.resolve({
             account,
             accountId: account.id,
+            createdAt: new Date(),
             expiresAt,
             id: 'session-id',
             revokedAt: null,
@@ -175,20 +176,65 @@ describe('Prisma DSV driver auth repository', () => {
       where: { refreshTokenHash: string };
     };
     const updateInput = transaction.driverAccountSession.update.mock.calls[0]?.[0] as {
-      data: { lastUsedAt: Date };
+      data: { expiresAt: Date; lastUsedAt: Date };
       where: { id: string };
     };
     expect(findInput.where.refreshTokenHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(transaction.$queryRaw).toHaveBeenCalledTimes(1);
     expect(updateInput.data.lastUsedAt).toBeInstanceOf(Date);
     expect(updateInput.where).toEqual({ id: 'session-id' });
+    // The refresh slides the session forward by a full window instead of keeping the login-time expiry.
+    const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+    expect(updateInput.data.expiresAt.getTime() - updateInput.data.lastUsedAt.getTime()).toBe(thirtyDays);
+    expect(updateInput.data.expiresAt.getTime()).toBeGreaterThan(expiresAt.getTime());
     expect(result).toMatchObject({
       account: { connectionStatus: 'LINKED', loginId: 'woojin' },
       accountId: 'account-id',
-      expiresAt,
+      expiresAt: updateInput.data.expiresAt,
       refreshToken: 'refresh-token',
       tokenVersion: 1,
     });
+  });
+
+  test('replaces a day-old refresh token, keeps the old one for a short grace window and prunes stale sessions', async () => {
+    const account = {
+      drivers: [{ displayName: '김삼봉', id: 'driver-id', phone: '01011112222', shop: { shopDomain: 'dsv-production.local' } }],
+      id: 'account-id', loginId: 'sambongkim', name: '김삼봉', phone: '01011112222', status: 'ACTIVE', tokenVersion: 1,
+    };
+    const createdAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    const expiresAt = new Date(createdAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const transaction = {
+      $queryRaw: vi.fn(() => Promise.resolve([{ lock: '' }])),
+      driverAccountSession: {
+        create: vi.fn((input: unknown) => { void input; return Promise.resolve({ id: 'session-next' }); }),
+        deleteMany: vi.fn((input: unknown) => { void input; return Promise.resolve({ count: 0 }); }),
+        findUnique: vi.fn(() => Promise.resolve({ account, accountId: account.id, createdAt, expiresAt, id: 'session-id', revokedAt: null })),
+        update: vi.fn((input: unknown) => { void input; return Promise.resolve({ id: 'session-id' }); }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
+      driverAccountSession: { findUnique: vi.fn(() => Promise.resolve({ accountId: account.id, id: 'session-id' })) },
+    };
+    const repository = new PrismaDsvDriverAuthRepository(prisma as never);
+
+    const result = await repository.refresh({ refreshToken: 'old-refresh-token' });
+
+    const created = transaction.driverAccountSession.create.mock.calls[0]?.[0] as {
+      data: { accountId: string; expiresAt: Date; lastUsedAt: Date; refreshTokenHash: string };
+    };
+    const updated = transaction.driverAccountSession.update.mock.calls[0]?.[0] as { data: { expiresAt: Date; lastUsedAt: Date }; where: { id: string } };
+    const pruned = transaction.driverAccountSession.deleteMany.mock.calls[0]?.[0] as { where: { accountId: string; expiresAt: { lt: Date } } };
+    expect(result.refreshToken).not.toBe('old-refresh-token');
+    expect(result.refreshToken).toMatch(/^[a-f0-9]{64}$/u);
+    expect(created.data.accountId).toBe('account-id');
+    expect(created.data.refreshTokenHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(created.data.expiresAt.getTime() - created.data.lastUsedAt.getTime()).toBe(30 * 24 * 60 * 60 * 1000);
+    expect(result.expiresAt).toEqual(created.data.expiresAt);
+    expect(updated.where).toEqual({ id: 'session-id' });
+    expect(updated.data.expiresAt.getTime() - updated.data.lastUsedAt.getTime()).toBe(2 * 60 * 1000);
+    expect(pruned.where.accountId).toBe('account-id');
+    expect(updated.data.lastUsedAt.getTime() - pruned.where.expiresAt.lt.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
   });
 
   test('rechecks refresh revocation under the shared account lock', async () => {
@@ -256,6 +302,7 @@ describe('Prisma DSV driver auth repository', () => {
           accountId: unlinkedAccount.id,
           expiresAt,
           id: 'session-id',
+          createdAt: new Date(),
           revokedAt: null,
         })),
         update: vi.fn(() => Promise.resolve({ id: 'session-id' })),
@@ -280,7 +327,13 @@ describe('Prisma DSV driver auth repository', () => {
         inviteCodeExpiresAt: null,
         phone: unlinkedAccount.phone,
       },
-      where: { accountId: null, id: 'driver-id', isStoreReviewData: false },
+      where: {
+        accountId: null,
+        displayName: unlinkedAccount.name,
+        id: 'driver-id',
+        isStoreReviewData: false,
+        status: 'ACTIVE',
+      },
     });
     expect(transaction.dsvDriverProfile.update).toHaveBeenCalledWith({
       data: { lookupName: unlinkedAccount.name },
