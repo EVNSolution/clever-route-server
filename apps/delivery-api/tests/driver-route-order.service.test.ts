@@ -61,6 +61,22 @@ describe('PrismaDriverRouteOrderService', () => {
     expect(receipt.status).toBe('SUCCEEDED');
   });
 
+  test('rebuilds the geometry of the driver order after the commit and keeps the reorder when the rebuild fails', async () => {
+    const { prisma } = harness();
+    const refreshRouteGeometryForRoutePlan = vi.fn(() => Promise.reject(new Error('routing engine unavailable')));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(new PrismaDriverRouteOrderService(prisma as never, { refreshRouteGeometryForRoutePlan }).reorder(baseInput))
+      .resolves.toMatchObject({ routeVersionId: 'version-new' });
+
+    expect(refreshRouteGeometryForRoutePlan).toHaveBeenCalledWith({
+      appId: 'clever', routePlanId: 'route-1', shopDomain: 'dsv.example.com', source: 'SHAPE_MUTATION'
+    });
+    expect(prisma.dsvCommandReceipt.updateMany.mock.invocationCallOrder[0])
+      .toBeLessThan(refreshRouteGeometryForRoutePlan.mock.invocationCallOrder[0]!);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('route geometry refresh failed'), expect.objectContaining({ routePlanId: 'route-1' }));
+  });
+
   test.each([
     ['stale version', { child: null }, baseInput, 'VERSION_CONFLICT'],
     ['duplicate stop', {}, { ...baseInput, orderedStopIds: ['stop-1', 'stop-1'] }, 'INVALID_STOP_SET'],
@@ -164,6 +180,7 @@ function harness(options: HarnessOptions = {}) {
         status: options.status ?? 'IN_PROGRESS'
       }))
     },
+    shop: { findUnique: vi.fn(() => Promise.resolve({ appId: 'clever', shopDomain: 'dsv.example.com' })) },
     routePlanGeometryCache: { deleteMany: vi.fn(() => Promise.resolve({ count: 1 })) },
     routePlanStop: {
       updateMany: vi.fn((input: { data: Record<string, unknown> }) => {

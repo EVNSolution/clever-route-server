@@ -16,7 +16,16 @@ import {
   type LiveRouteChildReplacementContext
 } from '../route-plans/live-route-change.js';
 
-type DriverRouteOrderPrisma = DsvAssignmentTransactionPort & Pick<PrismaClient, 'dsvCommandReceipt'>;
+type DriverRouteOrderPrisma = DsvAssignmentTransactionPort & Pick<PrismaClient, 'dsvCommandReceipt' | 'shop'>;
+
+export type DriverRouteOrderGeometryRefresher = {
+  refreshRouteGeometryForRoutePlan(input: {
+    appId?: string | undefined;
+    routePlanId: string;
+    shopDomain: string;
+    source: 'SHAPE_MUTATION';
+  }): Promise<unknown>;
+};
 
 export type DriverRouteOrderInput = {
   commandId: string;
@@ -57,9 +66,42 @@ const commandName = 'reorderDriverRouteStops';
 const transactionOptions = { maxWait: 20_000, timeout: 30_000 } as const;
 
 export class PrismaDriverRouteOrderService implements DriverRouteOrderServiceContract {
-  constructor(private readonly prisma: DriverRouteOrderPrisma) {}
+  constructor(
+    private readonly prisma: DriverRouteOrderPrisma,
+    private readonly routeGeometryRefresher?: DriverRouteOrderGeometryRefresher
+  ) {}
 
   async reorder(input: DriverRouteOrderInput): Promise<DriverRouteOrderResult> {
+    const result = await this.reorderInTransaction(input);
+    await this.refreshRouteGeometry(input);
+    return result;
+  }
+
+  /**
+   * The reorder clears the leg durations and geometry of the old stop order. Without new legs the planned ETA stays
+   * PENDING and the ROUTE_STARTED ETA fails, so the geometry is built again for the driver's order (never optimized).
+   * A failed refresh keeps the committed reorder; the next refresh or driver event fills the legs.
+   */
+  private async refreshRouteGeometry(input: DriverRouteOrderInput): Promise<void> {
+    if (this.routeGeometryRefresher === undefined) return;
+    try {
+      const shop = await this.prisma.shop.findUnique({ select: { appId: true, shopDomain: true }, where: { id: input.shopId } });
+      if (shop === null) return;
+      await this.routeGeometryRefresher.refreshRouteGeometryForRoutePlan({
+        appId: shop.appId,
+        routePlanId: input.routePlanId,
+        shopDomain: shop.shopDomain,
+        source: 'SHAPE_MUTATION'
+      });
+    } catch (error) {
+      console.warn('[driver-route-order] route geometry refresh failed after reorder commit', {
+        errorName: error instanceof Error ? error.name : typeof error,
+        routePlanId: input.routePlanId
+      });
+    }
+  }
+
+  private reorderInTransaction(input: DriverRouteOrderInput): Promise<DriverRouteOrderResult> {
     const payloadHash = hashPayload(input);
     return this.prisma.$transaction(async (tx) => {
       await lockCommand(tx, input.shopId, input.commandId);
