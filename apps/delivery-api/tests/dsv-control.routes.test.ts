@@ -702,6 +702,18 @@ describe('DSV control routes', () => {
         actorId: adminAccountId,
         status: 'DISABLED',
       }));
+
+      const discard = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: `/api/dsv/customer-accounts/${customerAccountId}`,
+      });
+      expect(discard.statusCode).toBe(200);
+      expect(discard.json()).toMatchObject({ data: { accountId: customerAccountId }, error: null });
+      expect(customerAccountService.discardUnclaimed).toHaveBeenCalledWith(expect.objectContaining({
+        accountId: customerAccountId,
+        actorId: adminAccountId,
+      }));
     } finally {
       await app.close();
     }
@@ -2678,6 +2690,7 @@ function createOperatorInvitationService(): DsvAdminOperatorInvitationService & 
 function createCustomerAccountService(): DsvCustomerAccountService & {
   complete: ReturnType<typeof vi.fn<DsvCustomerAccountService['complete']>>;
   createSignupInvitation: ReturnType<typeof vi.fn<DsvCustomerAccountService['createSignupInvitation']>>;
+  discardUnclaimed: ReturnType<typeof vi.fn<DsvCustomerAccountService['discardUnclaimed']>>;
   listAccounts: ReturnType<typeof vi.fn<DsvCustomerAccountService['listAccounts']>>;
   login: ReturnType<typeof vi.fn<DsvCustomerAccountService['login']>>;
   setStatus: ReturnType<typeof vi.fn<DsvCustomerAccountService['setStatus']>>;
@@ -2710,7 +2723,8 @@ function createCustomerAccountService(): DsvCustomerAccountService & {
     listAccounts: vi.fn<DsvCustomerAccountService['listAccounts']>(() => Promise.resolve([account])),
     login: vi.fn<DsvCustomerAccountService['login']>(() => Promise.resolve(identity)),
     reinvite: vi.fn<DsvCustomerAccountService['reinvite']>(() => Promise.resolve({ account, invitation })),
-    requestPasswordReset: vi.fn<DsvCustomerAccountService['requestPasswordReset']>(() => Promise.resolve({ account })),
+    discardUnclaimed: vi.fn<DsvCustomerAccountService['discardUnclaimed']>(() => Promise.resolve({ accountId: account.id })),
+    requestPasswordReset: vi.fn<DsvCustomerAccountService['requestPasswordReset']>(() => Promise.resolve({ account, invitation })),
     setStatus: vi.fn<DsvCustomerAccountService['setStatus']>(() => Promise.resolve({
       account: { ...account, status: 'DISABLED' },
     })),

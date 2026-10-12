@@ -2,9 +2,6 @@ import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'no
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
-import type { AdminStoreSettings } from '../commerce/admin-store-settings.service.js';
-import { normalizeDsvOperationalSettings } from './dsv-operational-settings.js';
-import type { DsvManualEmailService } from './dsv-manual-email.service.js';
 
 export type DsvCustomerAccountInvitePurpose = 'SIGNUP' | 'PASSWORD_RESET';
 export type DsvCustomerAccountApiStatus = 'INVITED' | 'ACTIVE' | 'DISABLED' | 'EXPIRED';
@@ -48,10 +45,11 @@ export type DsvCustomerSessionIdentity = {
 export type DsvCustomerAccountService = {
   complete(input: { displayName?: string; loginId?: string; password: string; requestId: string; shopDomain: string; token: string }): Promise<DsvCustomerSessionIdentity>;
   createSignupInvitation(input: { actorId: string | null; customerId: string; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
+  discardUnclaimed(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ accountId: string }>;
   listAccounts(input: { customerId: string; shopDomain: string }): Promise<DsvCustomerAccountSummary[]>;
   login(input: { id: string; password: string; requestId: string; shopDomain: string }): Promise<DsvCustomerSessionIdentity | null>;
   reinvite(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
-  requestPasswordReset(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ account: DsvCustomerAccountSummary }>;
+  requestPasswordReset(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
   setStatus(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string; status: 'ACTIVE' | 'DISABLED' }): Promise<{ account: DsvCustomerAccountSummary }>;
   validateInvitation(input: { shopDomain: string; token: string }): Promise<DsvCustomerInviteMetadata | null>;
 };
@@ -60,10 +58,6 @@ export type DsvCustomerAccountServicePrisma = Pick<
   PrismaClient,
   '$transaction' | 'customerAccount' | 'dsvAuditEvent' | 'dsvCustomerAccountInvite' | 'shop'
 >;
-
-export type DsvCustomerAccountSettingsService = Pick<{
-  getSettings(input: { shopDomain: string }): Promise<AdminStoreSettings | null>;
-}, 'getSettings'>;
 
 const issuer = 'CLEVER_DSV';
 const inviteTtlMs = 48 * 60 * 60 * 1000;
@@ -75,8 +69,6 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
   constructor(
     private readonly prisma: DsvCustomerAccountServicePrisma,
     private readonly dependencies: {
-      manualEmailService: DsvManualEmailService;
-      settingsService: DsvCustomerAccountSettingsService;
       webPublicOrigin?: string;
     },
   ) {}
@@ -122,10 +114,11 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     return this.invitationIssue(invitation);
   }
 
-  async requestPasswordReset(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ account: DsvCustomerAccountSummary }> {
+  async requestPasswordReset(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue> {
+    this.requireWebPublicOrigin();
     const account = await this.findAccountForShop(input.accountId, input.shopDomain);
     if (account === null) throw new DsvCustomerAccountServiceError('NOT_FOUND', 'Customer account not found');
-    if (account.email === null || account.loginId === null || account.passwordHash === null || account.status !== 'ACTIVE') {
+    if (account.loginId === null || account.passwordHash === null || account.status !== 'ACTIVE') {
       throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Active customer account credentials are required');
     }
     const invitation = await this.createInvite({
@@ -136,16 +129,7 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
       requestId: input.requestId,
       shopDomain: input.shopDomain,
     });
-    await this.sendPasswordResetEmail({
-      customerName: invitation.customerName,
-      displayName: account.displayName,
-      email: account.email,
-      requestId: input.requestId,
-      shopDomain: input.shopDomain,
-      token: invitation.token,
-      loginId: account.loginId,
-    });
-    return { account: invitation.account };
+    return this.invitationIssue(invitation);
   }
 
   async setStatus(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string; status: 'ACTIVE' | 'DISABLED' }): Promise<{ account: DsvCustomerAccountSummary }> {
@@ -155,21 +139,63 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
       throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Only activated customer accounts can be enabled or disabled');
     }
     const status = input.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE';
-    const updated = await this.prisma.customerAccount.update({
-      data: { activeSessionId: null, status },
-      include: latestSignupInviteInclude,
-      where: { id: account.id },
-    });
-    await this.audit({
-      accountId: updated.id,
-      actorId: input.actorId,
-      customerId: updated.customerId,
-      eventType: input.status === 'ACTIVE' ? 'CUSTOMER_ACCOUNT_ENABLED' : 'CUSTOMER_ACCOUNT_DISABLED',
-      redactedDiff: { status: input.status },
-      requestId: input.requestId,
-      shopId: updated.shopId,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Same lock as complete(): a disable either revokes the reset link first or runs after it is consumed.
+      await lockCustomerAccount(tx, account.id);
+      if (status === 'INACTIVE') {
+        await tx.dsvCustomerAccountInvite.updateMany({
+          data: { revokedAt: new Date() },
+          where: { accountId: account.id, consumedAt: null, revokedAt: null },
+        });
+      }
+      const row = await tx.customerAccount.update({
+        data: { activeSessionId: null, status },
+        include: latestSignupInviteInclude,
+        where: { id: account.id },
+      });
+      await createAudit(tx, {
+        accountId: row.id,
+        actorId: input.actorId,
+        customerId: row.customerId,
+        eventType: input.status === 'ACTIVE' ? 'CUSTOMER_ACCOUNT_ENABLED' : 'CUSTOMER_ACCOUNT_DISABLED',
+        redactedDiff: { status: input.status },
+        requestId: input.requestId,
+        shopId: row.shopId,
+      });
+      return row;
     });
     return { account: accountSummary(updated, new Date()) };
+  }
+
+  async discardUnclaimed(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ accountId: string }> {
+    const account = await this.findAccountForShop(input.accountId, input.shopDomain);
+    if (account === null) throw new DsvCustomerAccountServiceError('NOT_FOUND', 'Customer account not found');
+    if (account.passwordHash !== null) {
+      throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Only unclaimed customer accounts can be discarded');
+    }
+    await this.prisma.$transaction(async (tx) => {
+      await lockCustomerAccount(tx, account.id);
+      const current = await tx.customerAccount.findUnique({ select: { passwordHash: true }, where: { id: account.id } });
+      if (current === null) throw new DsvCustomerAccountServiceError('NOT_FOUND', 'Customer account not found');
+      if (current.passwordHash !== null) {
+        throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Only unclaimed customer accounts can be discarded');
+      }
+      await tx.dsvCustomerAccountInvite.updateMany({
+        data: { revokedAt: new Date() },
+        where: { accountId: account.id, consumedAt: null, revokedAt: null },
+      });
+      await tx.customerAccount.delete({ where: { id: account.id } });
+      await createAudit(tx, {
+        accountId: account.id,
+        actorId: input.actorId,
+        customerId: account.customerId,
+        eventType: 'CUSTOMER_ACCOUNT_DISCARDED',
+        principalType: 'DSV_ADMIN',
+        requestId: input.requestId,
+        shopId: account.shopId,
+      });
+    });
+    return { accountId: account.id };
   }
 
   async validateInvitation(input: { shopDomain: string; token: string }): Promise<DsvCustomerInviteMetadata | null> {
@@ -406,39 +432,6 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     return { account: accountSummary(account, now), customerName: customerRow.displayName, expiresAt, token };
   }
 
-  private async sendPasswordResetEmail(input: {
-    customerName: string | null;
-    displayName: string | null;
-    email: string;
-    requestId: string;
-    shopDomain: string;
-    token: string;
-    loginId: string;
-  }): Promise<void> {
-    if (this.dependencies.webPublicOrigin === undefined) {
-      throw new DsvCustomerAccountServiceError('INVITATION_LINK_NOT_CONFIGURED', 'CLEVER_DSV_WEB_PUBLIC_URL is required for customer account invitation links');
-    }
-    const settings = await this.dependencies.settingsService.getSettings({ shopDomain: input.shopDomain });
-    if (settings === null) throw new DsvCustomerAccountServiceError('NOT_FOUND', 'Customer workspace not found');
-    const operationSettings = normalizeDsvOperationalSettings(settings.dsvOperationalSettings);
-    if (operationSettings.manualEmailSenderEmail === null) {
-      throw new DsvCustomerAccountServiceError('EMAIL_NOT_CONFIGURED', 'DSV manual email sender is not configured');
-    }
-    const setupUrl = new URL('/customer/account/setup', this.dependencies.webPublicOrigin);
-    setupUrl.hash = `token=${encodeURIComponent(input.token)}`;
-    const loginUrl = new URL('/customer/login', this.dependencies.webPublicOrigin);
-    const subject = `${subjectPrefix(operationSettings.manualEmailSubject)}고객사 계정 비밀번호 재설정`;
-    const greeting = input.displayName ?? input.customerName ?? '고객';
-    const body = `안녕하세요 ${greeting}님.\n\nCLEVER DSV 고객사 계정 비밀번호 재설정 링크입니다.\n로그인 ID: ${input.loginId}\n48시간 안에 아래 일회용 링크로 접속해 새 비밀번호를 설정해 주세요.\n\n${setupUrl.toString()}\n\n이후 로그인 주소:\n${loginUrl.toString()}`;
-    await this.dependencies.manualEmailService.send({
-      commandId: input.requestId,
-      recipients: [input.email],
-      senderEmail: operationSettings.manualEmailSenderEmail,
-      subject,
-      textContent: body,
-    });
-  }
-
   private async findValidInvite(input: { shopDomain: string; token: string }) {
     const token = normalizeToken(input.token);
     if (token === null) return null;
@@ -461,6 +454,7 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
       || invite.customer.shopId !== invite.shopId
       || invite.consumedAt !== null
       || invite.revokedAt !== null
+      || (invite.account.status === 'INACTIVE' && invite.account.passwordHash !== null)
     ) {
       return null;
     }
@@ -703,7 +697,3 @@ async function constantTimePasswordCheck(password: string): Promise<void> {
   await verifyPassword(password, dummyPasswordSalt, dummyPasswordHash);
 }
 
-function subjectPrefix(value: string): string {
-  const match = /^\s*(\[[^\]]+\])\s*/u.exec(value);
-  return match?.[1] === undefined ? '[CLEVER DSV] ' : `${match[1]} `;
-}

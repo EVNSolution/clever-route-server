@@ -109,8 +109,6 @@ export function loadDsvControlDependencies(input: {
     ),
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
     customerAccountService: new PrismaDsvCustomerAccountService(input.prisma, {
-      manualEmailService,
-      settingsService,
       ...(webPublicOrigin === undefined ? {} : { webPublicOrigin }),
     }),
     operatorInvitationService: new PrismaDsvAdminOperatorInvitationService(input.prisma, {
