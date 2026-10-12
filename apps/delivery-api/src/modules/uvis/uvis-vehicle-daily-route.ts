@@ -115,7 +115,14 @@ export function buildUvisVehicleDailyRoute(
           };
         },
       ) : null;
-      bridges.push(inferredTunnel === null ? bridge : { ...bridge, inferredTunnel });
+      // Curated corridors win; otherwise use the routed bridge the materializer stored for this exit.
+      const routedTunnel = inferredTunnel !== null || bridge.reason !== 'IMPLAUSIBLE_JUMP'
+        ? undefined
+        : trailDocument?.tunnelBridges?.find((candidate) => (
+          candidate.toObservedAt === current.observedAt && candidate.fromObservedAt <= previous.observedAt
+        ));
+      const tunnel = inferredTunnel ?? routedTunnel ?? null;
+      bridges.push(tunnel === null ? bridge : { ...bridge, inferredTunnel: tunnel });
     }
     anchors.push({ observedAt: current.observedAt, coordinateIndex });
   }
