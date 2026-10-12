@@ -8,7 +8,8 @@ import {
   PrismaDriverRouteOrderService
 } from '../src/modules/driver/driver-route-order.service.js';
 import { replaceCurrentRouteGroupingChildVersion } from '../src/modules/route-grouping/route-grouping.service.js';
-import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
+import { computeRouteShapeSignature } from '../src/modules/route-plans/route-plan-geometry-cache.js';
+import { PrismaRoutePlanRepository, refreshPlannedRouteTimes } from '../src/modules/route-plans/route-plan.repository.js';
 import { RoutePlanAdminService } from '../src/modules/route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../src/modules/route-plans/route-plan.types.js';
 
@@ -185,6 +186,54 @@ describeDisposable('driver route order PostgreSQL integration', () => {
     expect(first).toMatchObject({ etaFailureCode: null, etaSource: 'ROUTE_STARTED', etaStatus: 'READY' });
     expect(first?.estimatedArrivalAt).toBeInstanceOf(Date);
     expect(second).toMatchObject({ estimatedArrivalAt: null, etaFailureCode: 'ETA_INPUT_DURATION_UNAVAILABLE', etaStatus: 'FAILED' });
+  });
+
+  test('keeps the STALE ETA of an admin stop move on the current route version and accepts the next driver event', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'READY');
+
+    await new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true }).updateAdminRouteStopOverride({
+      actor: 'integration', deliveryStopId: fixture.stopIds[1]!, payload: { latitude: 37.6, longitude: 127.2 },
+      routePlanId: fixture.routePlanId, shopDomain: fixture.shopDomain
+    });
+
+    const stops = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    const orders = await prisma.order.findMany({ where: { id: { in: fixture.orderIds } } });
+    expect(new Set(orders.map(({ currentRouteVersionId }) => currentRouteVersionId))).toEqual(new Set([fixture.childVersionId]));
+    expect(stops.map(({ etaInputRouteVersionId, etaStatus }) => ({ etaInputRouteVersionId, etaStatus })))
+      .toEqual([0, 1].map(() => ({ etaInputRouteVersionId: fixture.childVersionId, etaStatus: 'STALE' })));
+    await expect(new PrismaDriverEventRepository(prisma).recordDriverEvent(driverEvent(fixture, 'ROUTE_STARTED', null, '2026-09-07T00:00:00.000Z')))
+      .resolves.toBeDefined();
+  });
+
+  test('fails only the stops after a missing leg in the planned ETA, also when the driver Stop time changes later', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'READY');
+    const repository = new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true });
+    const detail = (await repository.findRoutePlanDetail({ routePlanId: fixture.routePlanId, shopDomain: fixture.shopDomain }))!;
+    const route = syntheticRoute(detail);
+
+    await repository.upsertRouteGeometryCache({
+      geometry: route.routeGeometry, metrics: route.routeMetrics, provider: 'integration', routePlanId: fixture.routePlanId,
+      shapeSignature: computeRouteShapeSignature(detail), source: 'SHAPE_MUTATION',
+      stopPoints: route.routeStopPoints.filter(({ deliveryStopId }) => deliveryStopId !== fixture.stopIds[1])
+    });
+
+    const [first, second] = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    expect(first).toMatchObject({ etaFailureCode: null, etaInputRouteVersionId: fixture.childVersionId, etaSource: 'PLANNED_DEPARTURE', etaStatus: 'READY' });
+    expect(first?.estimatedArrivalAt).toBeInstanceOf(Date);
+    expect(second).toMatchObject({ estimatedArrivalAt: null, etaFailureCode: 'ETA_INPUT_DURATION_UNAVAILABLE', etaStatus: 'FAILED' });
+
+    // The geometry of the current shape is stored, so a new driver Stop time computes the ETA again, and the stored
+    // missing leg still fails the stop after it.
+    const before = new Date('2026-01-01T00:00:00.000Z');
+    await prisma.routePlanStop.updateMany({ data: { etaCalculatedAt: before }, where: { routePlanId: fixture.routePlanId } });
+    await prisma.driver.update({ data: { averageServiceMinutes: 9 }, where: { id: fixture.driverId } });
+    await prisma.$transaction((tx) => refreshPlannedRouteTimes(tx, fixture.routePlanId));
+    const refreshed = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    expect(refreshed.map(({ etaFailureCode, etaStatus }) => ({ etaFailureCode, etaStatus }))).toEqual([
+      { etaFailureCode: null, etaStatus: 'READY' },
+      { etaFailureCode: 'ETA_INPUT_DURATION_UNAVAILABLE', etaStatus: 'FAILED' }
+    ]);
+    expect(refreshed[0]?.etaCalculatedAt?.getTime()).toBeGreaterThan(before.getTime());
   });
 
   test('keeps a committed reorder when the geometry refresh fails', async () => {

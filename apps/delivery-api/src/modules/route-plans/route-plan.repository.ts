@@ -517,7 +517,16 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       `;
 
       const routeStop = await tx.routePlanStop.findFirst({
-        select: { id: true, routePlan: { select: { status: true, constraints: true } } },
+        select: {
+          id: true,
+          routePlan: {
+            select: {
+              constraints: true,
+              routeGroupingChildVersions: { select: { id: true }, take: 1, where: { status: 'CURRENT', supersededAt: null } },
+              status: true
+            }
+          }
+        },
         where: {
           deliveryStopId: input.deliveryStopId,
           routePlanId: input.routePlanId,
@@ -592,7 +601,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
               etaCalculatedAt: null,
               etaFailureCode: null,
               etaFailureMessage: null,
-              etaInputRouteVersionId: null,
+              // The office reads only rows of the order's current version; NULL would show STALE as PENDING.
+              etaInputRouteVersionId: routeStop.routePlan.routeGroupingChildVersions[0]?.id ?? null,
               etaSource: 'ADMIN_STOP_OVERRIDE',
               etaStatus: 'STALE'
             },
@@ -2113,12 +2123,28 @@ export async function refreshPlannedRouteTimes(tx: Prisma.TransactionClient, rou
     where: { routePlanId }
   });
   // Legs that are not stored yet (new route, new stops) are stored with the ETAs when the geometry is; computing now
-  // would only record a failed ETA.
-  if (legs.some((leg) => leg.durationFromPreviousSeconds === null)) {
+  // would only record a failed ETA. A geometry stored for the current shape can still miss a leg: the stops before
+  // it keep a READY ETA, so they are computed again.
+  if (legs.some((leg) => leg.durationFromPreviousSeconds === null) && !await hasCurrentShapeGeometry(tx, routePlanId)) {
     await applyDriverStopTimes(tx, routePlanId);
     return;
   }
-  await persistPlannedRouteEta(tx, { routePlanId, stopPoints: legs });
+  // A stored NULL leg is a missing leg, not a 0-second one.
+  await persistPlannedRouteEta(tx, { routePlanId, stopPoints: legs.map((leg) => ({
+    deliveryStopId: leg.deliveryStopId,
+    distanceFromPreviousMeters: leg.distanceFromPreviousMeters ?? undefined,
+    durationFromPreviousSeconds: leg.durationFromPreviousSeconds ?? undefined
+  })) });
+}
+
+async function hasCurrentShapeGeometry(tx: Prisma.TransactionClient, routePlanId: string): Promise<boolean> {
+  const route = await tx.routePlan.findUnique({ where: { id: routePlanId }, include: routePlanInclude() }) as RoutePlanRecord | null;
+  if (route === null) return false;
+  const cache = await tx.routePlanGeometryCache.findUnique({
+    select: { id: true },
+    where: { routePlanId_shapeSignature: { routePlanId, shapeSignature: computeRouteShapeSignature(toRoutePlanDetail(route)) } }
+  });
+  return cache !== null;
 }
 
 async function persistPlannedRouteEta(
@@ -2186,7 +2212,6 @@ async function persistPlannedRouteEta(
       sequence: stop.sequence
     };
   });
-  const etaStatus = routePlan.driverId === null ? 'NOT_REQUIRED' : failureCode === null ? 'READY' : 'FAILED';
   const etaFailureMessage = failureCode === 'ETA_INPUT_START_UNAVAILABLE'
     ? 'ETA could not be calculated because the planned route start is unavailable.'
     : failureCode === 'ETA_INPUT_DURATION_UNAVAILABLE'
@@ -2194,14 +2219,16 @@ async function persistPlannedRouteEta(
       : null;
 
   for (const update of updates) {
+    // A missing leg only fails the stops after it; without a start every stop has no time and fails.
+    const etaStatus = routePlan.driverId === null ? 'NOT_REQUIRED' : update.estimatedArrivalAt === null ? 'FAILED' : 'READY';
     await tx.routePlanStop.updateMany({
       data: {
         distanceFromPreviousMeters: update.distanceFromPreviousMeters,
         durationFromPreviousSeconds: update.durationFromPreviousSeconds,
-        estimatedArrivalAt: etaStatus === 'READY' ? update.estimatedArrivalAt : null,
+        estimatedArrivalAt: update.estimatedArrivalAt,
         etaCalculatedAt: routePlan.driverId === null ? null : calculatedAt,
-        etaFailureCode: failureCode,
-        etaFailureMessage,
+        etaFailureCode: etaStatus === 'FAILED' ? failureCode : null,
+        etaFailureMessage: etaStatus === 'FAILED' ? etaFailureMessage : null,
         etaInputRouteVersionId: routeVersionId,
         etaSource: routePlan.driverId === null ? null : 'PLANNED_DEPARTURE',
         etaStatus
