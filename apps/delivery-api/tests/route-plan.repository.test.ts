@@ -375,6 +375,44 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('planned ETA fails only the stops after a missing leg', async () => {
+    const generatedAt = new Date('2026-08-18T08:14:40.000Z');
+    const { prisma } = createPrismaHarness({
+      routePlanProjection: {
+        constraints: {},
+        driverId: 'driver-id',
+        planDate: new Date('2026-08-18T00:00:00.000Z'),
+        routeGroupingChildVersions: [{ id: 'route-version-id' }],
+        routeStops: [1, 2, 3].map((sequence) => ({ deliveryStop: { serviceMinutes: 5 }, deliveryStopId: `stop-${sequence}`, sequence })),
+        shop: { commerceConnections: [], routeOpsUiSettings: { plannedDepartureTime: '08:30', version: 1 } },
+        status: 'READY'
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.upsertRouteGeometryCache({
+      generatedAt, geometry: null, metrics: null, provider: 'osrm', routePlanId: 'route-plan-id',
+      shapeSignature: 'shape-signature', source: 'OPTIMIZATION_APPLY',
+      // The leg to stop-2 is missing.
+      stopPoints: [1, 3].map((sequence) => ({
+        deliveryStopId: `stop-${sequence}`, distanceFromPreviousMeters: 1000, durationFromPreviousSeconds: 600,
+        inputCoordinates: [127, 37], name: null, sequence, shopifyOrderGid: `order-${sequence}`,
+        snapDistanceMeters: 0, snappedCoordinates: [127, 37]
+      }))
+    });
+
+    const written = prisma.routePlanStop.updateMany.mock.calls.map(([call]) => (call as { data: Record<string, unknown> }).data);
+    expect(written.map(({ estimatedArrivalAt, etaFailureCode, etaStatus }) => ({ estimatedArrivalAt, etaFailureCode, etaStatus }))).toEqual([
+      { estimatedArrivalAt: new Date('2026-08-18T08:40:00.000Z'), etaFailureCode: null, etaStatus: 'READY' },
+      { estimatedArrivalAt: null, etaFailureCode: 'ETA_INPUT_DURATION_UNAVAILABLE', etaStatus: 'FAILED' },
+      { estimatedArrivalAt: null, etaFailureCode: 'ETA_INPUT_DURATION_UNAVAILABLE', etaStatus: 'FAILED' }
+    ]);
+    expect(written[0]?.etaFailureMessage).toBeNull();
+    expect(written[1]?.etaFailureMessage).toEqual(expect.any(String));
+  });
+
   test('planned ETA persistence never overwrites arrived or terminal stops on a ready route', async () => {
     const { prisma } = createPrismaHarness({
       routePlanProjection: {
@@ -1883,6 +1921,7 @@ describe('PrismaRoutePlanRepository', () => {
         distanceFromPreviousMeters: null,
         durationFromPreviousSeconds: null,
         estimatedArrivalAt: null,
+        etaInputRouteVersionId: 'route-version-id',
         etaSource: 'ADMIN_STOP_OVERRIDE',
         etaStatus: 'STALE'
       },
@@ -3425,7 +3464,7 @@ function createPrismaHarness(input: {
       updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
       findFirst: vi.fn(() => {
         const result = input.routePlanStopFindFirst ?? input.conflictingRoutePlanStop ?? null;
-        return Promise.resolve(result === null ? null : { routePlan: { status: 'READY' }, ...result });
+        return Promise.resolve(result === null ? null : { routePlan: { routeGroupingChildVersions: [{ id: 'route-version-id' }], status: 'READY' }, ...result });
       }),
       findMany: vi.fn(() => Promise.resolve(input.existingRoutePlanStops ?? [])),
       deleteMany: vi.fn(() => Promise.resolve({ count: 2 }))
