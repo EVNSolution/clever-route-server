@@ -1285,6 +1285,11 @@ export class DsvAssignmentCommandService {
     for (const route of affectedRouteVersions) {
       if (route.routePlanId === null) continue;
       const routeEtaStatus = route.driverId === null ? 'NOT_REQUIRED' : 'PENDING';
+      // Finished stops keep their ETA record; only the stops still ahead wait for a new ETA.
+      await tx.routePlanStop.updateMany({
+        data: { etaInputRouteVersionId: route.routeVersionId },
+        where: { deliveryStop: { status: { in: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: route.routePlanId },
+      });
       await tx.routePlanStop.updateMany({
         data: {
           estimatedArrivalAt: null,
@@ -1295,7 +1300,7 @@ export class DsvAssignmentCommandService {
           etaSource: null,
           etaStatus: routeEtaStatus,
         },
-        where: { routePlanId: route.routePlanId },
+        where: { deliveryStop: { status: { notIn: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: route.routePlanId },
       });
     }
   }

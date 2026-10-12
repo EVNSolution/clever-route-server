@@ -64,6 +64,7 @@ const GEOMETRY_ROUTE_SELECT = {
   ...DELIVERY_COMPLETION_SELECT,
   depotLatitude: true, depotLongitude: true,
   liveChangeState: { select: { latestPublicationId: true, assignmentGeneration: true, driverId: true } },
+  routeGroupingChildVersions: { where: { status: 'CURRENT', supersededAt: null }, take: 1, select: { id: true } },
   routeStops: {
     orderBy: { sequence: 'asc' },
     select: {
@@ -295,7 +296,7 @@ export class PrismaLiveRouteChangeService {
             distanceFromPreviousMeters: point?.distanceFromPreviousMeters == null ? null : Math.round(point.distanceFromPreviousMeters),
             durationFromPreviousSeconds: duration ?? null, estimatedArrivalAt, etaCalculatedAt: now,
             etaSource: 'LIVE_ROUTE_CHANGE', etaStatus: estimatedArrivalAt === null ? 'FAILED' : 'READY',
-            etaInputRouteVersionId: null,
+            etaInputRouteVersionId: route.routeGroupingChildVersions[0]?.id ?? null,
             etaFailureCode: result === null ? failureCode : estimatedArrivalAt === null ? 'ETA_INPUT_CURRENT_STOP_UNAVAILABLE' : null,
             etaFailureMessage: null
           }

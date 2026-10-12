@@ -158,6 +158,7 @@ type CurrentChildVersionReplacementWriter = CurrentOrderRouteVersionWriter & {
     updateMany(args: Prisma.RouteGroupingChildVersionUpdateManyArgs): Promise<{ count: number }>;
   };
   routeLiveChangeState?: Pick<Tx['routeLiveChangeState'], 'findFirst'>;
+  routePlanStop?: { updateMany(args: Prisma.RoutePlanStopUpdateManyArgs): Promise<{ count: number }> };
 };
 
 type LoadedGrouping = Prisma.RouteGroupingGetPayload<{ include: ReturnType<typeof groupingInclude> }>;
@@ -375,6 +376,13 @@ export async function replaceCurrentRouteGroupingChildVersion(
     select: { id: true }
   });
   if (input.routePlanId !== null) {
+    // ETA rows follow the route version they were computed for. Left on the archived version, the office reads them
+    // as PENDING and a started route rejects every driver event as a stale ETA. A caller that changes the stop order
+    // resets the ETA after this.
+    await prisma.routePlanStop?.updateMany({
+      data: { etaInputRouteVersionId: nextChild.id },
+      where: { etaInputRouteVersionId: input.currentChildId, routePlanId: input.routePlanId, shopId: input.shopId }
+    });
     await prisma.routePlan.updateMany({
       data: {
         deliveryWorkCompletedAt: null,

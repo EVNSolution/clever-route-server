@@ -624,6 +624,10 @@ describe('DsvAssignmentCommandService', () => {
 
     expect(harness.updatedRoutePlanStops()).toEqual([
       {
+        data: { etaInputRouteVersionId: 'version-route-a' },
+        where: { deliveryStop: { status: { in: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: 'route-a' },
+      },
+      {
         data: {
           estimatedArrivalAt: null,
           etaCalculatedAt: null,
@@ -633,7 +637,11 @@ describe('DsvAssignmentCommandService', () => {
           etaSource: null,
           etaStatus: 'PENDING',
         },
-        where: { routePlanId: 'route-a' },
+        where: { deliveryStop: { status: { notIn: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: 'route-a' },
+      },
+      {
+        data: { etaInputRouteVersionId: 'version-unassigned' },
+        where: { deliveryStop: { status: { in: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: 'route-unassigned' },
       },
       {
         data: {
@@ -645,7 +653,7 @@ describe('DsvAssignmentCommandService', () => {
           etaSource: null,
           etaStatus: 'NOT_REQUIRED',
         },
-        where: { routePlanId: 'route-unassigned' },
+        where: { deliveryStop: { status: { notIn: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: 'route-unassigned' },
       },
     ]);
   });
@@ -664,6 +672,10 @@ describe('DsvAssignmentCommandService', () => {
     expect(harness.prisma.routePlanStop.count).not.toHaveBeenCalled();
     expect(harness.updatedRoutePlanStops()).toEqual([
       {
+        data: { etaInputRouteVersionId: 'version-route-a' },
+        where: { deliveryStop: { status: { in: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: 'route-a' },
+      },
+      {
         data: {
           estimatedArrivalAt: null,
           etaCalculatedAt: null,
@@ -673,7 +685,11 @@ describe('DsvAssignmentCommandService', () => {
           etaSource: null,
           etaStatus: 'PENDING',
         },
-        where: { routePlanId: 'route-a' },
+        where: { deliveryStop: { status: { notIn: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: 'route-a' },
+      },
+      {
+        data: { etaInputRouteVersionId: 'version-route-b' },
+        where: { deliveryStop: { status: { in: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: 'route-b' },
       },
       {
         data: {
@@ -685,7 +701,7 @@ describe('DsvAssignmentCommandService', () => {
           etaSource: null,
           etaStatus: 'PENDING',
         },
-        where: { routePlanId: 'route-b' },
+        where: { deliveryStop: { status: { notIn: ['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] } }, routePlanId: 'route-b' },
       },
     ]);
   });
