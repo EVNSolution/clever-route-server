@@ -554,7 +554,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     return Promise.all([...routePlanIdsByVehicle].map(async ([vehicleId, routePlanIds]) => {
       const history = await this.listVehicleGpsTrailHistoryForShop(
         principal.shopId,
-        { serviceDate, vehicleId },
+        { includeDailyRoute: true, serviceDate, vehicleId },
       );
       return {
         ...history,
