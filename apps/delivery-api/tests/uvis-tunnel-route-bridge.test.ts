@@ -289,6 +289,16 @@ describe('routed gap bridge', () => {
     await repository.materializeVehicleDay(input);
     expect(routeBetween).toHaveBeenCalledTimes(3);
 
+    // A rejected route is remembered as a miss and not asked again.
+    stored = null;
+    routeBetween.mockImplementation((from: { coordinate: [number, number] }, to: { coordinate: [number, number] }) =>
+      Promise.resolve({ ...straightRoute(from.coordinate, to.coordinate, 20, 0.02), distanceMeters: 0 }));
+    const rejected = await repository.materializeVehicleDay(input);
+    expect(rejected.routedGaps).toBeUndefined();
+    expect(rejected.routedGapMisses).toHaveLength(3);
+    await repository.materializeVehicleDay(input);
+    expect(routeBetween).toHaveBeenCalledTimes(6);
+
     const route = buildUvisVehicleDailyRoute(chordSamples(), first);
     expect(route?.bridges).toEqual([]);
     expect(route?.coordinates.length).toBeGreaterThan(CHORD_RUN.length * 3);
