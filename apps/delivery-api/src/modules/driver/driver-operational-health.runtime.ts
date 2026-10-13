@@ -13,7 +13,7 @@ export class DriverOperationalHealthRuntime {
   constructor(
     private readonly service: Pick<PrismaDriverSyncHealthService, 'detectOperationalHealth'>,
     private readonly logger?: LoggerLike,
-    private readonly intervalMs = 60_000
+    private readonly intervalMs = 15_000
   ) {}
 
   start(): void {
