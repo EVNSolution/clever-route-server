@@ -813,7 +813,7 @@ export class CustomerEmailService {
           (deliveryStopId) => `customer-email:${lockRoutePlan.shop.id}:${input.input.signal}:${deliveryStopId}`,
         );
         for (const key of lockKeys) {
-          await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+          await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
         }
         const existing = await tx.customerEmailManualDispatch.findUnique({
           select: { id: true },

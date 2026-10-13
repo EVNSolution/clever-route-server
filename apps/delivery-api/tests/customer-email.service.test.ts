@@ -1002,7 +1002,11 @@ describe('CustomerEmailService', () => {
       let releaseAdvisoryLock: () => void = () => undefined;
       const tx = {
         ...prisma,
-        $queryRaw: vi.fn(async () => {
+        $queryRaw: vi.fn(async (query: { sql: string }) => {
+          // PostgreSQL returns pg_advisory_xact_lock() as a void column, which Prisma $queryRaw cannot deserialize.
+          if (!/SELECT TRUE AS "locked" FROM pg_advisory_xact_lock\(/u.test(query.sql)) {
+            throw new Error("Failed to deserialize column of type 'void'");
+          }
           advisoryLockCalls();
           const previous = advisoryLockTail;
           advisoryLockTail = new Promise<void>((resolve) => { releaseAdvisoryLock = resolve; });
