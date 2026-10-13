@@ -2976,6 +2976,35 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /admin/route-groups/{routeGroupId}/stops/custom/check:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Preview where a custom stop address will be placed
+      description: Geocodes the address with the same geocoder and input mapping as custom stop create and returns `data.check` (`addressLabel`, `latitude`, `longitude`, `postalCode` or null). Persists nothing and ignores caller-supplied coordinates. Requires a non-empty address1 and a two-letter countryCode.
+      operationId: checkAdminRouteGroupCustomStopAddress
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomRouteStopCreateInput' }
+      responses:
+        '200':
+          description: Address check envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /admin/route-groups/{routeGroupId}/stops/{deliveryStopId}/custom:
     parameters:
       - name: routeGroupId

@@ -200,6 +200,34 @@ export function registerAdminRouteGroupRoutes(
     }
   });
 
+  // Read-only preview of what a custom stop save will geocode to. It uses the same geocoder and input mapping as create,
+  // persists nothing, and returns no provider ids.
+  app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/stops/custom/check', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readCustomStopPayload(request.body, true);
+      const result = await geocodeCustomStopAddress(payload, authenticated.shopDomain, dependencies.geocodingService);
+      return reply.code(200).send({
+        data: {
+          check: {
+            addressLabel: result.addressLabel,
+            latitude: result.latitude,
+            longitude: result.longitude,
+            postalCode: result.postalCode ?? null
+          }
+        },
+        error: null
+      });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
   app.patch<{ Body: unknown; Params: { deliveryStopId: string; routeGroupId: string } }>('/admin/route-groups/:routeGroupId/stops/:deliveryStopId/custom', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
@@ -725,11 +753,11 @@ function readCustomStopPayload(value: unknown, create: boolean): CustomStopPaylo
   return payload;
 }
 
-async function geocodeCustomStopPayload(
+async function geocodeCustomStopAddress(
   payload: CustomStopPayload,
   shopDomain: string,
   geocodingService: Pick<GeocodingService, 'geocode'>
-): Promise<CustomStopPayload & RequiredCustomStopLocationFields> {
+) {
   validateRequiredCustomStopAddress(payload);
   const geocode = await geocodingService.geocode({
     address: {
@@ -747,10 +775,19 @@ async function geocodeCustomStopPayload(
       `custom stop address could not be geocoded: ${geocode.message}`
     ]);
   }
+  return geocode.result;
+}
+
+async function geocodeCustomStopPayload(
+  payload: CustomStopPayload,
+  shopDomain: string,
+  geocodingService: Pick<GeocodingService, 'geocode'>
+): Promise<CustomStopPayload & RequiredCustomStopLocationFields> {
+  const result = await geocodeCustomStopAddress(payload, shopDomain, geocodingService);
   const resolved = {
     ...payload,
-    latitude: geocode.result.latitude,
-    longitude: geocode.result.longitude
+    latitude: result.latitude,
+    longitude: result.longitude
   };
   validateRequiredCustomStopLocation(resolved);
   return resolved;
