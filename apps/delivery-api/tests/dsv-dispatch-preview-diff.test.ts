@@ -17,7 +17,7 @@ describe('G003 DSV dispatch preview diff', () => {
       address: ' 서울시  강남구 ',
       detailAddress: ' 1층 ',
       destinationName: 'ＭＡＩＮ  Dock',
-    })).toEqual({ address: '서울시 강남구 1층', name: 'main dock' });
+    })).toEqual({ address: '서울시강남구1층', name: 'maindock' });
 
     const matching = buildDsvDispatchPreviewDiff(input({
       rows: [sourceRow({

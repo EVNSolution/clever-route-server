@@ -8,10 +8,11 @@ import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import { DisabledDriverPushProvider } from '../route-grouping/driver-push.provider.js';
 import { PrismaRouteGroupingService } from '../route-grouping/route-grouping.service.js';
 import type { RouteGroupingDraftRouteInput } from '../route-grouping/route-grouping.types.js';
-import type {
-  DsvAddressSuggestion,
-  DsvAddressCanonicalizer,
-  DsvAddressResolutionStatus,
+import {
+  parseKoreanDeliveryAddress,
+  type DsvAddressSuggestion,
+  type DsvAddressCanonicalizer,
+  type DsvAddressResolutionStatus,
 } from './dsv-address-canonicalization.js';
 import {
   buildDsvDispatchPreviewDiff,
@@ -949,7 +950,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     }));
 
     return persistenceSafeRows.map((row) => {
-      if (row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined) return row;
+      if (row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined) return withSplitDetailAddress(row);
       const rawAddress = row.rawAddress ?? row.address;
       const key = addressResolutionKey(rawAddress, row.destinationName);
       const resolution = resolutions.get(key);
@@ -2136,6 +2137,23 @@ async function findOrCreateDestination(
       shopId,
     },
   });
+}
+
+// Clients send back already-resolved rows with the raw cell as `address`
+// ("...번길30, 1층") and the parsed detail separately. Split the base address
+// again so two spellings of one place persist and match as one destination.
+function withSplitDetailAddress(row: DsvDispatchImportSourceRow): DsvDispatchImportSourceRow {
+  const parsed = parseKoreanDeliveryAddress(row.address);
+  const detailAddress = typeof row.detailAddress === 'string' && row.detailAddress.trim() !== ''
+    ? row.detailAddress.trim()
+    : parsed.detailAddress;
+  return {
+    ...row,
+    address: parsed.searchAddress,
+    detailAddress,
+    postalCode: row.postalCode ?? parsed.postalCode,
+    rawAddress: row.rawAddress ?? parsed.rawAddress,
+  };
 }
 
 function addressFingerprint(

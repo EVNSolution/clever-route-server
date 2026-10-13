@@ -27,6 +27,7 @@ import {
 } from './dsv-time-constraint.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { dsvDestinationIdentitySqlAddress, dsvDestinationIdentitySqlText } from './dsv-destination-identity.js';
+import { parseKoreanDeliveryAddress } from './dsv-address-canonicalization.js';
 import {
   filterDistantRoadMatchedAnchors,
   UVIS_VEHICLE_TRAIL_SCHEMA_VERSION,
@@ -920,7 +921,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         LIMIT ${page.limit + 1}
       `);
       return rows.map((row) => ({
-        address: normalizedDestinationAddressLabel(row.normalizedAddress),
+        address: normalizedAddressLabel(row.normalizedAddress),
         destinationId: row.id,
         displayName: row.displayName,
         lunchEntryStatus: row.driverLunchEntryStatus,
@@ -1996,9 +1997,7 @@ function toRecordRow(stop: RecordStopRow): RecordCursorRow {
     cursorStopId: stop.id,
     cursorUpdatedAt: stop.updatedAt,
     deliveryStatus: stopDeliveryStatus(stop, stop.order.deliveryStatus),
-    destinationAddress: sourceAddress === undefined || sourceAddress === ''
-      ? deliveryStopAddressLabel(stop)
-      : sourceAddress,
+    destinationAddress: destinationAddressLabel(sourceAddress, null) ?? deliveryStopAddressLabel(stop),
     destinationDisplayName: stop.order.destination?.canonicalName ?? stop.recipientName ?? '',
     ...etaFields(eta),
     etaStatus: fallbackEtaStatus(stop.order.currentRouteVersionId, eta),
@@ -2625,42 +2624,31 @@ function stringField(row: Record<string, unknown>, field: string): string | null
   return typeof value === 'string' ? value : null;
 }
 
+// Display rule: base address + detail address only. No postal code, no
+// city/province repeats, and no detail text that the base already carries.
+function destinationAddressLabel(base: unknown, detail: unknown): string | null {
+  const baseText = typeof base === 'string' ? base.trim() : '';
+  const detailInput = typeof detail === 'string' && detail.trim() !== '' ? detail.trim() : null;
+  if (baseText === '') return detailInput;
+  const parsed = parseKoreanDeliveryAddress(baseText);
+  const detailText = detailInput ?? parsed.detailAddress;
+  let address = parsed.searchAddress;
+  if (detailText !== null && address.endsWith(detailText)) {
+    address = address.slice(0, -detailText.length).replace(/[\s,]+$/u, '');
+  }
+  if (detailText === null || detailText === address) return address === '' ? detailText : address;
+  return address === '' ? detailText : `${address}, ${detailText}`;
+}
+
 function normalizedAddressLabel(value: Prisma.JsonValue): string | null {
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    const parts = ['address1', 'city', 'province', 'postalCode', 'countryCode']
-      .map((key) => value[key])
-      .filter((part): part is string => typeof part === 'string' && part.length > 0);
-    return parts.length === 0 ? null : parts.join(', ');
+    return destinationAddressLabel(value.address ?? value.address1, value.detailAddress ?? value.address2);
   }
   return null;
 }
 
-function normalizedDestinationAddressLabel(value: Prisma.JsonValue): string | null {
-  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    const baseAddress = value.address ?? value.address1;
-    const detailAddress = value.detailAddress ?? value.address2;
-    const parts = [baseAddress, detailAddress, value.city, value.province, value.countryCode]
-      .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
-      .map((part) => part.trim())
-      .filter((part, index, all) => all.findIndex((candidate) => candidate === part) === index);
-    return parts.length === 0 ? null : parts.join(', ');
-  }
-  return null;
-}
-
-function deliveryStopAddressLabel(value: {
-  address1: string | null;
-  address2: string | null;
-  city: string | null;
-  countryCode: string | null;
-  postalCode: string | null;
-  province: string | null;
-}): string | null {
-  const parts = [value.address1, value.address2, value.city, value.province]
-    .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
-    .map((part) => part.trim())
-    .filter((part, index, all) => all.findIndex((candidate) => candidate === part) === index);
-  return parts.length === 0 ? null : parts.join(', ');
+function deliveryStopAddressLabel(value: { address1: string | null; address2: string | null }): string | null {
+  return destinationAddressLabel(value.address1, value.address2);
 }
 
 function decimalToNumber(value: unknown): number | null {
