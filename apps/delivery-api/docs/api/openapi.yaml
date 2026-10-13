@@ -4485,6 +4485,76 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/route-plans/{routePlanId}/customer-email/selection:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read the Dispatch customer email selection for a route
+      description: >-
+        Returns `data.selection` (`signals`, `deliveryStopIds`, `updatedAt`,
+        `updatedBy`) or `null` when the office has not selected customers yet.
+      operationId: getAdminRoutePlanCustomerEmailSelection
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Selection envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Shopify Embedded Admin]
+      summary: Save which customers get which customer emails for a route
+      description: >-
+        Body `{ signals, deliveryStopIds }`. Saved at Dispatch. Automatic
+        customer email facts are queued and sent only for selected stops and
+        signals while automatic email is on; facts queued without a selection
+        are never claimed. Does not send email and does not change the route
+        version (`updatedAt`).
+      operationId: saveAdminRoutePlanCustomerEmailSelection
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: write-clever-db
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signals, deliveryStopIds]
+              properties:
+                signals:
+                  type: array
+                  items:
+                    type: string
+                    enum: [DELIVERY_SCHEDULED, OUT_FOR_DELIVERY, DELIVERED, MISSED_DELIVERY, DRIVER_NEARBY]
+                deliveryStopIds:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: Saved selection envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /admin/route-plans/{routePlanId}/customer-email/send:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'

@@ -5,6 +5,20 @@ import { defaultCustomerEmailSettings } from '../src/modules/customer-email/cust
 import { BrevoCustomerEmailTransport, CustomerEmailTransportSendError } from '../src/modules/customer-email/customer-email-transport.js';
 
 describe('CustomerEmailService', () => {
+  test('saves a Dispatch email selection only for stops on the route', async () => {
+    const { prisma, service } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue({ id: 'route-id', routeStops: [{ deliveryStopId: 'stop-1' }], shopId: 'shop-id' });
+    const input = { actor: 'office', routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signals: ['DELIVERED' as const] };
+
+    await expect(service.setRouteEmailSelection({ ...input, deliveryStopIds: ['stop-from-another-route'] }))
+      .rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_SELECTION_STOP_INVALID' });
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+
+    await expect(service.setRouteEmailSelection({ ...input, deliveryStopIds: ['stop-1'] }))
+      .resolves.toMatchObject({ deliveryStopIds: ['stop-1'], signals: ['DELIVERED'], updatedBy: 'office' });
+    expect(prisma.$executeRaw).toHaveBeenCalledOnce();
+  });
+
   test('activates automatic delivery only through the consent-scoped command', async () => {
     const { prisma, service } = createHarness();
     const updatedAt = new Date('2026-08-31T07:00:00.000Z');
@@ -1728,6 +1742,7 @@ function createHarness(attempts?: {
   startManual(input: unknown): Promise<{ attemptId: string; correlationId: string }>;
 }) {
   const prisma = {
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $queryRaw: vi.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]),
     $transaction: vi.fn(),
     customerEmailManualDispatch: {

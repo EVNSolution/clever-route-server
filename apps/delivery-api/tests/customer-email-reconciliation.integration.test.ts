@@ -169,6 +169,50 @@ describe('customer email reconciliation PostgreSQL contract', () => {
       await prisma.$disconnect();
     }
   });
+
+  live('after automatic activation the outbox sends only Dispatch-selected facts and DSV customer messages', async () => {
+    assertDisposableDatabase();
+    const prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+    const activeShopId = '91000000-0000-4000-8000-000000000072';
+    const legacyFactId = '93000000-0000-4000-8000-000000000001';
+    const selectedFactId = '93000000-0000-4000-8000-000000000002';
+    const dsvFactId = '93000000-0000-4000-8000-000000000003';
+    try {
+      await prisma.shop.create({ data: {
+        appId: 'clever',
+        customerEmailSettings: { automatic: { enabled: true } },
+        id: activeShopId,
+        shopDomain: 'email-route-selection-72.invalid'
+      } });
+      const order = await prisma.order.create({ data: {
+        name: '#EMAIL-ROUTE-SELECTION',
+        rawPayload: {},
+        shopId: activeShopId,
+        shopifyOrderGid: `gid://shopify/Order/${activeShopId}`,
+        sourceOrderId: 'email-route-selection-order',
+        sourcePlatform: 'SHOPIFY'
+      } });
+      const base = { orderId: order.id, recipientEmailSnapshot: 'customer-72@invalid.test', shopId: activeShopId, status: 'QUEUED' as const };
+      await prisma.customerRouteNotificationFact.createMany({ data: [
+        // Queued by an admin stop transition while automatic email was still off.
+        { ...base, id: legacyFactId, metadata: { uiStatus: 'READY' }, nextAttemptAt: new Date('2026-07-28T08:00:00.000Z'), occurredAt: new Date('2026-07-28T08:00:00.000Z'), requestedUiStatus: 'READY', source: 'ADMIN_ROUTE_STOP_TRANSITION' },
+        { ...base, id: selectedFactId, metadata: { routeEmailSelected: true, signal: 'DELIVERED' }, nextAttemptAt: now, occurredAt: now, requestedUiStatus: 'COMPLETED', source: 'DRIVER_EVENT' },
+        { ...base, id: dsvFactId, metadata: { orderMessageId: 'dsv-message-72' }, nextAttemptAt: now, occurredAt: now, source: 'DSV_CUSTOMER_MESSAGE' }
+      ] });
+
+      const outbox = new PrismaCustomerDeliveryNotificationOutbox(prisma);
+      const claimed: string[] = [];
+      for (let job = await outbox.claimNext({ leaseMs: 60_000, now }); job !== null; job = await outbox.claimNext({ leaseMs: 60_000, now })) {
+        claimed.push(job.factId);
+      }
+
+      expect(claimed.sort()).toEqual([selectedFactId, dsvFactId].sort());
+      expect(await prisma.customerRouteNotificationFact.findUniqueOrThrow({ where: { id: legacyFactId } }))
+        .toMatchObject({ attemptCount: 0, leaseToken: null, status: 'QUEUED' });
+    } finally {
+      await prisma.$disconnect();
+    }
+  });
 });
 
 function inputFor(id: string): Parameters<CustomerEmailReconciliationService['dryRun']>[0] {

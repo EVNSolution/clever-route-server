@@ -737,6 +737,8 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'post', path: '/admin/route-plans/:routePlanId/cash-settlements' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/preview' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/customer-email/send' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/customer-email/selection' },
+    { method: 'put', path: '/admin/route-plans/:routePlanId/customer-email/selection' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/departure-time' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/driver' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/live-change' },
