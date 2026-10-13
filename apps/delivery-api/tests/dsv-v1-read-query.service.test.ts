@@ -434,6 +434,34 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(secondQueryText).toContain('ORDER BY LOWER("displayName") ASC, id ASC');
   });
 
+  test('shows destination addresses as base address plus detail without repeating leaked detail or postal code', async () => {
+    const rows = [
+      { address: '경기 안양시 동안구 흥안대로439번길30, 1층', detailAddress: '1층' },
+      { address: '경기 안양시 동안구 흥안대로439번길 30,1층', detailAddress: '1층' },
+      { address: '서울 강남구 테헤란로 508 6층 sung-won park 01035967677', detailAddress: '6층 sung-won park 01035967677' },
+      { address: '서울 강남구 학동로 501, 5층(청담동,삼화와이즈빌딩)', detailAddress: '5층(청담동, 삼화와이즈빌딩)', postalCode: '06074' },
+      { address: '서울시 강남구', detailAddress: '1층', postalCode: '06236' },
+    ];
+    const prisma = prismaMock({
+      $queryRaw: vi.fn(() => Promise.resolve(rows.map((normalizedAddress, index) => ({
+        displayName: `D${index}`,
+        id: `destination-${index}`,
+        normalizedAddress,
+        postalCode: null,
+      })))),
+    });
+
+    const result = await new PrismaDsvV1ReadQueryService(prisma as never).listDestinations(adminPrincipal());
+
+    expect(result.items.map((item) => item.address)).toEqual([
+      '경기 안양시 동안구 흥안대로439번길 30, 1층',
+      '경기 안양시 동안구 흥안대로439번길 30, 1층',
+      '서울 강남구 테헤란로 508, 6층 sung-won park 01035967677',
+      '서울 강남구 학동로 501, 5층(청담동, 삼화와이즈빌딩)',
+      '서울시 강남구, 1층',
+    ]);
+  });
+
   test('returns canonical destination details while grouping duplicate active identities before pagination', async () => {
     const changedAt = new Date('2026-09-07T01:00:00.000Z');
     const prisma = prismaMock({
@@ -475,7 +503,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       requiredArrivalTimeUpdatedAt: changedAt,
     }]);
     expect(queryText).toContain('WITH active_destinations AS');
-    expect(queryText).toContain('NORMALIZE(BTRIM(COALESCE(');
+    expect(queryText).toContain("REGEXP_REPLACE(NORMALIZE(COALESCE(");
     expect(queryText).toContain('COUNT(*) FILTER (WHERE "driverMemoUpdatedAt" IS NOT NULL) > 0');
     expect(queryText).toContain('GROUP BY "isStoreReviewData", name_key, address_key');
     expect(queryText).toContain('AND "mergedIntoProfileId" IS NULL');
