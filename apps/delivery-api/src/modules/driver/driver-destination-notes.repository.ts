@@ -255,7 +255,7 @@ function destinationAddress(value: unknown): { address: string; detailAddress: s
   };
 }
 
-function fromDriverDestinationNotes(notes: DriverDestinationNotes, id: string): DestinationNotesRecord {
+export function fromDriverDestinationNotes(notes: DriverDestinationNotes, id: string): DestinationNotesRecord {
   return {
     driverLunchEntryStatus: notes.lunchEntryStatus,
     driverLunchEntryStatusUpdatedAt: dateOrNull(notes.lunchEntryStatusUpdatedAt),
