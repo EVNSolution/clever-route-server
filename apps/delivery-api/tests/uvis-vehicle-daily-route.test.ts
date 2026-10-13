@@ -272,9 +272,11 @@ describe('buildUvisVehicleDailyRoute', () => {
     const slowHeartbeatDocument = trailDocument(slowFrozenHeartbeat, [
       [before, [126.8820994, 37.3693881]], [exitAnchor, witness],
     ], anchors.map((anchor, index) => ({ ...anchor, observedAt: slowFrozenHeartbeat[[0, 1, 5, 6, 7][index]!]!.observedAt })));
+    // One missed poll inside the frozen run is still fresh (staleAfter covers two polls), as on the
+    // 2026-10-12 Seobu underground pass; the tunnel is still inferred.
     expect(buildUvisVehicleDailyRoute(slowFrozenHeartbeat, slowHeartbeatDocument)?.bridges.find((item) =>
       item.reason === 'IMPLAUSIBLE_JUMP'
-    )?.inferredTunnel).toBeUndefined();
+    )?.inferredTunnel).toMatchObject({ corridorId: 'seoul-suam-suri-eastbound' });
 
     const nearWitness: [number, number] = [126.93565, 37.3764];
     const nearAnchor: [number, number] = [126.9356057, 37.3763838];
@@ -325,6 +327,38 @@ describe('buildUvisVehicleDailyRoute', () => {
       toObservedAt: samples[1]!.observedAt,
       reason: 'NO_MATCH',
     }]);
+  });
+
+  test('draws a stored routed gap in place of a raw chord and reports no bridge for it', () => {
+    const samples = [
+      sample('2026-09-29T02:00:00.000Z', 37, 127),
+      sample('2026-09-29T02:01:00.000Z', 37.006, 127),
+      sample('2026-09-29T02:02:00.000Z', 37.012, 127),
+    ];
+    const document = {
+      ...trailDocument(samples, [[[128, 38], [128, 38.001], [128, 38.002]]], [
+        { observedAt: samples[0]!.observedAt, lineIndex: 0, coordinateIndex: 0 },
+        { observedAt: samples[1]!.observedAt, lineIndex: 0, coordinateIndex: 1 },
+        { observedAt: samples[2]!.observedAt, lineIndex: 0, coordinateIndex: 2 },
+      ]),
+      routedGaps: [{
+        coordinates: [[127, 37], [127.001, 37.002], [127.001, 37.004], [127, 37.006]] as Array<[number, number]>,
+        fromObservedAt: samples[0]!.observedAt,
+        source: 'OSRM_GAP_ROUTE' as const,
+        toObservedAt: samples[1]!.observedAt,
+        type: 'LineString' as const,
+      }],
+    };
+
+    const route = buildUvisVehicleDailyRoute(samples, document);
+
+    expect(route?.coordinates).toEqual([[127, 37], [127.001, 37.002], [127.001, 37.004], [127, 37.006], [127, 37.012]]);
+    expect(route?.anchors).toEqual([
+      { observedAt: samples[0]!.observedAt, coordinateIndex: 0 },
+      { observedAt: samples[1]!.observedAt, coordinateIndex: 3 },
+      { observedAt: samples[2]!.observedAt, coordinateIndex: 4 },
+    ]);
+    expect(route?.bridges).toEqual([{ fromObservedAt: samples[1]!.observedAt, toObservedAt: samples[2]!.observedAt, reason: 'NO_MATCH' }]);
   });
 
   test('falls back to raw GPS when a matched anchor is distant or invalid', () => {

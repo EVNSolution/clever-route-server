@@ -1699,6 +1699,125 @@ describe('DSV v1 read routes', () => {
     }
   });
 
+  test('draws the customer trail from the admin daily route with inferred tunnels spliced in', async () => {
+    const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
+    try {
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1' })],
+        page: { hasMore: false },
+        serviceDate: '2026-08-09',
+        timezone: 'Asia/Seoul',
+      });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1', vehicleLatitude: 37.5, vehicleLongitude: 126.92 },
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-last', vehicleId: 'vehicle-1', vehicleLatitude: 37.5, vehicleLongitude: 126.92 },
+      ]);
+      queryService.listCustomerGpsTrailHistories.mockResolvedValueOnce([{
+        dailyRoute: {
+          anchors: [
+            { coordinateIndex: 0, observedAt: '2026-08-09T00:50:00.000Z' },
+            { coordinateIndex: 1, observedAt: '2026-08-09T01:00:00.000Z' },
+            { coordinateIndex: 2, observedAt: '2026-08-09T01:01:00.000Z' },
+            { coordinateIndex: 3, observedAt: '2026-08-09T01:02:00.000Z' },
+            { coordinateIndex: 4, observedAt: '2026-08-09T01:03:00.000Z' },
+          ],
+          bridges: [{
+            fromObservedAt: '2026-08-09T01:01:00.000Z',
+            inferredTunnel: {
+              confirmedByObservedAt: '2026-08-09T01:03:00.000Z',
+              coordinates: [[126.915, 37.5], [126.9165, 37.501], [126.918, 37.5]],
+              corridorId: 'osrm-route',
+              fromObservedAt: '2026-08-09T01:01:00.000Z',
+              source: 'OSRM_TUNNEL_ROUTE',
+              toObservedAt: '2026-08-09T01:02:00.000Z',
+              type: 'LineString',
+            },
+            reason: 'IMPLAUSIBLE_JUMP',
+            toObservedAt: '2026-08-09T01:02:00.000Z',
+          }],
+          coordinates: [[126.8, 37.5], [126.905, 37.5], [126.915, 37.5], [126.918, 37.5], [126.94, 37.5]],
+          sourceSampleCount: 5,
+          type: 'LineString',
+        },
+        serviceDate: '2026-08-09',
+        sessions: [{
+          completedAt: null,
+          completionEventId: null,
+          endpoint: { endedAt: '2026-08-09T01:03:00.000Z', reason: 'LAST_VALID_SAMPLE' },
+          restart: null,
+          routePlanId: 'route-plan-1',
+          segments: [{
+            roadMatchedGeometry: {
+              anchors: [
+                { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-09T01:00:00.000Z' },
+                { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-09T01:01:00.000Z' },
+                { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-09T01:02:00.000Z' },
+                { coordinateIndex: 1, lineIndex: 1, observedAt: '2026-08-09T01:03:00.000Z' },
+              ],
+              coordinates: [
+                [[126.905, 37.5], [126.915, 37.5]],
+                [[126.918, 37.5], [126.94, 37.5]],
+              ],
+              type: 'MultiLineString',
+            },
+            samples: [
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z', speedKph: 10 },
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:01:00.000Z', speedKph: 10 },
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.92, observedAt: '2026-08-09T01:02:00.000Z', speedKph: 10 },
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.94, observedAt: '2026-08-09T01:03:00.000Z', speedKph: 10 },
+            ],
+            trailMarker: { kind: 'START', latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z' },
+          }],
+          sessionIndex: 0,
+          startedAt: '2026-08-09T01:00:00.000Z',
+          startEventId: 'start-1',
+          startSource: 'ROUTE_STARTED',
+        }],
+        timezone: 'Asia/Seoul',
+        vehicleId: 'vehicle-1',
+      }]);
+      routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+        routeGeometry: null,
+        routeStopPoints: [
+          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 1, shopifyOrderGid: 'order-customer-first', snappedCoordinates: [126.91, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 2, shopifyOrderGid: 'order-customer-last', snappedCoordinates: [126.93, 37.5] }),
+        ],
+        stops: [
+          routeDetailStop({ deliveryStopId: 'customer-first-stop', orderId: 'order-customer-first', sequence: 1, status: 'DELIVERED' }),
+          routeDetailStop({ deliveryStopId: 'customer-last-stop', orderId: 'order-customer-last', sequence: 2, status: 'DELIVERED' }),
+        ],
+      }));
+
+      const response = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?includeGpsTrails=true&serviceDate=2026-08-09',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(expectDsvV1Metadata(response).data).toMatchObject({
+        routes: [],
+        trails: [{
+          segments: [{ coordinates: [[126.905, 37.5], [126.915, 37.5], [126.9165, 37.501], [126.918, 37.5], [126.93, 37.5]] }],
+          vehicleId: 'vehicle-1',
+        }],
+      });
+      const serialized = JSON.stringify(expectDsvV1Metadata(response).data);
+      expect(serialized).not.toContain('126.94');
+      expect(serialized).not.toContain('126.8,37.5');
+      expect(queryService.listCustomerGpsTrailHistories).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId, principalType: 'CUSTOMER_USER', shopId }),
+        '2026-08-09',
+        expect.arrayContaining([expect.objectContaining({ routePlanId: 'route-plan-1' })]),
+      );
+      expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
+      expect(JSON.stringify(expectDsvV1Metadata(response).data)).not.toContain('route-plan-1');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('runs the trail to the latest GPS point and starts the planned route there while deliveries are in progress', async () => {
     const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
     const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
