@@ -5,7 +5,7 @@ const PUBLIC_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/privacy';
 const DRIVER_LAST_UPDATED = '2026-09-07';
 const DRIVER_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/driver-app/privacy';
 const DRIVER_SUPPORT_URL = 'https://clever-route-api.cleversystem.ai/driver-app/support';
-const ROUTES_APP_LAST_UPDATED = '2026-10-02';
+const ROUTES_APP_LAST_UPDATED = '2026-10-13';
 const ROUTES_APP_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/routes-app/privacy';
 const ROUTES_APP_SUPPORT_URL = 'https://clever-route-api.cleversystem.ai/routes-app/support';
 const ROUTES_APP_ACCOUNT_DELETION_URL = 'https://clever-route-api.cleversystem.ai/routes-app/account-deletion';
@@ -367,12 +367,12 @@ function renderRoutesAppPrivacyPage(): string {
       <h2>2. 처리하는 정보와 목적 / Information and purposes</h2>
       <ul>
         <li><strong>계정 및 인증:</strong> 배송원 이름, 등록 전화번호, 계정 식별자, 로그인·세션 기록. 계정 확인, 접근 통제와 지원에 사용합니다.</li>
-        <li><strong>위치:</strong> 활성 배송 경로에서 앱이 전경 및 백그라운드 상태일 때 기기의 정밀 위치, 위치 시각과 정확도 정보를 처리합니다. 현재 위치 표시, 경로 진행, 도착 확인, 운영 안전과 분쟁 대응에 사용합니다.</li>
+        <li><strong>위치:</strong> 오늘 배차된 배송 경로가 앱에 표시된 때부터(출발 전 포함) 경로가 끝날 때까지, 앱이 전경 및 백그라운드 상태일 때 기기의 정밀 위치, 위치 시각과 정확도 정보를 처리합니다. 현재 위치 표시, 경로 진행, 도착 확인, 운영 안전과 분쟁 대응에 사용합니다.</li>
         <li><strong>배송 증빙:</strong> 증빙 사진, 서명, 수령인 이름, 배송 메모와 제출 시각을 배송 완료 또는 실패 확인에 사용합니다.</li>
         <li><strong>경로 및 정차 활동:</strong> 배정 경로, 정차 순서, 배송 상태, 시작·일시정지·도착·완료 이벤트와 재시도 기록을 업무 진행, 동기화와 운영 감사에 사용합니다.</li>
         <li><strong>알림과 기기:</strong> 푸시 토큰, 제한된 기기 식별자 또는 그 해시, 앱 버전과 플랫폼 정보를 배송 알림, 세션 보호, 중복 기기 감지와 장애 대응에 사용합니다.</li>
       </ul>
-      <p>위치 처리는 배송원이 명시적으로 시작한 활성 배송 경로의 수행에 필요한 범위로 제한합니다. 위치 권한은 기기 설정에서 변경할 수 있지만, 권한을 끄면 실시간 경로 기능이 제한될 수 있습니다.</p>
+      <p>위치 처리는 배송원에게 배차된 당일 배송 경로의 수행에 필요한 범위로 제한합니다. 출발 전 위치는 배송원이 앱의 안내에 동의한 뒤에만 처리하며, 출발지까지의 이동 경로를 활성 배송 경로 기록에 포함하기 위한 것입니다. 이때 기기 알림에 위치 공유 중임이 표시되고, 출발, 경로 해제, 배정 회수 또는 최대 20시간 뒤에 끝납니다. 위치 권한은 기기 설정에서 변경할 수 있지만, 권한을 끄면 실시간 경로 기능이 제한될 수 있습니다.</p>
       <h3>앱 동작 및 장애 진단</h3>
       <p>로그인한 기기에서 앱의 안정성 확인, 동기화 지연 및 오류 원인 분석과 지원을 위해 기술 진단 정보를 자동으로 처리합니다. 이 정보에는 앱·빌드 및 운영체제 버전, 앱 실행 상태, 네트워크와 위치 권한·서비스 상태, 위치 처리와 이벤트 전송 단계의 시각, 대기·재시도 상태 및 제한된 오류 사유가 포함됩니다. 진단은 활성 배송 경로가 없는 경우에도 동작할 수 있습니다. 별도의 진단 수집 해제 설정은 제공하지 않습니다.</p>
       <p>진단은 앱 설치 시 생성한 임의 식별자의 해시와 로그인 계정을 연결하여 처리하며, 필요한 경우 배정 경로·배송 이벤트 식별자와 연계합니다. 이 식별자는 하드웨어 일련번호나 광고 식별자가 아니지만 계정에 연결될 수 있으므로 완전한 익명 정보는 아닙니다. 진단용 데이터 본문에는 원시 위치 좌표, 배송 증빙 사진·서명·메모 본문, 이름·전화번호·주소, 비밀번호·PIN·인증 토큰 또는 자유 입력 오류 본문을 포함하지 않습니다. 기존 배송 위치와 증빙 처리는 이 방침의 해당 항목에 따릅니다.</p>
