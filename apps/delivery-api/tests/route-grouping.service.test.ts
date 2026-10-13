@@ -1270,7 +1270,12 @@ describe('route grouping contracts', () => {
     const oldSnapshot = { stops: [{ orderId: 'order-old' }] };
     const nextSnapshot = { stops: [{ orderId: 'order-old' }, { orderId: 'order-new' }] };
     const prisma = {
-      order: { updateMany: vi.fn(() => { calls.push('rebind'); return Promise.resolve({ count: 2 }); }) },
+      order: {
+        updateMany: vi.fn((...args: [{ data: { currentRouteVersionId: string | null } }]) => {
+          calls.push(args[0].data.currentRouteVersionId === null ? 'release-removed' : 'rebind');
+          return Promise.resolve({ count: 2 });
+        })
+      },
       routePlan: {
         updateMany: vi.fn((...args: [unknown]) => {
           void args;
@@ -1290,7 +1295,7 @@ describe('route grouping contracts', () => {
       routePlanId: 'route-id', shopId: 'shop-id', snapshot: nextSnapshot, version: 7
     })).resolves.toBe('child-next');
 
-    expect(calls).toEqual(['archive', 'create', 'clear-completion', 'rebind']);
+    expect(calls).toEqual(['archive', 'create', 'clear-completion', 'rebind', 'release-removed']);
     expect(oldSnapshot).toEqual({ stops: [{ orderId: 'order-old' }] });
     const archiveCall: unknown = prisma.routeGroupingChildVersion.updateMany.mock.calls[0]?.[0];
     const createCall: unknown = prisma.routeGroupingChildVersion.create.mock.calls[0]?.[0];
