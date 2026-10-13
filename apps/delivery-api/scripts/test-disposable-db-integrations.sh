@@ -25,11 +25,19 @@ if [[ "${CLEVER_RUN_DISPOSABLE_DB_TESTS:-}" != "1" ]]; then
   exit 2
 fi
 
+# CI runs the core and isolated shards on separate runners. Unset runs both.
+shard="${CLEVER_DISPOSABLE_DB_SHARD:-all}"
+case "$shard" in
+  all|core|isolated) ;;
+  *) echo "CLEVER_DISPOSABLE_DB_SHARD must be all, core or isolated: ${shard}" >&2; exit 2 ;;
+esac
+
 command -v docker >/dev/null 2>&1 || { echo 'docker is required.' >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo 'docker daemon is not available.' >&2; exit 1; }
 
 audit_suffix="$$-${RANDOM}"
 declare -a audit_containers=()
+declare -a pending_postgres=()
 
 cleanup() {
   local container_name
@@ -54,17 +62,51 @@ start_postgres() {
     --env "POSTGRES_PASSWORD=${database_password}" \
     postgres:17-bookworm >/dev/null
   audit_containers+=("$container_name")
+  pending_postgres+=("${container_name}|${database_user}|${database_name}")
+}
 
-  local attempt
-  for attempt in {1..60}; do
-    if [[ "$(docker exec "$container_name" psql -U "$database_user" -d "$database_name" -Atqc 'SELECT 1' 2>/dev/null || true)" == '1' ]]; then
-      return 0
-    fi
-    sleep 1
+# Started containers boot in parallel. The TCP check skips the image's
+# socket-only init server, which restarts once before accepting connections.
+wait_for_started_postgres() {
+  local entry container_name database_user database_name attempt
+  (( ${#pending_postgres[@]} > 0 )) || return 0
+  for entry in "${pending_postgres[@]}"; do
+    IFS='|' read -r container_name database_user database_name <<<"$entry"
+    for attempt in {1..60}; do
+      if [[ "$(docker exec "$container_name" psql -U "$database_user" -d "$database_name" -Atqc 'SELECT 1' -h 127.0.0.1 2>/dev/null || true)" == '1' ]]; then
+        continue 2
+      fi
+      sleep 1
+    done
+    echo "PostgreSQL did not become ready: ${container_name}" >&2
+    return 1
   done
+  pending_postgres=()
+}
 
-  echo "PostgreSQL did not become ready: ${container_name}" >&2
-  return 1
+# Each disposable database is independent, so migrations run concurrently.
+# A database's full migration log is printed only when it fails.
+migrate_databases() {
+  local log_dir index database failed=0
+  local -a urls=("$@") pids=()
+  log_dir="$(mktemp -d)"
+  for index in "${!urls[@]}"; do
+    DATABASE_URL="${urls[$index]}" npm run prisma:migrate:deploy >"${log_dir}/${index}.log" 2>&1 &
+    pids+=("$!")
+  done
+  for index in "${!urls[@]}"; do
+    database="${urls[$index]##*/}"
+    database="${database%%\?*}"
+    if wait "${pids[$index]}"; then
+      echo "Prisma migrate deploy: ${database} OK"
+    else
+      echo "Prisma migrate deploy failed: ${database}" >&2
+      cat "${log_dir}/${index}.log" >&2
+      failed=1
+    fi
+  done
+  rm -rf "$log_dir"
+  return "$failed"
 }
 
 g003_container="clever-api-audit-g003-${audit_suffix}"
@@ -92,6 +134,9 @@ driver_reset_url='postgresql://driver_password_reset:driver_password_reset@127.0
 completion_assistance_url='postgresql://cc295:cc295@127.0.0.1:55495/cc295_disposable?schema=public'
 private_driver_demo_url='postgresql://clever_demo:clever_demo@127.0.0.1:55496/clever_private_demo_test?schema=public'
 
+# ---- core shard: populated upgrades and shared-database integration groups ----
+if [[ "$shard" == all || "$shard" == core ]]; then
+
 start_postgres "$g003_container" 55433 clever_g003 clever_g003 clever_g003
 start_postgres "$g003_upgrade_container" 55434 clever_g003_upgrade clever_g003_upgrade clever_g003_upgrade
 start_postgres "$g002_container" 55488 clever_g002 clever_g002 clever_g002
@@ -103,8 +148,8 @@ start_postgres "$driver_route_order_container" 55467 clever_route_order clever_r
 start_postgres "$g006_container" 55490 clever_g006 clever_g006 clever_g006
 start_postgres "$driver_password_reset_container" 55494 driver_password_reset driver_password_reset driver_password_reset
 start_postgres "$completion_assistance_container" 55495 cc295_disposable cc295 cc295
-start_postgres "$private_driver_demo_container" 55496 clever_private_demo_test clever_demo clever_demo
 start_postgres "$deletion_upgrade_container" 55492 clever_deletion_upgrade clever_deletion_upgrade clever_deletion_upgrade
+wait_for_started_postgres
 
 docker exec -i "$deletion_upgrade_container" psql -v ON_ERROR_STOP=1 \
   -U clever_deletion_upgrade -d clever_deletion_upgrade <<'SQL'
@@ -310,9 +355,7 @@ g003_upgrade_manifest="$(docker exec "$g003_upgrade_container" psql -At -U cleve
 [[ "$(printf '%s\n' "$g003_upgrade_manifest" | wc -l | tr -d ' ')" == '2' ]] || { echo 'Missing per-shop G003 migration manifest' >&2; exit 1; }
 printf 'G003 populated migration upgrade: PASS\n%s\n' "$g003_upgrade_manifest"
 
-for database_url in "$g002_url" "$email_reconciliation_url" "$g003_url" "$g010_url" "$g005_url" "$driver_route_order_url" "$g006_url" "$driver_reset_url" "$completion_assistance_url" "$private_driver_demo_url"; do
-  DATABASE_URL="$database_url" npm run prisma:migrate:deploy
-done
+migrate_databases "$g002_url" "$email_reconciliation_url" "$g003_url" "$g010_url" "$g005_url" "$driver_route_order_url" "$g006_url" "$driver_reset_url" "$completion_assistance_url"
 
 G002_DATABASE_TARGET_CLASS='safe-local-g002-disposable' \
 DATABASE_URL="$g002_url" \
@@ -380,6 +423,15 @@ KFOOD_COMPLETION_DATABASE_URL="$completion_assistance_url" \
 KFOOD_COMPLETION_DATABASE_TARGET_CLASS='safe-local-kfood-completion-disposable' \
 npm test -- kfood-delivery-completion.integration.test.ts
 
+fi # core shard
+
+# ---- isolated shard: scripts and fixtures that own their databases ----
+if [[ "$shard" == all || "$shard" == isolated ]]; then
+
+start_postgres "$private_driver_demo_container" 55496 clever_private_demo_test clever_demo clever_demo
+wait_for_started_postgres
+migrate_databases "$private_driver_demo_url"
+
 # Independent synthetic KFood live-change database and notification provider.
 bash scripts/test-live-route-change-db.sh
 
@@ -396,3 +448,5 @@ done
 DSV_OPERATIONAL_DATABASE_TARGET_CLASS='safe-local-dsv-operational-disposable' \
 DSV_OPERATIONAL_INCLUDE_G003='0' \
 bash scripts/test-dsv-operational-disposable.sh
+
+fi # isolated shard

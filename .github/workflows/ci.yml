@@ -18,12 +18,28 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# One runner keeps checkout, Node setup, and dependency installation single-pass.
-# Deploys consume this exact-SHA result and never repeat CI-grade tests.
+# classify selects lanes from the changed files. Independent lanes run in
+# parallel. validate is the single verdict: every selected lane must succeed
+# and every unselected lane must be skipped. Deploys consume this exact-SHA
+# workflow result and never repeat CI-grade tests.
 jobs:
-  validate:
+  classify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    outputs:
+      changed_files_count: ${{ steps.classify.outputs.changed_files_count }}
+      web_changed: ${{ steps.classify.outputs.web_changed }}
+      api_changed: ${{ steps.classify.outputs.api_changed }}
+      customer_email_changed: ${{ steps.classify.outputs.customer_email_changed }}
+      deploy_changed: ${{ steps.classify.outputs.deploy_changed }}
+      workflow_changed: ${{ steps.classify.outputs.workflow_changed }}
+      critical_changed: ${{ steps.classify.outputs.critical_changed }}
+      full_required: ${{ steps.classify.outputs.full_required }}
+      dependency_changed: ${{ steps.classify.outputs.dependency_changed }}
+      web_artifact_required: ${{ steps.classify.outputs.web_artifact_required }}
+      api_test_profile: ${{ steps.classify.outputs.api_test_profile }}
+      run_api_static: ${{ steps.lanes.outputs.run_api_static }}
+      run_api_db: ${{ steps.lanes.outputs.run_api_db }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -32,13 +48,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/delivery-api/package-lock.json
-            apps/route-ops-web/package-lock.json
 
       - name: Detect changed files
-        id: files
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +86,48 @@ jobs:
           node scripts/ci/route-ops-change-classifier.mjs "${args[@]}" < changed-files.txt
           cat "$GITHUB_OUTPUT"
 
+      - name: Select validation lanes
+        id: lanes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FULL: ${{ steps.classify.outputs.full_required }}
+          API: ${{ steps.classify.outputs.api_changed }}
+          CUSTOMER_EMAIL: ${{ steps.classify.outputs.customer_email_changed }}
+          CRITICAL: ${{ steps.classify.outputs.critical_changed }}
+          API_TEST_PROFILE: ${{ steps.classify.outputs.api_test_profile }}
+        run: |
+          set -euo pipefail
+          run_api_static=false
+          run_api_db=false
+          if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$FULL" = true ] || [ "$API" = true ] || [ "$CUSTOMER_EMAIL" = true ]; then
+            run_api_static=true
+          fi
+          if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$FULL" = true ] \
+            || { [ "$API" = true ] && [ "$CRITICAL" = true ] && [ "$API_TEST_PROFILE" != route_geometry ]; }; then
+            run_api_db=true
+          fi
+          echo "run_api_static=$run_api_static" >> "$GITHUB_OUTPUT"
+          echo "run_api_db=$run_api_db" >> "$GITHUB_OUTPUT"
+          printf 'run_api_static=%s run_api_db=%s\n' "$run_api_static" "$run_api_db"
+
+  checks:
+    needs: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/delivery-api/package-lock.json
+            apps/route-ops-web/package-lock.json
+
       - name: Repository hygiene
         run: |
           node scripts/check-ignore-hygiene.mjs
@@ -82,13 +135,13 @@ jobs:
           tests/security/scan-secrets.test.sh
 
       - name: Workflow and classifier contracts
-        if: steps.classify.outputs.workflow_changed == 'true' || steps.classify.outputs.full_required == 'true'
+        if: needs.classify.outputs.workflow_changed == 'true' || needs.classify.outputs.full_required == 'true'
         run: |
           node tests/ci/github-actions-structure.test.mjs
           node tests/ci/route-ops-change-classifier.test.mjs
 
       - name: Release wrapper contracts
-        if: steps.classify.outputs.deploy_changed == 'true' || steps.classify.outputs.workflow_changed == 'true' || steps.classify.outputs.full_required == 'true'
+        if: needs.classify.outputs.deploy_changed == 'true' || needs.classify.outputs.workflow_changed == 'true' || needs.classify.outputs.full_required == 'true'
         run: |
           for script in \
             scripts/ssm-simple-route-ops-deploy.sh \
@@ -124,17 +177,15 @@ jobs:
 
       - name: Install Route Ops Web dependencies
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          steps.classify.outputs.web_changed == 'true' ||
-          (steps.classify.outputs.api_changed == 'true' && steps.classify.outputs.web_artifact_required == 'true')
+          needs.classify.outputs.full_required == 'true' ||
+          needs.classify.outputs.web_changed == 'true' ||
+          (needs.classify.outputs.api_changed == 'true' && needs.classify.outputs.web_artifact_required == 'true')
         run: npm --prefix apps/route-ops-web ci --no-audit --no-fund
 
       - name: Validate Route Ops Web
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          steps.classify.outputs.web_changed == 'true'
+          needs.classify.outputs.full_required == 'true' ||
+          needs.classify.outputs.web_changed == 'true'
         run: |
           npm --prefix apps/route-ops-web run lint
           npm --prefix apps/route-ops-web run typecheck
@@ -142,41 +193,28 @@ jobs:
 
       - name: Build Route Ops Web artifact for API tests
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          steps.classify.outputs.web_changed == 'true' ||
-          (steps.classify.outputs.api_changed == 'true' && steps.classify.outputs.web_artifact_required == 'true')
+          needs.classify.outputs.full_required == 'true' ||
+          needs.classify.outputs.web_changed == 'true' ||
+          (needs.classify.outputs.api_changed == 'true' && needs.classify.outputs.web_artifact_required == 'true')
         run: npm --prefix apps/route-ops-web run build
 
       - name: Install delivery API dependencies
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          steps.classify.outputs.api_changed == 'true' ||
-          steps.classify.outputs.customer_email_changed == 'true'
+        if: needs.classify.outputs.run_api_static == 'true'
         run: npm --prefix apps/delivery-api ci --no-audit --no-fund
 
       - name: Dependency security audit
-        if: steps.classify.outputs.dependency_changed == 'true'
+        if: needs.classify.outputs.dependency_changed == 'true'
         run: npm --prefix apps/delivery-api run audit:production
 
-      - name: Prepare delivery API
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          steps.classify.outputs.api_changed == 'true' ||
-          steps.classify.outputs.customer_email_changed == 'true'
-        run: |
-          npm --prefix apps/delivery-api run prisma:generate
-          npm --prefix apps/delivery-api run lint
-          npm --prefix apps/delivery-api run typecheck
+      - name: Generate Prisma client for API tests
+        if: needs.classify.outputs.run_api_static == 'true'
+        run: npm --prefix apps/delivery-api run prisma:generate
 
       - name: Route geometry test profile
         if: >-
-          steps.classify.outputs.api_changed == 'true' &&
-          steps.classify.outputs.api_test_profile == 'route_geometry' &&
-          steps.classify.outputs.full_required != 'true' &&
-          github.event_name != 'workflow_dispatch'
+          needs.classify.outputs.api_changed == 'true' &&
+          needs.classify.outputs.api_test_profile == 'route_geometry' &&
+          needs.classify.outputs.full_required != 'true'
         run: >
           npm --prefix apps/delivery-api run test --
           tests/osrm-route-geometry.client.test.ts
@@ -187,61 +225,166 @@ jobs:
 
       - name: Delivery API test profile
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          (steps.classify.outputs.api_changed == 'true' &&
-           steps.classify.outputs.api_test_profile != 'route_geometry')
+          needs.classify.outputs.full_required == 'true' ||
+          (needs.classify.outputs.api_changed == 'true' &&
+           needs.classify.outputs.api_test_profile != 'route_geometry')
         run: npm --prefix apps/delivery-api run test
-
-      - name: Disposable PostgreSQL test profile
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          (steps.classify.outputs.api_changed == 'true' &&
-           steps.classify.outputs.critical_changed == 'true' &&
-           steps.classify.outputs.api_test_profile != 'route_geometry')
-        env:
-          CLEVER_RUN_DISPOSABLE_DB_TESTS: "1"
-        run: |
-          npm --prefix apps/delivery-api run test:db:disposable
-          bash apps/delivery-api/scripts/test-original-observations-db.sh
-
-      - name: Build delivery API once
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          steps.classify.outputs.api_changed == 'true' ||
-          steps.classify.outputs.customer_email_changed == 'true'
-        run: npm --prefix apps/delivery-api run build
-
-      - name: Customer email reconciliation wrapper
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.customer_email_changed == 'true' ||
-          steps.classify.outputs.full_required == 'true'
-        run: tests/deploy/ssm-customer-email-reconciliation.test.sh
 
       - name: Compose config
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          steps.classify.outputs.full_required == 'true' ||
-          steps.classify.outputs.deploy_changed == 'true' ||
-          (steps.classify.outputs.api_changed == 'true' && steps.classify.outputs.critical_changed == 'true')
+          needs.classify.outputs.full_required == 'true' ||
+          needs.classify.outputs.deploy_changed == 'true' ||
+          (needs.classify.outputs.api_changed == 'true' && needs.classify.outputs.critical_changed == 'true')
         run: |
           cp apps/delivery-api/.env.example apps/delivery-api/.env
           npm run compose:config
           rm -f apps/delivery-api/.env
+
+  # Typed ESLint is the slowest static check, so it gets its own runner.
+  api_lint:
+    needs: classify
+    if: needs.classify.outputs.run_api_static == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/delivery-api/package-lock.json
+
+      - name: Install delivery API dependencies
+        run: npm --prefix apps/delivery-api ci --no-audit --no-fund
+
+      - name: Lint delivery API
+        run: |
+          npm --prefix apps/delivery-api run prisma:generate
+          npm --prefix apps/delivery-api run lint
+
+  api_static:
+    needs: classify
+    if: needs.classify.outputs.run_api_static == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/delivery-api/package-lock.json
+
+      - name: Install delivery API dependencies
+        run: npm --prefix apps/delivery-api ci --no-audit --no-fund
+
+      - name: Prepare delivery API
+        run: |
+          npm --prefix apps/delivery-api run prisma:generate
+          npm --prefix apps/delivery-api run typecheck
+
+      - name: Build delivery API once
+        run: npm --prefix apps/delivery-api run build
+
+      # Smokes the compiled dist CLI, so it must follow the build in this lane.
+      - name: Customer email reconciliation wrapper
+        if: >-
+          needs.classify.outputs.customer_email_changed == 'true' ||
+          needs.classify.outputs.full_required == 'true'
+        run: tests/deploy/ssm-customer-email-reconciliation.test.sh
+
+  # Two runners split the disposable PostgreSQL profile. Each shard keeps the
+  # serial test order it had inside the single script.
+  api_db:
+    needs: classify
+    if: needs.classify.outputs.run_api_db == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, isolated]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/delivery-api/package-lock.json
+
+      - name: Install delivery API dependencies
+        run: npm --prefix apps/delivery-api ci --no-audit --no-fund
+
+      - name: Generate Prisma client
+        run: npm --prefix apps/delivery-api run prisma:generate
+
+      - name: Disposable PostgreSQL test profile
+        env:
+          CLEVER_RUN_DISPOSABLE_DB_TESTS: "1"
+          CLEVER_DISPOSABLE_DB_SHARD: ${{ matrix.shard }}
+        run: |
+          npm --prefix apps/delivery-api run test:db:disposable
+          if [ "$CLEVER_DISPOSABLE_DB_SHARD" = isolated ]; then
+            bash apps/delivery-api/scripts/test-original-observations-db.sh
+          fi
+
+  validate:
+    # Runs after failed or timed-out lanes. A cancelled run is never a
+    # successful run, so the deploy gate still refuses it.
+    if: ${{ !cancelled() }}
+    needs: [classify, checks, api_lint, api_static, api_db]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected lane to pass
+        shell: bash
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          API_LINT_RESULT: ${{ needs.api_lint.result }}
+          API_STATIC_RESULT: ${{ needs.api_static.result }}
+          API_DB_RESULT: ${{ needs.api_db.result }}
+          RUN_API_STATIC: ${{ needs.classify.outputs.run_api_static }}
+          RUN_API_DB: ${{ needs.classify.outputs.run_api_db }}
+        run: |
+          set -euo pipefail
+          failed=0
+          expect() {
+            local lane="$1" result="$2" selected="$3" want=skipped
+            if [ "$selected" = true ]; then want=success; fi
+            printf '%s: %s (expected %s)\n' "$lane" "$result" "$want"
+            if [ "$result" != "$want" ]; then
+              echo "::error::$lane finished as $result; expected $want"
+              failed=1
+            fi
+          }
+          expect classify "$CLASSIFY_RESULT" true
+          expect checks "$CHECKS_RESULT" true
+          expect api_lint "$API_LINT_RESULT" "$RUN_API_STATIC"
+          expect api_static "$API_STATIC_RESULT" "$RUN_API_STATIC"
+          expect api_db "$API_DB_RESULT" "$RUN_API_DB"
+          exit "$failed"
 
       - name: Validation summary
         if: always()
         run: |
           {
             echo "### CI profile"
-            echo "- changed files: ${{ steps.classify.outputs.changed_files_count }}"
-            echo "- web: ${{ steps.classify.outputs.web_changed }}"
-            echo "- api: ${{ steps.classify.outputs.api_changed }}"
-            echo "- customer email: ${{ steps.classify.outputs.customer_email_changed }}"
-            echo "- deploy: ${{ steps.classify.outputs.deploy_changed }}"
-            echo "- full: ${{ steps.classify.outputs.full_required }}"
-            echo "- API tests: ${{ steps.classify.outputs.api_test_profile }}"
+            echo "- changed files: ${{ needs.classify.outputs.changed_files_count }}"
+            echo "- web: ${{ needs.classify.outputs.web_changed }}"
+            echo "- api: ${{ needs.classify.outputs.api_changed }}"
+            echo "- customer email: ${{ needs.classify.outputs.customer_email_changed }}"
+            echo "- deploy: ${{ needs.classify.outputs.deploy_changed }}"
+            echo "- full: ${{ needs.classify.outputs.full_required }}"
+            echo "- API tests: ${{ needs.classify.outputs.api_test_profile }}"
+            echo "- lanes: checks=${{ needs.checks.result }} api_lint=${{ needs.api_lint.result }} api_static=${{ needs.api_static.result }} api_db=${{ needs.api_db.result }}"
           } >> "$GITHUB_STEP_SUMMARY"
