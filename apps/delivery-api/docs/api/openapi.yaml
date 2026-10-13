@@ -2985,7 +2985,7 @@ paths:
     post:
       tags: [Shopify Embedded Admin]
       summary: Preview where a custom stop address will be placed
-      description: Geocodes the address with the same geocoder and input mapping as custom stop create and returns `data.check` (`addressLabel`, `latitude`, `longitude`, `postalCode` or null). Persists nothing and ignores caller-supplied coordinates. Requires a non-empty address1 and a two-letter countryCode.
+      description: Geocodes the address with the same geocoder and input mapping as custom stop create and returns `data.check` (`matchedAddress` or null, `latitude`, `longitude`, `postalCode` or null). Persists nothing and ignores caller-supplied coordinates. Requires a non-empty address1 and a two-letter countryCode.
       operationId: checkAdminRouteGroupCustomStopAddress
       x-clever-audience: shopify-embedded-admin
       x-side-effect: read

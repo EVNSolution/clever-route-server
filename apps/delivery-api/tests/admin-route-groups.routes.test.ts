@@ -406,7 +406,8 @@ describe('Admin route group routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
-        data: { check: { addressLabel: '123 Main St, Toronto, ON', latitude: 43.7, longitude: -79.4, postalCode: null } },
+        // The geocoder's addressLabel is only the query shape; the matched place text is its rawLabel.
+        data: { check: { latitude: 43.7, longitude: -79.4, matchedAddress: '123 Main St, Toronto, ON', postalCode: null } },
         error: null
       });
       expect(geocode).toHaveBeenCalledWith({
