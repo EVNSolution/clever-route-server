@@ -134,9 +134,11 @@ export async function applyDestinationMerge(tx: MergeTx, group: DestinationMerge
     tx.dsvDispatchImportRow.updateMany({ data, where }),
     tx.destinationTip.updateMany({ data, where })
   ]);
+  // Rows merged earlier into one of these ids follow them to the new survivor,
+  // so every merge chain stays one step long.
   await tx.deliveryCustomerProfile.updateMany({
     data: { mergedIntoProfileId: group.survivorId },
-    where: { id: { in: group.mergedIds }, shopId: group.shopId }
+    where: { OR: [{ id: { in: group.mergedIds } }, { mergedIntoProfileId: { in: group.mergedIds } }], shopId: group.shopId }
   });
   const { id, ...notes } = fromDriverDestinationNotes(group.notes, group.survivorId);
   await tx.deliveryCustomerProfile.update({ data: notes, where: { id } });

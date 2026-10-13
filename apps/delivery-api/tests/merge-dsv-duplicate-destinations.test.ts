@@ -125,7 +125,8 @@ describe('runDestinationMergeRepair', () => {
     expect(prisma.dsvDispatchImportRow.updateMany).toHaveBeenCalledWith(repoint);
     expect(prisma.destinationTip.updateMany).toHaveBeenCalledWith(repoint);
     expect(prisma.deliveryCustomerProfile.updateMany).toHaveBeenCalledWith({
-      data: { mergedIntoProfileId: survivorId }, where: { id: { in: [duplicateId] }, shopId }
+      data: { mergedIntoProfileId: survivorId },
+      where: { OR: [{ id: { in: [duplicateId] } }, { mergedIntoProfileId: { in: [duplicateId] } }], shopId }
     });
     expect(prisma.deliveryCustomerProfile.update.mock.calls[0]?.[0]).toMatchObject({
       data: { driverMemo: '후문 하차', driverMemoUpdatedAt: new Date('2026-10-01T00:00:00.000Z'), driverOpenTime: null },
