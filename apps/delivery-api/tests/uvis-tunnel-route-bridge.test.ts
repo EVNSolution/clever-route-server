@@ -271,7 +271,8 @@ describe('routed gap bridge', () => {
     const [entry, exit] = gapRouteWaypoints(signature);
     expect(inferRoutedGapBridge(signature, straightRoute(entry.coordinate, exit.coordinate, 20, 0.02))).toBeNull();
     expect(inferRoutedGapBridge(signature, straightRoute([entry.coordinate[0] + 0.002, entry.coordinate[1]], exit.coordinate))).toBeNull();
-    const near = { ...samples[2]!, latitude: samples[1]!.latitude - 0.003, longitude: samples[1]!.longitude };
+    // 0.0008 degrees of latitude is about 90 m: below the 100 m floor, a chord is stop jitter.
+    const near = { ...samples[2]!, latitude: samples[1]!.latitude - 0.0008, longitude: samples[1]!.longitude };
     const short = { ...signature, to: near };
     expect(inferRoutedGapBridge(short, straightRoute(entry.coordinate, [near.longitude, near.latitude]))).toBeNull();
   });

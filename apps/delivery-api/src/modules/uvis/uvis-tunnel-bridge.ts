@@ -50,7 +50,12 @@ export type GapRouteSignature = {
   to: TunnelSample;
 };
 
-export const ROUTED_GAP_MIN_METERS = 500;
+// Below 100 m a chord is stop jitter, not a missed road. Under 500 m a short chord gets a tight detour
+// cap: the long-chord cap (1.5x + 300 m) would let a 100 m chord carry a 450 m loop around a block.
+export const ROUTED_GAP_MIN_METERS = 100;
+const SHORT_ROUTED_GAP_METERS = 500;
+const SHORT_GAP_MAX_ROUTE_RATIO = 1.3;
+const SHORT_GAP_MAX_EXTRA_METERS = 50;
 
 export type InferredTunnelBridge = {
   confirmedByObservedAt: string;
@@ -160,15 +165,15 @@ export function inferRoutedGapBridge(
     exitIndex < 1 || nearestExitMeters > 60
     || directMeters < ROUTED_GAP_MIN_METERS
     || exitRoadMeters < directMeters * 0.95
-    || exitRoadMeters > directMeters * 1.5 + 300
+    || exitRoadMeters > (directMeters < SHORT_ROUTED_GAP_METERS
+      ? directMeters * SHORT_GAP_MAX_ROUTE_RATIO + SHORT_GAP_MAX_EXTRA_METERS
+      : directMeters * 1.5 + 300)
     || elapsedSeconds <= 0 || exitRoadMeters / elapsedSeconds > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
   ) return null;
+  // Ends stay on the road, like matched-road anchors: pinning them to the raw fixes (5-15 m off the
+  // centreline while driving) put a visible zigzag at every 60-second boundary once short chords were routed.
   return {
-    coordinates: deduplicate([
-      [from.longitude, from.latitude],
-      ...route.coordinates.slice(0, exitIndex + 1),
-      [to.longitude, to.latitude],
-    ]),
+    coordinates: deduplicate(route.coordinates.slice(0, exitIndex + 1)),
     fromObservedAt: from.observedAt,
     source: 'OSRM_GAP_ROUTE',
     toObservedAt: to.observedAt,

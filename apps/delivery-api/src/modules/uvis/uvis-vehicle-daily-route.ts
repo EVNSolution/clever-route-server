@@ -3,6 +3,7 @@ import {
   type UvisVehicleTrailDocumentV1,
 } from './uvis-vehicle-trail-materializer.js';
 import {
+  distanceMeters,
   foldFrozenFixRuns,
   hasImplausibleGpsJump,
   impliedSpeedMetersPerSecond,
@@ -73,6 +74,14 @@ export function buildUvisVehicleDailyRoute(
     const currentTrusted = trustedAnchors.get(current.observedAt);
     const implausibleJump = hasImplausibleGpsJump(previous, current);
     const bridge = toBridge(previous, current);
+    // A stopped vehicle's fix wanders a few metres each poll. Drawing every wander as a step zigzags across
+    // the road, so a stop stays at the coordinate it was first drawn at (same rule as the stable-stop
+    // anchors of matched roads). Only when the road match did not already place both fixes.
+    if (bridge.reason === 'NO_MATCH' && isStableStop(previous, current)
+      && !(previousTrusted !== undefined && currentTrusted !== undefined)) {
+      anchors.push({ observedAt: current.observedAt, coordinateIndex: anchors.at(-1)!.coordinateIndex });
+      continue;
+    }
     // Reviewed corridors and stored tunnel routes decide first, for a folded GPS loss as for an impossible jump.
     const tunnel = previous.frozenGap !== undefined || bridge.reason === 'IMPLAUSIBLE_JUMP'
       ? tunnelFor(prepared, index, trustedAnchors, trailDocument)
@@ -109,10 +118,14 @@ export function buildUvisVehicleDailyRoute(
       }
     } else if (tunnel === null && (routedGap = routedGapFor(trailDocument, previous, current)) !== undefined) {
       // The engine's route between the two fixes replaces the raw chord; no bridge is reported.
+      // The anchor sits on the route's end, on the road, as a matched-road anchor would.
+      const rangeStart = coordinates.length;
       for (const coordinate of routedGap.coordinates) {
         if (isValidCoordinate(coordinate)) appendCoordinate(coordinates, coordinate);
       }
-      coordinateIndex = appendCoordinate(coordinates, readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current));
+      coordinateIndex = coordinates.length > rangeStart
+        ? coordinates.length - 1
+        : appendCoordinate(coordinates, readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current));
     } else {
       const endpoint = implausibleJump || tunnel !== null
         ? rawCoordinate(current)
@@ -157,6 +170,13 @@ function prepareSamples(samples: DailyRouteSample[]): PreparedSample[] {
   }
   prepared.push(chronological.at(-1)!);
   return foldFrozenFixRuns(prepared);
+}
+
+// Same stop evidence as the materializer's stable-stop interval: both fixes at rest, within 30 m.
+function isStableStop(previous: PreparedSample, current: PreparedSample): boolean {
+  return (previous.speedKph ?? Number.POSITIVE_INFINITY) <= 1
+    && (current.speedKph ?? Number.POSITIVE_INFINITY) <= 1
+    && distanceMeters(previous, current) <= 30;
 }
 
 function isIsolatedGpsJump(previous: PreparedSample, current: PreparedSample, next: PreparedSample): boolean {
