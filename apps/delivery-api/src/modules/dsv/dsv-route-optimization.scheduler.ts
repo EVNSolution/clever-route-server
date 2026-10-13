@@ -112,8 +112,9 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
         routePlanId: pending.routePlanId,
         shopDomain: pending.shopDomain,
       });
-      if (!isAssignedReadyRoute(detail)) return;
-      if (detail.stops.length === 1) {
+      if (!isAssignedOpenRoute(detail)) return;
+      // A started route is never optimized again; it only gets the legs and ETA of its new stops.
+      if (detail.routePlan.status === 'IN_PROGRESS' || detail.stops.length === 1) {
         await this.refreshGeometry(pending);
         return;
       }
@@ -161,7 +162,7 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
       routePlanId: pending.routePlanId,
       shopDomain: pending.shopDomain,
     });
-    if (!isAssignedReadyRoute(latest)) return;
+    if (!isAssignedOpenRoute(latest)) return;
     await this.services.routePlanService.refreshRouteGeometryForRoutePlan({
       routePlanId: pending.routePlanId,
       shopDomain: pending.shopDomain,
@@ -183,11 +184,11 @@ export class DsvRouteOptimizationScheduler implements DsvRouteOptimizationSchedu
   }
 }
 
-function isAssignedReadyRoute(
+function isAssignedOpenRoute(
   detail: Awaited<ReturnType<RoutePlanService['getRoutePlanDetail']>>,
 ): detail is NonNullable<typeof detail> {
   return detail !== null
-    && detail.routePlan.status === 'READY'
+    && (detail.routePlan.status === 'READY' || detail.routePlan.status === 'IN_PROGRESS')
     && detail.routePlan.driverId !== null
     && detail.routePlan.driverId !== undefined
     && detail.stops.length > 0;

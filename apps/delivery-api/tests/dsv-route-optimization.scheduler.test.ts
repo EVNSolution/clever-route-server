@@ -185,7 +185,10 @@ describe('DsvRouteOptimizationScheduler', () => {
     },
   );
 
-  test.each(['IN_PROGRESS', 'COMPLETED'])('never optimizes or refreshes an assigned %s route', async (status) => {
+  test.each([
+    ['IN_PROGRESS', 1],
+    ['COMPLETED', 0],
+  ])('never optimizes an assigned %s route and refreshes its ETA only while it runs', async (status, refreshes) => {
     vi.useFakeTimers();
     const detail = routeDetail();
     detail.routePlan.status = status;
@@ -213,7 +216,7 @@ describe('DsvRouteOptimizationScheduler', () => {
 
     expect(createJob).not.toHaveBeenCalled();
     expect(optimizeStopOrder).not.toHaveBeenCalled();
-    expect(refreshRouteGeometryForRoutePlan).not.toHaveBeenCalled();
+    expect(refreshRouteGeometryForRoutePlan).toHaveBeenCalledTimes(refreshes);
   });
 
   test('skips empty and unassigned routes without refreshing geometry or creating jobs', async () => {
