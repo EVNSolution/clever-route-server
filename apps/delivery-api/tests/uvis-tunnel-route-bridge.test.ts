@@ -6,6 +6,7 @@ import { OsrmRouteTrackingRoadMatchProvider } from '../src/modules/route-trackin
 import { findTunnelSignature, gapRouteWaypoints, inferRoutedGapBridge, inferRoutedTunnelBridge, tunnelRouteWaypoints } from '../src/modules/uvis/uvis-tunnel-bridge.js';
 import { buildUvisVehicleDailyRoute } from '../src/modules/uvis/uvis-vehicle-daily-route.js';
 import { PrismaUvisVehicleTrailMaterializationRepository } from '../src/modules/uvis/uvis-vehicle-trail-materializer.js';
+import { foldFrozenFixRuns } from '../src/modules/uvis/uvis-vehicle-trail-evidence.js';
 
 // Production pass of 서울86바3800 westbound through the Jeongneung/Hongjimun tunnels on 2026-10-12 03:43 KST.
 // The telematics unit repeats the entry fix with speed 255 until the next fresh fix after the tunnels.
@@ -56,6 +57,17 @@ describe('routed tunnel bridge', () => {
       source: 'OSRM_TUNNEL_ROUTE',
       toObservedAt: '2026-10-11T18:47:47.000Z',
     });
+  });
+
+  test('folds the speed-255 run with the shared function and finds the same signature folded or raw', () => {
+    const folded = foldFrozenFixRuns(samples());
+    expect(folded).toHaveLength(PASS.length - 3);
+    expect(folded.find((sample) => sample.frozenGap !== undefined)).toMatchObject({
+      frozenGap: { continuous: true, lastObservedAt: '2026-10-11T18:46:47.000Z', noFixRepeats: 3, repeats: 4 },
+      observedAt: '2026-10-11T18:43:47.000Z',
+    });
+    const foldedExitIndex = folded.findIndex((sample) => sample.observedAt === '2026-10-11T18:47:47.000Z');
+    expect(findTunnelSignature(folded, foldedExitIndex)).toEqual(findTunnelSignature(samples(), EXIT_INDEX));
   });
 
   test('asks for the route with the bearings the vehicle was driving', () => {

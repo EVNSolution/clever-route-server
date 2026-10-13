@@ -1556,7 +1556,8 @@ describe('PrismaDsvV1ReadQueryService', () => {
         serviceDate: '2026-09-30',
         vehicleId: 'vehicle-a',
       });
-      return result.dailyRoute?.bridges.find((bridge) => bridge.fromObservedAt === times[4]);
+      // The repeated fixes fold into the first one, so the bridge to the exit fix is found by its end.
+      return result.dailyRoute?.bridges.find((bridge) => bridge.toObservedAt === times[5]);
     };
 
     expect((await readBridge())?.inferredTunnel).toBeUndefined();

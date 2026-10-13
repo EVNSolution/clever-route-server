@@ -3,9 +3,11 @@ import {
   type UvisVehicleTrailDocumentV1,
 } from './uvis-vehicle-trail-materializer.js';
 import {
+  foldFrozenFixRuns,
   hasImplausibleGpsJump,
   impliedSpeedMetersPerSecond,
   MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND,
+  type FrozenFixGap,
 } from './uvis-vehicle-trail-evidence.js';
 import { inferReviewedTunnelBridge, type InferredTunnelBridge, type RoutedGapBridge } from './uvis-tunnel-bridge.js';
 
@@ -19,6 +21,8 @@ type DailyRouteSample = {
 };
 
 type PreparedSample = DailyRouteSample & {
+  // Set on the first fix of a folded run of repeated coordinates: one GPS gap up to the next fix.
+  frozenGap?: FrozenFixGap;
   observedAtMs: number;
 };
 
@@ -68,7 +72,12 @@ export function buildUvisVehicleDailyRoute(
     const previousTrusted = trustedAnchors.get(previous.observedAt);
     const currentTrusted = trustedAnchors.get(current.observedAt);
     const implausibleJump = hasImplausibleGpsJump(previous, current);
-    const followsMatchedRoad = !implausibleJump && previousTrusted !== undefined
+    const bridge = toBridge(previous, current);
+    // Reviewed corridors and stored tunnel routes decide first, for a folded GPS loss as for an impossible jump.
+    const tunnel = previous.frozenGap !== undefined || bridge.reason === 'IMPLAUSIBLE_JUMP'
+      ? tunnelFor(prepared, index, trustedAnchors, trailDocument)
+      : null;
+    const followsMatchedRoad = tunnel === null && !implausibleJump && previousTrusted !== undefined
       && currentTrusted !== undefined
       && previousTrusted.segmentIndex === currentTrusted.segmentIndex
       && previousTrusted.lineIndex === currentTrusted.lineIndex
@@ -96,40 +105,21 @@ export function buildUvisVehicleDailyRoute(
       else {
         coordinates.splice(rangeStart);
         coordinateIndex = appendCoordinate(coordinates, rawCoordinate(current));
-        bridges.push(toBridge(previous, current));
+        bridges.push(bridge);
       }
-    } else if ((routedGap = routedGapFor(trailDocument, previous, current)) !== undefined) {
+    } else if (tunnel === null && (routedGap = routedGapFor(trailDocument, previous, current)) !== undefined) {
       // The engine's route between the two fixes replaces the raw chord; no bridge is reported.
       for (const coordinate of routedGap.coordinates) {
         if (isValidCoordinate(coordinate)) appendCoordinate(coordinates, coordinate);
       }
       coordinateIndex = appendCoordinate(coordinates, readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current));
     } else {
-      const endpoint = implausibleJump ? rawCoordinate(current) : readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current);
+      const endpoint = implausibleJump || tunnel !== null
+        ? rawCoordinate(current)
+        : readAnchorCoordinate(currentTrusted) ?? rawCoordinate(current);
       coordinateIndex = appendCoordinate(coordinates, endpoint);
-      const bridge = toBridge(previous, current);
-      const inferredTunnel = bridge.reason === 'IMPLAUSIBLE_JUMP' ? inferReviewedTunnelBridge(
-        prepared,
-        index,
-        (sample) => {
-          const anchor = trustedAnchors.get(sample.observedAt);
-          const coordinate = readAnchorCoordinate(anchor);
-          return anchor === undefined || coordinate === null ? null : {
-            coordinate,
-            coordinateIndex: anchor.coordinateIndex,
-            lineIndex: anchor.lineIndex,
-            segmentIndex: anchor.segmentIndex,
-          };
-        },
-      ) : null;
-      // Curated corridors win; otherwise use the routed bridge the materializer stored for this exit.
-      const routedTunnel = inferredTunnel !== null || bridge.reason !== 'IMPLAUSIBLE_JUMP'
-        ? undefined
-        : trailDocument?.tunnelBridges?.find((candidate) => (
-          candidate.toObservedAt === current.observedAt && candidate.fromObservedAt <= previous.observedAt
-        ));
-      const tunnel = inferredTunnel ?? routedTunnel ?? null;
-      bridges.push(tunnel === null ? bridge : { ...bridge, inferredTunnel: tunnel });
+      // Consumers accept an inferred tunnel only on an IMPLAUSIBLE_JUMP bridge between adjacent anchors.
+      bridges.push(tunnel === null ? bridge : { ...bridge, reason: 'IMPLAUSIBLE_JUMP', inferredTunnel: tunnel });
     }
     anchors.push({ observedAt: current.observedAt, coordinateIndex });
   }
@@ -166,7 +156,7 @@ function prepareSamples(samples: DailyRouteSample[]): PreparedSample[] {
     if (!isIsolatedGpsJump(previous, current, next)) prepared.push(current);
   }
   prepared.push(chronological.at(-1)!);
-  return prepared;
+  return foldFrozenFixRuns(prepared);
 }
 
 function isIsolatedGpsJump(previous: PreparedSample, current: PreparedSample, next: PreparedSample): boolean {
@@ -222,6 +212,31 @@ function distinctCoordinateCount(samples: DailyRouteSample[]): number {
   return new Set(samples.map((sample) => `${sample.longitude},${sample.latitude}`)).size;
 }
 
+function tunnelFor(
+  prepared: PreparedSample[],
+  index: number,
+  trustedAnchors: Map<string, TrustedAnchor>,
+  trailDocument: UvisVehicleTrailDocumentV1 | null,
+): InferredTunnelBridge | null {
+  const inferred = inferReviewedTunnelBridge(prepared, index, (sample) => {
+    const anchor = trustedAnchors.get(sample.observedAt);
+    const coordinate = readAnchorCoordinate(anchor);
+    return anchor === undefined || coordinate === null ? null : {
+      coordinate,
+      coordinateIndex: anchor.coordinateIndex,
+      lineIndex: anchor.lineIndex,
+      segmentIndex: anchor.segmentIndex,
+    };
+  });
+  if (inferred !== null) return inferred;
+  // Curated corridors win; otherwise use the routed bridge the materializer stored for this exit.
+  const previous = prepared[index - 1]!;
+  const current = prepared[index]!;
+  return trailDocument?.tunnelBridges?.find((candidate) => (
+    candidate.toObservedAt === current.observedAt && candidate.fromObservedAt <= previous.observedAt
+  )) ?? null;
+}
+
 function routedGapFor(
   trailDocument: UvisVehicleTrailDocumentV1 | null,
   previous: PreparedSample,
@@ -241,7 +256,8 @@ function toBridge(
   return {
     fromObservedAt: previous.observedAt,
     toObservedAt: current.observedAt,
-    reason: Number.isFinite(staleAfterMs) && staleAfterMs < current.observedAtMs
+    // A folded run is a GPS loss from its first repeated fix to the recovery, however fast the 60-second tail.
+    reason: previous.frozenGap !== undefined || (Number.isFinite(staleAfterMs) && staleAfterMs < current.observedAtMs)
       ? 'GPS_GAP'
       : hasImplausibleGpsJump(previous, current) ? 'IMPLAUSIBLE_JUMP' : 'NO_MATCH',
   };
