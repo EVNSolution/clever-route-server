@@ -52,7 +52,7 @@ const reviewedAssignmentPointerInventory = [
   'modules/driver/private-driver-demo-seed.ts:order.updateMany:1',
   'modules/dsv/dsv-assignment-command.service.ts:order.updateMany:3',
   'modules/dsv/dsv-dispatch-import.service.ts:order.updateMany:1',
-  'modules/route-grouping/route-grouping.service.ts:order.updateMany:2'
+  'modules/route-grouping/route-grouping.service.ts:order.updateMany:3'
 ];
 
 describe('route membership mutation authority', () => {
