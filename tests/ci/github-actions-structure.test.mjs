@@ -53,6 +53,12 @@ assert.equal(count(jobs.api_static, /npm --prefix apps\/delivery-api run lint/g)
 assert.equal(count(ci, /npm --prefix apps\/delivery-api run lint/g), 1, 'API lint must run once');
 assert.equal(count(ci, /npm --prefix apps\/delivery-api run typecheck/g), 1, 'API typecheck must run once');
 assert.equal(count(ci, /npm --prefix apps\/delivery-api run build/g), 1, 'API build must run once');
+assert.equal(count(ci, /ssm-customer-email-reconciliation\.test\.sh/g), 1, 'customer email wrapper must run once');
+assert.match(
+  jobs.api_static,
+  /npm --prefix apps\/delivery-api run build[\s\S]*tests\/deploy\/ssm-customer-email-reconciliation\.test\.sh/u,
+  'customer email wrapper smokes the compiled CLI, so it must follow the API build in api_static',
+);
 assert.equal(count(jobs.api_db, /run test:db:disposable/g), 1, 'disposable DB tests belong to api_db');
 assert.equal(count(ci, /run test:db:disposable/g), 1, 'disposable DB tests must run once');
 assert.equal(count(jobs.api_static, apiPackageTest) + count(jobs.api_db, apiPackageTest), 0, 'API package tests belong to checks');

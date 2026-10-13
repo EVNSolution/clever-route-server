@@ -230,12 +230,6 @@ jobs:
            needs.classify.outputs.api_test_profile != 'route_geometry')
         run: npm --prefix apps/delivery-api run test
 
-      - name: Customer email reconciliation wrapper
-        if: >-
-          needs.classify.outputs.customer_email_changed == 'true' ||
-          needs.classify.outputs.full_required == 'true'
-        run: tests/deploy/ssm-customer-email-reconciliation.test.sh
-
       - name: Compose config
         if: >-
           needs.classify.outputs.full_required == 'true' ||
@@ -273,6 +267,13 @@ jobs:
 
       - name: Build delivery API once
         run: npm --prefix apps/delivery-api run build
+
+      # Smokes the compiled dist CLI, so it must follow the build in this lane.
+      - name: Customer email reconciliation wrapper
+        if: >-
+          needs.classify.outputs.customer_email_changed == 'true' ||
+          needs.classify.outputs.full_required == 'true'
+        run: tests/deploy/ssm-customer-email-reconciliation.test.sh
 
   api_db:
     needs: classify

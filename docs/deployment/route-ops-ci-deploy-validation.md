@@ -16,7 +16,7 @@ GitHub Actions에는 두 개의 진입점만 사용한다.
 | --- | --- | --- |
 | `classify` | 항상 | 변경 파일 분류, lane 선택 (`run_api_static`, `run_api_db`) |
 | `checks` | 항상 | hygiene, workflow·배포 wrapper 계약, Web 검증·build, API vitest, compose config |
-| `api_static` | API 또는 customer email 변경, full | Prisma generate, API lint, typecheck, build |
+| `api_static` | API 또는 customer email 변경, full | Prisma generate, API lint, typecheck, build, build 결과를 쓰는 customer email wrapper |
 | `api_db` | 핵심 API 변경, full | disposable PostgreSQL 통합 테스트 |
 | `validate` | 취소되지 않은 모든 실행 (`!cancelled()`) | 최종 판정 |
 
