@@ -44,6 +44,41 @@ describe('admin customer email routes', () => {
     }
   });
 
+  test('saves and reads the Dispatch customer email selection for one route', async () => {
+    const { dependencies, service } = createHarness();
+    const selection = { deliveryStopIds: ['stop-1'], signals: ['DELIVERY_SCHEDULED', 'DELIVERED'], updatedAt: '2026-10-13T08:00:00.000Z', updatedBy: 'shopify-user-id' };
+    service.setRouteEmailSelection.mockResolvedValue(selection);
+    service.getRouteEmailSelection.mockResolvedValue({ selection });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    try {
+      const saved = await app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'PUT',
+        payload: { deliveryStopIds: ['stop-1', 'stop-1'], signals: ['DELIVERY_SCHEDULED', 'DELIVERED'] },
+        url: '/admin/route-plans/route-id/customer-email/selection'
+      });
+      const read = await app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'GET',
+        url: '/admin/route-plans/route-id/customer-email/selection'
+      });
+      const invalid = await app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'PUT',
+        payload: { deliveryStopIds: ['stop-1'], signals: ['TEST'] },
+        url: '/admin/route-plans/route-id/customer-email/selection'
+      });
+
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toMatchObject({ data: { selection }, error: null });
+      expect(service.setRouteEmailSelection).toHaveBeenCalledWith(expect.objectContaining({
+        actor: 'shopify-user-id', deliveryStopIds: ['stop-1'], routePlanId: 'route-id', signals: ['DELIVERY_SCHEDULED', 'DELIVERED']
+      }));
+      expect(read.json()).toMatchObject({ data: { selection }, error: null });
+      expect(invalid.statusCode).toBe(400);
+      expect(service.setRouteEmailSelection).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('authenticates Brevo webhooks and records only message evidence', async () => {
     const providerRecord = vi.fn().mockResolvedValue(1);
     const { dependencies } = createHarness({ providerRecord, providerToken: 'webhook-secret' });
@@ -797,12 +832,14 @@ function createHarness(input: {
   publicBaseUrl?: string;
 } = {}) {
   const service = {
+    getRouteEmailSelection: vi.fn(),
     getSettings: vi.fn(),
     preview: vi.fn(),
     saveGlobalSettings: vi.fn(),
     saveSettings: vi.fn(),
     saveTemplateSettings: vi.fn(),
     setAutomaticActivation: vi.fn(),
+    setRouteEmailSelection: vi.fn(),
     send: vi.fn(),
     sendTest: vi.fn(),
   };

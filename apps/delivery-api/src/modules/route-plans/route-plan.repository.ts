@@ -1,5 +1,7 @@
 import { assertDeliveryOptionsEditable, assertProofDriverCompatible, assertProofRollout, mergeDeliveryOptions, readDeliveryProof, readTollPolicy, type DeliveryProofPolicy, type TollPolicy } from './delivery-options.js';
 import { randomUUID } from 'node:crypto';
+import { isRouteEmailSelected, ROUTE_EMAIL_SELECTED_KEY } from '../customer-email/customer-email-route-selection.js';
+import type { CustomerEmailSignal } from '../customer-email/customer-email-settings.js';
 
 import { closeDsvExecutionHook, syncDsvExecutionHook, resolveDsvStopNotificationsHook } from '../dsv/dsv-execution-hooks.js';
 import { visibleDsvRouteWhere } from '../dsv/dsv-test-visibility.js';
@@ -85,6 +87,21 @@ import { RouteGroupingValidationError } from '../route-grouping/route-grouping.t
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
 const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 const ROUTE_COPY_SOURCE_KIND = 'CLEVER_ROUTE_COPY';
+
+function signalForAdminStatus(status: AdminRouteStopTransitionInput['payload']['status']): CustomerEmailSignal {
+  if (status === 'READY') return 'DELIVERY_SCHEDULED';
+  if (status === 'IN_PROGRESS') return 'OUT_FOR_DELIVERY';
+  return 'DELIVERED';
+}
+
+// Admin transitions queue a customer email only under the same rule as driver events:
+// automatic email is on and the office selected this stop and signal at Dispatch.
+function adminCustomerEmailSelected(settings: unknown, constraints: unknown, signal: CustomerEmailSignal, deliveryStopId: string): boolean {
+  const automatic = settings !== null && typeof settings === 'object' && !Array.isArray(settings)
+    ? (settings as { automatic?: { enabled?: unknown } }).automatic
+    : undefined;
+  return automatic?.enabled === true && isRouteEmailSelected(constraints, signal, deliveryStopId);
+}
 
 function suppressCustomerNotification(order: { sellerOrderSourceKind: string | null; sourcePlatform: string } | null): boolean {
   return order?.sourcePlatform === 'CUSTOM' || order?.sellerOrderSourceKind === ROUTE_COPY_SOURCE_KIND;
@@ -269,7 +286,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
     const result = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
-        select: { id: true },
+        select: { customerEmailSettings: true, id: true },
         where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) return { duplicate: false as const, found: false as const };
@@ -286,7 +303,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         select: {
           deliveryStop: { select: { completionAssistanceCandidateId: true, order: { select: { email: true, sellerOrderSourceKind: true, sourcePlatform: true } }, orderId: true, status: true } },
           deliveryStopId: true,
-          routePlan: { select: { status: true } }
+          routePlan: { select: { constraints: true, status: true } }
         },
         where: {
           deliveryStopId: input.deliveryStopId,
@@ -380,14 +397,20 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         driverEvent = event;
       }
 
-      const notificationFact = suppressCustomerNotification(routeStop.deliveryStop.order) ? null : await tx.customerRouteNotificationFact.upsert({
+      const notificationSignal = signalForAdminStatus(input.payload.status);
+      const notificationFact = suppressCustomerNotification(routeStop.deliveryStop.order)
+        || !adminCustomerEmailSelected(shop.customerEmailSettings, routeStop.routePlan.constraints, notificationSignal, input.deliveryStopId)
+        ? null
+        : await tx.customerRouteNotificationFact.upsert({
         create: {
           deliveryStopId: input.deliveryStopId,
           idempotencyKey: notificationIdempotencyKey,
           metadata: {
             deliveryStopId: input.deliveryStopId,
+            [ROUTE_EMAIL_SELECTED_KEY]: true,
             routePlanId: input.routePlanId,
             runtimeSender: 'unwired',
+            signal: notificationSignal,
             uiStatus: input.payload.status
           },
           nextAttemptAt: new Date(),
@@ -409,8 +432,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           leaseToken: null,
           metadata: {
             deliveryStopId: input.deliveryStopId,
+            [ROUTE_EMAIL_SELECTED_KEY]: true,
             routePlanId: input.routePlanId,
             runtimeSender: 'unwired',
+            signal: notificationSignal,
             uiStatus: input.payload.status
           },
           nextAttemptAt: new Date(),

@@ -38,8 +38,8 @@ jobs:
       dependency_changed: ${{ steps.classify.outputs.dependency_changed }}
       web_artifact_required: ${{ steps.classify.outputs.web_artifact_required }}
       api_test_profile: ${{ steps.classify.outputs.api_test_profile }}
-      run_api_static: ${{ steps.lanes.outputs.run_api_static }}
-      run_api_db: ${{ steps.lanes.outputs.run_api_db }}
+      run_api_static: ${{ steps.classify.outputs.run_api_static }}
+      run_api_db: ${{ steps.classify.outputs.run_api_db }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -85,31 +85,6 @@ jobs:
           if [ "$FULL_VERIFY" = "true" ]; then args+=(--full-verify); fi
           node scripts/ci/route-ops-change-classifier.mjs "${args[@]}" < changed-files.txt
           cat "$GITHUB_OUTPUT"
-
-      - name: Select validation lanes
-        id: lanes
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          FULL: ${{ steps.classify.outputs.full_required }}
-          API: ${{ steps.classify.outputs.api_changed }}
-          CUSTOMER_EMAIL: ${{ steps.classify.outputs.customer_email_changed }}
-          CRITICAL: ${{ steps.classify.outputs.critical_changed }}
-          API_TEST_PROFILE: ${{ steps.classify.outputs.api_test_profile }}
-        run: |
-          set -euo pipefail
-          run_api_static=false
-          run_api_db=false
-          if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$FULL" = true ] || [ "$API" = true ] || [ "$CUSTOMER_EMAIL" = true ]; then
-            run_api_static=true
-          fi
-          if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$FULL" = true ] \
-            || { [ "$API" = true ] && [ "$CRITICAL" = true ] && [ "$API_TEST_PROFILE" != route_geometry ]; }; then
-            run_api_db=true
-          fi
-          echo "run_api_static=$run_api_static" >> "$GITHUB_OUTPUT"
-          echo "run_api_db=$run_api_db" >> "$GITHUB_OUTPUT"
-          printf 'run_api_static=%s run_api_db=%s\n' "$run_api_static" "$run_api_db"
 
   checks:
     needs: classify

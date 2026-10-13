@@ -1,8 +1,9 @@
 import type { Prisma } from '@prisma/client';
 
+import { isRouteEmailSelected, ROUTE_EMAIL_SELECTED_KEY } from './customer-email-route-selection.js';
 import { isEmail, normalizeCustomerEmailSettings, type CustomerEmailSignal } from './customer-email-settings.js';
 
-type AutomaticFactClient = Pick<Prisma.TransactionClient, 'customerRouteNotificationFact' | 'deliveryStop' | 'shop'>;
+type AutomaticFactClient = Pick<Prisma.TransactionClient, 'customerRouteNotificationFact' | 'deliveryStop' | 'routePlan' | 'shop'>;
 
 export type AutomaticCustomerEmailDriverEvent = {
   deliveryStopId: string | null;
@@ -41,7 +42,13 @@ export async function persistAutomaticCustomerEmailFacts(
   }
   if (!settings.automatic.enabled) return 0;
 
-  const stops = await prisma.deliveryStop.findMany({
+  const routePlan = await prisma.routePlan.findFirst({
+    select: { constraints: true },
+    where: { id: input.routePlanId, shopId: input.shopId }
+  });
+  if (routePlan === null) return 0;
+
+  const allStops = await prisma.deliveryStop.findMany({
     orderBy: { id: 'asc' },
     select: {
       id: true,
@@ -53,6 +60,8 @@ export async function persistAutomaticCustomerEmailFacts(
       shopId: input.shopId
     }
   });
+  // Only customers the office selected for this signal at Dispatch get an automatic email.
+  const stops = allStops.filter((stop) => isRouteEmailSelected(routePlan.constraints, signal, stop.id));
   if (stops.length === 0) return 0;
 
   const template = settings.templates[signal];
@@ -72,6 +81,7 @@ export async function persistAutomaticCustomerEmailFacts(
       idempotencyKey: `driver-event:${input.driverEventId}:${signal}:${stop.id}`,
       metadata: {
         driverEventId: input.driverEventId,
+        [ROUTE_EMAIL_SELECTED_KEY]: true,
         signal,
         sourceEventType: input.eventType,
         templateVersion: template.version

@@ -1521,6 +1521,7 @@ describe('PrismaRoutePlanRepository', () => {
 
   test('admin stop transition writes admin audit, nullable-driver tracking event, and queued customer notification fact', async () => {
     const { prisma } = createPrismaHarness({
+      shop: { customerEmailSettings: { automatic: { enabled: true } }, id: 'shop-id' },
       routePlanFindFirst: routePlanRecord({
         routeStops: [
           routePlanStopRecord({
@@ -1537,7 +1538,10 @@ describe('PrismaRoutePlanRepository', () => {
       routePlanStopFindFirst: {
         deliveryStop: { order: { email: 'customer@example.com' }, orderId: 'order-1' },
         deliveryStopId: 'stop-1',
-        routePlan: { status: 'IN_PROGRESS' }
+        routePlan: {
+          constraints: { customerEmailSelection: { deliveryStopIds: ['stop-1'], signals: ['DELIVERED'], updatedAt: '2026-05-08T08:00:00.000Z', updatedBy: 'office' } },
+          status: 'IN_PROGRESS'
+        }
       }
     });
     const repository = new PrismaRoutePlanRepository(
@@ -1605,6 +1609,7 @@ describe('PrismaRoutePlanRepository', () => {
         idempotencyKey: 'admin-stop-action-key:customer-notification',
         orderId: 'order-1',
         recipientEmailSnapshot: 'customer@example.com',
+        metadata: expect.objectContaining({ routeEmailSelected: true, signal: 'DELIVERED' }) as unknown,
         requestedUiStatus: 'COMPLETED',
         routePlanId: 'route-plan-id',
         source: 'ADMIN_ROUTE_STOP_TRANSITION',
@@ -1633,6 +1638,35 @@ describe('PrismaRoutePlanRepository', () => {
       shopId: 'shop-id',
       source: 'ADMIN'
     });
+  });
+
+  test.each([
+    ['automatic email is off', { automatic: { enabled: false } }, ['stop-1']],
+    ['the stop was not selected at Dispatch', { automatic: { enabled: true } }, ['other-stop']]
+  ])('admin stop transition queues no customer email when %s', async (_label, customerEmailSettings, deliveryStopIds) => {
+    const { prisma } = createPrismaHarness({
+      routePlanStopFindFirst: {
+        deliveryStop: { order: { email: 'customer@example.com' }, orderId: 'order-1' },
+        deliveryStopId: 'stop-1',
+        routePlan: {
+          constraints: { customerEmailSelection: { deliveryStopIds, signals: ['DELIVERED'], updatedAt: '2026-05-08T08:00:00.000Z', updatedBy: 'office' } },
+          status: 'IN_PROGRESS'
+        }
+      },
+      shop: { customerEmailSettings, id: 'shop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'admin-stop-action-key', status: 'COMPLETED' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
+    expect(result?.notification).toMatchObject({ factId: null, status: 'SKIPPED' });
   });
 
   test('admin completion reconciles the delivery-work marker while holding the route row lock', async () => {

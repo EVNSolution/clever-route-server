@@ -13,6 +13,7 @@ import {
   type CustomerEmailService,
 } from '../modules/customer-email/customer-email.service.js';
 import { readCustomerEmailSignal } from '../modules/customer-email/customer-email-settings.js';
+import { parseRouteEmailSelectionPayload } from '../modules/customer-email/customer-email-route-selection.js';
 import {
   CustomerEmailTransportConfigurationError,
   CustomerEmailTransportSendError,
@@ -271,6 +272,39 @@ export function registerAdminCustomerEmailRoutes(
           return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
         }
         throw error;
+      }
+    },
+  );
+
+  app.get<{ Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/customer-email/selection',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+      if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      const result = await dependencies.customerEmailService.getRouteEmailSelection({ ...authenticated, routePlanId: request.params.routePlanId });
+      if (result === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+      return reply.code(200).send({ data: result, error: null });
+    },
+  );
+
+  app.put<{ Body: unknown; Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/customer-email/selection',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+      if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      const payload = parseRouteEmailSelectionPayload(request.body);
+      if (payload === null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid customer email selection payload'));
+      try {
+        const selection = await dependencies.customerEmailService.setRouteEmailSelection({
+          ...authenticated,
+          ...payload,
+          actor: authenticated.subject,
+          routePlanId: request.params.routePlanId,
+        });
+        if (selection === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+        return reply.code(200).send({ data: { selection }, error: null });
+      } catch (error) {
+        return sendCustomerEmailError(reply, error);
       }
     },
   );
