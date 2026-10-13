@@ -16,11 +16,17 @@ GitHub Actions에는 두 개의 진입점만 사용한다.
 | --- | --- | --- |
 | `classify` | 항상 | 변경 파일 분류, lane 선택 (`run_api_static`, `run_api_db`) |
 | `checks` | 항상 | hygiene, workflow·배포 wrapper 계약, Web 검증·build, API vitest, compose config |
-| `api_static` | API 또는 customer email 변경, full | Prisma generate, API lint, typecheck, build, build 결과를 쓰는 customer email wrapper |
-| `api_db` | 핵심 API 변경, full | disposable PostgreSQL 통합 테스트 |
+| `api_lint` | API 또는 customer email 변경, full | Prisma generate, 타입 기반 API lint |
+| `api_static` | API 또는 customer email 변경, full | Prisma generate, typecheck, build, build 결과를 쓰는 customer email wrapper |
+| `api_db (core)` | 핵심 API 변경, full | populated upgrade 검사, 공유 DB 통합 테스트 묶음 |
+| `api_db (isolated)` | 핵심 API 변경, full | 자체 DB를 띄우는 스크립트들, private driver demo, original observations |
 | `validate` | 취소되지 않은 모든 실행 (`!cancelled()`) | 최종 판정 |
 
 - 비싼 검사는 한 lane에서만 한 번 실행한다. `tests/ci/github-actions-structure.test.mjs`가 이 배치를 강제한다.
+- `api_db`는 `CLEVER_DISPOSABLE_DB_SHARD`로 DB 스크립트를 두 runner에 나눈다. 각 shard 안의 테스트 순서는 기존과 같다.
+- 로컬에서 `CLEVER_DISPOSABLE_DB_SHARD`를 비우면 두 shard를 모두 실행한다.
+- DB 스크립트는 컨테이너를 한꺼번에 띄우고 migration을 DB별로 동시에 실행한다. migration 로그는 실패한 DB만 전체를 출력한다.
+- DB 스크립트에 shard를 추가하면 matrix에도 추가해야 한다. 구조 계약 테스트가 둘의 일치를 검사한다.
 - `validate`는 선택된 lane이 모두 success이고 선택되지 않은 lane이 모두 skipped일 때만 통과한다.
 - 실패, 취소, 누락, 선택되지 않았는데 실행된 lane이 있으면 workflow가 실패한다.
 - 배포 workflow는 같은 SHA의 성공한 main CI를 확인하고 lint·typecheck·test를 다시 실행하지 않는다.
@@ -29,9 +35,9 @@ GitHub Actions에는 두 개의 진입점만 사용한다.
 | Profile | 실행 조건 | 목표 wall time |
 | --- | --- | ---: |
 | hygiene | 문서 또는 비핵심 변경 | 2분 이내 |
-| route geometry | OSRM geometry 전용 변경 | 4분 이내 |
-| delivery API | API 변경, disposable DB 포함 | 5분 이내 |
-| full | workflow, lockfile, 수동 full verify | 6분 이내 |
+| route geometry | OSRM geometry 전용 변경 | 3분 이내 |
+| delivery API | API 변경, disposable DB 포함 | 4분 이내 |
+| full | workflow, lockfile, 수동 full verify | 4분 이내 |
 
 lane hard timeout은 20분이다. 목표 시간을 넘기면 같은 run을 반복하지 말고 가장 늦게
 끝난 lane의 install, test, disposable DB 시간을 확인한다.

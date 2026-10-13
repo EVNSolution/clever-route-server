@@ -240,6 +240,31 @@ jobs:
           npm run compose:config
           rm -f apps/delivery-api/.env
 
+  # Typed ESLint is the slowest static check, so it gets its own runner.
+  api_lint:
+    needs: classify
+    if: needs.classify.outputs.run_api_static == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/delivery-api/package-lock.json
+
+      - name: Install delivery API dependencies
+        run: npm --prefix apps/delivery-api ci --no-audit --no-fund
+
+      - name: Lint delivery API
+        run: |
+          npm --prefix apps/delivery-api run prisma:generate
+          npm --prefix apps/delivery-api run lint
+
   api_static:
     needs: classify
     if: needs.classify.outputs.run_api_static == 'true'
@@ -262,7 +287,6 @@ jobs:
       - name: Prepare delivery API
         run: |
           npm --prefix apps/delivery-api run prisma:generate
-          npm --prefix apps/delivery-api run lint
           npm --prefix apps/delivery-api run typecheck
 
       - name: Build delivery API once
@@ -275,11 +299,17 @@ jobs:
           needs.classify.outputs.full_required == 'true'
         run: tests/deploy/ssm-customer-email-reconciliation.test.sh
 
+  # Two runners split the disposable PostgreSQL profile. Each shard keeps the
+  # serial test order it had inside the single script.
   api_db:
     needs: classify
     if: needs.classify.outputs.run_api_db == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, isolated]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -300,15 +330,18 @@ jobs:
       - name: Disposable PostgreSQL test profile
         env:
           CLEVER_RUN_DISPOSABLE_DB_TESTS: "1"
+          CLEVER_DISPOSABLE_DB_SHARD: ${{ matrix.shard }}
         run: |
           npm --prefix apps/delivery-api run test:db:disposable
-          bash apps/delivery-api/scripts/test-original-observations-db.sh
+          if [ "$CLEVER_DISPOSABLE_DB_SHARD" = isolated ]; then
+            bash apps/delivery-api/scripts/test-original-observations-db.sh
+          fi
 
   validate:
     # Runs after failed or timed-out lanes. A cancelled run is never a
     # successful run, so the deploy gate still refuses it.
     if: ${{ !cancelled() }}
-    needs: [classify, checks, api_static, api_db]
+    needs: [classify, checks, api_lint, api_static, api_db]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -317,6 +350,7 @@ jobs:
         env:
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
+          API_LINT_RESULT: ${{ needs.api_lint.result }}
           API_STATIC_RESULT: ${{ needs.api_static.result }}
           API_DB_RESULT: ${{ needs.api_db.result }}
           RUN_API_STATIC: ${{ needs.classify.outputs.run_api_static }}
@@ -335,6 +369,7 @@ jobs:
           }
           expect classify "$CLASSIFY_RESULT" true
           expect checks "$CHECKS_RESULT" true
+          expect api_lint "$API_LINT_RESULT" "$RUN_API_STATIC"
           expect api_static "$API_STATIC_RESULT" "$RUN_API_STATIC"
           expect api_db "$API_DB_RESULT" "$RUN_API_DB"
           exit "$failed"
@@ -351,5 +386,5 @@ jobs:
             echo "- deploy: ${{ needs.classify.outputs.deploy_changed }}"
             echo "- full: ${{ needs.classify.outputs.full_required }}"
             echo "- API tests: ${{ needs.classify.outputs.api_test_profile }}"
-            echo "- lanes: checks=${{ needs.checks.result }} api_static=${{ needs.api_static.result }} api_db=${{ needs.api_db.result }}"
+            echo "- lanes: checks=${{ needs.checks.result }} api_lint=${{ needs.api_lint.result }} api_static=${{ needs.api_static.result }} api_db=${{ needs.api_db.result }}"
           } >> "$GITHUB_STEP_SUMMARY"
