@@ -3857,6 +3857,23 @@ paths:
                 senderEmail:
                   type: string
                   description: The current company-managed sender address, or the canonical empty value while unconfigured.
+                etaWindow:
+                  type: object
+                  description: >-
+                    Optional. Shapes `{{etaWindow}}`. AROUND renders ETA ± minutes,
+                    BEFORE renders ETA - minutes to ETA, AFTER renders ETA to
+                    ETA + minutes. Omitted keeps the current value; the default is
+                    AROUND 30.
+                  required: [direction, minutes]
+                  properties:
+                    direction:
+                      type: string
+                      enum: [AROUND, BEFORE, AFTER]
+                    minutes:
+                      type: integer
+                      minimum: 5
+                      maximum: 240
+                  additionalProperties: false
               additionalProperties: true
       responses:
         '200':
