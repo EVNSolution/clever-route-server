@@ -1,7 +1,15 @@
-import { distanceMeters, hasImplausibleGpsJump, MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND } from './uvis-vehicle-trail-evidence.js';
+import {
+  distanceMeters,
+  foldFrozenFixRuns,
+  hasImplausibleGpsJump,
+  isFreshSuccessor,
+  MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND,
+  type FrozenFixGap,
+} from './uvis-vehicle-trail-evidence.js';
 import { REVIEWED_TUNNEL_CORRIDORS } from './uvis-tunnel-corridor.js';
 
 export type TunnelSample = {
+  frozenGap?: FrozenFixGap;
   ignitionOn?: boolean | null;
   latitude: number;
   longitude: number;
@@ -200,32 +208,38 @@ export type TunnelSignature = {
 /**
  * Recognizes the telematics pattern of a vehicle driving through a tunnel: the last fix repeats with a
  * no-fix speed (>= 200 km/h) for 3 to 15 minutes, then the next fresh fix jumps ahead and keeps moving.
+ * The repeated run comes from the shared fold (exact repeats, ignition on, jump >= 500 m); this only adds
+ * the tunnel evidence on top: continuous reporting, the no-fix speed, and a witness after the exit.
+ * Works on raw or already folded samples.
  */
 export function findTunnelSignature(samples: readonly TunnelSample[], jumpIndex: number): TunnelSignature | null {
-  const exit = samples[jumpIndex];
-  const frozen = samples[jumpIndex - 1];
-  if (exit === undefined || frozen === undefined || exit.ignitionOn !== true
-    || !hasImplausibleGpsJump(frozen, exit)) return null;
+  const jump = samples[jumpIndex];
+  if (jump === undefined || jump.ignitionOn !== true) return null;
+  const folded = foldFrozenFixRuns(samples);
+  const exitIndex = folded.findIndex((sample) => sample.observedAt === jump.observedAt);
+  const exit = folded[exitIndex];
+  const entry = folded[exitIndex - 1];
+  const gap = entry?.frozenGap;
+  const before = folded[exitIndex - 2];
+  if (exit === undefined || entry === undefined || gap === undefined || before === undefined) return null;
 
-  let firstFrozenIndex = jumpIndex - 1;
-  while (firstFrozenIndex > 0) {
-    const earlier = samples[firstFrozenIndex - 1]!;
-    const later = samples[firstFrozenIndex]!;
-    if (!freshCadence(earlier, later) || distanceMeters(earlier, frozen) > 10) break;
-    firstFrozenIndex -= 1;
-  }
-  const firstFrozen = samples[firstFrozenIndex]!;
-  const before = samples[firstFrozenIndex - 1];
-  const frozenRun = samples.slice(firstFrozenIndex, jumpIndex);
-  const elapsedMs = exit.observedAtMs - firstFrozen.observedAtMs;
-  const witness = downstreamWitness(samples, jumpIndex);
-  if (before === undefined || frozenRun.length < 3 || elapsedMs < 180_000 || elapsedMs > 900_000
+  const lastFrozen = { ...entry, observedAt: gap.lastObservedAt, staleAfter: gap.lastStaleAfter };
+  const lastBefore = lastFix(before);
+  const elapsedMs = exit.observedAtMs - entry.observedAtMs;
+  const witness = downstreamWitness(folded, exitIndex);
+  if (elapsedMs < 180_000 || elapsedMs > 900_000
     || witness === null
-    || frozenRun.some((sample) => sample.ignitionOn !== true)
-    || frozenRun.slice(1).filter((sample) => (sample.speedKph ?? 0) >= 200).length < 2
-    || !freshCadence(before, firstFrozen) || !freshCadence(frozen, exit)
-    || hasImplausibleGpsJump(before, firstFrozen)) return null;
-  return { before, elapsedMs, entry: firstFrozen, exit, witness };
+    || !hasImplausibleGpsJump(lastFrozen, exit)
+    || !gap.continuous || gap.noFixRepeats < 2
+    || !isFreshSuccessor(lastBefore, entry) || !isFreshSuccessor(lastFrozen, exit)
+    || hasImplausibleGpsJump(lastBefore, entry)) return null;
+  return { before, elapsedMs, entry, exit, witness };
+}
+
+// A folded sample stands for a whole run; its freshness and timing are those of the run's last fix.
+function lastFix(sample: TunnelSample): TunnelSample {
+  const gap = sample.frozenGap;
+  return gap === undefined ? sample : { ...sample, observedAt: gap.lastObservedAt, staleAfter: gap.lastStaleAfter };
 }
 
 export function inferReviewedTunnelBridge(
@@ -322,15 +336,18 @@ function inferOnCorridor(input: {
   };
 }
 
-function downstreamWitness(samples: readonly TunnelSample[], jumpIndex: number): TunnelSample | null {
-  const exit = samples[jumpIndex]!;
-  let previous = exit;
-  for (let index = jumpIndex + 1; index <= Math.min(jumpIndex + 3, samples.length - 1); index += 1) {
+function downstreamWitness(samples: readonly TunnelSample[], exitIndex: number): TunnelSample | null {
+  const exit = samples[exitIndex]!;
+  // A folded exit is a run of repeats; like single repeats below, it must keep reporting the no-fix speed.
+  const exitRun = exit.frozenGap;
+  if (exitRun !== undefined && (!exitRun.continuous || exitRun.noFixRepeats < exitRun.repeats - 1)) return null;
+  let previous = lastFix(exit);
+  for (let index = exitIndex + 1; index <= Math.min(exitIndex + 3, samples.length - 1); index += 1) {
     const current = samples[index]!;
-    if (!freshCadence(previous, current) || current.ignitionOn !== true) return null;
+    if (!isFreshSuccessor(previous, current) || current.ignitionOn !== true) return null;
     if (distanceMeters(exit, current) <= 10) {
       if ((current.speedKph ?? 0) < 200) return null;
-      previous = current;
+      previous = lastFix(current);
       continue;
     }
     return (current.speedKph === null || current.speedKph === undefined || current.speedKph < 200)
@@ -344,14 +361,6 @@ function progressesOnMatchedLine(before: TunnelRoadAnchor, after: TunnelRoadAnch
   return before.segmentIndex === after.segmentIndex
     && before.lineIndex === after.lineIndex
     && after.coordinateIndex > before.coordinateIndex;
-}
-
-// The collector defines freshness: staleAfter is recordedAt + 2 polls, so one missed poll is still fresh.
-// A fixed cap tighter than that broke the Seobu underground pass on 2026-10-12 after a single missed poll.
-function freshCadence(before: TunnelSample, after: TunnelSample): boolean {
-  const elapsedMs = after.observedAtMs - before.observedAtMs;
-  const staleAfterMs = Date.parse(before.staleAfter);
-  return elapsedMs >= 30_000 && Number.isFinite(staleAfterMs) && staleAfterMs >= after.observedAtMs;
 }
 
 function project(point: [number, number], corridor: Corridor, cumulativeMeters: number[]): Projection {

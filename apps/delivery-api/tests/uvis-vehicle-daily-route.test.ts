@@ -114,9 +114,13 @@ describe('buildUvisVehicleDailyRoute', () => {
 
     const route = buildUvisVehicleDailyRoute(samples, document);
     const bridge = route?.bridges.find((item) => item.reason === 'IMPLAUSIBLE_JUMP');
+    // The bridge to the exit fix, whatever its reason: negative cases must still find a bridge to assert on.
+    const exitBridge = (source: typeof samples, trail: typeof document) =>
+      buildUvisVehicleDailyRoute(source, trail)?.bridges.find((item) => item.toObservedAt === times[7]);
 
+    // The six repeats are folded into the first one, so the bridge runs from the first repeated fix.
     expect(bridge).toMatchObject({
-      fromObservedAt: times[6],
+      fromObservedAt: times[1],
       toObservedAt: times[7],
       inferredTunnel: {
         corridorId: 'seoul-hongjimun-jeongneung-eastbound',
@@ -142,25 +146,25 @@ describe('buildUvisVehicleDailyRoute', () => {
       coordinateIndex: index === 0 || index === 7 ? 0 : 1,
     })));
     expect(buildUvisVehicleDailyRoute(afterAt120Seconds, afterAt120SecondsDocument)?.bridges.find((item) =>
-      item.fromObservedAt === times[6]
+      item.fromObservedAt === times[1]
     )?.inferredTunnel?.corridorId).toBe('seoul-hongjimun-jeongneung-eastbound');
 
     const stationary = samples.map((item, index) => ({ ...item, speedKph: index > 1 && index < 7 ? 0 : item.speedKph }));
-    expect(buildUvisVehicleDailyRoute(stationary, document)?.bridges.find((item) =>
-      item.reason === 'IMPLAUSIBLE_JUMP'
-    )?.inferredTunnel).toBeUndefined();
+    // Repeats at speed 0 are a plain GPS loss, not a tunnel: a routable gap, never a corridor.
+    expect(exitBridge(stationary, document)).toMatchObject({ reason: 'GPS_GAP' });
+    expect(exitBridge(stationary, document)?.inferredTunnel).toBeUndefined();
 
     const ignitionOff = samples.map((item, index) => ({ ...item, ignitionOn: index === 4 ? false : item.ignitionOn }));
-    expect(buildUvisVehicleDailyRoute(ignitionOff, document)?.bridges.find((item) =>
-      item.reason === 'IMPLAUSIBLE_JUMP'
-    )?.inferredTunnel).toBeUndefined();
+    // Ignition off inside the run: nothing is folded, the jump stays an impossible one.
+    expect(exitBridge(ignitionOff, document)).toMatchObject({ reason: 'IMPLAUSIBLE_JUMP' });
+    expect(exitBridge(ignitionOff, document)?.inferredTunnel).toBeUndefined();
 
     const stale = samples.map((item, index) => index === 6 ? { ...item, staleAfter: item.observedAt } : item);
     expect(buildUvisVehicleDailyRoute(stale, document)?.bridges.find((item) =>
-      item.fromObservedAt === times[6]
+      item.fromObservedAt === times[1]
     )).toMatchObject({ reason: 'GPS_GAP' });
     expect(buildUvisVehicleDailyRoute(stale, document)?.bridges.find((item) =>
-      item.fromObservedAt === times[6]
+      item.fromObservedAt === times[1]
     )?.inferredTunnel).toBeUndefined();
 
     const longGap = samples.map((item, index) => index < 7 ? item : {
@@ -168,16 +172,15 @@ describe('buildUvisVehicleDailyRoute', () => {
       observedAt: new Date(Date.parse(item.observedAt) + 4 * 60_000).toISOString(),
     });
     expect(buildUvisVehicleDailyRoute(longGap, document)?.bridges.find((item) =>
-      item.fromObservedAt === times[6]
+      item.fromObservedAt === times[1]
     )?.inferredTunnel).toBeUndefined();
 
     const parallelDocument = trailDocument(samples, [[beforeAnchor, frozenAnchor], [
       [exitAnchor[0], exitAnchor[1] + 0.0004],
       [afterAnchor[0], afterAnchor[1] + 0.0004],
     ]], document.segments[0]!.roadMatchedGeometry!.anchors!);
-    expect(buildUvisVehicleDailyRoute(samples, parallelDocument)?.bridges.find((item) =>
-      item.reason === 'IMPLAUSIBLE_JUMP'
-    )?.inferredTunnel).toBeUndefined();
+    expect(exitBridge(samples, parallelDocument)).toMatchObject({ reason: 'GPS_GAP' });
+    expect(exitBridge(samples, parallelDocument)?.inferredTunnel).toBeUndefined();
 
     const beyondReviewedExit: [number, number] = [126.9978655, 37.6090448];
     const beyondReviewedAfter: [number, number] = [127.0002551, 37.6082390];
@@ -187,18 +190,16 @@ describe('buildUvisVehicleDailyRoute', () => {
     const beyondReviewedDocument = trailDocument(beyondReviewed, [[beforeAnchor, frozenAnchor], [
       beyondReviewedExit, beyondReviewedAfter,
     ]], document.segments[0]!.roadMatchedGeometry!.anchors!);
-    expect(buildUvisVehicleDailyRoute(beyondReviewed, beyondReviewedDocument)?.bridges.find((item) =>
-      item.reason === 'IMPLAUSIBLE_JUMP'
-    )?.inferredTunnel).toBeUndefined();
+    expect(exitBridge(beyondReviewed, beyondReviewedDocument)).toMatchObject({ reason: 'GPS_GAP' });
+    expect(exitBridge(beyondReviewed, beyondReviewedDocument)?.inferredTunnel).toBeUndefined();
 
     const offCorridor = samples.map((item, index) => index < 7 ? item : { ...item, latitude: item.latitude + 0.005 });
     const offCorridorDocument = trailDocument(offCorridor, [[beforeAnchor, frozenAnchor], [
       [exit[0], exit[1] + 0.005],
       [after[0], after[1] + 0.005],
     ]], document.segments[0]!.roadMatchedGeometry!.anchors!);
-    expect(buildUvisVehicleDailyRoute(offCorridor, offCorridorDocument)?.bridges.find((item) =>
-      item.reason === 'IMPLAUSIBLE_JUMP'
-    )?.inferredTunnel).toBeUndefined();
+    expect(exitBridge(offCorridor, offCorridorDocument)).toMatchObject({ reason: 'GPS_GAP' });
+    expect(exitBridge(offCorridor, offCorridorDocument)?.inferredTunnel).toBeUndefined();
   });
 
   test('waits for a later mainline witness before inferring the reviewed Suam–Suri tunnel gap', () => {
@@ -225,8 +226,12 @@ describe('buildUvisVehicleDailyRoute', () => {
       [before, [126.8820994, 37.3693881]],
       [exitAnchor, witness],
     ], anchors);
-    const tunnelBridge = (source = samples, trail = document) =>
-      buildUvisVehicleDailyRoute(source, trail)?.bridges.find((item) => item.fromObservedAt === times[4]);
+    const tunnelBridge = (source = samples, trail = document) => {
+      // Every variant keeps a bridge to the exit fix; an absent one would make the negative cases vacuous.
+      const found = buildUvisVehicleDailyRoute(source, trail)?.bridges.find((item) => item.toObservedAt === times[5]);
+      expect(found).toBeDefined();
+      return found;
+    };
 
     expect(tunnelBridge(samples.slice(0, 6))?.inferredTunnel).toBeUndefined();
     expect(tunnelBridge(samples.slice(0, 7))?.inferredTunnel).toBeUndefined();
