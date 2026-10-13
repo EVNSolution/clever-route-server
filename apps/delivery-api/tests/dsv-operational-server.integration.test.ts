@@ -1418,6 +1418,7 @@ live('DSV operational server PostgreSQL integration', () => {
       })
     ));
     const created = await sync(randomUUID());
+    await markAssignmentNoticesRead(prisma, [created.executionContextId!]);
     await prisma.order.update({
       data: { rawPayload: { dsv: { normalized: { shippedBoxes: 2 } } } },
       where: { id: fixture.orderId },
@@ -1488,6 +1489,7 @@ live('DSV operational server PostgreSQL integration', () => {
   test('syncs both published children only after production draft projections are complete', async () => {
     const fixture = await createPublishedMultiChildFixture(prisma, createdShopIds, 'multi-child-save');
     const beforeContexts = await readExecutionVersions(prisma, fixture.contextIds);
+    await markAssignmentNoticesRead(prisma, fixture.contextIds);
     await prisma.order.updateMany({
       data: { rawPayload: { dsv: { normalized: { shippedBoxes: 2 } } } },
       where: { id: { in: fixture.orderIds } },
@@ -3754,6 +3756,20 @@ function multiChildDraftInput(fixture: PublishedMultiChildFixture, labelPrefix: 
     })),
     shopDomain: fixture.shopDomain,
   };
+}
+
+// A change notice follows only an assignment notice the driver already received.
+async function markAssignmentNoticesRead(prisma: PrismaClient, contextIds: string[]): Promise<void> {
+  const notices = await prisma.dsvOperationalNotification.findMany({
+    select: { id: true, recipientAccountId: true, shopId: true },
+    where: { executionContextId: { in: contextIds }, kind: 'N01' },
+  });
+  expect(notices).toHaveLength(contextIds.length);
+  await prisma.dsvOperationalNotificationAck.createMany({
+    data: notices.map((notice) => ({
+      accountId: notice.recipientAccountId!, ackKind: 'READ', notificationId: notice.id, shopId: notice.shopId,
+    })),
+  });
 }
 
 async function readExecutionVersions(prisma: PrismaClient, contextIds: string[]) {

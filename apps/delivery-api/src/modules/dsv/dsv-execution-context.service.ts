@@ -231,7 +231,7 @@ export class PrismaDsvExecutionContextService {
         where: { id: currentMapping.executionContextId, shopId: input.shopId },
       }) as ExecutionRow | null;
       if (context === null) throw new DsvExecutionContextError('EXECUTION_CONTEXT_SCOPE_INVALID');
-      return this.updateExistingContext(context, route, now);
+      return this.updateExistingContext(context, route, now, input.initiatedByAssignedDriver === true);
     }
 
     if (input.tripIntent === 'SAME_EXECUTION') {
@@ -247,7 +247,7 @@ export class PrismaDsvExecutionContextService {
       assertExecutionServiceDate(context, route);
       await this.validateRebindEffectiveAt(context, route, now);
       await this.rebindRoute(context, route, now);
-      return this.updateExistingContext(context, route, now);
+      return this.updateExistingContext(context, route, now, input.initiatedByAssignedDriver === true);
     }
 
     const createIsExplicit = input.tripIntent === 'NEW_EXECUTION' || input.tripIntent === 'INITIAL_EXECUTION';
@@ -337,6 +337,7 @@ export class PrismaDsvExecutionContextService {
     context: ExecutionRow,
     route: RouteSnapshot,
     now: Date,
+    initiatedByAssignedDriver = false,
   ): Promise<DsvExecutionSyncResult> {
     assertExecutionServiceDate(context, route);
     const assignmentChanged = context.driverId !== route.driverId
@@ -368,12 +369,17 @@ export class PrismaDsvExecutionContextService {
       }
       await closeSelections(this.tx, context.id, route.shopId, now);
     }
+    // An assignment notice the driver never received stays the first notice; it moves to the new version.
+    const pendingAssignmentNoticeId = contentChanged && !assignmentChanged && !initiatedByAssignedDriver
+      ? await findUndeliveredAssignmentNotice(this.tx, context)
+      : null;
     if (assignmentChanged) {
       await resolveOpenNotifications(this.tx, context.id, now, 'ASSIGNMENT_REPLACED');
     } else if (newlyObservedStart) {
       await resolveOpenNotifications(this.tx, context.id, now, 'ROUTE_STARTED', ['N04', 'N05']);
     } else if (contentChanged) {
-      await resolveOpenNotifications(this.tx, context.id, now, 'CONTENT_SUPERSEDED', ['N01', 'N02', 'N06']);
+      await resolveOpenNotifications(this.tx, context.id, now, 'CONTENT_SUPERSEDED',
+        pendingAssignmentNoticeId === null ? ['N01', 'N02', 'N06'] : ['N02', 'N06']);
     }
     const updated = await this.tx.dsvExecutionContext.update({
       data: {
@@ -413,7 +419,16 @@ export class PrismaDsvExecutionContextService {
       }, 'N03', now, { releasedAt: now.toISOString() });
       notificationKinds.push('N03');
     }
-    if (route.recipientAccountId !== null && (assignmentChanged || contentChanged)) {
+    if (pendingAssignmentNoticeId !== null) {
+      await this.tx.dsvOperationalNotification.update({
+        data: {
+          payload: { routePlanId: route.routePlanId, routeVersionId: route.childVersionId },
+          routeVersion: updated.routeVersion,
+        },
+        where: { id: pendingAssignmentNoticeId },
+      });
+      notificationKinds.push('N01');
+    } else if (route.recipientAccountId !== null && (assignmentChanged || (contentChanged && !initiatedByAssignedDriver))) {
       const kind = assignmentChanged && assignmentOwnerChanged ? 'N01' : 'N02';
       await createNotification(this.tx, updated, kind, now, {
         routePlanId: route.routePlanId,
@@ -765,6 +780,34 @@ function notificationRetentionMs(policy: Prisma.JsonValue | null | undefined): n
     : NOTIFICATION_RETENTION_MS;
 }
 
+async function findUndeliveredAssignmentNotice(
+  tx: Tx,
+  context: { assignmentEpoch: bigint; id: string; shopId: string },
+): Promise<string | null> {
+  const notice = await tx.dsvOperationalNotification.findFirst({
+    select: { id: true },
+    where: {
+      assignmentEpoch: context.assignmentEpoch,
+      audience: 'DRIVER',
+      businessStatus: { in: [...OPEN_NOTIFICATION_STATUSES] },
+      executionContextId: context.id,
+      kind: 'N01',
+      shopId: context.shopId,
+    },
+  });
+  if (notice === null) return null;
+  const sent = await tx.dsvOperationalNotificationAttempt.findFirst({
+    select: { id: true },
+    where: { notificationId: notice.id, shopId: context.shopId, status: 'SENT' },
+  });
+  if (sent !== null) return null;
+  const acknowledged = await tx.dsvOperationalNotificationAck.findFirst({
+    select: { id: true },
+    where: { notificationId: notice.id, shopId: context.shopId },
+  });
+  return acknowledged === null ? notice.id : null;
+}
+
 async function resolveOpenNotifications(
   tx: Tx,
   executionContextId: string,
@@ -835,6 +878,7 @@ function syncCommandPayload(input: DsvExecutionSyncInput): Prisma.InputJsonValue
   return commandPayload({
     commandId: input.commandId,
     executionContextId: input.executionContextId,
+    initiatedByAssignedDriver: input.initiatedByAssignedDriver,
     now: input.now,
     routePlanId: input.routePlanId,
     shopId: input.shopId,

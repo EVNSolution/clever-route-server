@@ -446,13 +446,20 @@ async function completeGroupingLiveChildReplacement(
 
 export async function syncPublishedRouteGroupingChildExecution(
   tx: Tx,
-  input: { childId: string; publishedAt: Date | null; routePlanId: string | null; shopId: string }
+  input: {
+    childId: string;
+    initiatedByAssignedDriver?: boolean;
+    publishedAt: Date | null;
+    routePlanId: string | null;
+    shopId: string;
+  }
 ): Promise<void> {
   if (input.routePlanId === null || input.publishedAt === null) return;
   await syncDsvExecutionHook(tx, {
     shopId: input.shopId,
     routePlanId: input.routePlanId,
-    commandId: `child-successor:${input.childId}`
+    commandId: `child-successor:${input.childId}`,
+    ...(input.initiatedByAssignedDriver === true ? { initiatedByAssignedDriver: true } : {})
   });
 }
 

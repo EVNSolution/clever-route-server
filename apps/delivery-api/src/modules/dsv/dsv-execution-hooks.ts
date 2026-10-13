@@ -14,7 +14,7 @@ function operationalTransaction(value: unknown): Prisma.TransactionClient | null
 
 export async function syncDsvExecutionHook(value: unknown, input: {
   shopId: string; routePlanId: string; commandId: string; firstPublication?: boolean;
-  previousPublishedAt?: Date | null; now?: Date;
+  initiatedByAssignedDriver?: boolean; previousPublishedAt?: Date | null; now?: Date;
 }): Promise<void> {
   const tx = operationalTransaction(value);
   if (tx !== null) await syncDsvExecutionForRoute(tx, input);

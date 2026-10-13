@@ -35,6 +35,8 @@ export type DsvExecutionSyncInput = {
   commandId: string;
   executionContextId?: string | undefined;
   firstPublication?: boolean | undefined;
+  // The assigned driver made this change in the app, so they need no push about it.
+  initiatedByAssignedDriver?: boolean | undefined;
   now?: Date | undefined;
   previousPublishedAt?: Date | null | undefined;
   routePlanId: string;
