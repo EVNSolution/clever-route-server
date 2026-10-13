@@ -304,7 +304,9 @@ jobs:
           bash apps/delivery-api/scripts/test-original-observations-db.sh
 
   validate:
-    if: always()
+    # Runs after failed or timed-out lanes. A cancelled run is never a
+    # successful run, so the deploy gate still refuses it.
+    if: ${{ !cancelled() }}
     needs: [classify, checks, api_static, api_db]
     runs-on: ubuntu-latest
     timeout-minutes: 5

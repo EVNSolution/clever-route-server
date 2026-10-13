@@ -35,7 +35,7 @@ assert.match(jobs.classify, /^ {6}run_api_db: \$\{\{ steps\.lanes\.outputs\.run_
 assert.match(jobs.api_static, /^ {4}if: needs\.classify\.outputs\.run_api_static == 'true'$/m);
 assert.match(jobs.api_db, /^ {4}if: needs\.classify\.outputs\.run_api_db == 'true'$/m);
 
-assert.match(jobs.validate, /^ {4}if: always\(\)$/m, 'verdict must run after failed or cancelled lanes');
+assert.match(jobs.validate, /^ {4}if: \$\{\{ !cancelled\(\) \}\}$/m, 'verdict must run after failed lanes');
 assert.match(jobs.validate, /^ {4}needs: \[classify, checks, api_static, api_db\]$/m, 'verdict must see every lane');
 for (const [lane, result, selected] of [
   ['classify', 'CLASSIFY_RESULT', 'true'],
