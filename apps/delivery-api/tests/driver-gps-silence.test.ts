@@ -100,3 +100,71 @@ describe('driver gps silence detector', () => {
     expect(h.alerts.openOrObserve).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('driver gps check push policy', () => {
+  function pushHarness(routes: unknown[]) {
+    const alerts = { openOrObserve: vi.fn().mockResolvedValue({}), resolveByDedupeKey: vi.fn().mockResolvedValue(true) };
+    const pusher = { send: vi.fn().mockResolvedValue({ failed: 0, invalidated: 0, pushId: 'p', reason: null, sent: 1 }) };
+    const prisma = {
+      driverRuntimeDiagnosticSnapshot: { findFirst: vi.fn().mockResolvedValue(null) },
+      routePlan: { findMany: vi.fn().mockResolvedValue(routes) }
+    };
+    let now = at(0);
+    const service = new PrismaDriverSyncHealthService(prisma as never, alerts as never, () => now, pusher);
+    return { advance: (seconds: number) => { now = at(seconds); }, alerts, prisma, pusher, service };
+  }
+  const route = (overrides: Record<string, unknown> = {}) => ({
+    deliveryWorkCompletedAt: null,
+    driverEvents: [{ createdAt: at(-3600) }],
+    driverId: 'driver-1',
+    driverRouteSessionLeases: [],
+    id: 'route-1',
+    routeStops: [{ deliveryStop: { status: 'PLANNED' } }],
+    shopId: 'shop-1',
+    trackingGeometry: { lastReceivedAt: at(0) },
+    ...overrides
+  });
+
+  test('sends a silent push every minute and a visible one every five, then stops after 30 minutes', async () => {
+    const h = pushHarness([route()]);
+    const seen: string[] = [];
+    for (let seconds = 15; seconds <= 1830; seconds += 15) {
+      h.advance(seconds);
+      await h.service.detectOperationalHealth();
+    }
+    for (const call of h.pusher.send.mock.calls) seen.push(`${(call[0] as { severity: string }).severity}`);
+    expect(seen.slice(0, 2)).toEqual(['WARNING', 'WARNING']);
+    expect(seen.filter((severity) => severity === 'CRITICAL')).toHaveLength(6);
+    expect(h.pusher.send.mock.calls.length).toBeLessThanOrEqual(36);
+    const lastSilent = Math.max(...h.pusher.send.mock.calls.map((call) => (call[0] as { silentSeconds: number }).silentSeconds));
+    expect(lastSilent).toBeLessThanOrEqual(30 * 60);
+  });
+
+  test('records push attempts in the alert payload and starts a fresh episode after a new fix', async () => {
+    const h = pushHarness([route()]);
+    h.advance(61);
+    await h.service.detectOperationalHealth();
+    const payload = (h.alerts.openOrObserve.mock.calls[0]?.[0] as { payload: { push: Record<string, unknown> } }).payload;
+    expect(payload.push).toMatchObject({ contactAfterPush: false, count: 1, lastSeverity: 'WARNING' });
+    (h.prisma.routePlan.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([route({ trackingGeometry: { lastReceivedAt: at(100) } })]);
+    h.advance(165);
+    await h.service.detectOperationalHealth();
+    expect(h.pusher.send).toHaveBeenCalledTimes(2);
+  });
+
+  test('pushes one route per driver and skips abandoned or finished routes', async () => {
+    const h = pushHarness([
+      route({ id: 'newer', trackingGeometry: { lastReceivedAt: at(0) } }),
+      route({ id: 'older', trackingGeometry: { lastReceivedAt: at(-100) } }),
+      route({ driverId: 'driver-2', id: 'abandoned', driverEvents: [{ createdAt: at(-90_000) }], trackingGeometry: { lastReceivedAt: at(-90_000) } }),
+      route({ deliveryWorkCompletedAt: at(-5), driverId: 'driver-3', id: 'done', trackingGeometry: { lastReceivedAt: at(-500) } })
+    ]);
+    h.advance(70);
+    await expect(h.service.detectOperationalHealth()).resolves.toMatchObject({ gpsSilent: 2 });
+    expect(h.pusher.send).toHaveBeenCalledTimes(1);
+    expect(h.pusher.send).toHaveBeenCalledWith(expect.objectContaining({ driverId: 'driver-1', routePlanId: 'older' }));
+    expect(h.alerts.resolveByDedupeKey).toHaveBeenCalledWith(expect.objectContaining({
+      dedupeKey: 'GPS_SILENT:abandoned:driver-2', resolutionCode: 'ROUTE_ABANDONED'
+    }));
+  });
+});

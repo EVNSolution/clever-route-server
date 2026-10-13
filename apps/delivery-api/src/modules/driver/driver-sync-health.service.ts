@@ -2,9 +2,14 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 import type { DriverRouteAccessScope } from './driver-token-access.repository.js';
 import type { PrismaOperationalAlertRepository } from '../notifications/operational-alert.repository.js';
 import { privateDriverDemoVisibilityWhere } from './private-driver-demo.js';
+import type { DriverGpsCheckPusher, DriverGpsCheckPushResult } from './driver-gps-check-push.service.js';
 
 export const DRIVER_SYNC_HEALTH_DEFAULTS = {
   alertRefreshSeconds: 60,
+  gpsAbandonedSeconds: 24 * 60 * 60,
+  gpsCheckDataIntervalSeconds: 60,
+  gpsCheckMaxSilentSeconds: 30 * 60,
+  gpsCheckVisibleIntervalSeconds: 300,
   gpsSilentCriticalSeconds: 300,
   gpsSilentWarningSeconds: 60,
   heartbeatAbsentSeconds: 180,
@@ -72,6 +77,8 @@ export type DriverSyncHeartbeatResult = {
 };
 
 export type DriverSilenceState = {
+  /** Silent for so long that the route is a leftover, not a live route with a dead GPS. */
+  abandoned: boolean;
   contactAbsent: boolean;
   gps: 'CRITICAL' | 'OK' | 'WARNING';
   gpsSilentSeconds: number | null;
@@ -96,10 +103,12 @@ export function deriveDriverSilence(input: {
   const lastLocationAt = latest(input.lastLocationReceivedAt, input.startedAt);
   const lastContactAt = latest(input.lastHeartbeatReceivedAt, lastLocationAt);
   const silentSeconds = lastLocationAt === null ? null : Math.max(0, (input.now.getTime() - lastLocationAt.getTime()) / 1000);
+  const abandoned = silentSeconds !== null && silentSeconds > DRIVER_SYNC_HEALTH_DEFAULTS.gpsAbandonedSeconds;
   return {
+    abandoned,
     contactAbsent: lastContactAt === null
       || input.now.getTime() - lastContactAt.getTime() > DRIVER_SYNC_HEALTH_DEFAULTS.heartbeatAbsentSeconds * 1000,
-    gps: silentSeconds === null || silentSeconds < DRIVER_SYNC_HEALTH_DEFAULTS.gpsSilentWarningSeconds
+    gps: silentSeconds === null || abandoned || silentSeconds < DRIVER_SYNC_HEALTH_DEFAULTS.gpsSilentWarningSeconds
       ? 'OK'
       : silentSeconds >= DRIVER_SYNC_HEALTH_DEFAULTS.gpsSilentCriticalSeconds ? 'CRITICAL' : 'WARNING',
     gpsSilentSeconds: silentSeconds === null ? null : Math.floor(silentSeconds),
@@ -108,13 +117,24 @@ export function deriveDriverSilence(input: {
   };
 }
 
+type GpsPushState = {
+  count: number;
+  episode: number;
+  lastAt: number;
+  lastResult: Pick<DriverGpsCheckPushResult, 'failed' | 'invalidated' | 'reason' | 'sent'> | null;
+  lastSeverity: 'CRITICAL' | 'WARNING' | null;
+  lastVisibleAt: number;
+};
+
 export class PrismaDriverSyncHealthService {
   private readonly alertSync = new Map<string, { at: number; state: string }>();
+  private readonly gpsPush = new Map<string, GpsPushState>();
 
   constructor(
     private readonly prisma: PrismaClient,
     private readonly alerts?: PrismaOperationalAlertRepository,
-    private readonly now: () => Date = () => new Date()
+    private readonly now: () => Date = () => new Date(),
+    private readonly gpsCheckPush?: DriverGpsCheckPusher
   ) {}
 
   async recordHeartbeat(context: DriverRouteAccessScope, input: DriverSyncHeartbeatInput): Promise<DriverSyncHeartbeatResult> {
@@ -380,6 +400,8 @@ export class PrismaDriverSyncHealthService {
     });
     const seen = new Set(routes.map((route) => route.id));
     for (const key of this.alertSync.keys()) if (!seen.has(key.slice(key.indexOf(':') + 1))) this.alertSync.delete(key);
+    for (const key of this.gpsPush.keys()) if (!seen.has(key)) this.gpsPush.delete(key);
+    const pushRouteIds = this.gpsCheckPush === undefined ? new Set<string>() : this.selectGpsPushRoutes(routes, now);
     let heartbeatAbsent = 0;
     let gpsSilent = 0;
     for (const route of routes) {
@@ -392,6 +414,7 @@ export class PrismaDriverSyncHealthService {
       const deliveryWorkDone = route.deliveryWorkCompletedAt !== null
         || (route.routeStops.length > 0 && route.routeStops.every(({ deliveryStop }) => resolvedStopStatuses.includes(deliveryStop.status)));
       if (deliveryWorkDone) {
+        this.gpsPush.delete(route.id);
         // The route stays IN_PROGRESS through return navigation; a quiet phone is expected then.
         await this.syncAlert(route.id, 'ABSENT', 'OK', now, () => this.alerts!.resolveByDedupeKey({
           dedupeKey: heartbeatDedupeKey, resolutionCode: 'DELIVERY_WORK_COMPLETED', resolvedAt: now, shopId: route.shopId
@@ -422,12 +445,21 @@ export class PrismaDriverSyncHealthService {
         }));
       }
       const gpsSeverity = silence.gps;
-      if (gpsSeverity === 'OK') {
+      if (silence.abandoned) {
+        this.gpsPush.delete(route.id);
+        await this.syncAlert(route.id, 'GPS', 'ABANDONED', now, () => this.alerts!.resolveByDedupeKey({
+          dedupeKey: gpsDedupeKey, resolutionCode: 'ROUTE_ABANDONED', resolvedAt: now, shopId: route.shopId
+        }));
+      } else if (gpsSeverity === 'OK') {
+        this.gpsPush.delete(route.id);
         await this.syncAlert(route.id, 'GPS', 'OK', now, () => this.alerts!.resolveByDedupeKey({
           dedupeKey: gpsDedupeKey, resolutionCode: 'GPS_RESUMED', resolvedAt: now, shopId: route.shopId
         }));
       } else {
         gpsSilent += 1;
+        const pushState = pushRouteIds.has(route.id)
+          ? await this.pushGpsCheck(route.id, route.driverId, gpsSeverity, silence, now)
+          : this.gpsPush.get(route.id) ?? null;
         await this.syncAlert(route.id, 'GPS', gpsSeverity, now, async () => {
           const device = await this.latestDeviceState(route.id);
           await this.alerts!.openOrObserve({
@@ -438,6 +470,15 @@ export class PrismaDriverSyncHealthService {
               device,
               lastContactAt: silence.lastContactAt?.toISOString() ?? null,
               lastLocationReceivedAt: silence.lastLocationAt?.toISOString() ?? null,
+              push: pushState === null || pushState.count === 0
+                ? null
+                : {
+                    contactAfterPush: silence.lastContactAt !== null && silence.lastContactAt.getTime() > pushState.lastAt,
+                    count: pushState.count,
+                    lastResult: pushState.lastResult,
+                    lastSentAt: new Date(pushState.lastAt).toISOString(),
+                    lastSeverity: pushState.lastSeverity
+                  },
               silentSeconds: silence.gpsSilentSeconds
             },
             routePlanId: route.id,
@@ -458,6 +499,73 @@ export class PrismaDriverSyncHealthService {
       }
     }
     return { gpsSilent, heartbeatAbsent, routesChecked: routes.length };
+  }
+
+  /** One push per driver account: the route silent the longest wins when a driver holds several. */
+  private selectGpsPushRoutes(
+    routes: Array<{
+      deliveryWorkCompletedAt: Date | null;
+      driverEvents: Array<{ createdAt: Date }>;
+      driverId: string | null;
+      id: string;
+      routeStops: Array<{ deliveryStop: { status: string } }>;
+      trackingGeometry: { lastReceivedAt: Date } | null;
+    }>,
+    now: Date
+  ): Set<string> {
+    const resolvedStopStatuses = ['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED'];
+    const best = new Map<string, { id: string; silentSeconds: number }>();
+    for (const route of routes) {
+      if (route.driverId === null || route.deliveryWorkCompletedAt !== null) continue;
+      if (route.routeStops.length > 0 && route.routeStops.every(({ deliveryStop }) => resolvedStopStatuses.includes(deliveryStop.status))) continue;
+      const silence = deriveDriverSilence({
+        lastHeartbeatReceivedAt: null,
+        lastLocationReceivedAt: route.trackingGeometry?.lastReceivedAt ?? null,
+        now,
+        startedAt: route.driverEvents[0]?.createdAt ?? null
+      });
+      if (silence.abandoned || silence.gps === 'OK' || silence.gpsSilentSeconds === null) continue;
+      const current = best.get(route.driverId);
+      if (current === undefined || silence.gpsSilentSeconds > current.silentSeconds) {
+        best.set(route.driverId, { id: route.id, silentSeconds: silence.gpsSilentSeconds });
+      }
+    }
+    return new Set([...best.values()].map(({ id }) => id));
+  }
+
+  /** Silent data push every minute, a visible one every five, and nothing past 30 minutes of one silence. */
+  private async pushGpsCheck(
+    routePlanId: string,
+    driverId: string,
+    severity: 'CRITICAL' | 'WARNING',
+    silence: DriverSilenceState,
+    now: Date
+  ): Promise<GpsPushState> {
+    const episode = silence.lastLocationAt?.getTime() ?? 0;
+    const previous = this.gpsPush.get(routePlanId);
+    const state: GpsPushState = previous !== undefined && previous.episode === episode
+      ? previous
+      : { count: 0, episode, lastAt: 0, lastResult: null, lastSeverity: null, lastVisibleAt: 0 };
+    this.gpsPush.set(routePlanId, state);
+    const silentSeconds = silence.gpsSilentSeconds ?? 0;
+    const nowMs = now.getTime();
+    if (this.gpsCheckPush === undefined || silentSeconds > DRIVER_SYNC_HEALTH_DEFAULTS.gpsCheckMaxSilentSeconds) return state;
+    const visibleDue = severity === 'CRITICAL'
+      && nowMs - state.lastVisibleAt >= DRIVER_SYNC_HEALTH_DEFAULTS.gpsCheckVisibleIntervalSeconds * 1000;
+    const dataDue = nowMs - state.lastAt >= DRIVER_SYNC_HEALTH_DEFAULTS.gpsCheckDataIntervalSeconds * 1000;
+    if (!visibleDue && !dataDue) return state;
+    const pushSeverity: 'CRITICAL' | 'WARNING' = visibleDue ? 'CRITICAL' : 'WARNING';
+    try {
+      const result = await this.gpsCheckPush.send({ driverId, routePlanId, severity: pushSeverity, silentSeconds });
+      state.lastResult = { failed: result.failed, invalidated: result.invalidated, reason: result.reason, sent: result.sent };
+    } catch {
+      state.lastResult = { failed: 1, invalidated: 0, reason: null, sent: 0 };
+    }
+    state.count += 1;
+    state.lastAt = nowMs;
+    state.lastSeverity = pushSeverity;
+    if (visibleDue) state.lastVisibleAt = nowMs;
+    return state;
   }
 
   /** Writes only when the state changed or an open alert is due for a refresh; keeps a 15 s scan cheap. */
