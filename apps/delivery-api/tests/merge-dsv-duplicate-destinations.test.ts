@@ -4,6 +4,7 @@ import {
   applyDestinationMerge,
   parseFlags,
   planDestinationMerges,
+  planRoadAddressRewrites,
   runDestinationMergeRepair
 } from '../src/scripts/merge-dsv-duplicate-destinations.js';
 
@@ -41,6 +42,39 @@ describe('planDestinationMerges', () => {
     expect(groups[0]?.notes).toMatchObject({ memo: '후문 하차', memoUpdatedAt: '2026-10-01T00:00:00.000Z', openTime: null });
   });
 
+  test('keeps the most-used spelling as survivor, then the oldest', () => {
+    const counts = new Map([[survivorId, 3], [duplicateId, 11]]);
+    expect(planDestinationMerges(shopId, [jioyoungOld, jioyoungNew], (id) => counts.get(id) ?? 0)[0])
+      .toMatchObject({ mergedIds: [survivorId], survivorId: duplicateId });
+  });
+
+  test('rewrites a jibun-only row to the bare road address of its same-name twin', () => {
+    const road = {
+      ...empty, canonicalName: '뉴신팜', createdAt: new Date('2026-09-02T00:00:00.000Z'), id: 'road-id',
+      normalizedAddress: { address: '경기 김포시 고촌읍 아라육로57번길 46, 2층', jibunAddress: '고촌읍 전호리 744', name: '뉴신팜' }
+    };
+    const jibun = {
+      ...empty, canonicalName: '뉴신팜', createdAt: new Date('2026-09-01T00:00:00.000Z'), id: 'jibun-id',
+      normalizedAddress: { address: '경기 김포시 고촌읍 전호리 744번지', jibunAddress: '경기도 김포시 고촌읍 전호리 744', name: '뉴신팜' }
+    };
+    const otherName = { ...jibun, canonicalName: '뉴신팜 물류창고', id: 'warehouse-id' };
+    const otherLot = { ...jibun, id: 'other-lot', normalizedAddress: { ...jibun.normalizedAddress, address: '경기 김포시 고촌읍 전호리 745' } };
+
+    expect(planRoadAddressRewrites(shopId, [jibun, road, otherName, otherLot])).toEqual([
+      { fromAddress: '경기 김포시 고촌읍 전호리 744번지', id: 'jibun-id', shopId, toAddress: '경기 김포시 고촌읍 아라육로57번길 46' }
+    ]);
+  });
+
+  test('does not rewrite when the lot maps to two different road addresses', () => {
+    const jibun = {
+      ...empty, canonicalName: 'x', createdAt: new Date('2026-09-01T00:00:00.000Z'), id: 'jibun-id',
+      normalizedAddress: { address: '서울 동대문구 답십리동 753', name: 'x' }
+    };
+    const roadA = { ...jibun, id: 'a', normalizedAddress: { address: '서울 동대문구 한천로 111', jibunAddress: '답십리동 753' } };
+    const roadB = { ...jibun, id: 'b', normalizedAddress: { address: '서울 동대문구 답십리로60길 27', jibunAddress: '답십리동 753' } };
+    expect(planRoadAddressRewrites(shopId, [jibun, roadA, roadB])).toEqual([]);
+  });
+
   test('ignores already merged rows', () => {
     expect(planDestinationMerges(shopId, [jioyoungOld, { ...jioyoungNew, mergedIntoProfileId: survivorId }])).toEqual([]);
   });
@@ -75,7 +109,7 @@ describe('runDestinationMergeRepair', () => {
     expect(reports).toMatchObject([{ mergedIds: [duplicateId], orderCounts: { [survivorId]: 11, [duplicateId]: 3 }, survivorId }]);
     expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>)).toMatchObject([
       { mode: 'dry-run', shopDomain: 'dsv.example.test', survivorId, mergedIds: [duplicateId] },
-      { groups: 1, mergedProfiles: 1, mode: 'dry-run', shops: 1, wroteDatabaseRows: false }
+      { groups: 1, mergedProfiles: 1, mode: 'dry-run', roadAddressRewrites: 0, shops: 1, wroteDatabaseRows: false }
     ]);
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(prisma.order.updateMany).not.toHaveBeenCalled();

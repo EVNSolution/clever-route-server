@@ -1,7 +1,8 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import {
   buildDispatchImportPreview,
+  canonicalizeDispatchRows,
   type DsvDispatchImportSourceRow,
 } from '../src/modules/dsv/dsv-dispatch-import.service.js';
 
@@ -105,6 +106,47 @@ describe('DSV dispatch import validation', () => {
 
     expect(preview.canCommit).toBe(true);
     expect(preview.rows[0]).toMatchObject({ driverId: null, issues: [], vehicleId: null });
+  });
+});
+
+describe('DSV dispatch address canonicalization', () => {
+  const clientResolved = (address: string): DsvDispatchImportSourceRow => ({
+    ...sourceRow(0),
+    address,
+    addressResolutionStatus: 'RESOLVED',
+    destinationName: '뉴신팜',
+    postalCode: '10137',
+    rawAddress: address,
+  });
+  const resolved = (address: string, status: 'RESOLVED' | 'NOT_FOUND' = 'RESOLVED') => ({
+    address,
+    detailAddress: null,
+    jibunAddress: '경기도 김포시 고촌읍 전호리 744',
+    latitude: 37.6,
+    longitude: 126.7,
+    postalCode: '10137',
+    rawAddress: '경기 김포시 고촌읍 전호리 744번지',
+    status,
+  });
+
+  test('re-resolves a client-resolved jibun address so the stored address is the road address', async () => {
+    const resolve = vi.fn(() => Promise.resolve(resolved('경기도 김포시 고촌읍 아라육로57번길 46')));
+    const [row] = await canonicalizeDispatchRows([clientResolved('경기 김포시 고촌읍 전호리 744번지')], 'dsv.test', { resolve });
+
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(row).toMatchObject({ address: '경기도 김포시 고촌읍 아라육로57번길 46', addressResolutionStatus: 'RESOLVED' });
+  });
+
+  test('keeps the client resolution when the geocoder has no road address, and skips client-resolved road addresses', async () => {
+    const resolve = vi.fn(() => Promise.resolve(resolved('경기 김포시 고촌읍 전호리 744', 'NOT_FOUND')));
+    const [jibun, road] = await canonicalizeDispatchRows([
+      clientResolved('경기 김포시 고촌읍 전호리 744번지'),
+      clientResolved('경기 김포시 고촌읍 아라육로57번길 46'),
+    ], 'dsv.test', { resolve });
+
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(jibun).toMatchObject({ address: '경기 김포시 고촌읍 전호리 744번지', addressResolutionStatus: 'RESOLVED' });
+    expect(road).toMatchObject({ address: '경기 김포시 고촌읍 아라육로57번길 46', addressResolutionStatus: 'RESOLVED' });
   });
 });
 

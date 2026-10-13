@@ -24,7 +24,7 @@ import {
   type DsvDispatchPreviewDiff,
   type DsvDispatchPreviewRow as DsvDispatchDiffRow,
 } from './dsv-dispatch-preview-diff.js';
-import { dsvDestinationIdentity } from './dsv-destination-identity.js';
+import { dsvDestinationIdentity, hasDsvRoadAddress } from './dsv-destination-identity.js';
 import type {
   DsvRouteOptimizationLogger,
   DsvRouteOptimizationSchedulerPort,
@@ -914,66 +914,11 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     });
   }
 
-  private async canonicalizeRows(
+  private canonicalizeRows(
     rows: DsvDispatchImportSourceRow[],
     shopDomain: string,
   ): Promise<DsvDispatchImportSourceRow[]> {
-    const persistenceSafeRows = rows.map(withPersistenceSafeCoordinates);
-    const canonicalizer = this.options.addressCanonicalizer;
-    if (canonicalizer === undefined) return persistenceSafeRows;
-
-    const resolutions = new Map<string, Awaited<ReturnType<DsvAddressCanonicalizer['resolve']>>>();
-    const pendingAddresses = new Map<string, { destinationName: string; rawAddress: string }>();
-    for (const row of persistenceSafeRows) {
-      if (row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined) continue;
-      const rawAddress = row.rawAddress ?? row.address;
-      const key = addressResolutionKey(rawAddress, row.destinationName);
-      if (!pendingAddresses.has(key)) {
-        pendingAddresses.set(key, { destinationName: row.destinationName, rawAddress });
-      }
-    }
-    const entries = [...pendingAddresses.entries()];
-    let nextEntryIndex = 0;
-    const workerCount = Math.min(10, entries.length);
-    await Promise.all(Array.from({ length: workerCount }, async () => {
-      while (nextEntryIndex < entries.length) {
-        const entry = entries[nextEntryIndex];
-        nextEntryIndex += 1;
-        if (entry === undefined) return;
-        const [key, pending] = entry;
-        resolutions.set(key, await canonicalizer.resolve({
-          address: pending.rawAddress,
-          destinationName: pending.destinationName,
-          shopDomain,
-        }));
-      }
-    }));
-
-    return persistenceSafeRows.map((row) => {
-      if (row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined) return withSplitDetailAddress(row);
-      const rawAddress = row.rawAddress ?? row.address;
-      const key = addressResolutionKey(rawAddress, row.destinationName);
-      const resolution = resolutions.get(key);
-      if (resolution === undefined) return row;
-      const hasSourceCoordinates = row.latitude !== null && row.longitude !== null;
-      const hasResolvedCoordinates = resolution.latitude !== null && resolution.longitude !== null;
-      return {
-        ...row,
-        address: resolution.address,
-        ...(resolution.suggestions === undefined
-          ? {}
-          : { addressSuggestions: resolution.suggestions }),
-        addressResolutionStatus: resolution.status === 'RESOLVED' && (hasResolvedCoordinates || hasSourceCoordinates)
-          ? 'RESOLVED'
-          : resolution.status,
-        detailAddress: resolution.detailAddress,
-        jibunAddress: resolution.jibunAddress,
-        latitude: persistenceSafeCoordinate(hasResolvedCoordinates ? resolution.latitude : row.latitude),
-        longitude: persistenceSafeCoordinate(hasResolvedCoordinates ? resolution.longitude : row.longitude),
-        postalCode: resolution.postalCode,
-        rawAddress: resolution.rawAddress,
-      };
-    });
+    return canonicalizeDispatchRows(rows, shopDomain, this.options.addressCanonicalizer);
   }
 
   private async persistConditionCandidates(
@@ -2154,6 +2099,83 @@ function withSplitDetailAddress(row: DsvDispatchImportSourceRow): DsvDispatchImp
     postalCode: row.postalCode ?? parsed.postalCode,
     rawAddress: row.rawAddress ?? parsed.rawAddress,
   };
+}
+
+export async function canonicalizeDispatchRows(
+  rows: DsvDispatchImportSourceRow[],
+  shopDomain: string,
+  canonicalizer: DsvAddressCanonicalizer | undefined,
+): Promise<DsvDispatchImportSourceRow[]> {
+  const persistenceSafeRows = rows.map(withPersistenceSafeCoordinates);
+  if (canonicalizer === undefined) return persistenceSafeRows;
+
+  const resolutions = new Map<string, Awaited<ReturnType<DsvAddressCanonicalizer['resolve']>>>();
+  const pendingAddresses = new Map<string, { destinationName: string; rawAddress: string }>();
+  for (const row of persistenceSafeRows) {
+    if (isClientResolvedRoadAddress(row)) continue;
+    const rawAddress = row.rawAddress ?? row.address;
+    const key = addressResolutionKey(rawAddress, row.destinationName);
+    if (!pendingAddresses.has(key)) {
+      pendingAddresses.set(key, { destinationName: row.destinationName, rawAddress });
+    }
+  }
+  const entries = [...pendingAddresses.entries()];
+  let nextEntryIndex = 0;
+  const workerCount = Math.min(10, entries.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextEntryIndex < entries.length) {
+      const entry = entries[nextEntryIndex];
+      nextEntryIndex += 1;
+      if (entry === undefined) return;
+      const [key, pending] = entry;
+      resolutions.set(key, await canonicalizer.resolve({
+        address: pending.rawAddress,
+        destinationName: pending.destinationName,
+        shopDomain,
+      }));
+    }
+  }));
+
+  return persistenceSafeRows.map((row) => {
+    if (isClientResolvedRoadAddress(row)) return withSplitDetailAddress(row);
+    const rawAddress = row.rawAddress ?? row.address;
+    const key = addressResolutionKey(rawAddress, row.destinationName);
+    const resolution = resolutions.get(key);
+    if (resolution === undefined) return row;
+    // A client-resolved jibun-only row is re-resolved only to learn its road
+    // address; if the geocoder cannot give one, keep the client's resolution.
+    if (isClientResolved(row) && (resolution.status !== 'RESOLVED' || !hasDsvRoadAddress(resolution.address))) {
+      return withSplitDetailAddress(row);
+    }
+    const hasSourceCoordinates = row.latitude !== null && row.longitude !== null;
+    const hasResolvedCoordinates = resolution.latitude !== null && resolution.longitude !== null;
+    return {
+      ...row,
+      address: resolution.address,
+      ...(resolution.suggestions === undefined
+        ? {}
+        : { addressSuggestions: resolution.suggestions }),
+      addressResolutionStatus: resolution.status === 'RESOLVED' && (hasResolvedCoordinates || hasSourceCoordinates)
+        ? 'RESOLVED'
+        : resolution.status,
+      detailAddress: resolution.detailAddress,
+      jibunAddress: resolution.jibunAddress,
+      latitude: persistenceSafeCoordinate(hasResolvedCoordinates ? resolution.latitude : row.latitude),
+      longitude: persistenceSafeCoordinate(hasResolvedCoordinates ? resolution.longitude : row.longitude),
+      postalCode: resolution.postalCode,
+      rawAddress: resolution.rawAddress,
+    };
+  });
+  }
+
+function isClientResolved(row: DsvDispatchImportSourceRow): boolean {
+  return row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined;
+}
+
+// Jibun-only addresses are still sent to the canonicalizer so the stored
+// address is the road address that the destination identity is keyed on.
+function isClientResolvedRoadAddress(row: DsvDispatchImportSourceRow): boolean {
+  return isClientResolved(row) && hasDsvRoadAddress(row.address);
 }
 
 function addressFingerprint(
