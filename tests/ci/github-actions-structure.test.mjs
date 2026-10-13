@@ -15,13 +15,50 @@ const ci = readFileSync(join(workflowDir, 'ci.yml'), 'utf8');
 const operations = readFileSync(join(workflowDir, 'route-ops-operations.yml'), 'utf8');
 
 assert.match(ci, /^name: CI$/m);
-assert.equal((ci.match(/^  [a-z0-9-]+:\n    runs-on:/gm) ?? []).length, 1, 'CI must use one runner job');
-assert.equal((ci.match(/uses: actions\/checkout@/g) ?? []).length, 1, 'CI checkout must run once');
-assert.equal((ci.match(/uses: actions\/setup-node@/g) ?? []).length, 1, 'CI Node setup must run once');
-assert.equal((ci.match(/npm --prefix apps\/delivery-api ci/g) ?? []).length, 1, 'delivery API install must run once');
-assert.equal((ci.match(/npm --prefix apps\/route-ops-web ci/g) ?? []).length, 1, 'web install must run once');
-assert.match(ci, /- name: Dependency security audit[\s\S]*?if: steps\.classify\.outputs\.dependency_changed == 'true'[\s\S]*?npm --prefix apps\/delivery-api run audit:production/u);
-assert.doesNotMatch(ci, /- name: Prepare delivery API[\s\S]*?npm --prefix apps\/delivery-api run audit:production/u, 'prepare step must not run the expensive audit');
+
+// CI is classify -> parallel lanes -> one verdict. Each expensive check lives in
+// exactly one lane, and validate fails unless every selected lane succeeded.
+const jobsSection = ci.slice(ci.indexOf('\njobs:\n'));
+const jobs = Object.fromEntries(
+  [...jobsSection.matchAll(/^ {2}([a-z0-9_-]+):\n([\s\S]*?)(?=^ {2}[a-z0-9_-]+:\n|(?![\s\S]))/gm)].map((m) => [m[1], m[2]]),
+);
+const count = (text, pattern) => (text.match(pattern) ?? []).length;
+const apiPackageTest = /npm --prefix apps\/delivery-api run test(?![:\w])/g;
+
+assert.deepEqual(Object.keys(jobs), ['classify', 'checks', 'api_static', 'api_db', 'validate'], 'CI job graph');
+for (const lane of ['checks', 'api_static', 'api_db']) {
+  assert.match(jobs[lane], /^ {4}needs: classify$/m, `${lane} must wait for classify`);
+  assert.equal(count(jobs[lane], /uses: actions\/checkout@/g), 1, `${lane} must checkout once`);
+}
+assert.match(jobs.classify, /^ {6}run_api_static: \$\{\{ steps\.lanes\.outputs\.run_api_static \}\}$/m);
+assert.match(jobs.classify, /^ {6}run_api_db: \$\{\{ steps\.lanes\.outputs\.run_api_db \}\}$/m);
+assert.match(jobs.api_static, /^ {4}if: needs\.classify\.outputs\.run_api_static == 'true'$/m);
+assert.match(jobs.api_db, /^ {4}if: needs\.classify\.outputs\.run_api_db == 'true'$/m);
+
+assert.match(jobs.validate, /^ {4}if: always\(\)$/m, 'verdict must run after failed or cancelled lanes');
+assert.match(jobs.validate, /^ {4}needs: \[classify, checks, api_static, api_db\]$/m, 'verdict must see every lane');
+for (const [lane, result, selected] of [
+  ['classify', 'CLASSIFY_RESULT', 'true'],
+  ['checks', 'CHECKS_RESULT', 'true'],
+  ['api_static', 'API_STATIC_RESULT', '"$RUN_API_STATIC"'],
+  ['api_db', 'API_DB_RESULT', '"$RUN_API_DB"'],
+]) {
+  assert.ok(jobs.validate.includes(`expect ${lane} "$${result}" ${selected}`), `verdict must check ${lane}`);
+}
+assert.match(jobs.validate, /exit "\$failed"/);
+
+assert.equal(count(ci, /npm --prefix apps\/route-ops-web ci/g), 1, 'web install must run once');
+assert.equal(count(jobs.checks, /npm --prefix apps\/route-ops-web ci/g), 1, 'web install belongs to checks');
+assert.equal(count(jobs.api_static, /npm --prefix apps\/delivery-api run lint/g), 1, 'API lint belongs to api_static');
+assert.equal(count(ci, /npm --prefix apps\/delivery-api run lint/g), 1, 'API lint must run once');
+assert.equal(count(ci, /npm --prefix apps\/delivery-api run typecheck/g), 1, 'API typecheck must run once');
+assert.equal(count(ci, /npm --prefix apps\/delivery-api run build/g), 1, 'API build must run once');
+assert.equal(count(jobs.api_db, /run test:db:disposable/g), 1, 'disposable DB tests belong to api_db');
+assert.equal(count(ci, /run test:db:disposable/g), 1, 'disposable DB tests must run once');
+assert.equal(count(jobs.api_static, apiPackageTest) + count(jobs.api_db, apiPackageTest), 0, 'API package tests belong to checks');
+assert.match(jobs.checks, /- name: Dependency security audit[\s\S]*?if: needs\.classify\.outputs\.dependency_changed == 'true'[\s\S]*?npm --prefix apps\/delivery-api run audit:production/u);
+assert.equal(count(ci, /audit:production/g), 1, 'dependency audit must run once');
+assert.doesNotMatch(jobs.api_static, /audit:production/u, 'prepare step must not run the expensive audit');
 
 assert.match(operations, /^name: Route Ops operations$/m);
 assert.match(operations, /^run-name: Route Ops \/ \$\{\{ inputs\.operation \}\} \/ \$\{\{ inputs\.source_ref \}\}$/m);
