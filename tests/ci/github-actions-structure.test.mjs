@@ -30,8 +30,10 @@ for (const lane of ['checks', 'api_lint', 'api_static', 'api_db']) {
   assert.match(jobs[lane], /^ {4}needs: classify$/m, `${lane} must wait for classify`);
   assert.equal(count(jobs[lane], /uses: actions\/checkout@/g), 1, `${lane} must checkout once`);
 }
-assert.match(jobs.classify, /^ {6}run_api_static: \$\{\{ steps\.lanes\.outputs\.run_api_static \}\}$/m);
-assert.match(jobs.classify, /^ {6}run_api_db: \$\{\{ steps\.lanes\.outputs\.run_api_db \}\}$/m);
+// Lane selection is classifier code with unit tests, not workflow shell.
+assert.match(jobs.classify, /^ {6}run_api_static: \$\{\{ steps\.classify\.outputs\.run_api_static \}\}$/m);
+assert.match(jobs.classify, /^ {6}run_api_db: \$\{\{ steps\.classify\.outputs\.run_api_db \}\}$/m);
+assert.doesNotMatch(jobs.classify, /id: lanes/, 'lane selection must stay in the classifier');
 assert.match(jobs.api_lint, /^ {4}if: needs\.classify\.outputs\.run_api_static == 'true'$/m);
 assert.match(jobs.api_static, /^ {4}if: needs\.classify\.outputs\.run_api_static == 'true'$/m);
 assert.match(jobs.api_db, /^ {4}if: needs\.classify\.outputs\.run_api_db == 'true'$/m);
