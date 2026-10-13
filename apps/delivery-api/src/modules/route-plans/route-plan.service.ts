@@ -95,6 +95,7 @@ export type RoutePlanRepository = {
     shopDomain: string;
   }): Promise<boolean>;
   upsertRouteGeometryCache?(input: RouteGeometryCacheWrite): Promise<void>;
+  persistStoredRouteEta?(routePlanId: string): Promise<void>;
   commitOrderDataRouteGeometryCache?(input: RouteGeometryCacheWrite & {
     appId?: string | undefined;
     expectedRoutePlanUpdatedAt: string;
@@ -450,13 +451,17 @@ export class RoutePlanAdminService implements RoutePlanService {
         !hasValidCoordinates(stop.coordinates.latitude, stop.coordinates.longitude)
       ))
     ) {
+      await this.repository.persistStoredRouteEta?.(detail.routePlan.id);
       return withRouteGeometryResult(detail, emptyRouteResult(), { generatedAt, source });
     }
     const routeResult = await this.buildRouteSafely(detail);
+    // Without new legs the ETA is still written from the stored ones, so a failed build reads FAILED, never PENDING.
     if (avoidsTolls(detail.routePlan.tollPolicy) && (routeResult === null || !isCompleteOrderDataRouteResult(detail, routeResult))) {
+      await this.repository.persistStoredRouteEta?.(detail.routePlan.id);
       throw new RoutePlanGeometryRefreshFailedError('Toll-avoiding route calculation failed. Existing geometry was preserved.');
     }
     if (routeResult === null) {
+      await this.repository.persistStoredRouteEta?.(detail.routePlan.id);
       return withRouteGeometryResult(detail, emptyRouteResult(), { generatedAt, source });
     }
 

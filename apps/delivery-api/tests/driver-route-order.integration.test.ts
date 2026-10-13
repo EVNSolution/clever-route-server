@@ -236,6 +236,50 @@ describeDisposable('driver route order PostgreSQL integration', () => {
     expect(refreshed[0]?.etaCalculatedAt?.getTime()).toBeGreaterThan(before.getTime());
   });
 
+  test('computes every stop of a started route right after the driver reorders it, also the finished ones', async () => {
+    const fixture = await createFixture(prisma, createdShopIds);
+    const events = new PrismaDriverEventRepository(prisma);
+    await events.recordDriverEvent(driverEvent(fixture, 'ROUTE_STARTED', null, '2026-09-07T00:00:00.000Z'));
+    await events.recordDriverEvent(driverEvent(fixture, 'STOP_ARRIVED', fixture.stopIds[0]!, '2026-09-07T00:10:00.000Z'));
+    await prisma.deliveryStop.update({ data: { status: 'DELIVERED' }, where: { id: fixture.stopIds[0]! } });
+    await prisma.driverEvent.create({ data: {
+      deliveryStopId: fixture.stopIds[0]!, driverId: fixture.driverId, eventType: 'STOP_DELIVERED', occurredAt: new Date('2026-09-07T00:12:00.000Z'),
+      payload: {}, routePlanId: fixture.routePlanId, routeVersionId: fixture.childVersionId, shopId: fixture.shopId
+    } });
+    const service = new PrismaDriverRouteOrderService(prisma, new RoutePlanAdminService(
+      new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true }),
+      { buildRoute: (detail) => Promise.resolve(syntheticRoute(detail)) }
+    ));
+
+    const reordered = await service.reorder({
+      commandId: 'route-order-started', driverId: fixture.driverId, expectedVersion: fixture.childVersionId,
+      orderedStopIds: [fixture.stopIds[1]!, fixture.stopIds[0]!], routePlanId: fixture.routePlanId, shopId: fixture.shopId
+    });
+
+    const stops = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    for (const stop of stops) {
+      expect(stop).toMatchObject({ etaFailureCode: null, etaInputRouteVersionId: reordered.routeVersionId, etaStatus: 'READY' });
+      expect(stop.estimatedArrivalAt).toBeInstanceOf(Date);
+    }
+  });
+
+  test('writes FAILED instead of leaving PENDING when the routing engine cannot rebuild a reordered route', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'READY');
+    const service = new PrismaDriverRouteOrderService(prisma, new RoutePlanAdminService(
+      new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true }),
+      { buildRoute: () => Promise.reject(new Error('routing engine unavailable')) }
+    ));
+
+    await service.reorder({
+      commandId: 'route-order-engine-down', driverId: fixture.driverId, expectedVersion: fixture.childVersionId,
+      orderedStopIds: [fixture.stopIds[1]!, fixture.stopIds[0]!], routePlanId: fixture.routePlanId, shopId: fixture.shopId
+    });
+
+    const stops = await prisma.routePlanStop.findMany({ orderBy: { sequence: 'asc' }, where: { routePlanId: fixture.routePlanId } });
+    expect(stops.map(({ etaFailureCode, etaStatus }) => ({ etaFailureCode, etaStatus })))
+      .toEqual([0, 1].map(() => ({ etaFailureCode: 'ETA_INPUT_DURATION_UNAVAILABLE', etaStatus: 'FAILED' })));
+  });
+
   test('keeps a committed reorder when the geometry refresh fails', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'READY');
     const service = new PrismaDriverRouteOrderService(prisma, {

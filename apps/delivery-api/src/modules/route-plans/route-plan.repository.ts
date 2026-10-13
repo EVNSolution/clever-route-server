@@ -61,6 +61,7 @@ import {
 } from './route-plan-geometry-cache.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
 import { applyDriverStopTimes } from './stop-service-time.js';
+import { replayRollingEta, type RollingEtaReplayEvent } from '../driver/rolling-eta-backfill.js';
 import { reconcileKfoodDeliveryWorkCompletion, toRouteDeliveryDisplayStatus } from './kfood-delivery-completion.js';
 import { normalizeRouteEtaRange, normalizeRouteTotalAmount } from './route-plan-summary-normalization.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
@@ -1448,6 +1449,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     return routePlan !== null;
   }
 
+  async persistStoredRouteEta(routePlanId: string): Promise<void> {
+    await this.prisma.$transaction((tx) => persistStoredLegsEta(tx, routePlanId));
+  }
+
   async upsertRouteGeometryCache(input: RouteGeometryCacheWrite): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       await tx.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
@@ -2129,6 +2134,19 @@ export async function refreshPlannedRouteTimes(tx: Prisma.TransactionClient, rou
     await applyDriverStopTimes(tx, routePlanId);
     return;
   }
+  await persistStoredLegsEta(tx, routePlanId, legs);
+}
+
+async function persistStoredLegsEta(
+  tx: Prisma.TransactionClient,
+  routePlanId: string,
+  legs?: Array<{ deliveryStopId: string; distanceFromPreviousMeters: number | null; durationFromPreviousSeconds: number | null }>
+): Promise<void> {
+  legs ??= await tx.routePlanStop.findMany({
+    orderBy: { sequence: 'asc' },
+    select: { deliveryStopId: true, distanceFromPreviousMeters: true, durationFromPreviousSeconds: true },
+    where: { routePlanId }
+  });
   // A stored NULL leg is a missing leg, not a 0-second one.
   await persistPlannedRouteEta(tx, { routePlanId, stopPoints: legs.map((leg) => ({
     deliveryStopId: leg.deliveryStopId,
@@ -2147,10 +2165,16 @@ async function hasCurrentShapeGeometry(tx: Prisma.TransactionClient, routePlanId
   return cache !== null;
 }
 
+/**
+ * The one ETA writer after a route save: every geometry commit ends here. A Ready route gets the planned ETA. A started
+ * route replays the driver's progress events over the new legs, so no save leaves its stops PENDING.
+ */
 async function persistPlannedRouteEta(
   tx: Prisma.TransactionClient,
   input: PlannedRouteEtaInput
 ): Promise<void> {
+  // Driver events take the same lock, so a replay never interleaves with a live ETA write.
+  await tx.$queryRaw`SELECT "id" FROM "route_plans" WHERE "id" = ${input.routePlanId}::uuid FOR UPDATE`;
   await applyDriverStopTimes(tx, input.routePlanId);
   const routePlan = await tx.routePlan.findUnique({
     select: {
@@ -2166,9 +2190,11 @@ async function persistPlannedRouteEta(
       routeStops: {
         orderBy: { sequence: 'asc' },
         select: {
-          deliveryStop: { select: { serviceMinutes: true } },
+          deliveryStop: { select: { serviceMinutes: true, status: true } },
           deliveryStopId: true,
-          sequence: true
+          id: true,
+          sequence: true,
+          updatedAt: true
         }
       },
       shop: {
@@ -2184,7 +2210,9 @@ async function persistPlannedRouteEta(
     },
     where: { id: input.routePlanId }
   });
-  if (routePlan === null || !isRouteReadyStatus(routePlan.status) || routePlan.routeStops.length === 0) return;
+  if (routePlan === null || routePlan.routeStops.length === 0) return;
+  const started = routePlan.status === 'IN_PROGRESS' && routePlan.driverId !== null;
+  if (!started && !isRouteReadyStatus(routePlan.status)) return;
 
   const calculatedAt = input.generatedAt ?? new Date();
   const routeVersionId = routePlan.routeGroupingChildVersions[0]?.id ?? null;
@@ -2217,30 +2245,82 @@ async function persistPlannedRouteEta(
     : failureCode === 'ETA_INPUT_DURATION_UNAVAILABLE'
       ? 'ETA could not be calculated because route leg durations are unavailable.'
       : null;
+  const etas = started
+    ? await replayStartedRouteEta(tx, input.routePlanId, routePlan.driverId!, routeVersionId, routePlan.routeStops, updates, calculatedAt)
+    : updates.map((update) => ({ estimatedArrivalAt: update.estimatedArrivalAt, etaFailureCode: null, etaSource: 'PLANNED_DEPARTURE' }));
 
-  for (const update of updates) {
+  for (const [index, update] of updates.entries()) {
+    const eta = etas[index]!;
     // A missing leg only fails the stops after it; without a start every stop has no time and fails.
-    const etaStatus = routePlan.driverId === null ? 'NOT_REQUIRED' : update.estimatedArrivalAt === null ? 'FAILED' : 'READY';
+    const etaStatus = routePlan.driverId === null ? 'NOT_REQUIRED' : eta.estimatedArrivalAt === null ? 'FAILED' : 'READY';
     await tx.routePlanStop.updateMany({
       data: {
         distanceFromPreviousMeters: update.distanceFromPreviousMeters,
         durationFromPreviousSeconds: update.durationFromPreviousSeconds,
-        estimatedArrivalAt: update.estimatedArrivalAt,
+        estimatedArrivalAt: eta.estimatedArrivalAt,
         etaCalculatedAt: routePlan.driverId === null ? null : calculatedAt,
-        etaFailureCode: etaStatus === 'FAILED' ? failureCode : null,
+        etaFailureCode: etaStatus === 'FAILED' ? eta.etaFailureCode ?? failureCode : null,
         etaFailureMessage: etaStatus === 'FAILED' ? etaFailureMessage : null,
         etaInputRouteVersionId: routeVersionId,
-        etaSource: routePlan.driverId === null ? null : 'PLANNED_DEPARTURE',
+        etaSource: routePlan.driverId === null ? null : eta.etaSource,
         etaStatus
       },
       where: {
-        deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } },
+        // A started route rewrites every stop: a finished stop keeps the ETA its events gave it.
+        ...(started ? {} : { deliveryStop: { status: { in: ['PENDING', 'ASSIGNED', 'EN_ROUTE'] } } }),
         deliveryStopId: update.deliveryStopId,
         routePlanId: input.routePlanId,
         sequence: update.sequence
       }
     });
   }
+}
+
+const PROGRESS_EVENT_TYPES = ['ROUTE_STARTED', 'PICKUP_COMPLETED', 'STOP_ARRIVED', 'STOP_DELIVERED', 'STOP_FAILED'] as const;
+
+/** The driver's progress events on this route, in any earlier version, replayed over the planned seed and the new legs. */
+async function replayStartedRouteEta(
+  tx: Prisma.TransactionClient,
+  routePlanId: string,
+  driverId: string,
+  routeVersionId: string | null,
+  routeStops: Array<{ deliveryStop: { serviceMinutes: number | null; status: string }; deliveryStopId: string; id: string; sequence: number; updatedAt: Date }>,
+  planned: Array<{ distanceFromPreviousMeters: number | null; durationFromPreviousSeconds: number | null; estimatedArrivalAt: Date | null }>,
+  calculatedAt: Date
+): Promise<Array<{ estimatedArrivalAt: Date | null; etaFailureCode: string | null; etaSource: string | null }>> {
+  const stopIds = new Set(routeStops.map((stop) => stop.deliveryStopId));
+  const events = await tx.driverEvent.findMany({
+    orderBy: { id: 'asc' },
+    select: { createdAt: true, deliveryStopId: true, driverId: true, eventType: true, id: true, occurredAt: true },
+    where: { driverId, eventType: { in: [...PROGRESS_EVENT_TYPES] }, routePlanId }
+  });
+  const replay = replayRollingEta({
+    currentRouteVersionId: routeVersionId,
+    // A stop moved to another route keeps its events there.
+    events: events
+      .filter((event) => event.deliveryStopId === null || stopIds.has(event.deliveryStopId))
+      .map((event) => ({ ...event, eventType: event.eventType as RollingEtaReplayEvent['eventType'] })),
+    stops: routeStops.map((stop, index) => ({
+      deliveryStopId: stop.deliveryStopId,
+      distanceFromPreviousMeters: planned[index]!.distanceFromPreviousMeters,
+      durationFromPreviousSeconds: planned[index]!.durationFromPreviousSeconds,
+      estimatedArrivalAt: planned[index]!.estimatedArrivalAt,
+      etaCalculatedAt: calculatedAt,
+      etaInputRouteVersionId: routeVersionId,
+      etaSource: 'PLANNED_DEPARTURE',
+      etaStatus: planned[index]!.estimatedArrivalAt === null ? 'FAILED' : 'READY',
+      id: stop.id,
+      sequence: stop.sequence,
+      serviceMinutes: stop.deliveryStop.serviceMinutes,
+      status: stop.deliveryStop.status,
+      updatedAt: stop.updatedAt
+    }))
+  });
+  return replay.stops.map((stop) => ({
+    estimatedArrivalAt: stop.estimatedArrivalAt,
+    etaFailureCode: stop.etaFailureCode ?? null,
+    etaSource: stop.etaSource
+  }));
 }
 
 function plannedRouteEtaStart(input: {

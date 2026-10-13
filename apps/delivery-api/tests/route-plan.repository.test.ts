@@ -453,16 +453,16 @@ describe('PrismaRoutePlanRepository', () => {
     }
   });
 
-  test('does not replace live driver ETA after route execution starts', async () => {
+  test('never leaves a finished route of a later status to the planned ETA', async () => {
     const { prisma } = createPrismaHarness({
       routePlanProjection: {
         constraints: {},
         driverId: 'driver-id',
         planDate: new Date('2026-08-18T00:00:00.000Z'),
         routeGroupingChildVersions: [{ id: 'route-version-id' }],
-        routeStops: [{ deliveryStop: { serviceMinutes: 5 }, deliveryStopId: 'stop-1', sequence: 1 }],
+        routeStops: [{ deliveryStop: { serviceMinutes: 5, status: 'DELIVERED' }, deliveryStopId: 'stop-1', id: 'row-1', sequence: 1, updatedAt: new Date() }],
         shop: { commerceConnections: [], routeOpsUiSettings: null },
-        status: 'IN_PROGRESS'
+        status: 'COMPLETED'
       }
     });
     const repository = new PrismaRoutePlanRepository(
