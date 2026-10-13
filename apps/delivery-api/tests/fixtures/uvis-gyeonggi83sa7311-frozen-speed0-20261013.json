@@ -1,0 +1,301 @@
+{
+  "description": "경기83사7311 (ebe9167c) VEHICLE_GPS samples 2026-10-12 22:08-22:44Z (KST service day 2026-10-13). Two frozen runs with speedKph 0: 22:18-22:22 then 5,262 m jump; 22:29-22:38 then 3,604 m jump. Pulled read-only from prod 2026-10-13.",
+  "samples": [
+    {
+      "observedAt": "2026-10-12T22:08:04.000Z",
+      "staleAfter": "2026-10-12T22:10:04.000Z",
+      "latitude": 37.330128,
+      "longitude": 126.938154,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:09:04.000Z",
+      "staleAfter": "2026-10-12T22:11:04.000Z",
+      "latitude": 37.329997,
+      "longitude": 126.935254,
+      "speedKph": 27.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:10:04.000Z",
+      "staleAfter": "2026-10-12T22:12:04.000Z",
+      "latitude": 37.329831,
+      "longitude": 126.933275,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:11:04.000Z",
+      "staleAfter": "2026-10-12T22:13:04.000Z",
+      "latitude": 37.329829,
+      "longitude": 126.933276,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:12:04.000Z",
+      "staleAfter": "2026-10-12T22:14:04.000Z",
+      "latitude": 37.329829,
+      "longitude": 126.933279,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:13:04.000Z",
+      "staleAfter": "2026-10-12T22:15:04.000Z",
+      "latitude": 37.33001,
+      "longitude": 126.933165,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:14:04.000Z",
+      "staleAfter": "2026-10-12T22:16:04.000Z",
+      "latitude": 37.330029,
+      "longitude": 126.933186,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:15:04.000Z",
+      "staleAfter": "2026-10-12T22:17:04.000Z",
+      "latitude": 37.330335,
+      "longitude": 126.930639,
+      "speedKph": 37.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:16:04.000Z",
+      "staleAfter": "2026-10-12T22:18:04.000Z",
+      "latitude": 37.327571,
+      "longitude": 126.928754,
+      "speedKph": 42.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:17:04.000Z",
+      "staleAfter": "2026-10-12T22:19:04.000Z",
+      "latitude": 37.328147,
+      "longitude": 126.924614,
+      "speedKph": 58.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:18:04.000Z",
+      "staleAfter": "2026-10-12T22:20:04.000Z",
+      "latitude": 37.336115,
+      "longitude": 126.920272,
+      "speedKph": 58.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:19:04.000Z",
+      "staleAfter": "2026-10-12T22:21:04.000Z",
+      "latitude": 37.336115,
+      "longitude": 126.920272,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:20:04.000Z",
+      "staleAfter": "2026-10-12T22:22:04.000Z",
+      "latitude": 37.336115,
+      "longitude": 126.920272,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:21:04.000Z",
+      "staleAfter": "2026-10-12T22:23:04.000Z",
+      "latitude": 37.336115,
+      "longitude": 126.920272,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:22:04.000Z",
+      "staleAfter": "2026-10-12T22:24:04.000Z",
+      "latitude": 37.336115,
+      "longitude": 126.920272,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:23:04.000Z",
+      "staleAfter": "2026-10-12T22:25:04.000Z",
+      "latitude": 37.372052,
+      "longitude": 126.881535,
+      "speedKph": 63.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:24:04.000Z",
+      "staleAfter": "2026-10-12T22:26:04.000Z",
+      "latitude": 37.380707,
+      "longitude": 126.875429,
+      "speedKph": 68.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:25:04.000Z",
+      "staleAfter": "2026-10-12T22:27:04.000Z",
+      "latitude": 37.388688,
+      "longitude": 126.867246,
+      "speedKph": 68.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:26:04.000Z",
+      "staleAfter": "2026-10-12T22:28:04.000Z",
+      "latitude": 37.398449,
+      "longitude": 126.862573,
+      "speedKph": 55.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:27:04.000Z",
+      "staleAfter": "2026-10-12T22:29:04.000Z",
+      "latitude": 37.403819,
+      "longitude": 126.860509,
+      "speedKph": 19.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:28:04.000Z",
+      "staleAfter": "2026-10-12T22:30:04.000Z",
+      "latitude": 37.409276,
+      "longitude": 126.858405,
+      "speedKph": 47.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:29:04.000Z",
+      "staleAfter": "2026-10-12T22:31:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 35.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:30:04.000Z",
+      "staleAfter": "2026-10-12T22:32:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:31:04.000Z",
+      "staleAfter": "2026-10-12T22:33:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:32:04.000Z",
+      "staleAfter": "2026-10-12T22:34:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:33:04.000Z",
+      "staleAfter": "2026-10-12T22:35:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:34:04.000Z",
+      "staleAfter": "2026-10-12T22:36:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:35:04.000Z",
+      "staleAfter": "2026-10-12T22:37:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:36:04.000Z",
+      "staleAfter": "2026-10-12T22:38:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:37:04.000Z",
+      "staleAfter": "2026-10-12T22:39:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:38:04.000Z",
+      "staleAfter": "2026-10-12T22:40:04.000Z",
+      "latitude": 37.414615,
+      "longitude": 126.861376,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:39:04.000Z",
+      "staleAfter": "2026-10-12T22:41:04.000Z",
+      "latitude": 37.434768,
+      "longitude": 126.893342,
+      "speedKph": 5.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:40:04.000Z",
+      "staleAfter": "2026-10-12T22:42:04.000Z",
+      "latitude": 37.436032,
+      "longitude": 126.894525,
+      "speedKph": 11.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:41:04.000Z",
+      "staleAfter": "2026-10-12T22:43:04.000Z",
+      "latitude": 37.437253,
+      "longitude": 126.895847,
+      "speedKph": 5.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:42:04.000Z",
+      "staleAfter": "2026-10-12T22:44:04.000Z",
+      "latitude": 37.438159,
+      "longitude": 126.896042,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:43:04.000Z",
+      "staleAfter": "2026-10-12T22:45:04.000Z",
+      "latitude": 37.439196,
+      "longitude": 126.896547,
+      "speedKph": 14.0,
+      "ignitionOn": true
+    },
+    {
+      "observedAt": "2026-10-12T22:44:04.000Z",
+      "staleAfter": "2026-10-12T22:46:04.000Z",
+      "latitude": 37.439718,
+      "longitude": 126.896882,
+      "speedKph": 0.0,
+      "ignitionOn": true
+    }
+  ]
+}
