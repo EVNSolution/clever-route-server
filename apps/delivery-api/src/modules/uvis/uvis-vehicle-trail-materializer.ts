@@ -24,6 +24,7 @@ import {
   type InferredTunnelBridge,
   type RoutedGapBridge,
 } from './uvis-tunnel-bridge.js';
+import { summarizeUvisTrailQuality } from './uvis-trail-quality.js';
 import { buildUvisVehicleDailyRoute } from './uvis-vehicle-daily-route.js';
 
 export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as const;
@@ -124,7 +125,10 @@ type IntervalEvidence = {
 };
 
 export class PrismaUvisVehicleTrailMaterializationRepository {
-  constructor(private readonly prisma: UvisVehicleTrailPrismaClient) {}
+  constructor(
+    private readonly prisma: UvisVehicleTrailPrismaClient,
+    private readonly logger?: { info: (context: Record<string, unknown>, message: string) => void },
+  ) {}
 
   async findDocument(input: {
     serviceDate: string;
@@ -242,6 +246,16 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
       ...(routedGapMisses.length === 0 ? {} : { routedGapMisses }),
       ...(routedGaps.length === 0 ? {} : { routedGaps }),
     };
+
+    // One line per vehicle-day on the finalizing run only; every-minute runs would log ~1,440 lines a day.
+    if (input.finalizing === true) {
+      this.logger?.info({
+        ...summarizeUvisTrailQuality(points, document),
+        serviceDate: input.serviceDate,
+        shopId: input.shopId,
+        vehicleId: input.vehicleId,
+      }, 'UVIS trail quality');
+    }
 
     const finalizedAt = input.finalizing === true
       && !retryable
