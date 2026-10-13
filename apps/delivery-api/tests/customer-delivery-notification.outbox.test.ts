@@ -51,7 +51,10 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
         AND: [{
           OR: [
             { source: 'DSV_CUSTOMER_MESSAGE' },
-            { shop: { customerEmailSettings: { equals: true, path: ['automatic', 'enabled'] } } }
+            {
+              metadata: { equals: true, path: ['routeEmailSelected'] },
+              shop: { customerEmailSettings: { equals: true, path: ['automatic', 'enabled'] } }
+            }
           ]
         }],
         OR: [
@@ -80,7 +83,10 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
     expect(claimUpdate?.where.AND).toEqual([{
       OR: [
         { source: 'DSV_CUSTOMER_MESSAGE' },
-        { shop: { customerEmailSettings: { equals: true, path: ['automatic', 'enabled'] } } }
+        {
+          metadata: { equals: true, path: ['routeEmailSelected'] },
+          shop: { customerEmailSettings: { equals: true, path: ['automatic', 'enabled'] } }
+        }
       ]
     }]);
   });

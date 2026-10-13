@@ -511,7 +511,7 @@ export class PrismaDriverEventRepository {
             routePlanId: requireRoutePlanId(input), shopId: input.shopId, now: event.createdAt
           });
         }
-        if (!deferCompletionForNavigation && transaction.customerRouteNotificationFact !== undefined && transaction.shop !== undefined) {
+        if (!deferCompletionForNavigation && transaction.customerRouteNotificationFact !== undefined && transaction.routePlan !== undefined && transaction.shop !== undefined) {
           await persistAutomaticCustomerEmailFacts(transaction, {
             deliveryStopId: input.deliveryStopId,
             driverEventId: event.id,

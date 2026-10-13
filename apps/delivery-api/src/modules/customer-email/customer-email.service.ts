@@ -18,6 +18,7 @@ import {
   type CustomerEmailTransport,
 } from './customer-email-transport.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
+import { readRouteEmailSelection, ROUTE_EMAIL_SELECTION_KEY, type RouteEmailSelection } from './customer-email-route-selection.js';
 import { DEFAULT_SHOPIFY_APP_ID, appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
 import { isIanaTimezone } from '../driver/driver-route-timezone.js';
@@ -148,7 +149,7 @@ export type CustomerEmailDispatchResult = {
 
 type CustomerEmailPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'customerEmailManualDispatch' | 'customerEmailManualDispatchRecipient' | 'routePlan' | 'shop'
+  '$executeRaw' | '$transaction' | 'customerEmailManualDispatch' | 'customerEmailManualDispatchRecipient' | 'routePlan' | 'shop'
 >;
 
 type CustomerEmailRoutePlanRow = {
@@ -203,6 +204,47 @@ export class CustomerEmailService {
     private readonly transport: CustomerEmailTransport,
     private readonly attempts?: PrismaCustomerDeliveryNotificationAttemptRepository,
   ) {}
+
+  async getRouteEmailSelection(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<{ selection: RouteEmailSelection | null } | null> {
+    const routePlan = await this.prisma.routePlan.findFirst({
+      select: { constraints: true },
+      where: { id: input.routePlanId, shop: { is: shopWhereInput(input) } },
+    });
+    return routePlan === null ? null : { selection: readRouteEmailSelection(routePlan.constraints) };
+  }
+
+  // Saved before Dispatch. A JSONB merge keeps other constraint keys and leaves updatedAt alone,
+  // so the Dispatch that follows does not see a version conflict.
+  async setRouteEmailSelection(input: {
+    actor: string;
+    appId?: string | undefined;
+    deliveryStopIds: string[];
+    routePlanId: string;
+    shopDomain: string;
+    signals: CustomerEmailSignal[];
+  }): Promise<RouteEmailSelection | null> {
+    const routePlan = await this.prisma.routePlan.findFirst({
+      select: { id: true, routeStops: { select: { deliveryStopId: true } }, shopId: true },
+      where: { id: input.routePlanId, shop: { is: shopWhereInput(input) } },
+    });
+    if (routePlan === null) return null;
+    const routeStopIds = new Set(routePlan.routeStops.map((stop) => stop.deliveryStopId));
+    if (input.deliveryStopIds.some((id) => !routeStopIds.has(id))) {
+      throw new CustomerEmailValidationError('Selected customers must be stops on this route.', 'CUSTOMER_EMAIL_SELECTION_STOP_INVALID');
+    }
+    const selection: RouteEmailSelection = {
+      deliveryStopIds: input.deliveryStopIds,
+      signals: input.signals,
+      updatedAt: new Date().toISOString(),
+      updatedBy: input.actor,
+    };
+    await this.prisma.$executeRaw`
+      UPDATE "route_plans"
+      SET "constraints" = COALESCE("constraints", '{}'::jsonb) || jsonb_build_object(${ROUTE_EMAIL_SELECTION_KEY}::text, ${JSON.stringify(selection)}::jsonb)
+      WHERE "id" = ${routePlan.id}::uuid AND "shopId" = ${routePlan.shopId}::uuid
+    `;
+    return selection;
+  }
 
   async getSettings(input: { appId?: string | undefined; shopDomain: string }): Promise<CustomerEmailSettings | null> {
     const shop = await this.prisma.shop.findUnique({
@@ -1081,7 +1123,7 @@ export class CustomerEmailService {
 }
 
 export class CustomerEmailValidationError extends Error {
-  readonly code: 'CUSTOMER_EMAIL_SENDER_MANAGED' | 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED' | 'CUSTOMER_EMAIL_BAD_REQUEST' | 'CUSTOMER_EMAIL_COMMAND_CONFLICT' | 'CUSTOMER_EMAIL_OUTCOME_UNCERTAIN' | 'CUSTOMER_EMAIL_PREVIEW_CONFLICT' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED';
+  readonly code: 'CUSTOMER_EMAIL_SELECTION_STOP_INVALID' | 'CUSTOMER_EMAIL_SENDER_MANAGED' | 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED' | 'CUSTOMER_EMAIL_BAD_REQUEST' | 'CUSTOMER_EMAIL_COMMAND_CONFLICT' | 'CUSTOMER_EMAIL_OUTCOME_UNCERTAIN' | 'CUSTOMER_EMAIL_PREVIEW_CONFLICT' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED';
 
   constructor(
     message: string,

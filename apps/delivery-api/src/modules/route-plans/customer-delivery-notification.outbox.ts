@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import type { Prisma, PrismaClient } from '@prisma/client';
 
+import { ROUTE_EMAIL_SELECTED_KEY } from '../customer-email/customer-email-route-selection.js';
+
 export type CustomerDeliveryNotificationJob = {
   appId: string;
   attemptCount: number;
@@ -29,6 +31,8 @@ const claimableWhere = (now: Date, allowCustomerMessages: boolean): Prisma.Custo
     OR: [
       ...(allowCustomerMessages ? [{ source: 'DSV_CUSTOMER_MESSAGE' }] : []),
       {
+        // Only facts the office selected at Dispatch; older QUEUED facts stay unsent after activation.
+        metadata: { equals: true, path: [ROUTE_EMAIL_SELECTED_KEY] },
         shop: {
           customerEmailSettings: {
             equals: true,
