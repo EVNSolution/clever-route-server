@@ -197,6 +197,15 @@ serverSuite('DSV isolated real PostgreSQL HTTP integration', () => {
       body: {}, headers: adminHeaders(fixture), method: 'POST',
     });
     expect(started.body.data).toMatchObject({ afterStart: 0, reminderStatus: 'RESOLVED_START' });
+    // A change notice follows only an assignment notice the driver already received.
+    const assignmentNotice = await harness.prisma.dsvOperationalNotification.findFirstOrThrow({
+      select: { id: true },
+      where: { kind: 'N01', shopId: fixture.shopId },
+    });
+    const read = await requestJson(baseUrl, `/api/dsv/driver/operational-notifications/${assignmentNotice.id}/acks`, {
+      body: { ackKind: 'READ' }, headers: { authorization: `Bearer ${accessToken}` }, method: 'POST',
+    });
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
     const changed = await requestJson(baseUrl, '/api/dsv/__fixture/actions/publication/change', {
       body: {}, headers: adminHeaders(fixture), method: 'POST',
     });
