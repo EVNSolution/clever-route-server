@@ -188,7 +188,11 @@ describe('privacy routes', () => {
       expect(response.body).toContain('Firebase Cloud Messaging');
       expect(response.body).toContain('Google Maps 또는 Waze');
       expect(response.body).toContain('/routes-app/account-deletion');
-      expect(response.body).toContain('Last updated: 2026-10-02');
+      expect(response.body).toContain('출발 전 포함');
+      expect(response.body).toContain('출발 전 위치는 배송원이 앱의 안내에 동의한 뒤에만 처리');
+      expect(response.body).toContain('최대 20시간');
+      expect(response.body).not.toContain('배송원이 명시적으로 시작한 활성 배송 경로');
+      expect(response.body).toContain('Last updated: 2026-10-13');
       expect(response.body).not.toContain('CLEVER Driver 개인정보 처리방침');
     } finally {
       await app.close();
