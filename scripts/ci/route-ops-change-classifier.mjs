@@ -180,6 +180,13 @@ export function classifyRouteOpsChanges(files, options = {}) {
   // for every API source edit adds several minutes without changing the result.
   const dependency_changed = force || any(files, [DEPENDENCY_MANIFEST_RE]);
 
+  // CI lanes. The disposable DB lane runs for every API change except the
+  // route-geometry-only profile. It runs in parallel, so a hand-kept allowlist
+  // of critical files only saved runner minutes, and it missed DSV, UVIS,
+  // route-tracking source and the DB tests and runner scripts themselves.
+  const run_api_static = fullRequired || apiChanged || customerEmailChanged;
+  const run_api_db = fullRequired || (apiChanged && !routeGeometryOnlyApiChanged);
+
   return {
     changed_files_count: files.length,
     route_ops_changed: routeOpsChanged,
@@ -194,6 +201,8 @@ export function classifyRouteOpsChanges(files, options = {}) {
     dependency_changed,
     web_artifact_required: webArtifactRequired,
     api_test_profile,
+    run_api_static,
+    run_api_db,
   };
 }
 
