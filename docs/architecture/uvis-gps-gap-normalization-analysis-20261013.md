@@ -13,7 +13,7 @@ GPS 고정 구간의 반복 송신을 새 위치 관측으로 취급하는 구�
 | 저장소 절대 경로 | `/Users/jiin/Documents/Files/03_Work_EVnSolution/01_Repos/04_CLEVER_Route/clever-route-server` |
 | 기준 커밋 | `8c693bda115f4480a4f86346f61dc1bf9b79eace` |
 | 포함된 최신 UVIS 수정 | `24d0a1ff02962cd55ede801cbbbc9091f403feb1` |
-| 상태 | 분석 완료. 아래 정규화 설계는 미구현 |
+| 상태 | 분석 완료. 정규화는 `fix/uvis-frozen-fix-gap`에서 구현. 구현은 아래 설계와 다르다: 판정 근거는 속도 255가 아니라 좌표 완전 동일 반복(속도 0 포함)이다. 접기 함수는 `foldFrozenFixRuns`다 |
 | 구현 전환 조건 | 사용자의 별도 `go` 이후 구현 시작 |
 | 제외 범위 | 운영 호스트 접근, 운영 재처리, 코드 변경, corridor 데이터 변경, `clever-dsv-web` 변경, API 응답 형식 변경 |
 

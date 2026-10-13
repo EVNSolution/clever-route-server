@@ -9,6 +9,7 @@ import type {
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 import {
   distanceMeters,
+  foldFrozenFixRuns,
   hasImplausibleGpsJump,
   impliedSpeedMetersPerSecond,
   MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND,
@@ -856,7 +857,8 @@ function prepareRoadMatchSamples(samples: TrailPoint[]): TrailPoint[] {
     prepared.push(current);
   }
   prepared.push(chronological.at(-1)!);
-  return prepared;
+  // Same normalization as the daily route: a run of repeated coordinates is one fix and one GPS gap.
+  return foldFrozenFixRuns(prepared);
 }
 
 function isIsolatedGpsJump(previous: TrailPoint, current: TrailPoint, next: TrailPoint): boolean {
