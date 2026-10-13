@@ -26,7 +26,7 @@ import {
   dsvTimeConstraintAuditEvents,
 } from './dsv-time-constraint.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
-import { dsvDestinationIdentitySqlAddress, dsvDestinationIdentitySqlText } from './dsv-destination-identity.js';
+import { dsvDestinationIdentitySqlAddress, dsvDestinationIdentitySqlName } from './dsv-destination-identity.js';
 import { parseKoreanDeliveryAddress } from './dsv-address-canonicalization.js';
 import {
   filterDistantRoadMatchedAnchors,
@@ -847,7 +847,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       const rows = await this.prisma.$queryRaw<DestinationManagementRow[]>(Prisma.sql`
         WITH active_destinations AS (
           SELECT *,
-            ${dsvDestinationIdentitySqlText(Prisma.sql`COALESCE(
+            ${dsvDestinationIdentitySqlName(Prisma.sql`COALESCE(
               NULLIF(BTRIM("canonicalName"), ''),
               NULLIF(BTRIM("normalizedAddress"->>'name'), ''),
               id::text
