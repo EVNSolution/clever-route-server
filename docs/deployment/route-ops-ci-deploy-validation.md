@@ -14,15 +14,18 @@ GitHub Actions에는 두 개의 진입점만 사용한다.
 
 | Job | 실행 조건 | 내용 |
 | --- | --- | --- |
-| `classify` | 항상 | 변경 파일 분류, lane 선택 (`run_api_static`, `run_api_db`) |
+| `classify` | 항상 | 변경 파일 분류, 분류기가 계산한 lane 선택 (`run_api_static`, `run_api_db`) |
 | `checks` | 항상 | hygiene, workflow·배포 wrapper 계약, Web 검증·build, API vitest, compose config |
 | `api_lint` | API 또는 customer email 변경, full | Prisma generate, 타입 기반 API lint |
 | `api_static` | API 또는 customer email 변경, full | Prisma generate, typecheck, build, build 결과를 쓰는 customer email wrapper |
-| `api_db (core)` | 핵심 API 변경, full | populated upgrade 검사, 공유 DB 통합 테스트 묶음 |
-| `api_db (isolated)` | 핵심 API 변경, full | 자체 DB를 띄우는 스크립트들, private driver demo, original observations |
+| `api_db (core)` | route geometry 전용을 제외한 API 변경, full | populated upgrade 검사, 공유 DB 통합 테스트 묶음 |
+| `api_db (isolated)` | route geometry 전용을 제외한 API 변경, full | 자체 DB를 띄우는 스크립트들, private driver demo, original observations |
 | `validate` | 취소되지 않은 모든 실행 (`!cancelled()`) | 최종 판정 |
 
 - 비싼 검사는 한 lane에서만 한 번 실행한다. `tests/ci/github-actions-structure.test.mjs`가 이 배치를 강제한다.
+- lane 선택은 workflow shell이 아니라 분류기 코드가 정한다. 분류기 테스트가 lane 선택을 검증한다.
+- `api_db`는 핵심 파일 목록과 관계없이 route geometry 전용을 제외한 API 변경마다 실행한다. 병렬 lane이라 전체 시간을 늘리지 않는다.
+- 분류기 테스트는 DB runner 스크립트와 그 스크립트가 실행하는 테스트 파일이 모두 `api_db`를 선택하는지 검사한다.
 - `api_db`는 `CLEVER_DISPOSABLE_DB_SHARD`로 DB 스크립트를 두 runner에 나눈다. 각 shard 안의 테스트 순서는 기존과 같다.
 - 로컬에서 `CLEVER_DISPOSABLE_DB_SHARD`를 비우면 두 shard를 모두 실행한다.
 - DB 스크립트는 컨테이너를 한꺼번에 띄우고 migration을 DB별로 동시에 실행한다. migration 로그는 실패한 DB만 전체를 출력한다.

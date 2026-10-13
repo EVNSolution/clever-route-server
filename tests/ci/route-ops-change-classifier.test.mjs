@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyRouteOpsChanges } from '../../scripts/ci/route-ops-change-classifier.mjs';
@@ -367,6 +367,50 @@ const forced = classifyRouteOpsChanges(['docs/note.md'], { forceFullVerify: true
 assert.equal(forced.full_required, true, 'force full verify sets full_required');
 assert.equal(forced.dependency_changed, true, 'force full verify runs dependency audit');
 assert.equal(forced.web_artifact_required, true, 'force full verify preserves web artifact build');
+assert.equal(forced.run_api_static, true, 'force full verify runs the API static lane');
+assert.equal(forced.run_api_db, true, 'force full verify runs the disposable DB lane');
+
+// CI lane selection. The disposable DB lane runs for every API change except the
+// route-geometry-only profile; a critical-file allowlist used to skip DSV, UVIS,
+// route-tracking source and the DB tests themselves.
+for (const [name, files] of [
+  ['DSV module source', ['apps/delivery-api/src/modules/dsv/dsv-destination-identity.ts']],
+  ['UVIS module source', ['apps/delivery-api/src/modules/uvis/uvis-trail.ts']],
+  ['route tracking source', ['apps/delivery-api/src/modules/route-tracking/route-tracking.service.ts']],
+  ['plain API route', ['apps/delivery-api/src/routes/health.ts']],
+  ['DB integration test only', ['apps/delivery-api/tests/dsv-driver-password-reset.integration.test.ts']],
+  ['DB test support harness', ['apps/delivery-api/tests/support/dsv-isolated-http-harness.ts']],
+  ['DB runner script only', ['apps/delivery-api/scripts/test-disposable-db-integrations.sh']],
+  ['Prisma migration', ['apps/delivery-api/prisma/migrations/20990101000000_example/migration.sql']],
+]) {
+  check(`${name} selects the API lanes`, files, { run_api_static: true, run_api_db: true });
+}
+check('route geometry only keeps its narrow profile', [
+  'apps/delivery-api/src/modules/route-plans/osrm-route-geometry.client.ts',
+  'apps/delivery-api/tests/osrm-route-geometry.client.test.ts',
+], { api_test_profile: 'route_geometry', run_api_static: true, run_api_db: false });
+check('web only skips the API lanes', ['apps/route-ops-web/src/App.tsx'], { run_api_static: false, run_api_db: false });
+check('docs only skips the API lanes', ['docs/deployment/route-ops-vroom.md'], { run_api_static: false, run_api_db: false });
+check('customer email host wrapper needs the build but not the DB', ['scripts/ssm-customer-email-reconciliation.sh'], {
+  run_api_static: true,
+  run_api_db: false,
+});
+check('deploy wrapper only skips the API lanes', ['scripts/ssm-edge-caddy-deploy.sh'], { run_api_static: false, run_api_db: false });
+
+// Every DB runner script, and every test file those scripts run, must select the DB lane.
+const dbScriptDir = 'apps/delivery-api/scripts';
+const dbScripts = readdirSync(dbScriptDir).filter((name) => /^test-.+\.sh$/.test(name));
+const dbTestFiles = new Set();
+for (const script of dbScripts) {
+  check(`DB runner script ${script} selects the DB lane`, [`${dbScriptDir}/${script}`], { run_api_db: true });
+  for (const [token] of readFileSync(join(dbScriptDir, script), 'utf8').matchAll(/[A-Za-z][\w.-]*\.test\.ts/g)) {
+    dbTestFiles.add(token);
+  }
+}
+assert.ok(dbTestFiles.size >= 25, `expected the DB runner scripts to name at least 25 test files, found ${dbTestFiles.size}`);
+for (const testFile of dbTestFiles) {
+  check(`DB test ${testFile} selects the DB lane`, [`apps/delivery-api/tests/${testFile}`], { run_api_db: true });
+}
 
 
 const cli = spawnSync(process.execPath, ['scripts/ci/route-ops-change-classifier.mjs', '--json'], {
