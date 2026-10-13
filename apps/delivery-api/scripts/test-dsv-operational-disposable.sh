@@ -63,14 +63,15 @@ docker run --detach --rm \
   --env "POSTGRES_PASSWORD=${database_password}" \
   postgres:17-bookworm >/dev/null
 
+# TCP only answers on the final server, never on the image's socket-only init server.
 for _attempt in {1..60}; do
-  if [[ "$(docker exec "$container_name" psql -U "$database_user" -d "$database_name" -Atqc 'SELECT 1' 2>/dev/null || true)" == '1' ]]; then
+  if [[ "$(docker exec "$container_name" psql -U "$database_user" -d "$database_name" -Atqc 'SELECT 1' -h 127.0.0.1 2>/dev/null || true)" == '1' ]]; then
     break
   fi
   sleep 1
 done
 
-if [[ "$(docker exec "$container_name" psql -U "$database_user" -d "$database_name" -Atqc 'SELECT 1' 2>/dev/null || true)" != '1' ]]; then
+if [[ "$(docker exec "$container_name" psql -U "$database_user" -d "$database_name" -Atqc 'SELECT 1' -h 127.0.0.1 2>/dev/null || true)" != '1' ]]; then
   echo "PostgreSQL did not become ready: ${container_name}" >&2
   exit 1
 fi

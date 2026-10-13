@@ -37,7 +37,7 @@ else
   task_database_url="postgresql://kfood_test:kfood_test@127.0.0.1:${task_port}/kfood_live_change?schema=public"
   task_ready=''
   for attempt in {1..60}; do
-    if docker exec "$task_container" pg_isready -U kfood_test -d kfood_live_change >/dev/null 2>&1; then
+    if docker exec "$task_container" pg_isready -h 127.0.0.1 -U kfood_test -d kfood_live_change >/dev/null 2>&1; then
       task_ready=1
       break
     fi

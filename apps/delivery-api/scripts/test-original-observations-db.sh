@@ -15,7 +15,7 @@ task_port="${task_port##*:}"
 [[ "$task_port" =~ ^[0-9]+$ ]] || exit 1
 task_database_url="postgresql://gps_read_test:gps_read_test@127.0.0.1:${task_port}/gps_read_test"
 for attempt in {1..60}; do
-  if docker exec "$task_container" pg_isready -U gps_read_test -d gps_read_test >/dev/null 2>&1; then break; fi
+  if docker exec "$task_container" pg_isready -h 127.0.0.1 -U gps_read_test -d gps_read_test >/dev/null 2>&1; then break; fi
   sleep 1
 done
 DATABASE_URL="$task_database_url" npm run prisma:migrate:deploy

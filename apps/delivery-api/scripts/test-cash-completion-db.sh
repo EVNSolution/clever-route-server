@@ -49,7 +49,7 @@ else
     task_port="${task_port##*:}"
     task_ready=''
     for attempt in {1..60}; do
-      if docker exec "$task_container" pg_isready -U kfood_test -d kfood_cash_completion >/dev/null 2>&1; then
+      if docker exec "$task_container" pg_isready -h 127.0.0.1 -U kfood_test -d kfood_cash_completion >/dev/null 2>&1; then
         task_ready=1
         break
       fi
