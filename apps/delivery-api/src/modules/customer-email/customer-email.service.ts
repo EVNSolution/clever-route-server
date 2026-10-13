@@ -7,8 +7,10 @@ import {
   isEmail,
   normalizeCustomerEmailSettings,
   readCustomerEmailSignal,
+  readEtaWindow,
   validateCustomerEmailSettingsPayload,
   type CustomerEmailBranding,
+  type CustomerEmailEtaWindow,
   type CustomerEmailSettings,
   type CustomerEmailSignal,
 } from './customer-email-settings.js';
@@ -306,6 +308,7 @@ export class CustomerEmailService {
         ...current.branding,
         ...payload.branding,
       },
+      etaWindow: payload.etaWindow ?? current.etaWindow,
       globalVersion: current.globalVersion + 1,
       replyTo: payload.replyTo,
       senderEmail: current.senderEmail,
@@ -486,7 +489,7 @@ export class CustomerEmailService {
         status: 'SKIPPED'
       };
     }
-    const context = renderContext(routePlan, stop);
+    const context = renderContext(routePlan, stop, settings.etaWindow);
     const result = await this.transport.send({
       branding: settings.branding,
       body: renderTemplate(template.body, context).value,
@@ -1176,7 +1179,7 @@ function buildPreview(
       });
       continue;
     }
-    const context = renderContext(routePlan, stop);
+    const context = renderContext(routePlan, stop, settings.etaWindow);
     const renderedBody = renderTemplate(template.body, context);
     const renderedSubject = renderTemplate(template.subject, context);
     recipients.push({
@@ -1332,7 +1335,11 @@ function computeCurrentProgressSequence(stops: CustomerEmailRoutePlanRow['routeS
   return completed.length === 0 ? 0 : Math.max(...completed);
 }
 
-function renderContext(routePlan: CustomerEmailRoutePlanRow, stop: CustomerEmailRoutePlanRow['routeStops'][number]): Record<string, string> {
+function renderContext(
+  routePlan: CustomerEmailRoutePlanRow,
+  stop: CustomerEmailRoutePlanRow['routeStops'][number],
+  etaWindow: CustomerEmailEtaWindow,
+): Record<string, string> {
   const timezone = resolveCustomerEmailTimezone(routePlan);
   return {
     customerName: stop.deliveryStop.recipientName ?? '',
@@ -1344,7 +1351,7 @@ function renderContext(routePlan: CustomerEmailRoutePlanRow, stop: CustomerEmail
       : formatEta(stop.estimatedArrivalAt, timezone),
     etaWindow: stop.estimatedArrivalAt === null || timezone === null
       ? ''
-      : formatEtaWindow(stop.estimatedArrivalAt, timezone),
+      : formatEtaWindow(stop.estimatedArrivalAt, timezone, etaWindow),
     inventoryList: formatInventoryList(stop.deliveryStop.order.orderItems),
     orderNumber: stop.deliveryStop.order.name,
     routeName: routePlan.name,
@@ -1361,7 +1368,7 @@ function testTemplateContext(settings: CustomerEmailSettings): Record<string, st
     deliveryWeekday: '',
     eta: 'TBD',
     etaWindow: 'Aug 4, 2026, 9:30 AM EDT - Aug 4, 2026, 10:30 AM EDT',
-    inventoryList: '',
+    inventoryList: '2 x Sample item\n1 x Another item',
     orderNumber: '#1001',
     routeName: 'Test route',
     sequence: '1',
@@ -1385,9 +1392,11 @@ function resolveCustomerEmailTimezone(routePlan: CustomerEmailRoutePlanRow): str
   return connectionTimezones.length === 1 ? connectionTimezones[0] ?? null : null;
 }
 
-function formatEtaWindow(eta: Date, timezone: string): string {
-  const halfWindowMs = 30 * 60 * 1000;
-  return `${formatEta(new Date(eta.getTime() - halfWindowMs), timezone)} - ${formatEta(new Date(eta.getTime() + halfWindowMs), timezone)}`;
+function formatEtaWindow(eta: Date, timezone: string, window: CustomerEmailEtaWindow): string {
+  const slackMs = window.minutes * 60 * 1000;
+  const start = window.direction === 'AFTER' ? eta.getTime() : eta.getTime() - slackMs;
+  const end = window.direction === 'BEFORE' ? eta.getTime() : eta.getTime() + slackMs;
+  return `${formatEta(new Date(start), timezone)} - ${formatEta(new Date(end), timezone)}`;
 }
 
 function formatEta(eta: Date, timezone: string): string {
@@ -1571,12 +1580,13 @@ function automaticSettingsVersion(settings: CustomerEmailSettings): string {
 
 export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
   branding: Partial<CustomerEmailBranding>;
+  etaWindow?: CustomerEmailEtaWindow;
   expectedVersion: number;
   replyTo: string | null;
   senderEmail?: string;
   senderName: string;
 } | null {
-  if (!isRecord(value) || !hasOnlyKeys({ senderEmail: '', ...value }, ['branding', 'expectedVersion', 'replyTo', 'senderEmail', 'senderName'])) return null;
+  if (!isRecord(value) || !hasOnlyKeys({ etaWindow: undefined, senderEmail: '', ...value }, ['branding', 'etaWindow', 'expectedVersion', 'replyTo', 'senderEmail', 'senderName'])) return null;
   if (typeof value.expectedVersion !== 'number' || !Number.isInteger(value.expectedVersion)) return null;
   if (!isRecord(value.branding)) return null;
   try {
@@ -1589,6 +1599,7 @@ export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
     });
     return {
       branding: value.branding,
+      ...('etaWindow' in value ? { etaWindow: readEtaWindow(value.etaWindow) } : {}),
       expectedVersion: value.expectedVersion,
       replyTo: settings.replyTo,
       ...('senderEmail' in value ? { senderEmail: settings.senderEmail } : {}),

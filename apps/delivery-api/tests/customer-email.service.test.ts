@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { CustomerEmailService } from '../src/modules/customer-email/customer-email.service.js';
+import { CustomerEmailService, CustomerEmailValidationError } from '../src/modules/customer-email/customer-email.service.js';
 import { defaultCustomerEmailSettings } from '../src/modules/customer-email/customer-email-settings.js';
 import { BrevoCustomerEmailTransport, CustomerEmailTransportSendError } from '../src/modules/customer-email/customer-email-transport.js';
 
@@ -187,6 +187,35 @@ describe('CustomerEmailService', () => {
       },
       where: { id: 'shop-id', updatedAt },
     }));
+  });
+
+  test('saves the ETA window option with global settings and rejects an invalid one', async () => {
+    const { prisma, service } = createHarness();
+    const updatedAt = new Date('2026-08-05T00:00:00.000Z');
+    const current = { ...defaultCustomerEmailSettings(), senderEmail: 'old@example.com' };
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt });
+    prisma.shop.updateMany.mockResolvedValue({ count: 1 });
+    const payload = {
+      branding: current.branding,
+      expectedVersion: 1,
+      replyTo: null,
+      senderEmail: 'old@example.com',
+      senderName: 'Sender',
+    };
+
+    expect(current.etaWindow).toEqual({ direction: 'AROUND', minutes: 30 });
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'AFTER', minutes: 60 } },
+      shopDomain: 'example.myshopify.com',
+    })).resolves.toMatchObject({ etaWindow: { direction: 'AFTER', minutes: 60 }, globalVersion: 2 });
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'SIDEWAYS', minutes: 60 } },
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toBeInstanceOf(CustomerEmailValidationError);
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'BEFORE', minutes: 1 } },
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toBeInstanceOf(CustomerEmailValidationError);
   });
 
   test('rejects stale global settings saves without updating', async () => {
@@ -511,6 +540,40 @@ describe('CustomerEmailService', () => {
       signal: 'DELIVERY_SCHEDULED',
     })).resolves.toMatchObject({ status: 'SENT' });
     expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({ body: renderedBody }));
+  });
+
+  test.each([
+    [{ direction: 'BEFORE', minutes: 45 }, 'Window Aug 4, 2026, 5:15 AM EDT - Aug 4, 2026, 6:00 AM EDT'],
+    [{ direction: 'AFTER', minutes: 60 }, 'Window Aug 4, 2026, 6:00 AM EDT - Aug 4, 2026, 7:00 AM EDT'],
+    [{ direction: 'AROUND', minutes: 15 }, 'Window Aug 4, 2026, 5:45 AM EDT - Aug 4, 2026, 6:15 AM EDT'],
+  ] as const)('renders the ETA window from the %o option', async (etaWindow, renderedBody) => {
+    const { prisma, service } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      constraints: { routeScope: { timezone: 'America/New_York' } },
+      customerEmailSettings: {
+        ...defaults,
+        etaWindow,
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...defaults.templates,
+          DELIVERY_SCHEDULED: { body: 'Window {{etaWindow}}', enabled: true, subject: 'Scheduled', version: 2 },
+        },
+      },
+      stops: [stopRow({
+        email: 'customer@example.com',
+        estimatedArrivalAt: new Date('2026-08-04T10:00:00.000Z'),
+        id: 'stop-1',
+        sequence: 1,
+        status: 'PENDING',
+      })],
+    }));
+
+    await expect(service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ recipients: [{ rendered: { body: renderedBody } }] });
   });
 
   test.each([
@@ -1834,7 +1897,7 @@ function stopRow(input: {
         email: input.email === undefined ? `${input.id}@example.com` : input.email,
         id: `order-${input.sequence}`,
         name: `Order #${input.sequence}`,
-        orderItems: input.items ?? [],
+        orderItems: input.items ?? [{ lineIndex: 0, name: 'Kimchi', options: [], quantity: 1 }],
       },
       orderId: `order-${input.sequence}`,
       postalCode: 'M1M 1M1',
