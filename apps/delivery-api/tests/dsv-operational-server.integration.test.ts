@@ -323,6 +323,41 @@ live('DSV operational server PostgreSQL integration', () => {
     await expect(prisma.dsvOperationalNotification.count({ where: { executionContextId: fixture.contextId, kind: 'N05' } })).resolves.toBe(before);
   });
 
+  test('sends one N06 for the first pending stop when several stops share a destination', async () => {
+    const fixture = await createOperationalFixture(prisma, createdShopIds, 'n06-shared-destination');
+    await enableSyntheticGeofence(prisma, fixture, 'LIVE');
+    const siblingStopId = randomUUID();
+    await prisma.dsvExecutionContext.update({
+      data: { monitorEndAt: new Date('2026-10-07T01:00:00.000Z'), contentSnapshot: {
+        depot: { latitude: 37.49, longitude: 127.01 },
+        stops: [
+          { id: siblingStopId, orderId: randomUUID(), sequence: 2, status: 'PENDING', latitude: 37.5, longitude: 127 },
+          { id: fixture.stopId, orderId: fixture.orderId, sequence: 1, status: 'PENDING', latitude: 37.5, longitude: 127 },
+        ],
+      } }, where: { id: fixture.contextId },
+    });
+    const telemetry = new PrismaUvisTelemetryRepository(prisma);
+    const service = new PrismaDsvGeofenceService(prisma);
+    const jobIds: string[] = [];
+    for (const seconds of [0, 10, 20]) {
+      const observedAt = new Date(Date.parse('2026-10-07T00:00:00.000Z') + seconds * 1_000);
+      const sample = await telemetry.recordSample(telemetryInput(fixture, observedAt, ['37.5000000', '127.0000000']));
+      const job = await prisma.dsvGeofenceJob.findUniqueOrThrow({ where: { sampleId: sample.sampleId } });
+      jobIds.push(job.id);
+      await makeGeofenceJobDue(prisma, job.id, observedAt);
+      await service.process(job.id, new Date(observedAt.getTime() + 1_000));
+    }
+    await expect(prisma.dsvOperationalNotification.findMany({
+      select: { targetStopId: true },
+      where: { executionContextId: fixture.contextId, kind: 'N06' },
+    })).resolves.toEqual([{ targetStopId: fixture.stopId }]);
+    await expect(prisma.dsvGeofenceEvent.count({
+      where: { executionContextId: fixture.contextId, targetKey: { in: [`STOP:${fixture.stopId}`, `STOP:${siblingStopId}`] }, transition: 'ARRIVED' },
+    })).resolves.toBe(2);
+    await expect(prisma.dsvGeofenceJob.findMany({ select: { resultReason: true }, where: { id: { in: jobIds } } }))
+      .resolves.toEqual(jobIds.map(() => ({ resultReason: 'PROCESSED_STOP_OVERLAP_GROUPED' })));
+  });
+
   test('does not reinterpret a pre-monitor stop observation after the monitor opens', async () => {
     const fixture = await createOperationalFixture(prisma, createdShopIds, 'n06-observation-window');
     await enableSyntheticGeofence(prisma, fixture, 'LIVE');

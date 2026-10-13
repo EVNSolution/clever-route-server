@@ -505,11 +505,17 @@ export class PrismaDsvGeofenceService {
             stop: null,
           }, now);
         }
-        if (stopMatches.length <= 1 && withinMonitorWindow(current, now) && withinMonitorWindow(current, sample.observedAt)) {
+        // Several orders often share one destination. One visit there sends one N06, for the first pending stop in route order.
+        const groupedArrivalStopId = stopMatches.length > 1
+          ? stopMatches.reduce((first, stop) => (stop.sequence < first.sequence ? stop : first)).id
+          : null;
+        if (withinMonitorWindow(current, now) && withinMonitorWindow(current, sample.observedAt)) {
           for (const stop of locatedStops) {
             if (TERMINAL_STOP_STATUSES.has(stop.status)) continue;
             await this.processTarget(transaction, current, observation, effectivePolicy, {
               key: `STOP:${stop.id}`,
+              notifyArrival: groupedArrivalStopId === null || groupedArrivalStopId === stop.id
+                || !stopMatches.some((match) => match.id === stop.id),
               point: stop,
               entryRadiusMeters: effectivePolicy.destinationRadiusMeters,
               exitRadiusMeters: effectivePolicy.destinationExitRadiusMeters,
@@ -522,7 +528,7 @@ export class PrismaDsvGeofenceService {
             leaseExpiresAt: null,
             leaseToken: null,
             processedAt: now,
-            resultReason: stopMatches.length > 1 ? 'PROCESSED_STOP_OVERLAP_DEFERRED' : 'PROCESSED',
+            resultReason: stopMatches.length > 1 ? 'PROCESSED_STOP_OVERLAP_GROUPED' : 'PROCESSED',
             status: 'COMPLETED',
           },
           where: { id: job.id, leaseToken: job.leaseToken, status: 'PROCESSING' },
@@ -531,7 +537,7 @@ export class PrismaDsvGeofenceService {
         return {
           executionContextId: current.id,
           jobId: job.id,
-          reason: stopMatches.length > 1 ? 'STOP_OVERLAP_DEFERRED' : 'PROCESSED',
+          reason: stopMatches.length > 1 ? 'STOP_OVERLAP_GROUPED' : 'PROCESSED',
           status: 'PROCESSED',
         };
       });
@@ -572,7 +578,14 @@ export class PrismaDsvGeofenceService {
     context: ExecutionContext,
     observation: DsvGeofenceObservation,
     policy: DsvGeofencePolicy,
-    target: { entryRadiusMeters: number; exitRadiusMeters: number; key: string; point: SnapshotPoint; stop: SnapshotStop | null },
+    target: {
+      entryRadiusMeters: number;
+      exitRadiusMeters: number;
+      key: string;
+      notifyArrival?: boolean;
+      point: SnapshotPoint;
+      stop: SnapshotStop | null;
+    },
     now: Date,
   ): Promise<void> {
     const coordinateHash = geofenceCoordinateHash(target.point, target.entryRadiusMeters, target.exitRadiusMeters);
@@ -673,7 +686,7 @@ export class PrismaDsvGeofenceService {
       return;
     }
 
-    if (advanced.transition === 'ARRIVED' && target.stop !== null) {
+    if (advanced.transition === 'ARRIVED' && target.stop !== null && target.notifyArrival !== false) {
       if (!await isCurrentNonTerminalStop(transaction, context, target.stop)) return;
       await createLiveNotification(transaction, context, policy, now, {
         evidenceObservedAt: observation.observedAt,
