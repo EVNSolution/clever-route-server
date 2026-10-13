@@ -215,9 +215,11 @@ export function registerAdminRouteGroupRoutes(
       return reply.code(200).send({
         data: {
           check: {
-            addressLabel: result.addressLabel,
             latitude: result.latitude,
             longitude: result.longitude,
+            // addressLabel is only the query shape; the matched place text is the provider's label, shown to the
+            // authenticated office on this read-only check and never stored or logged.
+            matchedAddress: result.rawLabel ?? result.roadAddress ?? result.jibunAddress ?? null,
             postalCode: result.postalCode ?? null
           }
         },
