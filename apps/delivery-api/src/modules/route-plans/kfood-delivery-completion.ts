@@ -47,13 +47,16 @@ export function hasDeliveryWorkCompleted(route: DeliveryWorkCompletionRecord): b
 // Admin/Shopify sees delivery work complete while legacy mobile access retains
 // the raw IN_PROGRESS execution state solely for the return-navigation grace.
 export function toRouteDeliveryDisplayStatus(route: DeliveryWorkCompletionRecord): RouteExecutionStatus {
-  if (route.status === 'IN_PROGRESS' && hasDeliveryWorkCompleted(route)) return 'COMPLETED';
+  if ((route.status === 'IN_PROGRESS' || route.status === 'READY') && hasDeliveryWorkCompleted(route)) return 'COMPLETED';
   return toRouteExecutionStatus(route.status, route.driverEvents);
 }
 
 export function hasDeliveryNavigationGraceExpired(route: DeliveryWorkCompletionRecord, now: Date): boolean {
-  return (route.status === 'IN_PROGRESS' || route.status === 'COMPLETED') && hasDeliveryWorkCompleted(route)
-    && route.driverNavigationUntil!.getTime() <= now.getTime();
+  if (!hasDeliveryWorkCompleted(route)) return false;
+  // Releasing completed work ends navigation immediately without rewriting its completion evidence.
+  return route.status === 'READY'
+    || ((route.status === 'IN_PROGRESS' || route.status === 'COMPLETED')
+      && route.driverNavigationUntil!.getTime() <= now.getTime());
 }
 
 type CompletionTx = Pick<Prisma.TransactionClient, 'routePlan'>;

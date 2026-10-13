@@ -36,12 +36,32 @@ backfill or synthetic `ROUTE_COMPLETED` event occurs.
 
 ## Mobile compatibility
 
-During the grace period, GPS and notes remain accepted; new execution, pause,
-restart and reorder commands are rejected. A client `ROUTE_COMPLETED` command
-is acknowledged as a `NOTE_ADDED` event with schema
-`kfood_return_navigation_completion_ack_v1`, preserving the navigation period.
-Its retry resolves to the same receipt. Previously committed stop retries also
-resolve before execution-state validation.
+During the grace period, GPS and notes remain accepted. New delivery execution,
+restart and reorder commands are rejected. An owned `IN_PROGRESS` route accepts
+`ROUTE_PAUSED` so a driver can switch routes after finishing the deliveries.
+The release moves the raw state to `READY` and preserves the completion marker,
+deadline and stop evidence. It ends navigation access immediately, removes the
+route from the driver's operational list and keeps the admin display at
+`COMPLETED`. The completed deliveries cannot be restarted. Ordinary unfinished
+`READY` routes retain their existing access. Concurrent retries resolve to the
+same release receipt; account-scoped receipt lookup remains available after
+route access ends.
+
+CLEVER Routes Android version code 47 and later, using driver contract v2,
+send `ROUTE_COMPLETED` only when the driver finishes or the app confirms arrival
+at the return location. These commands record a real `ROUTE_COMPLETED` event
+and move the raw state to `COMPLETED`. Active route lookup then excludes the
+route, so refreshing or restarting the app cannot restore its tracking session.
+The completion marker and delivery evidence remain intact. The version-code
+threshold selects client behavior; existing ownership, assignment, version and
+completion checks still authorize the command.
+
+Earlier version codes, missing version metadata and legacy driver contracts
+retain the compatibility behavior: `ROUTE_COMPLETED` is acknowledged as a
+`NOTE_ADDED` event with schema `kfood_return_navigation_completion_ack_v1`,
+preserving the navigation period. Its retry resolves to the same receipt,
+including an old acknowledgement replayed by an updated client. Previously
+committed stop retries also resolve before execution-state validation.
 
 At the deadline, active account/route lookup and route-token validation exclude
 the route even if the periodic worker has not run. A subsequent mobile refresh
