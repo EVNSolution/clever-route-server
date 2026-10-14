@@ -10,6 +10,7 @@ import { ShopifySessionTokenVerifier } from '../shopify/session-token-verifier.j
 import type { AdminCustomerEmailDependencies } from '../../routes/admin-customer-email.routes.js';
 import { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
 import { PrismaCustomerEmailProviderEventRepository } from './customer-email-provider-event.repository.js';
+import type { CustomerTrackingLinks } from '../customer-tracking/customer-tracking-link.js';
 
 export const DEFAULT_CUSTOMER_EMAIL_ASSETS_DIR = 'var/customer-email-assets';
 
@@ -21,6 +22,7 @@ export type CustomerEmailRuntimeEnv = CustomerEmailTransportEnv & ShopifyAppCred
 export function loadAdminCustomerEmailDependencies(input: {
   env: CustomerEmailRuntimeEnv;
   prisma: PrismaClient;
+  trackingLinks?: CustomerTrackingLinks | undefined;
 }): AdminCustomerEmailDependencies | undefined {
   const appCredentials = loadShopifyAppCredentials(input.env);
   if (appCredentials.length === 0) return undefined;
@@ -30,7 +32,8 @@ export function loadAdminCustomerEmailDependencies(input: {
     customerEmailService: new CustomerEmailService(
       input.prisma,
       loadCustomerEmailTransport(input.env),
-      new PrismaCustomerDeliveryNotificationAttemptRepository(input.prisma)
+      new PrismaCustomerDeliveryNotificationAttemptRepository(input.prisma),
+      input.trackingLinks,
     ),
     ...(logoAssets === undefined ? {} : { logoAssets }),
     ...(providerWebhookToken === undefined ? {} : {

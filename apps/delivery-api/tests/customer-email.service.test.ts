@@ -2,6 +2,9 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { CustomerEmailService, CustomerEmailValidationError } from '../src/modules/customer-email/customer-email.service.js';
 import { defaultCustomerEmailSettings } from '../src/modules/customer-email/customer-email-settings.js';
+import { loadCustomerTrackingLinks } from '../src/modules/customer-tracking/customer-tracking-link.js';
+
+const testTrackingLinks = loadCustomerTrackingLinks({ DELIVERY_API_PUBLIC_URL: 'https://track.example.com', JWT_SECRET: 'test-secret' });
 import { BrevoCustomerEmailTransport, CustomerEmailTransportSendError } from '../src/modules/customer-email/customer-email-transport.js';
 
 describe('CustomerEmailService', () => {
@@ -540,6 +543,27 @@ describe('CustomerEmailService', () => {
       signal: 'DELIVERY_SCHEDULED',
     })).resolves.toMatchObject({ status: 'SENT' });
     expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({ body: renderedBody }));
+  });
+
+  test('renders a signed tracking link for each recipient stop', async () => {
+    const { prisma, service } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      customerEmailSettings: {
+        ...defaults,
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...defaults.templates,
+          OUT_FOR_DELIVERY: { body: 'Track {{trackingLink}}', enabled: true, subject: 'Out', version: 2 },
+        },
+      },
+      stops: [stopRow({ email: 'customer@example.com', id: '11111111-1111-4111-8111-111111111111', sequence: 1, status: 'PENDING' })],
+    }));
+
+    const preview = await service.preview({ routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'OUT_FOR_DELIVERY' });
+    expect(preview?.recipients[0]?.rendered.body).toMatch(
+      /^Track https:\/\/track\.example\.com\/t\/11111111-1111-4111-8111-111111111111\.[A-Za-z0-9_-]{22}$/u,
+    );
   });
 
   test.each([
@@ -1699,6 +1723,29 @@ describe('CustomerEmailService', () => {
 });
 
 describe('BrevoCustomerEmailTransport', () => {
+  test('links https URLs in the body and keeps trailing punctuation outside the link', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
+    const transport = new BrevoCustomerEmailTransport({ apiKey: 'secret', fetchImpl, timeoutMs: 1234 });
+
+    await transport.send({
+      branding: defaultCustomerEmailSettings().branding,
+      body: 'Track: https://track.example.com/t/abc.def.\nSee "https://example.com/x" or http://plain.example.com',
+      commandId: 'command-1:stop-1',
+      recipientEmail: 'customer@example.com',
+      replyTo: null,
+      senderEmail: 'sender@example.com',
+      senderName: 'Sender',
+      signal: 'OUT_FOR_DELIVERY',
+      subject: 'Out',
+      tags: [],
+    });
+
+    const [, request] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const { htmlContent } = JSON.parse(request.body as string) as { htmlContent: string };
+    expect(htmlContent).toContain('Track: <a href="https://track.example.com/t/abc.def" style="color:#1f6feb;text-decoration:underline">https://track.example.com/t/abc.def</a>.<br />');
+    expect(htmlContent).toContain('See &quot;<a href="https://example.com/x" style="color:#1f6feb;text-decoration:underline">https://example.com/x</a>&quot; or http://plain.example.com');
+  });
+
   test('sends escaped neutral HTML with subject heading, body, divider, and boxed footer', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
     const transport = new BrevoCustomerEmailTransport({
@@ -1840,7 +1887,7 @@ function createHarness(attempts?: {
   };
   return {
     prisma,
-    service: new CustomerEmailService(prisma as never, transport, attempts as never),
+    service: new CustomerEmailService(prisma as never, transport, attempts as never, testTrackingLinks),
     transport,
   };
 }

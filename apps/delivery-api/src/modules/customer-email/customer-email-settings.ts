@@ -103,6 +103,7 @@ export const CUSTOMER_EMAIL_TEMPLATE_VARIABLES = [
   'routeName',
   'sequence',
   'shopName',
+  'trackingLink',
 ] as const;
 
 const customerEmailSignalSet = new Set<string>(customerEmailSignals);
@@ -120,13 +121,13 @@ export function defaultCustomerEmailSettings(): CustomerEmailSettings {
     senderName: 'CLEVER',
     templates: {
       DELIVERY_SCHEDULED: {
-        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is scheduled for delivery on {{deliveryDate}}.\n\nEstimated arrival window: {{etaWindow}}\n\nDelivery address:\n{{deliveryAddress}}\n\nItems in this delivery:\n{{inventoryList}}',
+        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is scheduled for delivery on {{deliveryDate}}.\n\nEstimated arrival window: {{etaWindow}}\n\nDelivery address:\n{{deliveryAddress}}\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'Your delivery is scheduled',
         version: 1,
       },
       OUT_FOR_DELIVERY: {
-        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is out for delivery today. Estimated arrival: {{eta}}.\n\nItems in this delivery:\n{{inventoryList}}',
+        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is out for delivery today. Estimated arrival: {{eta}}.\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'Your order is out for delivery',
         version: 1,
@@ -138,13 +139,13 @@ export function defaultCustomerEmailSettings(): CustomerEmailSettings {
         version: 1,
       },
       MISSED_DELIVERY: {
-        body: 'Hello {{customerName}},\n\nWe could not complete delivery for order {{orderNumber}} today. Please contact {{shopName}} for next steps.\n\nItems in this delivery:\n{{inventoryList}}',
+        body: 'Hello {{customerName}},\n\nWe could not complete delivery for order {{orderNumber}} today. Please contact {{shopName}} for next steps.\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'We missed your delivery',
         version: 1,
       },
       DRIVER_NEARBY: {
-        body: 'Hello {{customerName}},\n\nYour driver is nearby for order {{orderNumber}}. Estimated arrival: {{eta}}.\n\nItems in this delivery:\n{{inventoryList}}',
+        body: 'Hello {{customerName}},\n\nYour driver is nearby for order {{orderNumber}}. Estimated arrival: {{eta}}.\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'Your driver is nearby',
         version: 1,
@@ -187,6 +188,14 @@ export function readEtaWindow(value: unknown): CustomerEmailEtaWindow {
   const direction = customerEmailEtaWindowDirections.find((candidate) => candidate === value.direction);
   if (direction === undefined) throw new Error('etaWindow.direction must be AROUND, BEFORE, or AFTER.');
   return { direction, minutes: readIntegerInRange(value.minutes, 5, 240, 'etaWindow.minutes') };
+}
+
+export function customerEmailEtaWindowRange(eta: Date, window: CustomerEmailEtaWindow): { end: Date; start: Date } {
+  const slackMs = window.minutes * 60 * 1000;
+  return {
+    end: new Date(window.direction === 'BEFORE' ? eta.getTime() : eta.getTime() + slackMs),
+    start: new Date(window.direction === 'AFTER' ? eta.getTime() : eta.getTime() - slackMs),
+  };
 }
 
 export function defaultCustomerEmailAutomaticSettings(): CustomerEmailAutomaticSettings {
