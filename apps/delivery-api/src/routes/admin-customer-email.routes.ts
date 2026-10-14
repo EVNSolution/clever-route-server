@@ -70,6 +70,17 @@ export function registerAdminCustomerEmailRoutes(
     return reply.code(200).send({ data: { customerEmailSettings }, error: null });
   });
 
+  app.post<{ Body: unknown }>('/admin/customer-email/sample-preview', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    try {
+      const preview = dependencies.customerEmailService.samplePreview(request.body);
+      return reply.code(200).send({ data: { preview }, error: null });
+    } catch (error) {
+      return sendCustomerEmailError(reply, error);
+    }
+  });
+
   app.patch<{ Body: unknown }>('/admin/customer-email/settings', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
     if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));

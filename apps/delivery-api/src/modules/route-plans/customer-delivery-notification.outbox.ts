@@ -32,7 +32,11 @@ const claimableWhere = (now: Date, allowCustomerMessages: boolean): Prisma.Custo
       ...(allowCustomerMessages ? [{ source: 'DSV_CUSTOMER_MESSAGE' }] : []),
       {
         // Only facts the office selected at Dispatch; older QUEUED facts stay unsent after activation.
-        metadata: { equals: true, path: [ROUTE_EMAIL_SELECTED_KEY] },
+        AND: [
+          { metadata: { equals: true, path: [ROUTE_EMAIL_SELECTED_KEY] } },
+          // Scheduled is manual-only. This also blocks legacy queued automatic facts.
+          { metadata: { not: 'DELIVERY_SCHEDULED', path: ['signal'] } }
+        ],
         shop: {
           customerEmailSettings: {
             equals: true,

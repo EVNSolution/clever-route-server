@@ -15,6 +15,26 @@ import {
 } from '../src/modules/route-plans/route-plan.types.js';
 import type { OrderItemDto } from '../src/modules/order-items/order-items.js';
 import type { RoutePlanOrderInput } from '../src/modules/route-plans/route-plan.types.js';
+import { defaultCustomerEmailSettings } from '../src/modules/customer-email/customer-email-settings.js';
+
+type AutomaticFactTestRow = {
+  deliveryStopId: string;
+  idempotencyKey: string;
+  metadata: unknown;
+  [key: string]: unknown;
+};
+
+type AutomaticFactCreateManyInput = {
+  data: AutomaticFactTestRow[];
+  skipDuplicates: boolean;
+};
+
+function createAutomaticFactCreateManyMock() {
+  return vi.fn<(input: AutomaticFactCreateManyInput) => Promise<{ count: number }>>()
+    .mockImplementation(({ data }) => Promise.resolve({ count: data.length }));
+}
+
+type AutomaticFactCreateManyMock = ReturnType<typeof createAutomaticFactCreateManyMock>;
 
 describe('PrismaRoutePlanRepository', () => {
   test('upserts selected Shopify orders and stores route stops in request sequence', async () => {
@@ -1669,6 +1689,181 @@ describe('PrismaRoutePlanRepository', () => {
     expect(result?.notification).toMatchObject({ factId: null, status: 'SKIPPED' });
   });
 
+  test('admin READY transition never queues the manual-only Scheduled email', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanStopFindFirst: {
+        deliveryStop: {
+          completionAssistanceCandidateId: null,
+          order: { email: 'customer@example.com' },
+          orderId: 'order-1',
+          status: 'DELIVERED'
+        },
+        deliveryStopId: 'stop-1',
+        routePlan: {
+          constraints: {
+            customerEmailSelection: {
+              deliveryStopIds: ['stop-1'],
+              signals: ['DELIVERY_SCHEDULED'],
+              updatedAt: '2026-10-14T00:00:00.000Z',
+              updatedBy: 'office'
+            }
+          },
+          status: 'IN_PROGRESS'
+        }
+      },
+      shop: { customerEmailSettings: { automatic: { enabled: true } }, id: 'shop-id' }
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce(completionReconciliationRoute('PENDING', true))
+      .mockResolvedValueOnce(routePlanRecord({ status: 'IN_PROGRESS' }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'reopen-no-scheduled-email', status: 'READY' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
+    expect(result?.notification).toMatchObject({ factId: null, status: 'SKIPPED' });
+  });
+
+  test('same-state admin READY transition reports Scheduled as skipped', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({ status: 'IN_PROGRESS' }),
+      routePlanStopFindFirst: {
+        deliveryStop: {
+          completionAssistanceCandidateId: null,
+          order: { email: 'customer@example.com' },
+          orderId: 'order-1',
+          status: 'PENDING'
+        },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'same-ready', status: 'READY' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.duplicate).toBe(true);
+    expect(result?.notification).toMatchObject({ factId: null, status: 'SKIPPED' });
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
+  });
+
+  test('replayed admin READY transition without a fact reports Scheduled as skipped', async () => {
+    const { prisma } = createPrismaHarness({
+      adminStopActionAudit: {
+        deliveryStopId: 'stop-1',
+        routePlanId: 'route-plan-id',
+        shopId: 'shop-id'
+      },
+      customerNotificationExists: false,
+      routePlanFindFirst: routePlanRecord({ status: 'IN_PROGRESS' }),
+      routePlanStopFindFirst: {
+        deliveryStop: { order: { email: 'customer@example.com' }, orderId: 'order-1', status: 'PENDING' },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'replayed-ready', status: 'READY' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.duplicate).toBe(true);
+    expect(result?.notification).toMatchObject({ factId: null, status: 'SKIPPED' });
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
+  });
+
+  test('admin completion advances Nearby without creating a second Delivered fact', async () => {
+    const settings = defaultCustomerEmailSettings();
+    settings.automatic.enabled = true;
+    settings.senderEmail = 'dispatch@example.test';
+    const { prisma } = createPrismaHarness({
+      routePlanStopFindFirst: {
+        deliveryStop: {
+          completionAssistanceCandidateId: null,
+          order: { email: 'customer-stop-1@example.test' },
+          orderId: 'order-stop-1',
+          status: 'ARRIVED'
+        },
+        deliveryStopId: 'stop-1',
+        routePlan: {
+          constraints: {
+            customerEmailSelection: {
+              deliveryStopIds: [],
+              mode: 'ALL_ELIGIBLE',
+              signals: ['DELIVERED', 'DRIVER_NEARBY'],
+              updatedAt: '2026-10-14T00:00:00.000Z',
+              updatedBy: 'office'
+            }
+          },
+          status: 'IN_PROGRESS'
+        }
+      },
+      shop: {
+        customerEmailSettings: settings,
+        id: 'shop-id',
+        routeOpsUiSettings: { nearbyStopsThreshold: 3, version: 1 }
+      }
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce({
+        constraints: {
+          customerEmailSelection: {
+            deliveryStopIds: [],
+            mode: 'ALL_ELIGIBLE',
+            signals: ['DELIVERED', 'DRIVER_NEARBY'],
+            updatedAt: '2026-10-14T00:00:00.000Z',
+            updatedBy: 'office'
+          }
+        },
+        driverEvents: [{ id: 'route-start' }],
+        routeStops: ['DELIVERED', 'PENDING', 'PENDING', 'PENDING'].map((status, index) => ({
+          deliveryStop: {
+            id: `stop-${index + 1}`,
+            order: { email: `customer-stop-${index + 1}@example.test`, id: `order-stop-${index + 1}` },
+            status
+          },
+          sequence: index + 1
+        }))
+      })
+      .mockResolvedValueOnce(completionReconciliationRoute('DELIVERED'))
+      .mockResolvedValue(routePlanRecord({ status: 'IN_PROGRESS' }));
+    const repository = new PrismaRoutePlanRepository(prisma as never);
+
+    await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { idempotencyKey: 'admin-complete-nearby', status: 'COMPLETED' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.customerRouteNotificationFact.upsert).toHaveBeenCalledOnce();
+    const nearbyRows = prisma.customerRouteNotificationFact.createMany.mock.calls[0]?.[0].data;
+    expect(nearbyRows).toHaveLength(3);
+    expect(nearbyRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ deliveryStopId: 'stop-2', metadata: expect.objectContaining({ signal: 'DRIVER_NEARBY' }) as unknown }),
+      expect.objectContaining({ deliveryStopId: 'stop-3', metadata: expect.objectContaining({ signal: 'DRIVER_NEARBY' }) as unknown }),
+      expect.objectContaining({ deliveryStopId: 'stop-4', metadata: expect.objectContaining({ signal: 'DRIVER_NEARBY' }) as unknown })
+    ]));
+  });
+
   test('admin completion reconciles the delivery-work marker while holding the route row lock', async () => {
     const { prisma } = createPrismaHarness({
       routePlanStopFindFirst: {
@@ -3187,6 +3382,7 @@ function hasRouteStatusUpdate(
 function createPrismaHarness(input: {
   adminStopActionAudit?: { deliveryStopId: string; routePlanId: string; shopId: string } | null;
   conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
+  customerNotificationExists?: boolean;
   customerNotificationStatus?: 'DEAD' | 'PROCESSING' | 'QUEUED' | 'SENT';
   deliveryStopForId?: Record<string, unknown> | null;
   deliveryFacts?: Array<Record<string, unknown>>;
@@ -3218,6 +3414,7 @@ function createPrismaHarness(input: {
       findUnique: ReturnType<typeof vi.fn>;
     };
     customerRouteNotificationFact: {
+      createMany: AutomaticFactCreateManyMock;
       findUnique: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
@@ -3299,7 +3496,8 @@ function createPrismaHarness(input: {
       findUnique: vi.fn(() => Promise.resolve(input.adminStopActionAudit ?? null))
     },
     customerRouteNotificationFact: {
-      findUnique: vi.fn(() => Promise.resolve({
+      createMany: createAutomaticFactCreateManyMock(),
+      findUnique: vi.fn(() => Promise.resolve(input.customerNotificationExists === false ? null : {
         id: 'customer-notification-fact-id',
         orderId: 'order-1',
         status: input.customerNotificationStatus ?? 'QUEUED'
