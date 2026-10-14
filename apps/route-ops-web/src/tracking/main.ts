@@ -96,6 +96,12 @@ function createView(container: HTMLElement, mapStyle: string) {
       map.touchZoomRotate.disableRotation();
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
       installMissingMapImageFallback(map);
+      // Compact attribution starts expanded and only collapses on drag, which is disabled here.
+      map.once('idle', () => {
+        const attribution = mapBox.querySelector('.maplibregl-ctrl-attrib.maplibregl-compact');
+        attribution?.classList.remove('maplibregl-compact-show');
+        attribution?.removeAttribute('open');
+      });
       driverMarker = new maplibregl.Marker({ element: el('div', 'tracking-driver-marker') }).setLngLat(center).addTo(map);
       if (status.destination !== null) {
         new maplibregl.Marker({ color: '#1f6feb' })
