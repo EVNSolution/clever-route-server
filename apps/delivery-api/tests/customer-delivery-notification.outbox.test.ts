@@ -52,7 +52,10 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
           OR: [
             { source: 'DSV_CUSTOMER_MESSAGE' },
             {
-              metadata: { equals: true, path: ['routeEmailSelected'] },
+              AND: [
+                { metadata: { equals: true, path: ['routeEmailSelected'] } },
+                { metadata: { not: 'DELIVERY_SCHEDULED', path: ['signal'] } }
+              ],
               shop: { customerEmailSettings: { equals: true, path: ['automatic', 'enabled'] } }
             }
           ]
@@ -84,7 +87,10 @@ describe('PrismaCustomerDeliveryNotificationOutbox', () => {
       OR: [
         { source: 'DSV_CUSTOMER_MESSAGE' },
         {
-          metadata: { equals: true, path: ['routeEmailSelected'] },
+          AND: [
+            { metadata: { equals: true, path: ['routeEmailSelected'] } },
+            { metadata: { not: 'DELIVERY_SCHEDULED', path: ['signal'] } }
+          ],
           shop: { customerEmailSettings: { equals: true, path: ['automatic', 'enabled'] } }
         }
       ]

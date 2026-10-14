@@ -18,6 +18,7 @@ import {
 import {
   CustomerEmailTransportConfigurationError,
   CustomerEmailTransportSendError,
+  renderCustomerEmailHtml,
   type CustomerEmailTransport,
 } from './customer-email-transport.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
@@ -62,6 +63,7 @@ export type CustomerEmailPreview = {
     };
     rendered: {
       body: string;
+      html: string;
       subject: string;
     };
   };
@@ -108,6 +110,7 @@ export type CustomerEmailRenderedRecipient = {
   history: CustomerEmailManualHistorySummary;
   rendered: {
     body: string;
+    html: string;
     subject: string;
   };
   sequence: number;
@@ -228,6 +231,7 @@ export class CustomerEmailService {
     actor: string;
     appId?: string | undefined;
     deliveryStopIds: string[];
+    mode?: RouteEmailSelection['mode'];
     routePlanId: string;
     shopDomain: string;
     signals: CustomerEmailSignal[];
@@ -243,6 +247,7 @@ export class CustomerEmailService {
     }
     const selection: RouteEmailSelection = {
       deliveryStopIds: input.deliveryStopIds,
+      mode: input.mode ?? 'EXPLICIT',
       signals: input.signals,
       updatedAt: new Date().toISOString(),
       updatedBy: input.actor,
@@ -415,12 +420,16 @@ export class CustomerEmailService {
 
   async sendTest(input: {
     appId?: string | undefined;
+    branding?: Partial<CustomerEmailBranding> | undefined;
     body?: string | undefined;
     confirmed: boolean;
+    etaWindow?: CustomerEmailEtaWindow | undefined;
     recipientEmail: string;
+    senderName?: string | undefined;
     shopDomain: string;
     signal?: CustomerEmailSignal | undefined;
     subject?: string | undefined;
+    template?: { body: string; subject: string } | undefined;
   }): Promise<{ messageId: string | null; provider: string; recipientEmail: string; sentAt: string }> {
     if (input.confirmed !== true) {
       throw new CustomerEmailValidationError('Test customer email send must be confirmed.', 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED');
@@ -430,18 +439,41 @@ export class CustomerEmailService {
     assertConfigured(settings);
     if (!isEmail(input.recipientEmail.trim().toLowerCase())) throw new CustomerEmailValidationError('Test recipient email is invalid.');
     const signal = input.signal ?? 'DELIVERY_SCHEDULED';
-    const template = settings.templates[signal];
-    const testContext = testTemplateContext(settings);
+    const savedTemplate = settings.templates[signal];
+    const draftTemplate = input.template ?? {
+      body: input.body?.trim() || savedTemplate.body,
+      subject: input.subject?.trim() || savedTemplate.subject,
+    };
+    const draftSettings = validateCustomerEmailSettingsPayload({
+      ...settings,
+      branding: { ...settings.branding, ...input.branding },
+      etaWindow: input.etaWindow ?? settings.etaWindow,
+      senderName: input.senderName ?? settings.senderName,
+      templates: {
+        ...settings.templates,
+        [signal]: { ...savedTemplate, ...draftTemplate },
+      },
+    }, { allowAutomaticEnabled: true });
+    const rendered = renderCustomerEmail({
+      branding: draftSettings.branding,
+      context: testTemplateContext(draftSettings),
+      deliveryStopId: SAMPLE_DELIVERY_STOP_ID,
+      isSample: true,
+      senderName: draftSettings.senderName,
+      signal,
+      template: draftTemplate,
+    });
     const result = await this.transport.send({
-      branding: settings.branding,
-      body: input.body?.trim() || renderTemplate(template.body, testContext).value,
+      branding: draftSettings.branding,
+      body: rendered.body,
       commandId: `test:${cryptoRandomId()}`,
       recipientEmail: input.recipientEmail.trim().toLowerCase(),
       replyTo: settings.replyTo,
       senderEmail: settings.senderEmail,
-      senderName: settings.senderName,
+      senderName: draftSettings.senderName,
+      renderedHtml: rendered.html,
       signal: 'TEST',
-      subject: input.subject?.trim() || renderTemplate(template.subject, testContext).value,
+      subject: rendered.subject,
       tags: ['customer-delivery-email', 'test'],
     });
     return {
@@ -450,6 +482,36 @@ export class CustomerEmailService {
       recipientEmail: input.recipientEmail.trim().toLowerCase(),
       sentAt: new Date().toISOString(),
     };
+  }
+
+  samplePreview(input: unknown): { body: string; html: string; subject: string } {
+    const payload = readCustomerEmailSamplePreviewPayload(input);
+    if (payload === null) throw new CustomerEmailValidationError('Invalid customer email sample preview payload.');
+    const defaults = defaultCustomerEmailSettings();
+    const branding = { ...defaults.branding, ...payload.branding };
+    const settings = validateCustomerEmailSettingsPayload({
+      ...defaults,
+      branding,
+      etaWindow: payload.etaWindow ?? defaults.etaWindow,
+      senderName: payload.senderName ?? defaults.senderName,
+      templates: {
+        ...defaults.templates,
+        [payload.signal]: {
+          ...defaults.templates[payload.signal],
+          ...payload.template,
+        },
+      },
+    });
+    const rendered = renderCustomerEmail({
+      branding: settings.branding,
+      context: testTemplateContext(settings),
+      deliveryStopId: SAMPLE_DELIVERY_STOP_ID,
+      isSample: true,
+      senderName: settings.senderName,
+      signal: payload.signal,
+      template: payload.template,
+    });
+    return { body: rendered.body, html: rendered.html, subject: rendered.subject };
   }
 
   async preview(input: CustomerEmailPreviewInput): Promise<CustomerEmailPreview | null> {
@@ -497,16 +559,25 @@ export class CustomerEmailService {
       };
     }
     const context = renderContext(routePlan, stop, settings.etaWindow, this.trackingLink);
+    const rendered = renderCustomerEmail({
+      branding: settings.branding,
+      context,
+      deliveryStopId: stop.deliveryStop.id,
+      senderName: settings.senderName,
+      signal: input.signal,
+      template,
+    });
     const result = await this.transport.send({
       branding: settings.branding,
-      body: renderTemplate(template.body, context).value,
+      body: rendered.body,
       commandId: input.idempotencyKey,
       recipientEmail,
       replyTo: settings.replyTo,
       senderEmail: settings.senderEmail,
       senderName: settings.senderName,
+      renderedHtml: rendered.html,
       signal: input.signal,
-      subject: renderTemplate(template.subject, context).value,
+      subject: rendered.subject,
       tags: ['customer-delivery-email', 'automatic', input.signal.toLowerCase()]
     });
     return { provider: result.provider, providerMessageId: result.providerMessageId, status: 'SENT' };
@@ -617,6 +688,7 @@ export class CustomerEmailService {
           replyTo: sendSettings.replyTo,
           senderEmail: sendSettings.senderEmail,
           senderName: sendSettings.senderName,
+          renderedHtml: recipient.rendered.html,
           signal: input.signal,
           subject: recipient.rendered.subject,
           tags: [
@@ -1188,12 +1260,18 @@ function buildPreview(
       continue;
     }
     const context = renderContext(routePlan, stop, settings.etaWindow, trackingLink);
-    const renderedBody = renderTemplate(template.body, context);
-    const renderedSubject = renderTemplate(template.subject, context);
+    const rendered = renderCustomerEmail({
+      branding: settings.branding,
+      context,
+      deliveryStopId: stop.deliveryStop.id,
+      senderName: settings.senderName,
+      signal: input.signal,
+      template,
+    });
     recipients.push({
       diagnostics: {
-        body: renderedBody.diagnostics,
-        subject: renderedSubject.diagnostics,
+        body: rendered.diagnostics.body,
+        subject: rendered.diagnostics.subject,
       },
       deliveryStopId: stop.deliveryStop.id,
       email,
@@ -1201,16 +1279,24 @@ function buildPreview(
       orderId: stop.deliveryStop.order.id,
       orderNumber: stop.deliveryStop.order.name,
       rendered: {
-        body: renderedBody.value,
-        subject: renderedSubject.value,
+        body: rendered.body,
+        html: rendered.html,
+        subject: rendered.subject,
       },
       sequence: stop.sequence,
     });
   }
   const statusExclusions = selectedStops.filter((stop) => !eligibleStopIds.has(stop.deliveryStop.id));
   const exclusions = buildStatusExclusions(routePlan.status, input.signal, statusExclusions);
-  const exampleBody = renderTemplate(template.body, testTemplateContext(settings));
-  const exampleSubject = renderTemplate(template.subject, testTemplateContext(settings));
+  const example = renderCustomerEmail({
+    branding: settings.branding,
+    context: testTemplateContext(settings),
+    deliveryStopId: SAMPLE_DELIVERY_STOP_ID,
+    isSample: true,
+    senderName: settings.senderName,
+    signal: input.signal,
+    template,
+  });
   const previewWithoutToken = {
     counts: {
       eligible: eligibleStops.length,
@@ -1223,8 +1309,8 @@ function buildPreview(
       totalStops: routePlan.routeStops.length,
     },
     example: {
-      diagnostics: { body: exampleBody.diagnostics, subject: exampleSubject.diagnostics },
-      rendered: { body: exampleBody.value, subject: exampleSubject.value },
+      diagnostics: example.diagnostics,
+      rendered: { body: example.body, html: example.html, subject: example.subject },
     },
     exclusions,
     recipients,
@@ -1374,16 +1460,16 @@ function testTemplateContext(settings: CustomerEmailSettings): Record<string, st
   return {
     customerName: 'Customer',
     deliveryAddress: '123 Delivery St',
-    deliveryDate: formatDate(new Date()),
-    deliveryWeekday: '',
-    eta: 'TBD',
-    etaWindow: 'Aug 4, 2026, 9:30 AM EDT - Aug 4, 2026, 10:30 AM EDT',
+    deliveryDate: formatDate(SAMPLE_ETA),
+    deliveryWeekday: new Intl.DateTimeFormat('en-US', { timeZone: SAMPLE_TIMEZONE, weekday: 'long' }).format(SAMPLE_ETA),
+    eta: formatEta(SAMPLE_ETA, SAMPLE_TIMEZONE),
+    etaWindow: formatEtaWindow(SAMPLE_ETA, SAMPLE_TIMEZONE, settings.etaWindow),
     inventoryList: '2 x Sample item\n1 x Another item',
     orderNumber: '#1001',
     routeName: 'Test route',
     sequence: '1',
     shopName: settings.senderName,
-    trackingLink: 'https://example.com/t/sample',
+    trackingLink: `https://example.com/t/${SAMPLE_DELIVERY_STOP_ID}.abcdefghijklmnopqrstuv`,
   };
 }
 
@@ -1426,6 +1512,90 @@ function formatEta(eta: Date, timezone: string): string {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+const SAMPLE_DELIVERY_STOP_ID = '00000000-0000-4000-8000-000000000001';
+const SAMPLE_ETA = new Date('2026-10-14T14:00:00.000Z');
+const SAMPLE_TIMEZONE = 'America/Toronto';
+const trackingTokenPattern = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.([A-Za-z0-9_-]{22})$/u;
+
+export function renderCustomerEmail(input: {
+  branding: CustomerEmailBranding;
+  context: Record<string, string>;
+  deliveryStopId: string;
+  isSample?: boolean | undefined;
+  senderName: string;
+  signal: CustomerEmailSignal;
+  template: { body: string; subject: string };
+}): {
+  body: string;
+  diagnostics: { body: CustomerEmailRenderDiagnostic[]; subject: CustomerEmailRenderDiagnostic[] };
+  html: string;
+  subject: string;
+} {
+  const trackingAction = validTrackingAction(input.context.trackingLink, input.deliveryStopId, input.isSample === true);
+  const renderedBody = renderTemplate(input.template.body, input.context);
+  const htmlBody = trackingAction === undefined
+    ? renderedBody.value
+    : renderTemplate(input.template.body, { ...input.context, trackingLink: 'Use the button below.' }).value;
+  const renderedSubject = renderTemplate(input.template.subject, input.context);
+  const bodyWithRequiredContent = appendRequiredContent(renderedBody.value, input.template.body, input.context, input.signal);
+  const htmlBodyWithRequiredContent = appendRequiredContent(htmlBody, input.template.body, input.context, input.signal);
+  const body = trackingAction === undefined
+    ? bodyWithRequiredContent
+    : templateUsesToken(input.template.body, 'trackingLink')
+      ? `${bodyWithRequiredContent}\n\n${trackingAction.isSample ? 'Sample tracking number' : 'Tracking number'}: ${trackingAction.deliveryStopId}`
+      : `${bodyWithRequiredContent}\n\nTrack your delivery:\n${trackingAction.url}\n${trackingAction.isSample ? 'Sample tracking number' : 'Tracking number'}: ${trackingAction.deliveryStopId}`;
+  return {
+    body,
+    diagnostics: { body: renderedBody.diagnostics, subject: renderedSubject.diagnostics },
+    html: renderCustomerEmailHtml({
+      branding: input.branding,
+      body: htmlBodyWithRequiredContent,
+      senderName: input.senderName,
+      subject: renderedSubject.value,
+      ...(trackingAction === undefined ? {} : { trackingAction }),
+    }),
+    subject: renderedSubject.value,
+  };
+}
+
+function appendRequiredContent(
+  body: string,
+  templateBody: string,
+  context: Record<string, string>,
+  signal: CustomerEmailSignal,
+): string {
+  const blocks = [body];
+  if (!templateUsesToken(templateBody, 'inventoryList') && (context.inventoryList ?? '') !== '') {
+    blocks.push(`Items in this delivery:\n${context.inventoryList}`);
+  }
+  if (signal === 'DELIVERY_SCHEDULED' && !templateUsesToken(templateBody, 'etaWindow') && (context.etaWindow ?? '') !== '') {
+    blocks.push(`Estimated arrival window: ${context.etaWindow}`);
+  }
+  return blocks.join('\n\n');
+}
+
+function templateUsesToken(template: string, token: string): boolean {
+  return new RegExp(`\\{\\{\\s*${token}\\s*\\}\\}`, 'u').test(template);
+}
+
+function validTrackingAction(
+  trackingLink: string | undefined,
+  deliveryStopId: string,
+  isSample: boolean,
+): { deliveryStopId: string; isSample?: boolean; url: string } | undefined {
+  if (trackingLink === undefined || trackingLink.trim() === '') return undefined;
+  try {
+    const url = new URL(trackingLink);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+    const token = decodeURIComponent(url.pathname.split('/').at(-1) ?? '');
+    const match = trackingTokenPattern.exec(token);
+    if (match?.[1] !== deliveryStopId) return undefined;
+    return { deliveryStopId, ...(isSample ? { isSample: true } : {}), url: url.toString() };
+  } catch {
+    return undefined;
+  }
 }
 
 function renderTemplate(template: string, context: Record<string, string>): { diagnostics: CustomerEmailRenderDiagnostic[]; value: string } {
@@ -1656,6 +1826,36 @@ export function readCustomerEmailTemplateSettingsPayload(value: unknown): {
   }
 }
 
+export function readCustomerEmailSamplePreviewPayload(value: unknown): {
+  branding?: Partial<CustomerEmailBranding>;
+  etaWindow?: CustomerEmailEtaWindow;
+  senderName?: string;
+  signal: CustomerEmailSignal;
+  template: { body: string; subject: string };
+} | null {
+  if (!isRecord(value)) return null;
+  const allowedKeys = new Set(['branding', 'etaWindow', 'senderName', 'signal', 'template']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) return null;
+  const signal = readCustomerEmailSignal(value.signal);
+  if (signal === null || !isRecord(value.template)) return null;
+  if (Object.keys(value.template).some((key) => key !== 'body' && key !== 'subject')) return null;
+  if (typeof value.template.body !== 'string' || value.template.body.length > 10_000) return null;
+  if (typeof value.template.subject !== 'string' || value.template.subject.length > 200) return null;
+  if (value.branding !== undefined && !isRecord(value.branding)) return null;
+  if (value.senderName !== undefined && typeof value.senderName !== 'string') return null;
+  try {
+    return {
+      ...(value.branding === undefined ? {} : { branding: value.branding }),
+      ...(value.etaWindow === undefined ? {} : { etaWindow: readEtaWindow(value.etaWindow) }),
+      ...(typeof value.senderName === 'string' ? { senderName: value.senderName } : {}),
+      signal,
+      template: { body: value.template.body, subject: value.template.subject },
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function readCustomerEmailCommandPayload(value: unknown): {
   commandId?: string | undefined;
   confirmed?: boolean | undefined;
@@ -1687,24 +1887,48 @@ export function readCustomerEmailCommandPayload(value: unknown): {
 }
 
 export function readCustomerEmailTestPayload(value: unknown): {
+  branding?: Partial<CustomerEmailBranding> | undefined;
   body?: string | undefined;
   confirmed: true;
+  etaWindow?: CustomerEmailEtaWindow | undefined;
   recipientEmail: string;
+  senderName?: string | undefined;
   signal?: CustomerEmailSignal | undefined;
   subject?: string | undefined;
+  template?: { body: string; subject: string } | undefined;
 } | null {
   if (!isRecord(value) || value.confirmed !== true || typeof value.recipientEmail !== 'string') return null;
   if (typeof value.subject === 'string' && value.subject.length > 200) return null;
   if (typeof value.body === 'string' && value.body.length > 10_000) return null;
+  if (value.branding !== undefined && !isRecord(value.branding)) return null;
+  if (value.senderName !== undefined && typeof value.senderName !== 'string') return null;
+  if (value.template !== undefined && (
+    !isRecord(value.template)
+    || Object.keys(value.template).some((key) => key !== 'body' && key !== 'subject')
+    || typeof value.template.body !== 'string'
+    || value.template.body.length > 10_000
+    || typeof value.template.subject !== 'string'
+    || value.template.subject.length > 200
+  )) return null;
   const signal = value.signal === undefined ? undefined : readCustomerEmailSignal(value.signal);
   if (value.signal !== undefined && signal === null) return null;
-  return {
-    ...(typeof value.body === 'string' ? { body: value.body } : {}),
-    confirmed: true,
-    recipientEmail: value.recipientEmail,
-    ...(signal === undefined || signal === null ? {} : { signal }),
-    ...(typeof value.subject === 'string' ? { subject: value.subject } : {}),
-  };
+  try {
+    return {
+      ...(value.branding === undefined ? {} : { branding: value.branding }),
+      ...(typeof value.body === 'string' ? { body: value.body } : {}),
+      confirmed: true,
+      ...(value.etaWindow === undefined ? {} : { etaWindow: readEtaWindow(value.etaWindow) }),
+      recipientEmail: value.recipientEmail,
+      ...(typeof value.senderName === 'string' ? { senderName: value.senderName } : {}),
+      ...(signal === undefined || signal === null ? {} : { signal }),
+      ...(typeof value.subject === 'string' ? { subject: value.subject } : {}),
+      ...(value.template === undefined ? {} : {
+        template: { body: value.template.body as string, subject: value.template.subject as string },
+      }),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
