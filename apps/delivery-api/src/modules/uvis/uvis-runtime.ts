@@ -34,7 +34,7 @@ export function createUvisTelemetryRuntime(input: {
   const roadMatchProvider = createRoadMatchProvider(input.env ?? process.env);
   const trailMaterializationQueue = new UvisVehicleTrailMaterializationQueue({
     logger: input.logger,
-    repository: new PrismaUvisVehicleTrailMaterializationRepository(input.prisma),
+    repository: new PrismaUvisVehicleTrailMaterializationRepository(input.prisma, input.logger),
     ...(roadMatchProvider === undefined ? {} : { roadMatchProvider }),
   });
   const worker = new UvisTelemetryWorker({

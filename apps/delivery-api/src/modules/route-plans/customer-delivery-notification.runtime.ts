@@ -9,6 +9,7 @@ import { CustomerDeliveryNotificationWorker } from './customer-delivery-notifica
 import { PrismaCustomerDeliveryNotificationAttemptRepository } from '../customer-email/customer-delivery-notification-attempt.repository.js';
 import { PrismaCustomerEmailAutomaticSender } from '../customer-email/customer-email-automatic.sender.js';
 import { loadCustomerEmailTransport, type CustomerEmailTransportEnv } from '../customer-email/customer-email-transport.js';
+import { loadCustomerTrackingLinks, type CustomerTrackingLinksEnv } from '../customer-tracking/customer-tracking-link.js';
 
 type LoggerLike = {
   error?(bindings: unknown, message?: string): void;
@@ -23,14 +24,14 @@ export type CustomerDeliveryNotificationRuntime = {
 };
 
 export function createCustomerDeliveryNotificationRuntime(input: {
-  env: CustomerDeliveryNotificationRuntimeEnv & CustomerEmailTransportEnv;
+  env: CustomerDeliveryNotificationRuntimeEnv & CustomerEmailTransportEnv & CustomerTrackingLinksEnv;
   logger?: LoggerLike | undefined;
   prisma: PrismaClient;
 }): CustomerDeliveryNotificationRuntime {
   const legacySender = loadCustomerDeliveryNotificationSender(input.env);
   const transport = loadCustomerEmailTransport(input.env);
   const sender = transport.configured
-    ? new PrismaCustomerEmailAutomaticSender(input.prisma, transport, legacySender)
+    ? new PrismaCustomerEmailAutomaticSender(input.prisma, transport, legacySender, loadCustomerTrackingLinks(input.env))
     : legacySender;
   if (sender === undefined || !isCustomerDeliveryNotificationWorkerEnabled(input.env)) {
     return {

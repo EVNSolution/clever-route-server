@@ -727,6 +727,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'patch', path: '/admin/route-groups/:routeGroupId/polygons' },
     { method: 'post', path: '/admin/route-groups/:routeGroupId/re-optimize' },
     { method: 'post', path: '/admin/route-groups/:routeGroupId/stops/custom' },
+    { method: 'post', path: '/admin/route-groups/:routeGroupId/stops/custom/check' },
     { method: 'delete', path: '/admin/route-groups/:routeGroupId/stops/:deliveryStopId/custom' },
     { method: 'patch', path: '/admin/route-groups/:routeGroupId/stops/:deliveryStopId/custom' },
     { method: 'get', path: '/admin/route-plans' },

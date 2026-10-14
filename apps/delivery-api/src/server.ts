@@ -10,6 +10,9 @@ import {
 import { loadAdminDriverDependencies } from './modules/driver/admin-driver.dependencies.js';
 import { loadAdminInventoryDependencies } from './modules/inventory/inventory.dependencies.js';
 import { loadAdminCustomerEmailDependencies } from './modules/customer-email/customer-email.dependencies.js';
+import { loadCustomerTrackingLinks } from './modules/customer-tracking/customer-tracking-link.js';
+import { CustomerTrackingService } from './modules/customer-tracking/customer-tracking.service.js';
+import { readCurrentRouteOpsMapConfig, resolveRouteOpsWebDistPath } from './routes/admin-commerce-connections-ui.routes.js';
 import { PrismaEmailRuntimeHealthService } from './modules/customer-email/email-runtime-health.service.js';
 import { EmailRuntimeHealthRuntime } from './modules/customer-email/email-runtime-health.runtime.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
@@ -68,7 +71,14 @@ const operationalAlertRepository = new PrismaOperationalAlertRepository(prisma);
 const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env: process.env, prisma });
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
 const adminInventories = loadAdminInventoryDependencies({ env: process.env, prisma });
-const adminCustomerEmail = loadAdminCustomerEmailDependencies({ env: process.env, prisma });
+const customerTrackingLinks = loadCustomerTrackingLinks(process.env);
+const adminCustomerEmail = loadAdminCustomerEmailDependencies({ env: process.env, prisma, trackingLinks: customerTrackingLinks });
+const customerTracking = customerTrackingLinks === undefined ? undefined : {
+  links: customerTrackingLinks,
+  readMapConfig: readCurrentRouteOpsMapConfig,
+  service: new CustomerTrackingService(prisma),
+  webDistPath: resolveRouteOpsWebDistPath(),
+};
 const routeGroupingService = createRouteGroupingService({ env: process.env, prisma });
 const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma, routeGroupingService });
 const routeTrackingStreamHub = new RouteTrackingStreamHub();
@@ -155,6 +165,7 @@ const trustedProxyAddresses = process.env.CLEVER_TRUST_CADDY_PROXY === 'true'
 const app = await buildApp({
   trustedProxyAddresses,
   ...(dsvExecution === undefined ? {} : { dsvExecution }),
+  ...(customerTracking === undefined ? {} : { customerTracking }),
   ...createBuildAppOptions({
     adminCommerceConnections,
     adminCommerceConnectionsUi,

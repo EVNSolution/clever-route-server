@@ -309,14 +309,14 @@ function readRouteOptimizationJobTimeoutBudgetMs(): number {
   return parsed;
 }
 
-function readCurrentRouteOpsMapConfig() {
+export function readCurrentRouteOpsMapConfig() {
   return readRouteOpsMapConfig({
     appVendorPath: ADMIN_UI_APP_VENDOR_PATH,
     webPublicPath: ROUTE_OPS_WEB_PUBLIC_PATH,
   });
 }
 
-function resolveRouteOpsWebDistPath(): string {
+export function resolveRouteOpsWebDistPath(): string {
   const explicit = process.env.ROUTE_OPS_WEB_DIST_PATH?.trim();
   if (explicit !== undefined && explicit !== "") return explicit;
 

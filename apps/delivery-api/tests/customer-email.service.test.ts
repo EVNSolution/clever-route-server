@@ -1,7 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { CustomerEmailService } from '../src/modules/customer-email/customer-email.service.js';
+import { CustomerEmailService, CustomerEmailValidationError } from '../src/modules/customer-email/customer-email.service.js';
 import { defaultCustomerEmailSettings } from '../src/modules/customer-email/customer-email-settings.js';
+import { loadCustomerTrackingLinks } from '../src/modules/customer-tracking/customer-tracking-link.js';
+
+const testTrackingLinks = loadCustomerTrackingLinks({ DELIVERY_API_PUBLIC_URL: 'https://track.example.com', JWT_SECRET: 'test-secret' });
 import { BrevoCustomerEmailTransport, CustomerEmailTransportSendError } from '../src/modules/customer-email/customer-email-transport.js';
 
 describe('CustomerEmailService', () => {
@@ -187,6 +190,35 @@ describe('CustomerEmailService', () => {
       },
       where: { id: 'shop-id', updatedAt },
     }));
+  });
+
+  test('saves the ETA window option with global settings and rejects an invalid one', async () => {
+    const { prisma, service } = createHarness();
+    const updatedAt = new Date('2026-08-05T00:00:00.000Z');
+    const current = { ...defaultCustomerEmailSettings(), senderEmail: 'old@example.com' };
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt });
+    prisma.shop.updateMany.mockResolvedValue({ count: 1 });
+    const payload = {
+      branding: current.branding,
+      expectedVersion: 1,
+      replyTo: null,
+      senderEmail: 'old@example.com',
+      senderName: 'Sender',
+    };
+
+    expect(current.etaWindow).toEqual({ direction: 'AROUND', minutes: 30 });
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'AFTER', minutes: 60 } },
+      shopDomain: 'example.myshopify.com',
+    })).resolves.toMatchObject({ etaWindow: { direction: 'AFTER', minutes: 60 }, globalVersion: 2 });
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'SIDEWAYS', minutes: 60 } },
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toBeInstanceOf(CustomerEmailValidationError);
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'BEFORE', minutes: 1 } },
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toBeInstanceOf(CustomerEmailValidationError);
   });
 
   test('rejects stale global settings saves without updating', async () => {
@@ -511,6 +543,61 @@ describe('CustomerEmailService', () => {
       signal: 'DELIVERY_SCHEDULED',
     })).resolves.toMatchObject({ status: 'SENT' });
     expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({ body: renderedBody }));
+  });
+
+  test('renders a signed tracking link for each recipient stop', async () => {
+    const { prisma, service } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      customerEmailSettings: {
+        ...defaults,
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...defaults.templates,
+          OUT_FOR_DELIVERY: { body: 'Track {{trackingLink}}', enabled: true, subject: 'Out', version: 2 },
+        },
+      },
+      stops: [stopRow({ email: 'customer@example.com', id: '11111111-1111-4111-8111-111111111111', sequence: 1, status: 'PENDING' })],
+    }));
+
+    const preview = await service.preview({ routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'OUT_FOR_DELIVERY' });
+    expect(preview?.recipients[0]?.rendered.body).toMatch(
+      /^Track https:\/\/track\.example\.com\/t\/11111111-1111-4111-8111-111111111111\.[A-Za-z0-9_-]{22}$/u,
+    );
+  });
+
+  test.each([
+    [{ direction: 'BEFORE', minutes: 45 }, 'Window Aug 4, 2026, 5:15 AM EDT - Aug 4, 2026, 6:00 AM EDT'],
+    [{ direction: 'AFTER', minutes: 60 }, 'Window Aug 4, 2026, 6:00 AM EDT - Aug 4, 2026, 7:00 AM EDT'],
+    [{ direction: 'AROUND', minutes: 15 }, 'Window Aug 4, 2026, 5:45 AM EDT - Aug 4, 2026, 6:15 AM EDT'],
+  ] as const)('renders the ETA window from the %o option', async (etaWindow, renderedBody) => {
+    const { prisma, service } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      constraints: { routeScope: { timezone: 'America/New_York' } },
+      customerEmailSettings: {
+        ...defaults,
+        etaWindow,
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...defaults.templates,
+          DELIVERY_SCHEDULED: { body: 'Window {{etaWindow}}', enabled: true, subject: 'Scheduled', version: 2 },
+        },
+      },
+      stops: [stopRow({
+        email: 'customer@example.com',
+        estimatedArrivalAt: new Date('2026-08-04T10:00:00.000Z'),
+        id: 'stop-1',
+        sequence: 1,
+        status: 'PENDING',
+      })],
+    }));
+
+    await expect(service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ recipients: [{ rendered: { body: renderedBody } }] });
   });
 
   test.each([
@@ -1636,6 +1723,29 @@ describe('CustomerEmailService', () => {
 });
 
 describe('BrevoCustomerEmailTransport', () => {
+  test('links https URLs in the body and keeps trailing punctuation outside the link', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
+    const transport = new BrevoCustomerEmailTransport({ apiKey: 'secret', fetchImpl, timeoutMs: 1234 });
+
+    await transport.send({
+      branding: defaultCustomerEmailSettings().branding,
+      body: 'Track: https://track.example.com/t/abc.def.\nSee "https://example.com/x" or http://plain.example.com',
+      commandId: 'command-1:stop-1',
+      recipientEmail: 'customer@example.com',
+      replyTo: null,
+      senderEmail: 'sender@example.com',
+      senderName: 'Sender',
+      signal: 'OUT_FOR_DELIVERY',
+      subject: 'Out',
+      tags: [],
+    });
+
+    const [, request] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const { htmlContent } = JSON.parse(request.body as string) as { htmlContent: string };
+    expect(htmlContent).toContain('Track: <a href="https://track.example.com/t/abc.def" style="color:#1f6feb;text-decoration:underline">https://track.example.com/t/abc.def</a>.<br />');
+    expect(htmlContent).toContain('See &quot;<a href="https://example.com/x" style="color:#1f6feb;text-decoration:underline">https://example.com/x</a>&quot; or http://plain.example.com');
+  });
+
   test('sends escaped neutral HTML with subject heading, body, divider, and boxed footer', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
     const transport = new BrevoCustomerEmailTransport({
@@ -1777,7 +1887,7 @@ function createHarness(attempts?: {
   };
   return {
     prisma,
-    service: new CustomerEmailService(prisma as never, transport, attempts as never),
+    service: new CustomerEmailService(prisma as never, transport, attempts as never, testTrackingLinks),
     transport,
   };
 }
@@ -1834,7 +1944,7 @@ function stopRow(input: {
         email: input.email === undefined ? `${input.id}@example.com` : input.email,
         id: `order-${input.sequence}`,
         name: `Order #${input.sequence}`,
-        orderItems: input.items ?? [],
+        orderItems: input.items ?? [{ lineIndex: 0, name: 'Kimchi', options: [], quantity: 1 }],
       },
       orderId: `order-${input.sequence}`,
       postalCode: 'M1M 1M1',

@@ -8,7 +8,11 @@ export default defineConfig({
     // unexpected application bundle growth rather than the known map runtime.
     chunkSizeWarningLimit: 1100,
     manifest: true,
-    outDir: 'dist'
+    outDir: 'dist',
+    rollupOptions: {
+      // tracking.html is the public customer tracking page served by delivery-api at /t/:token.
+      input: { main: 'index.html', tracking: 'tracking.html' }
+    }
   },
   plugins: [react()]
 });

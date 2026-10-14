@@ -392,6 +392,83 @@ describe('Admin route group routes', () => {
     }
   });
 
+  test('checks a custom stop address with the same geocoder and saves nothing', async () => {
+    const { createCustomStop, dependencies, geocode, updateCustomStop } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+        method: 'POST',
+        payload: { address1: '100 Queen St W', city: 'Toronto', countryCode: 'CA', latitude: 1, longitude: 2, postalCode: 'M5H 2N2' },
+        url: '/admin/route-groups/route-group-id/stops/custom/check'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        // The geocoder's addressLabel is only the query shape; the matched place text is its rawLabel.
+        data: { check: { latitude: 43.7, longitude: -79.4, matchedAddress: '123 Main St, Toronto, ON', postalCode: null } },
+        error: null
+      });
+      expect(geocode).toHaveBeenCalledWith({
+        address: { address1: '100 Queen St W', address2: null, city: 'Toronto', countryCode: 'CA', postalCode: 'M5H 2N2', province: null },
+        shopDomain: 'example.myshopify.com'
+      });
+      expect(createCustomStop).not.toHaveBeenCalled();
+      expect(updateCustomStop).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('custom stop address check rejects a missing address and reports a failed geocode', async () => {
+    const { dependencies, geocode } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const missing = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { countryCode: 'CA' },
+        url: '/admin/route-groups/route-group-id/stops/custom/check'
+      });
+      expect(missing.statusCode).toBe(400);
+      expect(geocode).not.toHaveBeenCalled();
+
+      geocode.mockResolvedValueOnce({ code: 'GEOCODER_NO_RESULT', message: 'No geocoding result was found.', ok: false });
+      const failed = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { address1: 'Nowhere 0', countryCode: 'CA' },
+        url: '/admin/route-groups/route-group-id/stops/custom/check'
+      });
+      expect(failed.statusCode).toBe(400);
+      expect(failed.json()).toEqual({
+        data: null,
+        error: { code: 'ROUTE_GROUPING_INVALID', message: 'custom stop address could not be geocoded: No geocoding result was found.' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('custom stop address check requires authentication', async () => {
+    const { dependencies, geocode } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { address1: '100 Queen St W', countryCode: 'CA' },
+        url: '/admin/route-groups/route-group-id/stops/custom/check'
+      });
+      expect(response.statusCode).toBe(401);
+      expect(geocode).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects incomplete or malformed custom stop locations before calling the service', async () => {
     const { createCustomStop, dependencies, geocode } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });

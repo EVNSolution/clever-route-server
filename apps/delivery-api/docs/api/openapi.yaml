@@ -2976,6 +2976,35 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /admin/route-groups/{routeGroupId}/stops/custom/check:
+    parameters:
+      - name: routeGroupId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Preview where a custom stop address will be placed
+      description: Geocodes the address with the same geocoder and input mapping as custom stop create and returns `data.check` (`matchedAddress` or null, `latitude`, `longitude`, `postalCode` or null). Persists nothing and ignores caller-supplied coordinates. Requires a non-empty address1 and a two-letter countryCode.
+      operationId: checkAdminRouteGroupCustomStopAddress
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-route-groups.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomRouteStopCreateInput' }
+      responses:
+        '200':
+          description: Address check envelope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /admin/route-groups/{routeGroupId}/stops/{deliveryStopId}/custom:
     parameters:
       - name: routeGroupId
@@ -3828,6 +3857,23 @@ paths:
                 senderEmail:
                   type: string
                   description: The current company-managed sender address, or the canonical empty value while unconfigured.
+                etaWindow:
+                  type: object
+                  description: >-
+                    Optional. Shapes `{{etaWindow}}`. AROUND renders ETA ± minutes,
+                    BEFORE renders ETA - minutes to ETA, AFTER renders ETA to
+                    ETA + minutes. Omitted keeps the current value; the default is
+                    AROUND 30.
+                  required: [direction, minutes]
+                  properties:
+                    direction:
+                      type: string
+                      enum: [AROUND, BEFORE, AFTER]
+                    minutes:
+                      type: integer
+                      minimum: 5
+                      maximum: 240
+                  additionalProperties: false
               additionalProperties: true
       responses:
         '200':
@@ -4021,6 +4067,60 @@ paths:
           content:
             image/png:
               schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /t/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        description: Signed customer tracking token `<deliveryStopId>.<signature>` from the `{{trackingLink}}` email variable.
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Serve the public customer delivery tracking page
+      description: >-
+        Unauthenticated. Valid until 14 days after the route plan date. Rate
+        limited per IP. Returns no-store, no-referrer, noindex headers.
+      operationId: getCustomerTrackingPage
+      x-clever-audience: public-customer
+      x-side-effect: read
+      x-source-file: src/routes/customer-tracking.routes.ts
+      security: []
+      responses:
+        '200':
+          description: HTML shell that loads the route-ops-web tracking entry.
+          content:
+            text/html:
+              schema: { type: string }
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /t/{token}/status:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read public customer delivery tracking status
+      description: >-
+        Returns stage (PREPARING, ON_THE_WAY, DELIVERED, MISSED, CANCELLED),
+        the configured ETA window, items, recipient name and address, and the
+        driver location only while the driver is within the shop's
+        nearby-stops threshold and the last fix is under 10 minutes old.
+      operationId: getCustomerTrackingStatus
+      x-clever-audience: public-customer
+      x-side-effect: read
+      x-source-file: src/routes/customer-tracking.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Envelope with `data` tracking status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
         '404':
           $ref: '#/components/responses/NotFound'
   /admin/route-plans/{routePlanId}:

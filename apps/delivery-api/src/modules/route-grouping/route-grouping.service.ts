@@ -404,6 +404,11 @@ export async function replaceCurrentRouteGroupingChildVersion(
     orderIds: input.orderIds,
     shopId: input.shopId
   });
+  // An order that left this route must not keep pointing at the version just archived: reads treat that as "Unknown".
+  await prisma.order.updateMany({
+    data: { currentRouteVersionId: null },
+    where: { currentRouteVersionId: input.currentChildId, id: { notIn: [...new Set(input.orderIds)] }, shopId: input.shopId }
+  });
   return nextChild.id;
 }
 

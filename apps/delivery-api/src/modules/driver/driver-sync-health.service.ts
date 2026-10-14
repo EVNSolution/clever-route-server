@@ -4,6 +4,9 @@ import type { PrismaOperationalAlertRepository } from '../notifications/operatio
 import { privateDriverDemoVisibilityWhere } from './private-driver-demo.js';
 
 export const DRIVER_SYNC_HEALTH_DEFAULTS = {
+  alertRefreshSeconds: 60,
+  gpsSilentCriticalSeconds: 300,
+  gpsSilentWarningSeconds: 60,
   heartbeatAbsentSeconds: 180,
   healthyHeartbeatSeconds: 60,
   leaseSeconds: 180,
@@ -68,7 +71,46 @@ export type DriverSyncHeartbeatResult = {
   syncHealth: DriverSyncHealthDto;
 };
 
+export type DriverSilenceState = {
+  contactAbsent: boolean;
+  gps: 'CRITICAL' | 'OK' | 'WARNING';
+  gpsSilentSeconds: number | null;
+  lastContactAt: Date | null;
+  lastLocationAt: Date | null;
+};
+
+/**
+ * Silence is measured on server receipt time. Sync heartbeats are sent only when the app
+ * runs in the foreground, so any accepted location also counts as device contact.
+ */
+export function deriveDriverSilence(input: {
+  lastHeartbeatReceivedAt: Date | null;
+  lastLocationReceivedAt: Date | null;
+  now: Date;
+  startedAt: Date | null;
+}): DriverSilenceState {
+  const latest = (...values: Array<Date | null>): Date | null => values.reduce<Date | null>(
+    (best, value) => value !== null && (best === null || value > best) ? value : best,
+    null
+  );
+  const lastLocationAt = latest(input.lastLocationReceivedAt, input.startedAt);
+  const lastContactAt = latest(input.lastHeartbeatReceivedAt, lastLocationAt);
+  const silentSeconds = lastLocationAt === null ? null : Math.max(0, (input.now.getTime() - lastLocationAt.getTime()) / 1000);
+  return {
+    contactAbsent: lastContactAt === null
+      || input.now.getTime() - lastContactAt.getTime() > DRIVER_SYNC_HEALTH_DEFAULTS.heartbeatAbsentSeconds * 1000,
+    gps: silentSeconds === null || silentSeconds < DRIVER_SYNC_HEALTH_DEFAULTS.gpsSilentWarningSeconds
+      ? 'OK'
+      : silentSeconds >= DRIVER_SYNC_HEALTH_DEFAULTS.gpsSilentCriticalSeconds ? 'CRITICAL' : 'WARNING',
+    gpsSilentSeconds: silentSeconds === null ? null : Math.floor(silentSeconds),
+    lastContactAt,
+    lastLocationAt
+  };
+}
+
 export class PrismaDriverSyncHealthService {
+  private readonly alertSync = new Map<string, { at: number; state: string }>();
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly alerts?: PrismaOperationalAlertRepository,
@@ -316,38 +358,94 @@ export class PrismaDriverSyncHealthService {
     return result;
   }
 
-  async detectOperationalHealth(): Promise<{ heartbeatAbsent: number; routesChecked: number }> {
-    if (this.alerts === undefined) return { heartbeatAbsent: 0, routesChecked: 0 };
+  async detectOperationalHealth(): Promise<{ gpsSilent: number; heartbeatAbsent: number; routesChecked: number }> {
+    if (this.alerts === undefined) return { gpsSilent: 0, heartbeatAbsent: 0, routesChecked: 0 };
     const now = this.now();
     const routes = await this.prisma.routePlan.findMany({
       include: {
+        driverEvents: {
+          orderBy: { occurredAt: 'desc' },
+          select: { createdAt: true },
+          take: 1,
+          where: { eventType: 'ROUTE_STARTED' }
+        },
         driverRouteSessionLeases: {
           include: { syncSession: { include: { heartbeats: { orderBy: { heartbeatSequence: 'desc' }, take: 1 } } } },
           orderBy: { issuedAt: 'desc' }, take: 1, where: { expiresAt: { gt: now }, revokedAt: null }
-        }
+        },
+        routeStops: { select: { deliveryStop: { select: { status: true } } } },
+        trackingGeometry: { select: { lastReceivedAt: true } }
       },
       where: { driverId: { not: null }, status: 'IN_PROGRESS' }
     });
+    const seen = new Set(routes.map((route) => route.id));
+    for (const key of this.alertSync.keys()) if (!seen.has(key.slice(key.indexOf(':') + 1))) this.alertSync.delete(key);
     let heartbeatAbsent = 0;
+    let gpsSilent = 0;
     for (const route of routes) {
       if (route.driverId === null) continue;
       const heartbeatDedupeKey = `HEARTBEAT_ABSENT:${route.id}:${route.driverId}`;
+      const gpsDedupeKey = `GPS_SILENT:${route.id}:${route.driverId}`;
       const activeLease = route.driverRouteSessionLeases[0];
       const activeHeartbeat = activeLease?.syncSession.heartbeats[0];
-      const heartbeatIsAbsent = activeHeartbeat === undefined
-        || now.getTime() - activeHeartbeat.serverReceivedAt.getTime() > DRIVER_SYNC_HEALTH_DEFAULTS.heartbeatAbsentSeconds * 1000;
-      if (heartbeatIsAbsent) {
+      const resolvedStopStatuses = ['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED'];
+      const deliveryWorkDone = route.deliveryWorkCompletedAt !== null
+        || (route.routeStops.length > 0 && route.routeStops.every(({ deliveryStop }) => resolvedStopStatuses.includes(deliveryStop.status)));
+      if (deliveryWorkDone) {
+        // The route stays IN_PROGRESS through return navigation; a quiet phone is expected then.
+        await this.syncAlert(route.id, 'ABSENT', 'OK', now, () => this.alerts!.resolveByDedupeKey({
+          dedupeKey: heartbeatDedupeKey, resolutionCode: 'DELIVERY_WORK_COMPLETED', resolvedAt: now, shopId: route.shopId
+        }));
+        await this.syncAlert(route.id, 'GPS', 'OK', now, () => this.alerts!.resolveByDedupeKey({
+          dedupeKey: gpsDedupeKey, resolutionCode: 'DELIVERY_WORK_COMPLETED', resolvedAt: now, shopId: route.shopId
+        }));
+        continue;
+      }
+      const silence = deriveDriverSilence({
+        lastHeartbeatReceivedAt: activeHeartbeat?.serverReceivedAt ?? null,
+        lastLocationReceivedAt: route.trackingGeometry?.lastReceivedAt ?? null,
+        now,
+        startedAt: route.driverEvents[0]?.createdAt ?? null
+      });
+      if (silence.contactAbsent) {
         heartbeatAbsent += 1;
-        await this.alerts.openOrObserve({
+        await this.syncAlert(route.id, 'ABSENT', 'ABSENT', now, () => this.alerts!.openOrObserve({
           dedupeKey: heartbeatDedupeKey, observedAt: now, routePlanId: route.id, severity: 'CRITICAL', shopId: route.shopId,
           title: 'Driver heartbeat is absent', type: 'HEARTBEAT_ABSENT'
-        });
-      } else if (activeLease !== undefined && activeHeartbeat !== undefined) {
-        await this.alerts.resolveByDedupeKey({
+        }));
+      } else {
+        await this.syncAlert(route.id, 'ABSENT', 'OK', now, () => this.alerts!.resolveByDedupeKey({
           dedupeKey: heartbeatDedupeKey,
           resolutionCode: 'HEARTBEAT_RECOVERED_BY_DETECTOR',
           resolvedAt: now,
           shopId: route.shopId
+        }));
+      }
+      const gpsSeverity = silence.gps;
+      if (gpsSeverity === 'OK') {
+        await this.syncAlert(route.id, 'GPS', 'OK', now, () => this.alerts!.resolveByDedupeKey({
+          dedupeKey: gpsDedupeKey, resolutionCode: 'GPS_RESUMED', resolvedAt: now, shopId: route.shopId
+        }));
+      } else {
+        gpsSilent += 1;
+        await this.syncAlert(route.id, 'GPS', gpsSeverity, now, async () => {
+          const device = await this.latestDeviceState(route.id);
+          await this.alerts!.openOrObserve({
+            body: `No GPS fix received for ${silence.gpsSilentSeconds ?? 0}s`,
+            dedupeKey: gpsDedupeKey,
+            observedAt: now,
+            payload: {
+              device,
+              lastContactAt: silence.lastContactAt?.toISOString() ?? null,
+              lastLocationReceivedAt: silence.lastLocationAt?.toISOString() ?? null,
+              silentSeconds: silence.gpsSilentSeconds
+            },
+            routePlanId: route.id,
+            severity: gpsSeverity,
+            shopId: route.shopId,
+            title: 'Driver GPS is silent',
+            type: 'GPS_SILENT'
+          });
         });
       }
       if (activeLease !== undefined && activeHeartbeat !== undefined) {
@@ -359,7 +457,49 @@ export class PrismaDriverSyncHealthService {
         );
       }
     }
-    return { heartbeatAbsent, routesChecked: routes.length };
+    return { gpsSilent, heartbeatAbsent, routesChecked: routes.length };
+  }
+
+  /** Writes only when the state changed or an open alert is due for a refresh; keeps a 15 s scan cheap. */
+  private async syncAlert(
+    routePlanId: string,
+    kind: 'ABSENT' | 'GPS',
+    state: string,
+    now: Date,
+    write: () => Promise<unknown>
+  ): Promise<void> {
+    const key = `${kind}:${routePlanId}`;
+    const previous = this.alertSync.get(key);
+    const due = previous === undefined
+      || previous.state !== state
+      || (state !== 'OK' && now.getTime() - previous.at >= DRIVER_SYNC_HEALTH_DEFAULTS.alertRefreshSeconds * 1000);
+    if (!due) return;
+    await write();
+    this.alertSync.set(key, { at: now.getTime(), state });
+  }
+
+  /** Last phone-side state the runtime diagnostics reported; lets operators tell "app alive, GPS dead" from "app gone". */
+  private async latestDeviceState(routePlanId: string): Promise<Prisma.InputJsonObject | null> {
+    const snapshot = await this.prisma.driverRuntimeDiagnosticSnapshot.findFirst({
+      orderBy: { receivedAt: 'desc' },
+      select: { receivedAt: true, snapshot: true },
+      where: { routePlanId }
+    });
+    if (snapshot === null) return null;
+    const value = snapshot.snapshot !== null && typeof snapshot.snapshot === 'object' && !Array.isArray(snapshot.snapshot)
+      ? snapshot.snapshot as Record<string, unknown>
+      : {};
+    const text = (key: string): string | null => {
+      const field = value[key];
+      return typeof field === 'string' ? field : null;
+    };
+    return {
+      lastGpsCollectedAt: text('lastGpsCollectedAt'),
+      lifecycle: text('lifecycle'),
+      locationTask: text('locationTask'),
+      network: text('network'),
+      reportedAt: snapshot.receivedAt.toISOString()
+    };
   }
 
   private async observeMismatch(

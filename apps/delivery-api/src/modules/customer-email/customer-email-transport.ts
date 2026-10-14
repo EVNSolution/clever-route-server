@@ -201,7 +201,14 @@ function deriveLogoAltText(senderName: string): string {
 }
 
 function renderMultilineText(value: string): string {
-  return escapeHtml(value).replace(/\r\n|\r|\n/gu, '<br />');
+  return escapeHtml(value)
+    .replace(/https:\/\/[^\s<]+/gu, (match) => {
+      // Keep sentence punctuation and escaped quotes that follow a URL outside the link.
+      const trailing = /(?:&quot;|&#39;|[.,;:!?)])+$/u.exec(match)?.[0] ?? '';
+      const url = match.slice(0, match.length - trailing.length);
+      return `<a href="${url}" style="color:#1f6feb;text-decoration:underline">${url}</a>${trailing}`;
+    })
+    .replace(/\r\n|\r|\n/gu, '<br />');
 }
 
 function textContent(message: CustomerEmailTransportMessage): string {

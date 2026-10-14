@@ -35,6 +35,15 @@ describe('customer email settings', () => {
       websiteUrl: null,
     });
     expect(customerEmailSignals.every((signal) => settings.templates[signal].enabled)).toBe(true);
+    expect(customerEmailSignals.every((signal) => settings.templates[signal].body.includes('{{inventoryList}}'))).toBe(true);
+    expect(settings.etaWindow).toEqual({ direction: 'AROUND', minutes: 30 });
+  });
+
+  test('keeps stored settings without etaWindow on the AROUND 30 default', () => {
+    const stored: Partial<ReturnType<typeof defaultCustomerEmailSettings>> = defaultCustomerEmailSettings();
+    delete stored.etaWindow;
+
+    expect(normalizeCustomerEmailSettings(stored).etaWindow).toEqual({ direction: 'AROUND', minutes: 30 });
   });
 
   test('validates version and whitelisted variables', () => {

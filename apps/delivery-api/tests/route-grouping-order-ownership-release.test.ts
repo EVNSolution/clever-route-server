@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
   archiveDeletedRouteGroupingChildMembership,
+  replaceCurrentRouteGroupingChildVersion,
   releaseRouteVersionOrderOwnership
 } from '../src/modules/route-grouping/route-grouping.service.js';
 
@@ -64,5 +65,39 @@ describe('route grouping order ownership release', () => {
       }
     });
     expect(tx.order.updateMany).toHaveBeenCalledOnce();
+  });
+
+  test('clears the archived child pointer of an order that left the route when the child is replaced', async () => {
+    const tx = {
+      order: { updateMany: vi.fn(() => Promise.resolve({ count: 1 })) },
+      routeGroupingChildVersion: {
+        create: vi.fn(() => Promise.resolve({ id: 'next-child-id' })),
+        updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+      },
+      routePlan: { updateMany: vi.fn() }
+    };
+
+    await replaceCurrentRouteGroupingChildVersion(tx, {
+      currentChildId: 'old-child-id',
+      driverId: null,
+      groupingId: 'grouping-id',
+      groupingVersionId: 'grouping-version-id',
+      notificationStatus: 'SKIPPED',
+      orderIds: ['kept-order-id'],
+      publishedAt: null,
+      routePlanId: null,
+      shopId: 'shop-id',
+      snapshot: { membershipSchemaVersion: 1, stops: [] },
+      version: 1
+    });
+
+    expect(tx.order.updateMany).toHaveBeenCalledWith({
+      data: { currentRouteVersionId: null },
+      where: {
+        currentRouteVersionId: 'old-child-id',
+        id: { notIn: ['kept-order-id'] },
+        shopId: 'shop-id'
+      }
+    });
   });
 });
