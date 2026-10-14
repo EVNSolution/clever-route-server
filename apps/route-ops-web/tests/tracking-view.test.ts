@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { formatEtaWindow, isFinalStage, reachedStep, trackingHeadline } from '../src/tracking/trackingView';
+import { formatEtaWindow, isFinalStage, trackingHeadline, trackingTimeline, trackingTimelineTime } from '../src/tracking/trackingView';
 
 describe('customer tracking view', () => {
   test('formats the ETA window in the route timezone', () => {
@@ -15,7 +15,22 @@ describe('customer tracking view', () => {
       .toEqual({ detail: 'Your driver is 2 stops away.', title: 'Your order is on the way' });
     expect(trackingHeadline({ stage: 'ON_THE_WAY', stopsAway: 0, storeName: 'K-Food' }).detail).toBe('Your driver is arriving now.');
     expect(trackingHeadline({ stage: 'MISSED', stopsAway: null, storeName: 'K-Food' }).detail).toBe('Please contact K-Food to reschedule.');
-    expect([reachedStep('PREPARING'), reachedStep('ON_THE_WAY'), reachedStep('DELIVERED'), reachedStep('MISSED')]).toEqual([0, 1, 2, -1]);
     expect([isFinalStage('ON_THE_WAY'), isFinalStage('DELIVERED'), isFinalStage('CANCELLED')]).toEqual([false, true, true]);
+  });
+
+  test('keeps missed and delivered as distinct recorded outcomes', () => {
+    const timeline = [
+      { kind: 'MISSED', occurredAt: '2026-10-14T04:00:00.000Z', state: 'COMPLETED' },
+      { kind: 'DELIVERED', occurredAt: '2026-10-14T05:00:00.000Z', state: 'CURRENT' },
+    ] as const;
+    expect(trackingTimeline({ stage: 'DELIVERED', timeline: [...timeline] })).toEqual(timeline);
+    expect(trackingTimelineTime(timeline[1], 'America/Toronto')).toBe('Wed, Oct 14, 1:00 AM EDT');
+  });
+
+  test('shows unknown timestamps explicitly and does not invent history for an older API', () => {
+    expect(trackingTimeline({ stage: 'MISSED' })).toEqual([{ kind: 'MISSED', occurredAt: null, state: 'CURRENT' }]);
+    expect(trackingTimelineTime({ kind: 'DELIVERED', occurredAt: null, state: 'UPCOMING' }, null)).toBe('Not yet');
+    expect(trackingTimelineTime({ kind: 'DRIVER_NEARBY', occurredAt: null, state: 'NOT_RECORDED' }, null)).toBe('Not recorded');
+    expect(trackingTimelineTime({ kind: 'DRIVER_NEARBY', occurredAt: null, state: 'CURRENT' }, null)).toBe('Time not recorded');
   });
 });

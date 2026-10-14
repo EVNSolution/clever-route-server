@@ -10,6 +10,7 @@ export type CustomerEmailTransportMessage = {
   commandId: string;
   recipientEmail: string;
   replyTo: string | null;
+  renderedHtml?: string | undefined;
   senderEmail: string;
   senderName: string;
   signal: CustomerEmailSignal | 'TEST';
@@ -61,7 +62,7 @@ export class BrevoCustomerEmailTransport implements CustomerEmailTransport {
         headers: {
           'Idempotency-Key': `customer-email:${message.commandId}`,
         },
-        htmlContent: brandedHtml(message),
+        htmlContent: message.renderedHtml ?? renderCustomerEmailHtml(message),
         ...(message.replyTo === null ? {} : { replyTo: { email: message.replyTo } }),
         sender: {
           email: message.senderEmail,
@@ -120,7 +121,12 @@ function readPositiveInteger(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function brandedHtml(message: CustomerEmailTransportMessage): string {
+export function renderCustomerEmailHtml(message: Pick<
+  CustomerEmailTransportMessage,
+  'branding' | 'body' | 'senderName' | 'subject'
+> & {
+  trackingAction?: { deliveryStopId: string; isSample?: boolean | undefined; url: string } | undefined;
+}): string {
   const branding = message.branding ?? defaultCustomerEmailBranding();
   const footerLogo = renderLogo(branding, message.senderName);
   const footerDetails = renderFooterDetails(branding);
@@ -139,9 +145,11 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
                     </td>
                   </tr>
                 </table>`;
+  const trackingAction = message.trackingAction === undefined ? '' : renderTrackingAction(message.trackingAction);
   return `<!doctype html>
 <html>
   <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
     <meta name="supported-color-schemes" content="light dark">
     <style>
@@ -150,7 +158,10 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
         .email-page { background:#000000 !important;color:#ffffff !important; }
         .email-text { color:#ffffff !important; }
         .email-muted { color:#c9d1d9 !important; }
+        .email-link { color:#8dbbff !important; }
         .email-footer { border-color:#8b949e !important; }
+        .email-track-button { background:#8dbbff !important;border-color:#bedbff !important;color:#102440 !important; }
+        .email-track-label { color:#c9d1d9 !important; }
       }
     </style>
   </head>
@@ -163,6 +174,7 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
               <td style="padding:28px 0">
                 <h1 class="email-text" style="color:#111111;font-size:28px;font-weight:700;line-height:1.2;margin:0 0 20px">${escapeHtml(message.subject)}</h1>
                 <div class="email-text" style="color:#111111;font-size:16px;line-height:1.65;overflow-wrap:anywhere;word-wrap:break-word">${renderMultilineText(message.body)}</div>
+                ${trackingAction}
                 ${footer}
               </td>
             </tr>
@@ -174,13 +186,25 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
 </html>`;
 }
 
+function renderTrackingAction(input: { deliveryStopId: string; isSample?: boolean | undefined; url: string }): string {
+  const trackingLabel = input.isSample === true ? 'Sample tracking number' : 'Tracking number';
+  return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:24px 0 0;width:100%">
+                  <tr>
+                    <td>
+                      <a class="email-track-button" href="${escapeHtml(input.url)}" style="background:#005bd3;border:1px solid #91baff;border-radius:8px;color:#ffffff;display:inline-block;font-size:16px;font-weight:700;line-height:1;padding:14px 20px;text-decoration:none">Track your delivery</a>
+                      <div class="email-track-label" style="color:#57606a;font-size:13px;line-height:1.5;margin:10px 0 0;overflow-wrap:anywhere;word-break:break-word">${trackingLabel}: ${escapeHtml(input.deliveryStopId)}</div>
+                    </td>
+                  </tr>
+                </table>`;
+}
+
 function renderFooterDetails(branding: CustomerEmailBranding): string {
   const rows = [
-    branding.businessName === '' ? '' : `<div style="color:#111111;font-size:14px;font-weight:700;line-height:1.4;margin:0 0 6px">${escapeHtml(branding.businessName)}</div>`,
+    branding.businessName === '' ? '' : `<div class="email-text" style="color:#111111;font-size:14px;font-weight:700;line-height:1.4;margin:0 0 6px">${escapeHtml(branding.businessName)}</div>`,
     branding.address === '' ? '' : `<div style="font-size:13px;line-height:1.55;margin:0">${escapeHtml(branding.address)}</div>`,
     branding.phone === '' ? '' : `<div style="font-size:13px;line-height:1.55;margin:0">${escapeHtml(branding.phone)}</div>`,
-    branding.contactEmail === null ? '' : `<div style="font-size:13px;line-height:1.55;margin:0"><a href="mailto:${escapeHtml(branding.contactEmail)}" style="color:#57606a;text-decoration:underline">${escapeHtml(branding.contactEmail)}</a></div>`,
-    branding.websiteUrl === null ? '' : `<div style="font-size:13px;line-height:1.55;margin:0"><a href="${escapeHtml(branding.websiteUrl)}" style="color:#57606a;text-decoration:underline">${escapeHtml(branding.websiteUrl)}</a></div>`,
+    branding.contactEmail === null ? '' : `<div style="font-size:13px;line-height:1.55;margin:0"><a class="email-link" href="mailto:${escapeHtml(branding.contactEmail)}" style="color:#57606a;text-decoration:underline">${escapeHtml(branding.contactEmail)}</a></div>`,
+    branding.websiteUrl === null ? '' : `<div style="font-size:13px;line-height:1.55;margin:0"><a class="email-link" href="${escapeHtml(branding.websiteUrl)}" style="color:#57606a;text-decoration:underline">${escapeHtml(branding.websiteUrl)}</a></div>`,
     branding.note === '' ? '' : `<div style="font-size:13px;line-height:1.55;margin:8px 0 0">${escapeHtml(branding.note)}</div>`,
   ].filter((row) => row !== '');
   return rows.join('');
@@ -206,7 +230,7 @@ function renderMultilineText(value: string): string {
       // Keep sentence punctuation and escaped quotes that follow a URL outside the link.
       const trailing = /(?:&quot;|&#39;|[.,;:!?)])+$/u.exec(match)?.[0] ?? '';
       const url = match.slice(0, match.length - trailing.length);
-      return `<a href="${url}" style="color:#1f6feb;text-decoration:underline">${url}</a>${trailing}`;
+      return `<a class="email-link" href="${url}" style="color:#1f6feb;text-decoration:underline">${url}</a>${trailing}`;
     })
     .replace(/\r\n|\r|\n/gu, '<br />');
 }

@@ -5,10 +5,11 @@ import maplibregl from 'maplibre-gl';
 
 import { installMissingMapImageFallback } from '../maps/maplibre-missing-images';
 import {
-  TRACKING_STEPS,
+  TRACKING_LABELS,
   formatEtaWindow,
   isFinalStage,
-  reachedStep,
+  trackingTimeline,
+  trackingTimelineTime,
   trackingHeadline,
   type TrackingStatus,
 } from './trackingView';
@@ -50,6 +51,10 @@ function createView(container: HTMLElement, mapStyle: string) {
   const detail = el('p', 'tracking-detail');
   const eta = el('p', 'tracking-eta');
   const recipient = el('p', 'tracking-recipient');
+  const timelineBox = el('section', 'tracking-card tracking-timeline');
+  const timelineTitle = el('h2', 'tracking-subtitle', 'Delivery timeline');
+  timelineTitle.id = 'delivery-timeline-title';
+  timelineBox.setAttribute('aria-labelledby', timelineTitle.id);
   const steps = el('ol', 'tracking-steps');
   const mapBox = el('section', 'tracking-map');
   const itemsBox = el('section', 'tracking-card');
@@ -57,8 +62,9 @@ function createView(container: HTMLElement, mapStyle: string) {
   const items = el('ul', 'tracking-items');
   const error = el('p', 'tracking-error');
   card.append(order, title, detail, eta, recipient);
+  timelineBox.append(timelineTitle, steps);
   itemsBox.append(itemsTitle, items);
-  page.append(store, error, card, steps, mapBox, itemsBox);
+  page.append(store, error, card, timelineBox, mapBox, itemsBox);
   container.append(page);
   mapBox.hidden = true;
   error.hidden = true;
@@ -129,11 +135,19 @@ function createView(container: HTMLElement, mapStyle: string) {
       eta.hidden = status.etaWindow === null;
       recipient.textContent = [status.recipientName, status.address].filter((part) => part !== '').join(', ');
 
-      const reached = reachedStep(status.stage);
-      steps.hidden = reached < 0;
-      steps.replaceChildren(...TRACKING_STEPS.map((label, index) => {
-        const step = el('li', index <= reached ? 'tracking-step is-reached' : 'tracking-step', label);
-        if (index === reached) step.setAttribute('aria-current', 'step');
+      steps.replaceChildren(...trackingTimeline(status).map((entry) => {
+        const step = el('li', `tracking-step is-${entry.state.toLowerCase()}`);
+        const text = el('div', 'tracking-step-content');
+        text.append(el('span', 'tracking-step-label', TRACKING_LABELS[entry.kind]));
+        const timestamp = el(entry.occurredAt === null ? 'span' : 'time', 'tracking-step-time', trackingTimelineTime(entry, status.timezone));
+        if (entry.occurredAt !== null) timestamp.setAttribute('datetime', entry.occurredAt);
+        text.append(timestamp);
+        if (entry.state === 'CURRENT') {
+          step.setAttribute('aria-current', 'step');
+          text.append(el('span', 'tracking-step-current', 'Current status'));
+        }
+        if (entry.kind === 'MISSED' || entry.kind === 'CANCELLED') step.classList.add('is-exception');
+        step.append(text);
         return step;
       }));
 
