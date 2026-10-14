@@ -5,6 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest, FastifyServerOptions } from 'fastify';
 
+import { registerCustomerTrackingRoutes, type CustomerTrackingDependencies } from './routes/customer-tracking.routes.js';
 import {
   registerAdminRoutePlanRoutes,
   type AdminRoutePlanDependencies
@@ -62,6 +63,7 @@ export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
   adminCommerceConnectionsUi?: AdminCommerceConnectionsUiDependencies;
   adminCustomerEmail?: AdminCustomerEmailDependencies;
+  customerTracking?: CustomerTrackingDependencies;
   adminDrivers?: AdminDriversDependencies;
   adminInventories?: AdminInventoryDependencies;
   adminOrders?: AdminOrdersDependencies;
@@ -206,6 +208,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.adminCustomerEmail !== undefined) {
     registerAdminCustomerEmailRoutes(app, options.adminCustomerEmail);
+  }
+
+  const customerTracking = options.customerTracking;
+  if (customerTracking !== undefined) {
+    await app.register(async (customerTrackingApp) => {
+      // Public, unauthenticated links: cap per-IP polling and token guessing.
+      await customerTrackingApp.register(rateLimit, { max: 120, timeWindow: '1 minute' });
+      registerCustomerTrackingRoutes(customerTrackingApp, customerTracking);
+    });
   }
 
   if (options.adminDrivers !== undefined) {

@@ -6,6 +6,7 @@ import {
   defaultCustomerEmailSettings,
   isEmail,
   normalizeCustomerEmailSettings,
+  customerEmailEtaWindowRange,
   readCustomerEmailSignal,
   readEtaWindow,
   validateCustomerEmailSettingsPayload,
@@ -24,6 +25,7 @@ import { readRouteEmailSelection, ROUTE_EMAIL_SELECTION_KEY, type RouteEmailSele
 import { DEFAULT_SHOPIFY_APP_ID, appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
 import { isIanaTimezone } from '../driver/driver-route-timezone.js';
+import { customerTrackingUrl, type CustomerTrackingLinks } from '../customer-tracking/customer-tracking-link.js';
 
 export type CustomerEmailPreviewInput = {
   appId?: string | undefined;
@@ -201,11 +203,16 @@ type CustomerEmailRoutePlanRow = {
 };
 
 export class CustomerEmailService {
+  private readonly trackingLink: (deliveryStopId: string) => string;
+
   constructor(
     private readonly prisma: CustomerEmailPrismaClient,
     private readonly transport: CustomerEmailTransport,
     private readonly attempts?: PrismaCustomerDeliveryNotificationAttemptRepository,
-  ) {}
+    trackingLinks?: CustomerTrackingLinks,
+  ) {
+    this.trackingLink = (deliveryStopId) => trackingLinks === undefined ? '' : customerTrackingUrl(trackingLinks, deliveryStopId);
+  }
 
   async getRouteEmailSelection(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<{ selection: RouteEmailSelection | null } | null> {
     const routePlan = await this.prisma.routePlan.findFirst({
@@ -452,7 +459,7 @@ export class CustomerEmailService {
     const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
       .map((stop) => stop.deliveryStop.id);
     const history = await this.readManualHistory(routePlan.shop.id, input.signal, eligibleStopIds);
-    return buildPreview(routePlan, settings, input, history);
+    return buildPreview(routePlan, settings, input, history, this.trackingLink);
   }
 
   async sendAutomatic(input: CustomerEmailPreviewInput & {
@@ -489,7 +496,7 @@ export class CustomerEmailService {
         status: 'SKIPPED'
       };
     }
-    const context = renderContext(routePlan, stop, settings.etaWindow);
+    const context = renderContext(routePlan, stop, settings.etaWindow, this.trackingLink);
     const result = await this.transport.send({
       branding: settings.branding,
       body: renderTemplate(template.body, context).value,
@@ -524,7 +531,7 @@ export class CustomerEmailService {
     const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
       .map((stop) => stop.deliveryStop.id);
     const history = await this.readManualHistory(routePlan.shop.id, input.signal, eligibleStopIds);
-    const preview = buildPreview(routePlan, settings, input, history);
+    const preview = buildPreview(routePlan, settings, input, history, this.trackingLink);
     if (input.previewToken !== undefined && input.previewToken !== preview.previewToken) {
       throw new CustomerEmailValidationError(
         'Customer email preview is stale or does not match this send request.',
@@ -859,7 +866,7 @@ export class CustomerEmailService {
           eligibleStopIds,
           tx,
         );
-        const preview = buildPreview(routePlan, settings, input.input, history);
+        const preview = buildPreview(routePlan, settings, input.input, history, this.trackingLink);
         const template = settings.templates[input.input.signal];
         if (input.input.previewToken !== undefined && input.input.previewToken !== preview.previewToken) {
           throw new CustomerEmailValidationError(
@@ -1158,7 +1165,8 @@ function buildPreview(
   routePlan: CustomerEmailRoutePlanRow,
   settings: CustomerEmailSettings,
   input: CustomerEmailPreviewInput,
-  history: Map<string, CustomerEmailManualHistorySummary> = new Map(),
+  history: Map<string, CustomerEmailManualHistorySummary>,
+  trackingLink: (deliveryStopId: string) => string,
 ): CustomerEmailPreview {
   const template = settings.templates[input.signal];
   const selectedStops = selectStops(routePlan, input.deliveryStopIds);
@@ -1179,7 +1187,7 @@ function buildPreview(
       });
       continue;
     }
-    const context = renderContext(routePlan, stop, settings.etaWindow);
+    const context = renderContext(routePlan, stop, settings.etaWindow, trackingLink);
     const renderedBody = renderTemplate(template.body, context);
     const renderedSubject = renderTemplate(template.subject, context);
     recipients.push({
@@ -1326,7 +1334,7 @@ function routeOpsNearbyStopsThreshold(routePlan: CustomerEmailRoutePlanRow): num
   return normalizeRouteOpsUiSettings(routePlan.shop.routeOpsUiSettings).nearbyStopsThreshold;
 }
 
-function computeCurrentProgressSequence(stops: CustomerEmailRoutePlanRow['routeStops']): number {
+export function computeCurrentProgressSequence(stops: Array<{ deliveryStop: { status: string }; sequence: number }>): number {
   const active = stops.find((stop) => ['ARRIVED', 'EN_ROUTE'].includes(stop.deliveryStop.status));
   if (active !== undefined) return active.sequence;
   const completed = stops
@@ -1339,6 +1347,7 @@ function renderContext(
   routePlan: CustomerEmailRoutePlanRow,
   stop: CustomerEmailRoutePlanRow['routeStops'][number],
   etaWindow: CustomerEmailEtaWindow,
+  trackingLink: (deliveryStopId: string) => string,
 ): Record<string, string> {
   const timezone = resolveCustomerEmailTimezone(routePlan);
   return {
@@ -1357,6 +1366,7 @@ function renderContext(
     routeName: routePlan.name,
     sequence: String(stop.sequence),
     shopName: routePlan.shop.shopDomain,
+    trackingLink: trackingLink(stop.deliveryStop.id),
   };
 }
 
@@ -1373,10 +1383,14 @@ function testTemplateContext(settings: CustomerEmailSettings): Record<string, st
     routeName: 'Test route',
     sequence: '1',
     shopName: settings.senderName,
+    trackingLink: 'https://example.com/t/sample',
   };
 }
 
-function resolveCustomerEmailTimezone(routePlan: CustomerEmailRoutePlanRow): string | null {
+export function resolveCustomerEmailTimezone(routePlan: {
+  constraints: unknown;
+  shop: { commerceConnections: Array<{ timezone: string | null }> };
+}): string | null {
   const constraints = isRecord(routePlan.constraints) ? routePlan.constraints : null;
   const routeScope = constraints !== null && isRecord(constraints.routeScope) ? constraints.routeScope : null;
   const routeTimezone = [
@@ -1393,10 +1407,8 @@ function resolveCustomerEmailTimezone(routePlan: CustomerEmailRoutePlanRow): str
 }
 
 function formatEtaWindow(eta: Date, timezone: string, window: CustomerEmailEtaWindow): string {
-  const slackMs = window.minutes * 60 * 1000;
-  const start = window.direction === 'AFTER' ? eta.getTime() : eta.getTime() - slackMs;
-  const end = window.direction === 'BEFORE' ? eta.getTime() : eta.getTime() + slackMs;
-  return `${formatEta(new Date(start), timezone)} - ${formatEta(new Date(end), timezone)}`;
+  const { end, start } = customerEmailEtaWindowRange(eta, window);
+  return `${formatEta(start, timezone)} - ${formatEta(end, timezone)}`;
 }
 
 function formatEta(eta: Date, timezone: string): string {

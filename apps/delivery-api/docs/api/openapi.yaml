@@ -4069,6 +4069,60 @@ paths:
               schema: { type: string, format: binary }
         '404':
           $ref: '#/components/responses/NotFound'
+  /t/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        description: Signed customer tracking token `<deliveryStopId>.<signature>` from the `{{trackingLink}}` email variable.
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Serve the public customer delivery tracking page
+      description: >-
+        Unauthenticated. Valid until 14 days after the route plan date. Rate
+        limited per IP. Returns no-store, no-referrer, noindex headers.
+      operationId: getCustomerTrackingPage
+      x-clever-audience: public-customer
+      x-side-effect: read
+      x-source-file: src/routes/customer-tracking.routes.ts
+      security: []
+      responses:
+        '200':
+          description: HTML shell that loads the route-ops-web tracking entry.
+          content:
+            text/html:
+              schema: { type: string }
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /t/{token}/status:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read public customer delivery tracking status
+      description: >-
+        Returns stage (PREPARING, ON_THE_WAY, DELIVERED, MISSED, CANCELLED),
+        the configured ETA window, items, recipient name and address, and the
+        driver location only while the driver is within the shop's
+        nearby-stops threshold and the last fix is under 10 minutes old.
+      operationId: getCustomerTrackingStatus
+      x-clever-audience: public-customer
+      x-side-effect: read
+      x-source-file: src/routes/customer-tracking.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Envelope with `data` tracking status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /admin/route-plans/{routePlanId}:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'

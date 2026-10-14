@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import { CustomerEmailService } from './customer-email.service.js';
 import type { CustomerEmailSignal } from './customer-email-settings.js';
 import type { CustomerEmailTransport } from './customer-email-transport.js';
+import type { CustomerTrackingLinks } from '../customer-tracking/customer-tracking-link.js';
 import type {
   CustomerDeliveryNotificationMessage,
   CustomerDeliveryNotificationSender,
@@ -16,10 +17,11 @@ export class PrismaCustomerEmailAutomaticSender implements CustomerDeliveryNotif
   constructor(
     prisma: PrismaClient,
     transport: CustomerEmailTransport,
-    private readonly legacySender?: CustomerDeliveryNotificationSender
+    private readonly legacySender?: CustomerDeliveryNotificationSender,
+    trackingLinks?: CustomerTrackingLinks
   ) {
     this.providerName = transport.providerName;
-    this.service = new CustomerEmailService(prisma, transport);
+    this.service = new CustomerEmailService(prisma, transport, undefined, trackingLinks);
   }
 
   async send(message: CustomerDeliveryNotificationMessage): Promise<CustomerDeliveryNotificationSendResult> {
