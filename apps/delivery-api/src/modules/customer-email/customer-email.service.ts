@@ -1517,7 +1517,8 @@ function etaParts(value: Date, timezone: string): { day: string; time: string; z
   }).formatToParts(value);
   return {
     day: formatDay(value, timezone),
-    time: parts.filter((part) => part.type !== 'timeZoneName').map((part) => part.value).join('').trim(),
+    // Some ICU builds put U+202F before AM/PM; plain-text email keeps an ordinary space.
+    time: parts.filter((part) => part.type !== 'timeZoneName').map((part) => part.value).join('').replace(/\u202f/gu, ' ').trim(),
     zone: parts.find((part) => part.type === 'timeZoneName')?.value ?? '',
   };
 }
