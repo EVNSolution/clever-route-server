@@ -3201,6 +3201,24 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('maps a driver event foreign-key hit to the same route deletion domain error', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanDeleteError: new Prisma.PrismaClientKnownRequestError('driver events', {
+        clientVersion: '6.19.3',
+        code: 'P2003',
+        meta: { constraint: 'driver_events_routePlanId_shopId_fkey' }
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toMatchObject({ code: 'ROUTE_DELETE_BLOCKED' });
+  });
+
   test('deletes a route generated from a parent grouping', async () => {
     const { prisma } = createPrismaHarness({ routeGroupingChildVersionCount: 1 });
     const repository = new PrismaRoutePlanRepository(

@@ -3340,11 +3340,9 @@ function isRouteGeometryCommitConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
 }
 
+// Any foreign-key hit on delete means execution records (driver events, proof media, sessions) still point at the route.
 function isRetainedProofMediaForeignKeyConflict(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2003') return false;
-  return Object.values(error.meta ?? {}).some(
-    (value) => typeof value === 'string' && value.includes('driver_proof_media')
-  );
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
 }
 
 function routeLifecycleEventQuery() {
