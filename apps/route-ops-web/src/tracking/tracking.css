@@ -84,6 +84,7 @@ body {
 }
 
 .tracking-step::before {
+  box-sizing: border-box;
   border: 2px dashed #8c959f;
   border-radius: 50%;
   content: "";
