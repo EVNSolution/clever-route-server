@@ -92,6 +92,7 @@ export type ListCanonicalOrdersFilters = OrdersV2Filters & {
   orderedDateTo?: string;
   orderedDateTimeZone?: string;
   planned?: boolean;
+  orderIds?: string[];
   planningGroupKey?: string;
   readiness?: CanonicalOrderReadiness;
   routeScopeKey?: string;
@@ -1752,6 +1753,7 @@ export function toCanonicalOrderWhere(
   ];
   const orderNumberWhere = orderNumberPrefixWhere(filters.orderNumberPrefix);
   if (orderNumberWhere !== null) AND.push(orderNumberWhere);
+  if (filters.orderIds !== undefined) AND.push({ id: { in: filters.orderIds } });
   if (filters.search !== undefined && filters.search.trim() !== "") {
     const search = filters.search.trim();
     const textFields = [
