@@ -257,18 +257,36 @@ function readBrowserLocale(): string | null {
   return navigator.language;
 }
 
-function PageBody(input: {
+// Tabs the user has opened stay mounted and are only hidden, so coming back
+// shows the last screen at once instead of waiting for every list to reload.
+// The route-group editor is never kept: it is a draft workspace, not a tab.
+export function PageBody(input: {
   bootstrap: BootstrapPayload;
   navigate(path: string): void;
   route: AppRoute;
   setError(error: string | null): void;
 }): ReactElement {
-  if (input.route.page === 'orders') return <OrdersPage bootstrap={input.bootstrap} navigate={input.navigate} setError={input.setError} />;
-  if (input.route.page === 'routes' && input.route.routeGroupId !== null) return <RouteGroupingPage bootstrap={input.bootstrap} navigate={input.navigate} routeGroupId={input.route.routeGroupId} setError={input.setError} />;
-  if (input.route.page === 'routes') return <RoutesPage bootstrap={input.bootstrap} navigate={input.navigate} routePlanId={input.route.routePlanId} setError={input.setError} />;
-  if (input.route.page === 'drivers') return <DriversPage bootstrap={input.bootstrap} setError={input.setError} />;
-  if (input.route.page === 'settings') return <SettingsPage bootstrap={input.bootstrap} setError={input.setError} />;
-  return <DashboardPage bootstrap={input.bootstrap} navigate={input.navigate} />;
+  const { bootstrap, navigate, route, setError } = input;
+  const grouping = route.page === 'routes' && route.routeGroupId !== null;
+  const activeTab = grouping ? null : route.page;
+  const [opened, setOpened] = useState<ReadonlySet<Page>>(() => new Set());
+  const [lastRoutePlanId, setLastRoutePlanId] = useState<string | null>(null);
+  if (activeTab !== null && !opened.has(activeTab)) setOpened(new Set(opened).add(activeTab));
+  if (activeTab === 'routes' && route.routePlanId !== lastRoutePlanId) setLastRoutePlanId(route.routePlanId);
+  const tab = (page: Page, element: ReactElement): ReactElement | null =>
+    page === activeTab || opened.has(page)
+      ? <div key={page} hidden={page !== activeTab} style={page === activeTab ? { display: 'contents' } : undefined}>{element}</div>
+      : null;
+  return (
+    <>
+      {grouping ? <RouteGroupingPage bootstrap={bootstrap} navigate={navigate} routeGroupId={route.routeGroupId as string} setError={setError} /> : null}
+      {tab('dashboard', <DashboardPage bootstrap={bootstrap} navigate={navigate} />)}
+      {tab('orders', <OrdersPage active={activeTab === 'orders'} bootstrap={bootstrap} navigate={navigate} setError={setError} />)}
+      {tab('routes', <RoutesPage active={activeTab === 'routes'} bootstrap={bootstrap} navigate={navigate} routePlanId={activeTab === 'routes' ? route.routePlanId : lastRoutePlanId} setError={setError} />)}
+      {tab('drivers', <DriversPage active={activeTab === 'drivers'} bootstrap={bootstrap} setError={setError} />)}
+      {tab('settings', <SettingsPage bootstrap={bootstrap} setError={setError} />)}
+    </>
+  );
 }
 
 function parseRoute(pathname: string): AppRoute {
