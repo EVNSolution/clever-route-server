@@ -53,4 +53,32 @@ describe('FirebaseAdminDriverPushProvider', () => {
       token: 'driver-device-token'
     });
   });
+
+  test('sends the gps check as a silent data message for WARNING and with a notification for CRITICAL', async () => {
+    const provider = new FirebaseAdminDriverPushProvider({ projectId: 'clever-routes-prod' });
+    const base = { devicePushToken: 'tok', pushId: 'push-1', routePlanId: 'route-1', sentAt: '2026-10-14T01:00:00.000Z', silentSeconds: 61 };
+
+    await provider.sendGpsCheck({ ...base, severity: 'WARNING' });
+    expect(firebase.send).toHaveBeenLastCalledWith({
+      android: { priority: 'high', ttl: 60_000 },
+      data: { pushId: 'push-1', routePlanId: 'route-1', sentAt: '2026-10-14T01:00:00.000Z', severity: 'WARNING', silentSeconds: '61', type: 'driver_gps_check' },
+      token: 'tok'
+    });
+
+    await provider.sendGpsCheck({ ...base, severity: 'CRITICAL', silentSeconds: 301 });
+    expect(firebase.send).toHaveBeenLastCalledWith({
+      android: { notification: { channelId: 'route-updates' }, priority: 'high', ttl: 60_000 },
+      data: { pushId: 'push-1', routePlanId: 'route-1', sentAt: '2026-10-14T01:00:00.000Z', severity: 'CRITICAL', silentSeconds: '301', type: 'driver_gps_check' },
+      notification: { body: '앱을 열어 위치 전송을 확인해 주세요.', title: '위치 확인 필요' },
+      token: 'tok'
+    });
+  });
+
+  test('reports an unregistered token as invalid', async () => {
+    firebase.send.mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 'messaging/registration-token-not-registered' }));
+    const provider = new FirebaseAdminDriverPushProvider({ projectId: 'clever-routes-prod' });
+    await expect(provider.sendGpsCheck({
+      devicePushToken: 'tok', pushId: 'p', routePlanId: 'r', sentAt: 'now', severity: 'WARNING', silentSeconds: 70
+    })).resolves.toMatchObject({ invalidToken: true, status: 'FAILED' });
+  });
 });

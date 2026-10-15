@@ -58,6 +58,8 @@ import {
 } from '../dsv/dsv-assignment-command.service.js';
 import { PrismaCompletionAssistanceService } from './completion-assistance.service.js';
 import { PrismaLiveRouteChangeService } from '../route-plans/live-route-change.service.js';
+import { loadDriverPushProvider } from '../route-grouping/driver-push.provider.js';
+import { PrismaDriverGpsCheckPushService } from './driver-gps-check-push.service.js';
 import { createAdminRouteGeometryProvider, type AdminRoutePlanRuntimeEnv } from '../route-plans/route-plan.dependencies.js';
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
 import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
@@ -71,6 +73,8 @@ export const DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND = 'none';
 export const DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND = 'none';
 
 export type DriverApiRuntimeEnv = Partial<Record<
+  | 'FIREBASE_PROJECT_ID'
+  | 'GOOGLE_APPLICATION_CREDENTIALS'
   | 'KFOOD_PRIVATE_DEMO_SHOP_ID'
   | 'KFOOD_PRIVATE_DEMO_ACCOUNT_ID'
   | 'DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS'
@@ -167,7 +171,12 @@ export function loadDriverApiDependencies(
     }
   });
 
-  const driverSyncHealthService = new PrismaDriverSyncHealthService(input.prisma, input.operationalAlertRepository);
+  const driverSyncHealthService = new PrismaDriverSyncHealthService(
+    input.prisma,
+    input.operationalAlertRepository,
+    undefined,
+    new PrismaDriverGpsCheckPushService(input.prisma, loadDriverPushProvider(input.env))
+  );
   const routeGeometryProvider = createAdminRouteGeometryProvider(input.env);
   const routeGeometryRefresher = routeGeometryProvider === undefined
     ? undefined
