@@ -753,6 +753,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'post', path: '/admin/route-plans/:routePlanId/refresh-order-data' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/start-time' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/stops' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/customer-email/history' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/override' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/transition' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/tracking' },
