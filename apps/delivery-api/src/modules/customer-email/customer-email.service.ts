@@ -156,7 +156,7 @@ export type CustomerEmailDispatchResult = {
 
 type CustomerEmailPrismaClient = Pick<
   PrismaClient,
-  '$executeRaw' | '$transaction' | 'customerEmailManualDispatch' | 'customerEmailManualDispatchRecipient' | 'routePlan' | 'shop'
+  '$executeRaw' | '$transaction' | 'customerEmailManualDispatch' | 'customerEmailManualDispatchRecipient' | 'customerRouteNotificationFact' | 'routePlan' | 'shop'
 >;
 
 type CustomerEmailRoutePlanRow = {
@@ -223,6 +223,61 @@ export class CustomerEmailService {
       where: { id: input.routePlanId, shop: { is: shopWhereInput(input) } },
     });
     return routePlan === null ? null : { selection: readRouteEmailSelection(routePlan.constraints) };
+  }
+
+  // Every customer email for one stop, manual and automatic, newest first, for the stop's notification history.
+  async getStopEmailHistory(input: {
+    appId?: string | undefined;
+    deliveryStopId: string;
+    routePlanId: string;
+    shopDomain: string;
+  }): Promise<CustomerEmailStopHistory | null> {
+    const routePlan = await this.prisma.routePlan.findFirst({
+      select: {
+        constraints: true,
+        routeStops: { select: { deliveryStopId: true }, where: { deliveryStopId: input.deliveryStopId } },
+        shop: { select: { commerceConnections: { select: { timezone: true }, where: { status: 'ACTIVE' } } } },
+        shopId: true,
+      },
+      where: { id: input.routePlanId, shop: { is: shopWhereInput(input) } },
+    });
+    if (routePlan === null || routePlan.routeStops.length === 0) return null;
+    const where = { deliveryStopId: input.deliveryStopId, shopId: routePlan.shopId };
+    const [manualRows, factRows] = await Promise.all([
+      this.prisma.customerEmailManualDispatchRecipient.findMany({
+        select: {
+          attempts: { select: { completedAt: true }, orderBy: { completedAt: 'desc' }, take: 1, where: { outcome: 'SENT' } },
+          createdAt: true,
+          dispatch: { select: { signal: true } },
+          errorMessage: true,
+          providerStatus: true,
+          recipientEmail: true,
+          sentAt: true,
+          status: true,
+        },
+        take: STOP_EMAIL_HISTORY_LIMIT,
+        orderBy: { createdAt: 'desc' },
+        where,
+      }),
+      this.prisma.customerRouteNotificationFact.findMany({
+        select: {
+          errorMessage: true,
+          metadata: true,
+          occurredAt: true,
+          providerStatus: true,
+          recipientEmailSnapshot: true,
+          sentAt: true,
+          status: true,
+        },
+        take: STOP_EMAIL_HISTORY_LIMIT,
+        orderBy: { occurredAt: 'desc' },
+        where,
+      }),
+    ]);
+    return {
+      events: buildStopEmailHistoryEvents(manualRows, factRows),
+      timezone: resolveCustomerEmailTimezone(routePlan),
+    };
   }
 
   // Saved before Dispatch. A JSONB merge keeps other constraint keys and leaves updatedAt alone,
@@ -1471,6 +1526,68 @@ function testTemplateContext(settings: CustomerEmailSettings): Record<string, st
     shopName: settings.senderName,
     trackingLink: `https://example.com/t/${SAMPLE_DELIVERY_STOP_ID}.abcdefghijklmnopqrstuv`,
   };
+}
+
+const STOP_EMAIL_HISTORY_LIMIT = 50;
+
+export type CustomerEmailStopHistoryEvent = {
+  at: string;
+  errorMessage: string | null;
+  providerStatus: string | null;
+  recipientEmail: string | null;
+  signal: CustomerEmailSignal | null;
+  source: 'AUTOMATIC' | 'MANUAL';
+  status: 'FAILED' | 'PENDING' | 'SENT' | 'SKIPPED';
+};
+
+export type CustomerEmailStopHistory = { events: CustomerEmailStopHistoryEvent[]; timezone: string | null };
+
+// Manual sends count as SENT once any provider attempt succeeded; automatic facts map QUEUED/PROCESSING to PENDING and DEAD to FAILED.
+export function buildStopEmailHistoryEvents(
+  manualRows: Array<{
+    attempts?: Array<{ completedAt: Date | null }>;
+    createdAt: Date;
+    dispatch: { signal: string };
+    errorMessage: string | null;
+    providerStatus: string | null;
+    recipientEmail: string | null;
+    sentAt: Date | null;
+    status: string;
+  }>,
+  factRows: Array<{
+    errorMessage: string | null;
+    metadata: unknown;
+    occurredAt: Date;
+    providerStatus: string | null;
+    recipientEmailSnapshot: string | null;
+    sentAt: Date | null;
+    status: string;
+  }>,
+): CustomerEmailStopHistoryEvent[] {
+  const signalOf = (value: unknown) => customerEmailSignals.find((signal) => signal === value) ?? null;
+  const manual = manualRows.map((row): CustomerEmailStopHistoryEvent => {
+    const sentAt = row.sentAt ?? row.attempts?.[0]?.completedAt ?? null;
+    const sent = row.status === 'SENT' || sentAt !== null;
+    return {
+      at: (sent ? sentAt ?? row.createdAt : row.createdAt).toISOString(),
+      errorMessage: row.errorMessage,
+      providerStatus: row.providerStatus,
+      recipientEmail: row.recipientEmail,
+      signal: signalOf(row.dispatch.signal),
+      source: 'MANUAL',
+      status: sent ? 'SENT' : row.status === 'PENDING' || row.status === 'UNKNOWN' ? 'PENDING' : row.status === 'SKIPPED' ? 'SKIPPED' : 'FAILED',
+    };
+  });
+  const automatic = factRows.map((row): CustomerEmailStopHistoryEvent => ({
+    at: (row.sentAt ?? row.occurredAt).toISOString(),
+    errorMessage: row.errorMessage,
+    providerStatus: row.providerStatus,
+    recipientEmail: row.recipientEmailSnapshot,
+    signal: signalOf(isRecord(row.metadata) ? row.metadata.signal : null),
+    source: 'AUTOMATIC',
+    status: row.status === 'SENT' ? 'SENT' : row.status === 'SKIPPED' ? 'SKIPPED' : row.status === 'DEAD' ? 'FAILED' : 'PENDING',
+  }));
+  return [...manual, ...automatic].sort((left, right) => right.at.localeCompare(left.at));
 }
 
 export function resolveCustomerEmailTimezone(routePlan: {

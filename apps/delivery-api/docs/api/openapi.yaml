@@ -4677,6 +4677,36 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/route-plans/{routePlanId}/stops/{deliveryStopId}/customer-email/history:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+      - $ref: '#/components/parameters/DeliveryStopId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read every customer email sent for one route stop
+      description: >-
+        Returns `data.events` (newest first) and `data.timezone`. Each event has
+        `signal`, `source` (`MANUAL` or `AUTOMATIC`), `status` (`SENT`,
+        `FAILED`, `PENDING`, `SKIPPED`), `at`, `recipientEmail`,
+        `providerStatus`, and `errorMessage`. Returns 404 when the route is not
+        this shop's, the stop is not on the route, or an ID is not a uuid.
+      operationId: getAdminRouteStopCustomerEmailHistory
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Stop email history envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /admin/route-plans/{routePlanId}/customer-email/selection:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
