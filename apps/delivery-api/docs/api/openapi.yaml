@@ -2474,6 +2474,17 @@ paths:
           in: query
           schema:
             type: string
+        - name: orderId
+          in: query
+          description: Repeat to return only these canonical order ids (at most 500).
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 500
+            items:
+              type: string
+              format: uuid
       responses:
         '200':
           description: Canonical orders for the authenticated shop.

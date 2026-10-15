@@ -1,4 +1,5 @@
-import { prepareOrdersV2Filters, V2_PROGRESS, V2_SERVICES, V2_FULFILLMENT, V2_PAYMENT } from './order-filters-v2.js';
+import { prepareOrdersV2Filters } from './order-filters-v2.js';
+import { countV2Facets, loadV2FacetOrders, V2_FACET_KEYS } from './order-facets-v2.js';
 import { createHmac, randomBytes } from 'node:crypto';
 
 import { Prisma, type PrismaClient } from '@prisma/client';
@@ -260,19 +261,12 @@ export class PrismaOrderQueryRepository {
 
   private async v2Facets(shopId: string, filters: ListCanonicalOrdersFilters, now: Date, filterHash: string) {
     const preparedFilters = await prepareOrdersV2Filters(this.prisma, shopId, filters);
-    const scheduledKeys = ['scheduledDateFrom', 'scheduledDateTo', 'scheduledDateMissing', 'scheduledWeekdays', 'scheduledActualDates'] as const;
-    const without = (...keys: (keyof ListCanonicalOrdersFilters)[]) => { const copy = { ...preparedFilters }; for (const key of keys) delete copy[key]; return copy; };
-    const count = async (query: ListCanonicalOrdersFilters) => this.prisma.order.count({ where: toCanonicalOrderWhere(shopId, query, now) });
-    const options = async (key: 'serviceTypes' | 'deliveryProgress' | 'fulfillmentStatuses' | 'paymentStatuses', values: readonly string[]) => Promise.all(values.map(async value => ({ value, count: await count({ ...without(key), [key]: [value] }) })));
-    const [areas, services, progress, fulfillment, payments, missingDateCount, totalCount] = await Promise.all([
-      this.prisma.orderDeliveryFact.groupBy({ by: ['deliveryArea'], _count: { _all: true }, where: { order: toCanonicalOrderWhere(shopId, without('areas', 'areaMissing'), now) } }),
-      options('serviceTypes', V2_SERVICES), options('deliveryProgress', V2_PROGRESS), options('fulfillmentStatuses', V2_FULFILLMENT), options('paymentStatuses', V2_PAYMENT),
-      count({ ...without(...scheduledKeys), scheduledDateMissing: true }), count(preparedFilters)
-    ]);
-    const areaValues = areas.flatMap(row => row.deliveryArea?.trim() ? [row.deliveryArea] : []);
-    const areaCounts = await Promise.all(areaValues.map(async value => ({ value, count: await count({ ...without('areas', 'areaMissing'), areas: [value] }) })));
-    areaCounts.push({ value: '__MISSING__', count: await count({ ...without('areas', 'areaMissing'), areaMissing: true }) });
-    return { countPrecision: 'exact' as const, filterHash, totalCount, facets: { areas: areaCounts, serviceTypes: services, deliveryProgress: progress, fulfillmentStatuses: fulfillment, paymentStatuses: payments, scheduledDateMissing: [{ value: 'true', count: missingDateCount }] } };
+    const baseFilters = { ...preparedFilters };
+    for (const key of V2_FACET_KEYS) delete baseFilters[key];
+    const baseIds = await this.prisma.order.findMany({ select: { id: true }, where: toCanonicalOrderWhere(shopId, baseFilters, now) });
+    const orders = await loadV2FacetOrders(this.prisma, baseIds.map(({ id }) => id), now);
+    const { facets, totalCount } = countV2Facets(orders, preparedFilters, now);
+    return { countPrecision: 'exact' as const, filterHash, totalCount, facets };
   }
 
   async mapPoints(input: { appId?: string; filters?: ListCanonicalOrdersFilters; limit: number; shopDomain: string }) {
