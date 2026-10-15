@@ -117,14 +117,18 @@ export class PrismaDriverAuthRepository {
       where: { refreshTokenHash },
       include: { account: true }
     });
-    if (isAccountRefreshSessionUsable(accountSession, new Date())) {
+    const now = new Date();
+    if (isAccountRefreshSessionUsable(accountSession, now)) {
+      // A used session slides forward: a driver who opens the app every day is not logged out 30 days after
+      // the login that created it. An unused session still expires; the expiry is never shortened.
+      const expiresAt = new Date(Math.max(accountSession.expiresAt.getTime(), now.getTime() + SESSION_TTL_MS));
       await this.prisma.driverAccountSession.update({
         where: { id: accountSession.id },
-        data: { lastUsedAt: new Date() }
+        data: { expiresAt, lastUsedAt: now }
       });
       return {
         accountId: accountSession.account.id,
-        expiresAt: accountSession.expiresAt,
+        expiresAt,
         kind: 'account',
         refreshToken,
         tokenVersion: accountSession.account.tokenVersion
