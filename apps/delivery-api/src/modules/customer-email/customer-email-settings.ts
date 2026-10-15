@@ -127,7 +127,7 @@ export function defaultCustomerEmailSettings(): CustomerEmailSettings {
         version: 1,
       },
       OUT_FOR_DELIVERY: {
-        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is out for delivery today. Estimated arrival: {{eta}}.\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
+        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is out for delivery. Estimated arrival: {{eta}}.\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'Your order is out for delivery',
         version: 1,
