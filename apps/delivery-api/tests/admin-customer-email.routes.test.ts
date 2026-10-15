@@ -44,6 +44,70 @@ describe('admin customer email routes', () => {
     }
   });
 
+  test('returns an authenticated provider-free sample preview from the shared renderer', async () => {
+    const { dependencies, service } = createHarness();
+    service.samplePreview.mockReturnValue({
+      body: 'Sample body',
+      html: '<!doctype html><p>Sample body</p>',
+      subject: 'Sample subject',
+    });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    try {
+      const payload = {
+        etaWindow: { direction: 'AROUND', minutes: 30 },
+        senderName: 'K-Food',
+        signal: 'DELIVERY_SCHEDULED',
+        template: { body: 'Hello {{customerName}}', subject: 'Delivery update' },
+      };
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload,
+        url: '/admin/customer-email/sample-preview',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: { preview: { body: 'Sample body', html: '<!doctype html><p>Sample body</p>', subject: 'Sample subject' } },
+        error: null,
+      });
+      expect(service.samplePreview).toHaveBeenCalledWith(payload);
+      expect(service.send).not.toHaveBeenCalled();
+      expect(service.sendTest).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('reads one stop customer email history and refuses malformed or foreign stops', async () => {
+    const { dependencies, service } = createHarness();
+    const routePlanId = '11111111-1111-4111-8111-111111111111';
+    const deliveryStopId = '22222222-2222-4222-8222-222222222222';
+    const history = { events: [{ at: '2026-10-15T13:00:00.000Z', signal: 'DELIVERY_SCHEDULED', source: 'MANUAL', status: 'SENT' }], timezone: 'America/Toronto' };
+    service.getStopEmailHistory.mockResolvedValueOnce(history).mockResolvedValueOnce(null);
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    try {
+      const read = (stopId: string) => app.inject({
+        headers: { authorization: 'Bearer session-token' }, method: 'GET',
+        url: `/admin/route-plans/${routePlanId}/stops/${stopId}/customer-email/history`,
+      });
+      const found = await read(deliveryStopId);
+      const foreign = await read(deliveryStopId);
+      const malformed = await read('stop-1');
+      const unauthorized = await app.inject({ method: 'GET', url: `/admin/route-plans/${routePlanId}/stops/${deliveryStopId}/customer-email/history` });
+
+      expect(found.statusCode).toBe(200);
+      expect(found.json()).toEqual({ data: history, error: null });
+      expect(service.getStopEmailHistory).toHaveBeenCalledWith(expect.objectContaining({ deliveryStopId, routePlanId }));
+      expect(foreign.statusCode).toBe(404);
+      expect(malformed.statusCode).toBe(404);
+      expect(service.getStopEmailHistory).toHaveBeenCalledTimes(2);
+      expect(unauthorized.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('saves and reads the Dispatch customer email selection for one route', async () => {
     const { dependencies, service } = createHarness();
     const selection = { deliveryStopIds: ['stop-1'], signals: ['DELIVERY_SCHEDULED', 'DELIVERED'], updatedAt: '2026-10-13T08:00:00.000Z', updatedBy: 'shopify-user-id' };
@@ -528,9 +592,13 @@ describe('admin customer email routes', () => {
         },
         method: 'POST',
         payload: {
+          branding: { businessName: 'Draft K-Food' },
           confirmed: true,
+          etaWindow: { direction: 'BEFORE', minutes: 20 },
           recipientEmail: 'customer@example.com',
+          senderName: 'Draft Sender',
           signal: 'DELIVERY_SCHEDULED',
+          template: { body: 'Draft body', subject: 'Draft subject' },
         },
         url: '/admin/customer-email/test',
       });
@@ -543,6 +611,12 @@ describe('admin customer email routes', () => {
         },
         error: null,
       });
+      expect(service.sendTest).toHaveBeenCalledWith(expect.objectContaining({
+        branding: { businessName: 'Draft K-Food' },
+        etaWindow: { direction: 'BEFORE', minutes: 20 },
+        senderName: 'Draft Sender',
+        template: { body: 'Draft body', subject: 'Draft subject' },
+      }));
     } finally {
       await app.close();
     }
@@ -834,7 +908,9 @@ function createHarness(input: {
   const service = {
     getRouteEmailSelection: vi.fn(),
     getSettings: vi.fn(),
+    getStopEmailHistory: vi.fn(),
     preview: vi.fn(),
+    samplePreview: vi.fn(),
     saveGlobalSettings: vi.fn(),
     saveSettings: vi.fn(),
     saveTemplateSettings: vi.fn(),

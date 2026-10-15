@@ -6,15 +6,19 @@ import {
   defaultCustomerEmailSettings,
   isEmail,
   normalizeCustomerEmailSettings,
+  customerEmailEtaWindowRange,
   readCustomerEmailSignal,
+  readEtaWindow,
   validateCustomerEmailSettingsPayload,
   type CustomerEmailBranding,
+  type CustomerEmailEtaWindow,
   type CustomerEmailSettings,
   type CustomerEmailSignal,
 } from './customer-email-settings.js';
 import {
   CustomerEmailTransportConfigurationError,
   CustomerEmailTransportSendError,
+  renderCustomerEmailHtml,
   type CustomerEmailTransport,
 } from './customer-email-transport.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
@@ -22,6 +26,7 @@ import { readRouteEmailSelection, ROUTE_EMAIL_SELECTION_KEY, type RouteEmailSele
 import { DEFAULT_SHOPIFY_APP_ID, appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
 import { isIanaTimezone } from '../driver/driver-route-timezone.js';
+import { customerTrackingUrl, type CustomerTrackingLinks } from '../customer-tracking/customer-tracking-link.js';
 
 export type CustomerEmailPreviewInput = {
   appId?: string | undefined;
@@ -58,6 +63,7 @@ export type CustomerEmailPreview = {
     };
     rendered: {
       body: string;
+      html: string;
       subject: string;
     };
   };
@@ -104,6 +110,7 @@ export type CustomerEmailRenderedRecipient = {
   history: CustomerEmailManualHistorySummary;
   rendered: {
     body: string;
+    html: string;
     subject: string;
   };
   sequence: number;
@@ -149,7 +156,7 @@ export type CustomerEmailDispatchResult = {
 
 type CustomerEmailPrismaClient = Pick<
   PrismaClient,
-  '$executeRaw' | '$transaction' | 'customerEmailManualDispatch' | 'customerEmailManualDispatchRecipient' | 'routePlan' | 'shop'
+  '$executeRaw' | '$transaction' | 'customerEmailManualDispatch' | 'customerEmailManualDispatchRecipient' | 'customerRouteNotificationFact' | 'routePlan' | 'shop'
 >;
 
 type CustomerEmailRoutePlanRow = {
@@ -199,11 +206,16 @@ type CustomerEmailRoutePlanRow = {
 };
 
 export class CustomerEmailService {
+  private readonly trackingLink: (deliveryStopId: string) => string;
+
   constructor(
     private readonly prisma: CustomerEmailPrismaClient,
     private readonly transport: CustomerEmailTransport,
     private readonly attempts?: PrismaCustomerDeliveryNotificationAttemptRepository,
-  ) {}
+    trackingLinks?: CustomerTrackingLinks,
+  ) {
+    this.trackingLink = (deliveryStopId) => trackingLinks === undefined ? '' : customerTrackingUrl(trackingLinks, deliveryStopId);
+  }
 
   async getRouteEmailSelection(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<{ selection: RouteEmailSelection | null } | null> {
     const routePlan = await this.prisma.routePlan.findFirst({
@@ -213,12 +225,68 @@ export class CustomerEmailService {
     return routePlan === null ? null : { selection: readRouteEmailSelection(routePlan.constraints) };
   }
 
+  // Every customer email for one stop, manual and automatic, newest first, for the stop's notification history.
+  async getStopEmailHistory(input: {
+    appId?: string | undefined;
+    deliveryStopId: string;
+    routePlanId: string;
+    shopDomain: string;
+  }): Promise<CustomerEmailStopHistory | null> {
+    const routePlan = await this.prisma.routePlan.findFirst({
+      select: {
+        constraints: true,
+        routeStops: { select: { deliveryStopId: true }, where: { deliveryStopId: input.deliveryStopId } },
+        shop: { select: { commerceConnections: { select: { timezone: true }, where: { status: 'ACTIVE' } } } },
+        shopId: true,
+      },
+      where: { id: input.routePlanId, shop: { is: shopWhereInput(input) } },
+    });
+    if (routePlan === null || routePlan.routeStops.length === 0) return null;
+    const where = { deliveryStopId: input.deliveryStopId, shopId: routePlan.shopId };
+    const [manualRows, factRows] = await Promise.all([
+      this.prisma.customerEmailManualDispatchRecipient.findMany({
+        select: {
+          attempts: { select: { completedAt: true }, orderBy: { completedAt: 'desc' }, take: 1, where: { outcome: 'SENT' } },
+          createdAt: true,
+          dispatch: { select: { signal: true } },
+          errorMessage: true,
+          providerStatus: true,
+          recipientEmail: true,
+          sentAt: true,
+          status: true,
+        },
+        take: STOP_EMAIL_HISTORY_LIMIT,
+        orderBy: { createdAt: 'desc' },
+        where,
+      }),
+      this.prisma.customerRouteNotificationFact.findMany({
+        select: {
+          errorMessage: true,
+          metadata: true,
+          occurredAt: true,
+          providerStatus: true,
+          recipientEmailSnapshot: true,
+          sentAt: true,
+          status: true,
+        },
+        take: STOP_EMAIL_HISTORY_LIMIT,
+        orderBy: { occurredAt: 'desc' },
+        where,
+      }),
+    ]);
+    return {
+      events: buildStopEmailHistoryEvents(manualRows, factRows),
+      timezone: resolveCustomerEmailTimezone(routePlan),
+    };
+  }
+
   // Saved before Dispatch. A JSONB merge keeps other constraint keys and leaves updatedAt alone,
   // so the Dispatch that follows does not see a version conflict.
   async setRouteEmailSelection(input: {
     actor: string;
     appId?: string | undefined;
     deliveryStopIds: string[];
+    mode?: RouteEmailSelection['mode'];
     routePlanId: string;
     shopDomain: string;
     signals: CustomerEmailSignal[];
@@ -234,6 +302,7 @@ export class CustomerEmailService {
     }
     const selection: RouteEmailSelection = {
       deliveryStopIds: input.deliveryStopIds,
+      mode: input.mode ?? 'EXPLICIT',
       signals: input.signals,
       updatedAt: new Date().toISOString(),
       updatedBy: input.actor,
@@ -306,6 +375,7 @@ export class CustomerEmailService {
         ...current.branding,
         ...payload.branding,
       },
+      etaWindow: payload.etaWindow ?? current.etaWindow,
       globalVersion: current.globalVersion + 1,
       replyTo: payload.replyTo,
       senderEmail: current.senderEmail,
@@ -405,12 +475,16 @@ export class CustomerEmailService {
 
   async sendTest(input: {
     appId?: string | undefined;
+    branding?: Partial<CustomerEmailBranding> | undefined;
     body?: string | undefined;
     confirmed: boolean;
+    etaWindow?: CustomerEmailEtaWindow | undefined;
     recipientEmail: string;
+    senderName?: string | undefined;
     shopDomain: string;
     signal?: CustomerEmailSignal | undefined;
     subject?: string | undefined;
+    template?: { body: string; subject: string } | undefined;
   }): Promise<{ messageId: string | null; provider: string; recipientEmail: string; sentAt: string }> {
     if (input.confirmed !== true) {
       throw new CustomerEmailValidationError('Test customer email send must be confirmed.', 'CUSTOMER_EMAIL_TEST_CONFIRMATION_REQUIRED');
@@ -420,18 +494,41 @@ export class CustomerEmailService {
     assertConfigured(settings);
     if (!isEmail(input.recipientEmail.trim().toLowerCase())) throw new CustomerEmailValidationError('Test recipient email is invalid.');
     const signal = input.signal ?? 'DELIVERY_SCHEDULED';
-    const template = settings.templates[signal];
-    const testContext = testTemplateContext(settings);
+    const savedTemplate = settings.templates[signal];
+    const draftTemplate = input.template ?? {
+      body: input.body?.trim() || savedTemplate.body,
+      subject: input.subject?.trim() || savedTemplate.subject,
+    };
+    const draftSettings = validateCustomerEmailSettingsPayload({
+      ...settings,
+      branding: { ...settings.branding, ...input.branding },
+      etaWindow: input.etaWindow ?? settings.etaWindow,
+      senderName: input.senderName ?? settings.senderName,
+      templates: {
+        ...settings.templates,
+        [signal]: { ...savedTemplate, ...draftTemplate },
+      },
+    }, { allowAutomaticEnabled: true });
+    const rendered = renderCustomerEmail({
+      branding: draftSettings.branding,
+      context: testTemplateContext(draftSettings),
+      deliveryStopId: SAMPLE_DELIVERY_STOP_ID,
+      isSample: true,
+      senderName: draftSettings.senderName,
+      signal,
+      template: draftTemplate,
+    });
     const result = await this.transport.send({
-      branding: settings.branding,
-      body: input.body?.trim() || renderTemplate(template.body, testContext).value,
+      branding: draftSettings.branding,
+      body: rendered.body,
       commandId: `test:${cryptoRandomId()}`,
       recipientEmail: input.recipientEmail.trim().toLowerCase(),
       replyTo: settings.replyTo,
       senderEmail: settings.senderEmail,
-      senderName: settings.senderName,
+      senderName: draftSettings.senderName,
+      renderedHtml: rendered.html,
       signal: 'TEST',
-      subject: input.subject?.trim() || renderTemplate(template.subject, testContext).value,
+      subject: rendered.subject,
       tags: ['customer-delivery-email', 'test'],
     });
     return {
@@ -442,6 +539,36 @@ export class CustomerEmailService {
     };
   }
 
+  samplePreview(input: unknown): { body: string; html: string; subject: string } {
+    const payload = readCustomerEmailSamplePreviewPayload(input);
+    if (payload === null) throw new CustomerEmailValidationError('Invalid customer email sample preview payload.');
+    const defaults = defaultCustomerEmailSettings();
+    const branding = { ...defaults.branding, ...payload.branding };
+    const settings = validateCustomerEmailSettingsPayload({
+      ...defaults,
+      branding,
+      etaWindow: payload.etaWindow ?? defaults.etaWindow,
+      senderName: payload.senderName ?? defaults.senderName,
+      templates: {
+        ...defaults.templates,
+        [payload.signal]: {
+          ...defaults.templates[payload.signal],
+          ...payload.template,
+        },
+      },
+    });
+    const rendered = renderCustomerEmail({
+      branding: settings.branding,
+      context: testTemplateContext(settings),
+      deliveryStopId: SAMPLE_DELIVERY_STOP_ID,
+      isSample: true,
+      senderName: settings.senderName,
+      signal: payload.signal,
+      template: payload.template,
+    });
+    return { body: rendered.body, html: rendered.html, subject: rendered.subject };
+  }
+
   async preview(input: CustomerEmailPreviewInput): Promise<CustomerEmailPreview | null> {
     const routePlan = await this.findRoutePlan(input);
     if (routePlan === null) return null;
@@ -449,7 +576,7 @@ export class CustomerEmailService {
     const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
       .map((stop) => stop.deliveryStop.id);
     const history = await this.readManualHistory(routePlan.shop.id, input.signal, eligibleStopIds);
-    return buildPreview(routePlan, settings, input, history);
+    return buildPreview(routePlan, settings, input, history, this.trackingLink);
   }
 
   async sendAutomatic(input: CustomerEmailPreviewInput & {
@@ -486,17 +613,26 @@ export class CustomerEmailService {
         status: 'SKIPPED'
       };
     }
-    const context = renderContext(routePlan, stop);
+    const context = renderContext(routePlan, stop, settings.etaWindow, this.trackingLink);
+    const rendered = renderCustomerEmail({
+      branding: settings.branding,
+      context,
+      deliveryStopId: stop.deliveryStop.id,
+      senderName: settings.senderName,
+      signal: input.signal,
+      template,
+    });
     const result = await this.transport.send({
       branding: settings.branding,
-      body: renderTemplate(template.body, context).value,
+      body: rendered.body,
       commandId: input.idempotencyKey,
       recipientEmail,
       replyTo: settings.replyTo,
       senderEmail: settings.senderEmail,
       senderName: settings.senderName,
+      renderedHtml: rendered.html,
       signal: input.signal,
-      subject: renderTemplate(template.subject, context).value,
+      subject: rendered.subject,
       tags: ['customer-delivery-email', 'automatic', input.signal.toLowerCase()]
     });
     return { provider: result.provider, providerMessageId: result.providerMessageId, status: 'SENT' };
@@ -521,7 +657,7 @@ export class CustomerEmailService {
     const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
       .map((stop) => stop.deliveryStop.id);
     const history = await this.readManualHistory(routePlan.shop.id, input.signal, eligibleStopIds);
-    const preview = buildPreview(routePlan, settings, input, history);
+    const preview = buildPreview(routePlan, settings, input, history, this.trackingLink);
     if (input.previewToken !== undefined && input.previewToken !== preview.previewToken) {
       throw new CustomerEmailValidationError(
         'Customer email preview is stale or does not match this send request.',
@@ -607,6 +743,7 @@ export class CustomerEmailService {
           replyTo: sendSettings.replyTo,
           senderEmail: sendSettings.senderEmail,
           senderName: sendSettings.senderName,
+          renderedHtml: recipient.rendered.html,
           signal: input.signal,
           subject: recipient.rendered.subject,
           tags: [
@@ -856,7 +993,7 @@ export class CustomerEmailService {
           eligibleStopIds,
           tx,
         );
-        const preview = buildPreview(routePlan, settings, input.input, history);
+        const preview = buildPreview(routePlan, settings, input.input, history, this.trackingLink);
         const template = settings.templates[input.input.signal];
         if (input.input.previewToken !== undefined && input.input.previewToken !== preview.previewToken) {
           throw new CustomerEmailValidationError(
@@ -1155,7 +1292,8 @@ function buildPreview(
   routePlan: CustomerEmailRoutePlanRow,
   settings: CustomerEmailSettings,
   input: CustomerEmailPreviewInput,
-  history: Map<string, CustomerEmailManualHistorySummary> = new Map(),
+  history: Map<string, CustomerEmailManualHistorySummary>,
+  trackingLink: (deliveryStopId: string) => string,
 ): CustomerEmailPreview {
   const template = settings.templates[input.signal];
   const selectedStops = selectStops(routePlan, input.deliveryStopIds);
@@ -1176,13 +1314,19 @@ function buildPreview(
       });
       continue;
     }
-    const context = renderContext(routePlan, stop);
-    const renderedBody = renderTemplate(template.body, context);
-    const renderedSubject = renderTemplate(template.subject, context);
+    const context = renderContext(routePlan, stop, settings.etaWindow, trackingLink);
+    const rendered = renderCustomerEmail({
+      branding: settings.branding,
+      context,
+      deliveryStopId: stop.deliveryStop.id,
+      senderName: settings.senderName,
+      signal: input.signal,
+      template,
+    });
     recipients.push({
       diagnostics: {
-        body: renderedBody.diagnostics,
-        subject: renderedSubject.diagnostics,
+        body: rendered.diagnostics.body,
+        subject: rendered.diagnostics.subject,
       },
       deliveryStopId: stop.deliveryStop.id,
       email,
@@ -1190,16 +1334,24 @@ function buildPreview(
       orderId: stop.deliveryStop.order.id,
       orderNumber: stop.deliveryStop.order.name,
       rendered: {
-        body: renderedBody.value,
-        subject: renderedSubject.value,
+        body: rendered.body,
+        html: rendered.html,
+        subject: rendered.subject,
       },
       sequence: stop.sequence,
     });
   }
   const statusExclusions = selectedStops.filter((stop) => !eligibleStopIds.has(stop.deliveryStop.id));
   const exclusions = buildStatusExclusions(routePlan.status, input.signal, statusExclusions);
-  const exampleBody = renderTemplate(template.body, testTemplateContext(settings));
-  const exampleSubject = renderTemplate(template.subject, testTemplateContext(settings));
+  const example = renderCustomerEmail({
+    branding: settings.branding,
+    context: testTemplateContext(settings),
+    deliveryStopId: SAMPLE_DELIVERY_STOP_ID,
+    isSample: true,
+    senderName: settings.senderName,
+    signal: input.signal,
+    template,
+  });
   const previewWithoutToken = {
     counts: {
       eligible: eligibleStops.length,
@@ -1212,8 +1364,8 @@ function buildPreview(
       totalStops: routePlan.routeStops.length,
     },
     example: {
-      diagnostics: { body: exampleBody.diagnostics, subject: exampleSubject.diagnostics },
-      rendered: { body: exampleBody.value, subject: exampleSubject.value },
+      diagnostics: example.diagnostics,
+      rendered: { body: example.body, html: example.html, subject: example.subject },
     },
     exclusions,
     recipients,
@@ -1323,7 +1475,7 @@ function routeOpsNearbyStopsThreshold(routePlan: CustomerEmailRoutePlanRow): num
   return normalizeRouteOpsUiSettings(routePlan.shop.routeOpsUiSettings).nearbyStopsThreshold;
 }
 
-function computeCurrentProgressSequence(stops: CustomerEmailRoutePlanRow['routeStops']): number {
+export function computeCurrentProgressSequence(stops: Array<{ deliveryStop: { status: string }; sequence: number }>): number {
   const active = stops.find((stop) => ['ARRIVED', 'EN_ROUTE'].includes(stop.deliveryStop.status));
   if (active !== undefined) return active.sequence;
   const completed = stops
@@ -1332,7 +1484,12 @@ function computeCurrentProgressSequence(stops: CustomerEmailRoutePlanRow['routeS
   return completed.length === 0 ? 0 : Math.max(...completed);
 }
 
-function renderContext(routePlan: CustomerEmailRoutePlanRow, stop: CustomerEmailRoutePlanRow['routeStops'][number]): Record<string, string> {
+function renderContext(
+  routePlan: CustomerEmailRoutePlanRow,
+  stop: CustomerEmailRoutePlanRow['routeStops'][number],
+  etaWindow: CustomerEmailEtaWindow,
+  trackingLink: (deliveryStopId: string) => string,
+): Record<string, string> {
   const timezone = resolveCustomerEmailTimezone(routePlan);
   return {
     customerName: stop.deliveryStop.recipientName ?? '',
@@ -1344,12 +1501,13 @@ function renderContext(routePlan: CustomerEmailRoutePlanRow, stop: CustomerEmail
       : formatEta(stop.estimatedArrivalAt, timezone),
     etaWindow: stop.estimatedArrivalAt === null || timezone === null
       ? ''
-      : formatEtaWindow(stop.estimatedArrivalAt, timezone),
+      : formatEtaWindow(stop.estimatedArrivalAt, timezone, etaWindow),
     inventoryList: formatInventoryList(stop.deliveryStop.order.orderItems),
     orderNumber: stop.deliveryStop.order.name,
     routeName: routePlan.name,
     sequence: String(stop.sequence),
     shopName: routePlan.shop.shopDomain,
+    trackingLink: trackingLink(stop.deliveryStop.id),
   };
 }
 
@@ -1357,19 +1515,85 @@ function testTemplateContext(settings: CustomerEmailSettings): Record<string, st
   return {
     customerName: 'Customer',
     deliveryAddress: '123 Delivery St',
-    deliveryDate: formatDate(new Date()),
-    deliveryWeekday: '',
-    eta: 'TBD',
-    etaWindow: 'Aug 4, 2026, 9:30 AM EDT - Aug 4, 2026, 10:30 AM EDT',
-    inventoryList: '',
+    deliveryDate: formatDate(SAMPLE_ETA),
+    deliveryWeekday: new Intl.DateTimeFormat('en-US', { timeZone: SAMPLE_TIMEZONE, weekday: 'long' }).format(SAMPLE_ETA),
+    eta: formatEta(SAMPLE_ETA, SAMPLE_TIMEZONE),
+    etaWindow: formatEtaWindow(SAMPLE_ETA, SAMPLE_TIMEZONE, settings.etaWindow),
+    inventoryList: '2 x Sample item\n1 x Another item',
     orderNumber: '#1001',
     routeName: 'Test route',
     sequence: '1',
     shopName: settings.senderName,
+    trackingLink: `https://example.com/t/${SAMPLE_DELIVERY_STOP_ID}.abcdefghijklmnopqrstuv`,
   };
 }
 
-function resolveCustomerEmailTimezone(routePlan: CustomerEmailRoutePlanRow): string | null {
+const STOP_EMAIL_HISTORY_LIMIT = 50;
+
+export type CustomerEmailStopHistoryEvent = {
+  at: string;
+  errorMessage: string | null;
+  providerStatus: string | null;
+  recipientEmail: string | null;
+  signal: CustomerEmailSignal | null;
+  source: 'AUTOMATIC' | 'MANUAL';
+  status: 'FAILED' | 'PENDING' | 'SENT' | 'SKIPPED';
+};
+
+export type CustomerEmailStopHistory = { events: CustomerEmailStopHistoryEvent[]; timezone: string | null };
+
+// Manual sends count as SENT once any provider attempt succeeded; automatic facts map QUEUED/PROCESSING to PENDING and DEAD to FAILED.
+export function buildStopEmailHistoryEvents(
+  manualRows: Array<{
+    attempts?: Array<{ completedAt: Date | null }>;
+    createdAt: Date;
+    dispatch: { signal: string };
+    errorMessage: string | null;
+    providerStatus: string | null;
+    recipientEmail: string | null;
+    sentAt: Date | null;
+    status: string;
+  }>,
+  factRows: Array<{
+    errorMessage: string | null;
+    metadata: unknown;
+    occurredAt: Date;
+    providerStatus: string | null;
+    recipientEmailSnapshot: string | null;
+    sentAt: Date | null;
+    status: string;
+  }>,
+): CustomerEmailStopHistoryEvent[] {
+  const signalOf = (value: unknown) => customerEmailSignals.find((signal) => signal === value) ?? null;
+  const manual = manualRows.map((row): CustomerEmailStopHistoryEvent => {
+    const sentAt = row.sentAt ?? row.attempts?.[0]?.completedAt ?? null;
+    const sent = row.status === 'SENT' || sentAt !== null;
+    return {
+      at: (sent ? sentAt ?? row.createdAt : row.createdAt).toISOString(),
+      errorMessage: row.errorMessage,
+      providerStatus: row.providerStatus,
+      recipientEmail: row.recipientEmail,
+      signal: signalOf(row.dispatch.signal),
+      source: 'MANUAL',
+      status: sent ? 'SENT' : row.status === 'PENDING' || row.status === 'UNKNOWN' ? 'PENDING' : row.status === 'SKIPPED' ? 'SKIPPED' : 'FAILED',
+    };
+  });
+  const automatic = factRows.map((row): CustomerEmailStopHistoryEvent => ({
+    at: (row.sentAt ?? row.occurredAt).toISOString(),
+    errorMessage: row.errorMessage,
+    providerStatus: row.providerStatus,
+    recipientEmail: row.recipientEmailSnapshot,
+    signal: signalOf(isRecord(row.metadata) ? row.metadata.signal : null),
+    source: 'AUTOMATIC',
+    status: row.status === 'SENT' ? 'SENT' : row.status === 'SKIPPED' ? 'SKIPPED' : row.status === 'DEAD' ? 'FAILED' : 'PENDING',
+  }));
+  return [...manual, ...automatic].sort((left, right) => right.at.localeCompare(left.at));
+}
+
+export function resolveCustomerEmailTimezone(routePlan: {
+  constraints: unknown;
+  shop: { commerceConnections: Array<{ timezone: string | null }> };
+}): string | null {
   const constraints = isRecord(routePlan.constraints) ? routePlan.constraints : null;
   const routeScope = constraints !== null && isRecord(constraints.routeScope) ? constraints.routeScope : null;
   const routeTimezone = [
@@ -1385,26 +1609,127 @@ function resolveCustomerEmailTimezone(routePlan: CustomerEmailRoutePlanRow): str
   return connectionTimezones.length === 1 ? connectionTimezones[0] ?? null : null;
 }
 
-function formatEtaWindow(eta: Date, timezone: string): string {
-  const halfWindowMs = 30 * 60 * 1000;
-  return `${formatEta(new Date(eta.getTime() - halfWindowMs), timezone)} - ${formatEta(new Date(eta.getTime() + halfWindowMs), timezone)}`;
+function formatEtaWindow(eta: Date, timezone: string, window: CustomerEmailEtaWindow): string {
+  const { end, start } = customerEmailEtaWindowRange(eta, window);
+  const startParts = etaParts(start, timezone);
+  const endParts = etaParts(end, timezone);
+  // Same day and same zone: "Wed, Oct 14, 9:30 AM – 10:30 AM EDT". A midnight or DST crossing keeps both full stamps.
+  return startParts.day === endParts.day && startParts.zone === endParts.zone
+    ? `${startParts.day}, ${startParts.time} – ${endParts.time} ${endParts.zone}`
+    : `${formatEta(start, timezone)} – ${formatEta(end, timezone)}`;
 }
 
 function formatEta(eta: Date, timezone: string): string {
-  return new Intl.DateTimeFormat('en-US', {
-    day: 'numeric',
+  const { day, time, zone } = etaParts(eta, timezone);
+  return `${day}, ${time} ${zone}`;
+}
+
+function etaParts(value: Date, timezone: string): { day: string; time: string; zone: string } {
+  const parts = new Intl.DateTimeFormat('en-US', {
     hour: 'numeric',
     hour12: true,
     minute: '2-digit',
-    month: 'short',
     timeZone: timezone,
     timeZoneName: 'short',
-    year: 'numeric',
-  }).format(eta);
+  }).formatToParts(value);
+  return {
+    day: formatDay(value, timezone),
+    // Some ICU builds put U+202F before AM/PM; plain-text email keeps an ordinary space.
+    time: parts.filter((part) => part.type !== 'timeZoneName').map((part) => part.value).join('').replace(/\u202f/gu, ' ').trim(),
+    zone: parts.find((part) => part.type === 'timeZoneName')?.value ?? '',
+  };
+}
+
+function formatDay(value: Date, timezone: string): string {
+  return new Intl.DateTimeFormat('en-US', { day: 'numeric', month: 'short', timeZone: timezone, weekday: 'short' }).format(value);
 }
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+const SAMPLE_DELIVERY_STOP_ID = '00000000-0000-4000-8000-000000000001';
+const SAMPLE_ETA = new Date('2026-10-14T14:00:00.000Z');
+const SAMPLE_TIMEZONE = 'America/Toronto';
+const trackingTokenPattern = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.([A-Za-z0-9_-]{22})$/u;
+
+export function renderCustomerEmail(input: {
+  branding: CustomerEmailBranding;
+  context: Record<string, string>;
+  deliveryStopId: string;
+  isSample?: boolean | undefined;
+  senderName: string;
+  signal: CustomerEmailSignal;
+  template: { body: string; subject: string };
+}): {
+  body: string;
+  diagnostics: { body: CustomerEmailRenderDiagnostic[]; subject: CustomerEmailRenderDiagnostic[] };
+  html: string;
+  subject: string;
+} {
+  const trackingAction = validTrackingAction(input.context.trackingLink, input.deliveryStopId, input.isSample === true);
+  const renderedBody = renderTemplate(input.template.body, input.context);
+  const htmlBody = trackingAction === undefined
+    ? renderedBody.value
+    : renderTemplate(input.template.body, { ...input.context, trackingLink: 'Use the button below.' }).value;
+  const renderedSubject = renderTemplate(input.template.subject, input.context);
+  const bodyWithRequiredContent = appendRequiredContent(renderedBody.value, input.template.body, input.context, input.signal);
+  const htmlBodyWithRequiredContent = appendRequiredContent(htmlBody, input.template.body, input.context, input.signal);
+  const body = trackingAction === undefined
+    ? bodyWithRequiredContent
+    : templateUsesToken(input.template.body, 'trackingLink')
+      ? `${bodyWithRequiredContent}\n\n${trackingAction.isSample ? 'Sample tracking number' : 'Tracking number'}: ${trackingAction.deliveryStopId}`
+      : `${bodyWithRequiredContent}\n\nTrack your delivery:\n${trackingAction.url}\n${trackingAction.isSample ? 'Sample tracking number' : 'Tracking number'}: ${trackingAction.deliveryStopId}`;
+  return {
+    body,
+    diagnostics: { body: renderedBody.diagnostics, subject: renderedSubject.diagnostics },
+    html: renderCustomerEmailHtml({
+      branding: input.branding,
+      body: htmlBodyWithRequiredContent,
+      senderName: input.senderName,
+      subject: renderedSubject.value,
+      ...(trackingAction === undefined ? {} : { trackingAction }),
+    }),
+    subject: renderedSubject.value,
+  };
+}
+
+function appendRequiredContent(
+  body: string,
+  templateBody: string,
+  context: Record<string, string>,
+  signal: CustomerEmailSignal,
+): string {
+  const blocks = [body];
+  if (!templateUsesToken(templateBody, 'inventoryList') && (context.inventoryList ?? '') !== '') {
+    blocks.push(`Items in this delivery:\n${context.inventoryList}`);
+  }
+  if (signal === 'DELIVERY_SCHEDULED' && !templateUsesToken(templateBody, 'etaWindow') && (context.etaWindow ?? '') !== '') {
+    blocks.push(`Estimated arrival window: ${context.etaWindow}`);
+  }
+  return blocks.join('\n\n');
+}
+
+function templateUsesToken(template: string, token: string): boolean {
+  return new RegExp(`\\{\\{\\s*${token}\\s*\\}\\}`, 'u').test(template);
+}
+
+function validTrackingAction(
+  trackingLink: string | undefined,
+  deliveryStopId: string,
+  isSample: boolean,
+): { deliveryStopId: string; isSample?: boolean; url: string } | undefined {
+  if (trackingLink === undefined || trackingLink.trim() === '') return undefined;
+  try {
+    const url = new URL(trackingLink);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+    const token = decodeURIComponent(url.pathname.split('/').at(-1) ?? '');
+    const match = trackingTokenPattern.exec(token);
+    if (match?.[1] !== deliveryStopId) return undefined;
+    return { deliveryStopId, ...(isSample ? { isSample: true } : {}), url: url.toString() };
+  } catch {
+    return undefined;
+  }
 }
 
 function renderTemplate(template: string, context: Record<string, string>): { diagnostics: CustomerEmailRenderDiagnostic[]; value: string } {
@@ -1457,7 +1782,8 @@ function formatItemOptions(value: unknown): string {
 }
 
 function formatDate(value: Date): string {
-  return value.toISOString().slice(0, 10);
+  // deliveryDate and planDate are @db.Date values stored as UTC midnight.
+  return formatDay(value, 'UTC');
 }
 
 function assertConfigured(settings: CustomerEmailSettings): void {
@@ -1571,12 +1897,13 @@ function automaticSettingsVersion(settings: CustomerEmailSettings): string {
 
 export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
   branding: Partial<CustomerEmailBranding>;
+  etaWindow?: CustomerEmailEtaWindow;
   expectedVersion: number;
   replyTo: string | null;
   senderEmail?: string;
   senderName: string;
 } | null {
-  if (!isRecord(value) || !hasOnlyKeys({ senderEmail: '', ...value }, ['branding', 'expectedVersion', 'replyTo', 'senderEmail', 'senderName'])) return null;
+  if (!isRecord(value) || !hasOnlyKeys({ etaWindow: undefined, senderEmail: '', ...value }, ['branding', 'etaWindow', 'expectedVersion', 'replyTo', 'senderEmail', 'senderName'])) return null;
   if (typeof value.expectedVersion !== 'number' || !Number.isInteger(value.expectedVersion)) return null;
   if (!isRecord(value.branding)) return null;
   try {
@@ -1589,6 +1916,7 @@ export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
     });
     return {
       branding: value.branding,
+      ...('etaWindow' in value ? { etaWindow: readEtaWindow(value.etaWindow) } : {}),
       expectedVersion: value.expectedVersion,
       replyTo: settings.replyTo,
       ...('senderEmail' in value ? { senderEmail: settings.senderEmail } : {}),
@@ -1633,6 +1961,36 @@ export function readCustomerEmailTemplateSettingsPayload(value: unknown): {
   }
 }
 
+export function readCustomerEmailSamplePreviewPayload(value: unknown): {
+  branding?: Partial<CustomerEmailBranding>;
+  etaWindow?: CustomerEmailEtaWindow;
+  senderName?: string;
+  signal: CustomerEmailSignal;
+  template: { body: string; subject: string };
+} | null {
+  if (!isRecord(value)) return null;
+  const allowedKeys = new Set(['branding', 'etaWindow', 'senderName', 'signal', 'template']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) return null;
+  const signal = readCustomerEmailSignal(value.signal);
+  if (signal === null || !isRecord(value.template)) return null;
+  if (Object.keys(value.template).some((key) => key !== 'body' && key !== 'subject')) return null;
+  if (typeof value.template.body !== 'string' || value.template.body.length > 10_000) return null;
+  if (typeof value.template.subject !== 'string' || value.template.subject.length > 200) return null;
+  if (value.branding !== undefined && !isRecord(value.branding)) return null;
+  if (value.senderName !== undefined && typeof value.senderName !== 'string') return null;
+  try {
+    return {
+      ...(value.branding === undefined ? {} : { branding: value.branding }),
+      ...(value.etaWindow === undefined ? {} : { etaWindow: readEtaWindow(value.etaWindow) }),
+      ...(typeof value.senderName === 'string' ? { senderName: value.senderName } : {}),
+      signal,
+      template: { body: value.template.body, subject: value.template.subject },
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function readCustomerEmailCommandPayload(value: unknown): {
   commandId?: string | undefined;
   confirmed?: boolean | undefined;
@@ -1664,24 +2022,48 @@ export function readCustomerEmailCommandPayload(value: unknown): {
 }
 
 export function readCustomerEmailTestPayload(value: unknown): {
+  branding?: Partial<CustomerEmailBranding> | undefined;
   body?: string | undefined;
   confirmed: true;
+  etaWindow?: CustomerEmailEtaWindow | undefined;
   recipientEmail: string;
+  senderName?: string | undefined;
   signal?: CustomerEmailSignal | undefined;
   subject?: string | undefined;
+  template?: { body: string; subject: string } | undefined;
 } | null {
   if (!isRecord(value) || value.confirmed !== true || typeof value.recipientEmail !== 'string') return null;
   if (typeof value.subject === 'string' && value.subject.length > 200) return null;
   if (typeof value.body === 'string' && value.body.length > 10_000) return null;
+  if (value.branding !== undefined && !isRecord(value.branding)) return null;
+  if (value.senderName !== undefined && typeof value.senderName !== 'string') return null;
+  if (value.template !== undefined && (
+    !isRecord(value.template)
+    || Object.keys(value.template).some((key) => key !== 'body' && key !== 'subject')
+    || typeof value.template.body !== 'string'
+    || value.template.body.length > 10_000
+    || typeof value.template.subject !== 'string'
+    || value.template.subject.length > 200
+  )) return null;
   const signal = value.signal === undefined ? undefined : readCustomerEmailSignal(value.signal);
   if (value.signal !== undefined && signal === null) return null;
-  return {
-    ...(typeof value.body === 'string' ? { body: value.body } : {}),
-    confirmed: true,
-    recipientEmail: value.recipientEmail,
-    ...(signal === undefined || signal === null ? {} : { signal }),
-    ...(typeof value.subject === 'string' ? { subject: value.subject } : {}),
-  };
+  try {
+    return {
+      ...(value.branding === undefined ? {} : { branding: value.branding }),
+      ...(typeof value.body === 'string' ? { body: value.body } : {}),
+      confirmed: true,
+      ...(value.etaWindow === undefined ? {} : { etaWindow: readEtaWindow(value.etaWindow) }),
+      recipientEmail: value.recipientEmail,
+      ...(typeof value.senderName === 'string' ? { senderName: value.senderName } : {}),
+      ...(signal === undefined || signal === null ? {} : { signal }),
+      ...(typeof value.subject === 'string' ? { subject: value.subject } : {}),
+      ...(value.template === undefined ? {} : {
+        template: { body: value.template.body as string, subject: value.template.subject as string },
+      }),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

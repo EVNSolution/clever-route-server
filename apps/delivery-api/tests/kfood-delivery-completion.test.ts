@@ -21,6 +21,22 @@ describe('K-food delivery work completion with return navigation', () => {
     expect(hasDeliveryNavigationGraceExpired(marker, navigationUntil)).toBe(true);
   });
 
+  test('ends navigation immediately for released completed work while preserving its original deadline', () => {
+    const released = { ...marker, status: 'READY' };
+    expect(toRouteDeliveryDisplayStatus(released)).toBe('COMPLETED');
+    expect(hasDeliveryNavigationGraceExpired(released, completedAt)).toBe(true);
+    expect(hasDeliveryNavigationGraceExpired(released, navigationUntil)).toBe(true);
+    expect(released.driverNavigationUntil).toEqual(navigationUntil);
+  });
+
+  test('keeps ordinary ready routes and stale completion markers outside the navigation cutoff', () => {
+    for (const ready of [{ status: 'READY' }, { ...marker, status: 'READY', assignmentGeneration: 3n }]) {
+      expect(toRouteDeliveryDisplayStatus(ready)).toBe('READY');
+      expect(hasDeliveryNavigationGraceExpired(ready, completedAt)).toBe(false);
+      expect(hasDeliveryNavigationGraceExpired(ready, navigationUntil)).toBe(false);
+    }
+  });
+
   test('does not reuse a previous assignment or a malformed interval', () => {
     expect(toRouteDeliveryDisplayStatus({ ...marker, assignmentGeneration: 3n })).toBe('IN_PROGRESS');
     expect(hasDeliveryNavigationGraceExpired({ ...marker, assignmentGeneration: 3n }, navigationUntil)).toBe(false);

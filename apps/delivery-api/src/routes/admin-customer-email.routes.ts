@@ -41,6 +41,7 @@ export type CustomerEmailLogoAssetStore = {
 };
 
 const maxLogoBytes = 3 * 1024 * 1024;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const logoFileNamePattern = /^[a-f0-9]{64}\.(?:jpg|png|webp)$/u;
 
 export function registerAdminCustomerEmailRoutes(
@@ -68,6 +69,17 @@ export function registerAdminCustomerEmailRoutes(
     const customerEmailSettings = await dependencies.customerEmailService.getSettings(authenticated);
     if (customerEmailSettings === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Shop not found'));
     return reply.code(200).send({ data: { customerEmailSettings }, error: null });
+  });
+
+  app.post<{ Body: unknown }>('/admin/customer-email/sample-preview', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    try {
+      const preview = dependencies.customerEmailService.samplePreview(request.body);
+      return reply.code(200).send({ data: { preview }, error: null });
+    } catch (error) {
+      return sendCustomerEmailError(reply, error);
+    }
   });
 
   app.patch<{ Body: unknown }>('/admin/customer-email/settings', async (request, reply) => {
@@ -306,6 +318,25 @@ export function registerAdminCustomerEmailRoutes(
       } catch (error) {
         return sendCustomerEmailError(reply, error);
       }
+    },
+  );
+
+  app.get<{ Params: { deliveryStopId: string; routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/stops/:deliveryStopId/customer-email/history',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+      if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      // Both IDs are uuid columns; a malformed one would fail the query instead of reading as not found.
+      if (!uuidPattern.test(request.params.routePlanId) || !uuidPattern.test(request.params.deliveryStopId)) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Route stop not found'));
+      }
+      const history = await dependencies.customerEmailService.getStopEmailHistory({
+        ...authenticated,
+        deliveryStopId: request.params.deliveryStopId,
+        routePlanId: request.params.routePlanId,
+      });
+      if (history === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route stop not found'));
+      return reply.code(200).send({ data: history, error: null });
     },
   );
 

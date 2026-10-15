@@ -183,4 +183,39 @@ describe('authenticated v2 Orders resource boundary', () => {
       await app.close();
     }
   });
+
+  const idA = '11111111-1111-4111-8111-111111111111';
+  const idB = '22222222-2222-4222-8222-222222222222';
+  test.each([
+    [`orderId=${idA}&orderId=${idB}&orderId=${idA}`, 200, [idA, idB]],
+    [`orderId=${idA}`, 200, [idA]],
+    ['orderId=not-a-uuid', 400, null],
+    [Array.from({ length: 501 }, (_, i) => `orderId=${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`).join('&'), 400, null],
+  ] as const)('filters the order list by canonical order ids: %#', async (query, status, orderIds) => {
+    const list = vi.fn<AdminOrdersDependencies['orderSyncService']['listCanonicalOrders']>(() =>
+      Promise.resolve([]),
+    );
+    const app = await buildApp({
+      adminOrders: {
+        sessionTokenVerifier: {
+          verify: () => ({ shopDomain: 'fixture.example.test', subject: 'synthetic-user' }),
+        },
+        orderSyncService: {
+          listCanonicalOrders: list,
+          syncOrdersSnapshot: () => Promise.reject(new Error('not invoked')),
+        },
+      },
+    });
+    try {
+      const response = await app.inject({
+        url: `/admin/orders?${query}`,
+        headers: { authorization: 'Bearer synthetic-token' },
+      });
+      expect(response.statusCode).toBe(status);
+      if (orderIds === null) expect(list).not.toHaveBeenCalled();
+      else expect(list.mock.calls[0]?.[0].filters).toEqual({ orderIds });
+    } finally {
+      await app.close();
+    }
+  });
 });

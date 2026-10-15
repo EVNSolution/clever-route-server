@@ -68,12 +68,21 @@ export type CustomerEmailAutomaticSettings = {
   enabled: boolean;
 };
 
+export const customerEmailEtaWindowDirections = ['AROUND', 'BEFORE', 'AFTER'] as const;
+
+// minutes is the slack on each widened side: AROUND = ETA ± minutes, BEFORE = ETA - minutes .. ETA, AFTER = ETA .. ETA + minutes.
+export type CustomerEmailEtaWindow = {
+  direction: (typeof customerEmailEtaWindowDirections)[number];
+  minutes: number;
+};
+
 export type CustomerEmailSettings = {
   automatic: CustomerEmailAutomaticSettings;
   branding: CustomerEmailBranding;
   compatibility: {
     nearbyStopsThreshold: number;
   };
+  etaWindow: CustomerEmailEtaWindow;
   globalVersion: number;
   replyTo: string | null;
   senderEmail: string;
@@ -94,6 +103,7 @@ export const CUSTOMER_EMAIL_TEMPLATE_VARIABLES = [
   'routeName',
   'sequence',
   'shopName',
+  'trackingLink',
 ] as const;
 
 const customerEmailSignalSet = new Set<string>(customerEmailSignals);
@@ -104,37 +114,38 @@ export function defaultCustomerEmailSettings(): CustomerEmailSettings {
     branding: defaultCustomerEmailBranding(),
     automatic: defaultCustomerEmailAutomaticSettings(),
     compatibility: { nearbyStopsThreshold: 3 },
+    etaWindow: defaultCustomerEmailEtaWindow(),
     globalVersion: 1,
     replyTo: null,
     senderEmail: '',
     senderName: 'CLEVER',
     templates: {
       DELIVERY_SCHEDULED: {
-        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is scheduled for delivery on {{deliveryDate}}.\n\nEstimated arrival window: {{etaWindow}}\n\nDelivery address:\n{{deliveryAddress}}',
+        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is scheduled for delivery on {{deliveryDate}}.\n\nEstimated arrival window: {{etaWindow}}\n\nDelivery address:\n{{deliveryAddress}}\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'Your delivery is scheduled',
         version: 1,
       },
       OUT_FOR_DELIVERY: {
-        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is out for delivery today. Estimated arrival: {{eta}}.',
+        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} is out for delivery. Estimated arrival: {{eta}}.\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'Your order is out for delivery',
         version: 1,
       },
       DELIVERED: {
-        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} has been delivered.',
+        body: 'Hello {{customerName}},\n\nYour order {{orderNumber}} has been delivered.\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'Your order has been delivered',
         version: 1,
       },
       MISSED_DELIVERY: {
-        body: 'Hello {{customerName}},\n\nWe could not complete delivery for order {{orderNumber}} today. Please contact {{shopName}} for next steps.',
+        body: 'Hello {{customerName}},\n\nWe could not complete delivery for order {{orderNumber}} today. Please contact {{shopName}} for next steps.\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'We missed your delivery',
         version: 1,
       },
       DRIVER_NEARBY: {
-        body: 'Hello {{customerName}},\n\nYour driver is nearby for order {{orderNumber}}. Estimated arrival: {{eta}}.',
+        body: 'Hello {{customerName}},\n\nYour driver is nearby for order {{orderNumber}}. Estimated arrival: {{eta}}.\n\nTrack your delivery: {{trackingLink}}\n\nItems in this delivery:\n{{inventoryList}}',
         enabled: true,
         subject: 'Your driver is nearby',
         version: 1,
@@ -164,6 +175,26 @@ export function defaultCustomerEmailBranding(): CustomerEmailBranding {
     surfaceColor: '#ffffff',
     textColor: '#24292f',
     websiteUrl: null,
+  };
+}
+
+export function defaultCustomerEmailEtaWindow(): CustomerEmailEtaWindow {
+  return { direction: 'AROUND', minutes: 30 };
+}
+
+export function readEtaWindow(value: unknown): CustomerEmailEtaWindow {
+  if (value === undefined || value === null) return defaultCustomerEmailEtaWindow();
+  if (!isRecord(value)) throw new Error('etaWindow must be an object.');
+  const direction = customerEmailEtaWindowDirections.find((candidate) => candidate === value.direction);
+  if (direction === undefined) throw new Error('etaWindow.direction must be AROUND, BEFORE, or AFTER.');
+  return { direction, minutes: readIntegerInRange(value.minutes, 5, 240, 'etaWindow.minutes') };
+}
+
+export function customerEmailEtaWindowRange(eta: Date, window: CustomerEmailEtaWindow): { end: Date; start: Date } {
+  const slackMs = window.minutes * 60 * 1000;
+  return {
+    end: new Date(window.direction === 'BEFORE' ? eta.getTime() : eta.getTime() + slackMs),
+    start: new Date(window.direction === 'AFTER' ? eta.getTime() : eta.getTime() - slackMs),
   };
 }
 
@@ -200,6 +231,7 @@ export function validateCustomerEmailSettingsPayload(
     automatic: readAutomaticSettings(value.automatic, options.allowAutomaticEnabled === true),
     branding: readBranding(value.branding),
     compatibility: { nearbyStopsThreshold: readCompatibilityNearbyStopsThreshold(value.compatibility) },
+    etaWindow: readEtaWindow(value.etaWindow),
     globalVersion: readOptionalVersion(value.globalVersion, 'globalVersion'),
     replyTo,
     senderEmail,
@@ -249,6 +281,7 @@ function migrateCustomerEmailSettingsV1(value: Record<string, unknown>): Custome
     automatic: defaultCustomerEmailAutomaticSettings(),
     branding: defaultCustomerEmailBranding(),
     compatibility: { nearbyStopsThreshold },
+    etaWindow: defaultCustomerEmailEtaWindow(),
     globalVersion: 1,
     replyTo,
     senderEmail,
@@ -273,6 +306,7 @@ function migrateCustomerEmailSettingsV2(value: Record<string, unknown>): Custome
     automatic: defaultCustomerEmailAutomaticSettings(),
     branding: readBranding(value.branding),
     compatibility: { nearbyStopsThreshold },
+    etaWindow: defaultCustomerEmailEtaWindow(),
     globalVersion: 1,
     replyTo,
     senderEmail,

@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-10-09
+  x-contract-revision: 2026-10-14
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -2474,6 +2474,17 @@ paths:
           in: query
           schema:
             type: string
+        - name: orderId
+          in: query
+          description: Repeat to return only these canonical order ids (at most 500).
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 500
+            items:
+              type: string
+              format: uuid
       responses:
         '200':
           description: Canonical orders for the authenticated shop.
@@ -3857,6 +3868,23 @@ paths:
                 senderEmail:
                   type: string
                   description: The current company-managed sender address, or the canonical empty value while unconfigured.
+                etaWindow:
+                  type: object
+                  description: >-
+                    Optional. Shapes `{{etaWindow}}`. AROUND renders ETA ± minutes,
+                    BEFORE renders ETA - minutes to ETA, AFTER renders ETA to
+                    ETA + minutes. Omitted keeps the current value; the default is
+                    AROUND 30.
+                  required: [direction, minutes]
+                  properties:
+                    direction:
+                      type: string
+                      enum: [AROUND, BEFORE, AFTER]
+                    minutes:
+                      type: integer
+                      minimum: 5
+                      maximum: 240
+                  additionalProperties: false
               additionalProperties: true
       responses:
         '200':
@@ -3965,7 +3993,10 @@ paths:
       description: >-
         Requires the literal boolean `confirmed: true` before any provider
         request. Sends only to the arbitrary test recipient in the request.
-        The Brevo API key remains server-side.
+        The Brevo API key remains server-side. Optional draft `template`,
+        `branding`, `etaWindow`, and `senderName` fields use the same renderer as
+        sample preview and customer delivery sends. When `template` is present,
+        it takes precedence over the legacy top-level `subject` and `body` fields.
       operationId: sendAdminCustomerEmailTest
       x-clever-audience: shopify-embedded-admin
       x-side-effect: external-email-send
@@ -3977,16 +4008,16 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [confirmed, recipientEmail]
-              properties:
-                confirmed: { type: boolean, const: true }
-                recipientEmail: { type: string, format: email }
-                signal:
-                  type: string
-                  enum: [DELIVERY_SCHEDULED, OUT_FOR_DELIVERY, DELIVERED, MISSED_DELIVERY, DRIVER_NEARBY]
-                subject: { type: string }
-                body: { type: string }
+              $ref: '#/components/schemas/CustomerEmailTestRequest'
+            example:
+              confirmed: true
+              recipientEmail: operator@example.com
+              signal: DELIVERY_SCHEDULED
+              template:
+                subject: Your delivery is scheduled
+                body: Hello {{customerName}}
+              senderName: K-Food
+              etaWindow: { direction: AROUND, minutes: 30 }
       responses:
         '202':
           description: Test send result envelope with `data.test`.
@@ -4000,6 +4031,65 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /admin/customer-email/sample-preview:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Render a customer email sample without sending or saving
+      description: >-
+        Uses the same server renderer as test and customer delivery sends.
+        Sample customer, order, item, ETA, tracking link, and tracking number
+        metadata are clearly marked as sample data. This endpoint does not write
+        settings, create notification facts, or call the email provider.
+      operationId: previewAdminCustomerEmailSample
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerEmailSamplePreviewRequest'
+            example:
+              signal: DELIVERY_SCHEDULED
+              template:
+                subject: Your delivery is scheduled
+                body: Hello {{customerName}}
+              senderName: K-Food
+              etaWindow: { direction: BEFORE, minutes: 20 }
+              branding:
+                businessName: K-Food
+      responses:
+        '200':
+          description: Shared-renderer sample in `data.preview`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerEmailSamplePreviewEnvelope'
+              example:
+                data:
+                  preview:
+                    subject: Your delivery is scheduled
+                    body: |-
+                      Hello Customer
+
+                      Items in this delivery:
+                      2 x Sample item
+                      1 x Another item
+
+                      Estimated arrival window: Oct 14, 2026, 9:40 AM EDT - Oct 14, 2026, 10:00 AM EDT
+
+                      Track your delivery:
+                      https://example.com/t/00000000-0000-4000-8000-000000000001.abcdefghijklmnopqrstuv
+                      Sample tracking number: 00000000-0000-4000-8000-000000000001
+                    html: '<!doctype html><html>...server-rendered sample email...</html>'
+                error: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /admin/customer-email/logo:
     post:
       tags: [Shopify Embedded Admin]
@@ -4050,6 +4140,62 @@ paths:
           content:
             image/png:
               schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /t/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        description: Signed customer tracking token `<deliveryStopId>.<signature>` from the `{{trackingLink}}` email variable.
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Serve the public customer delivery tracking page
+      description: >-
+        Unauthenticated. Valid until 14 days after the route plan date. Rate
+        limited per IP. Returns no-store, no-referrer, noindex headers.
+      operationId: getCustomerTrackingPage
+      x-clever-audience: public-customer
+      x-side-effect: read
+      x-source-file: src/routes/customer-tracking.routes.ts
+      security: []
+      responses:
+        '200':
+          description: HTML shell that loads the route-ops-web tracking entry.
+          content:
+            text/html:
+              schema: { type: string }
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /t/{token}/status:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read public customer delivery tracking status
+      description: >-
+        Returns stage (PREPARING, ON_THE_WAY, DELIVERED, MISSED, CANCELLED),
+        the configured ETA window, items, recipient name and address, the
+        delivery timeline, and the driver location only while the driver is
+        within the shop's nearby-stops threshold and the last fix is under 10
+        minutes old. The SCHEDULED timeline time records route assignment. It
+        does not record when a scheduled email was sent.
+      operationId: getCustomerTrackingStatus
+      x-clever-audience: public-customer
+      x-side-effect: read
+      x-source-file: src/routes/customer-tracking.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Envelope with `data` tracking status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerTrackingStatusEnvelope'
         '404':
           $ref: '#/components/responses/NotFound'
   /admin/route-plans/{routePlanId}:
@@ -4487,8 +4633,10 @@ paths:
         Does not send email or enqueue automatic notification facts. Response
         is `data.preview` and always includes a generic rendered `example`,
         route/status exclusions, sendable/missing/status-excluded counts, and a
-        `previewToken`. The example remains available when the selected signal
-        does not apply to a completed route.
+        `previewToken`. Every eligible recipient and the example include
+        `rendered.subject`, `rendered.body`, and the exact server-rendered
+        `rendered.html` used by delivery sends. The example remains available
+        when the selected signal does not apply to a completed route.
       operationId: previewAdminRoutePlanCustomerEmail
       x-clever-audience: shopify-embedded-admin
       x-side-effect: read
@@ -4503,13 +4651,58 @@ paths:
               $ref: '#/components/schemas/CustomerEmailRouteCommandRequest'
       responses:
         '200':
-          description: Preview envelope with rendered subject/body per eligible stop plus skipped rows and counts.
+          description: Preview envelope with rendered subject, text body, and HTML per eligible stop plus skipped rows and counts.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenericDataEnvelope'
+              example:
+                data:
+                  preview:
+                    example:
+                      rendered:
+                        subject: Your delivery is scheduled
+                        body: Server-rendered sample text
+                        html: '<!doctype html><html><body>Server-rendered sample email</body></html>'
+                    recipients:
+                      - deliveryStopId: 64c062a0-89d7-4673-9595-4319e29e53ba
+                        rendered:
+                          subject: Your delivery is scheduled
+                          body: Server-rendered customer text
+                          html: '<!doctype html><html><body>Server-rendered customer email</body></html>'
+                error: null
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-plans/{routePlanId}/stops/{deliveryStopId}/customer-email/history:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+      - $ref: '#/components/parameters/DeliveryStopId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read every customer email sent for one route stop
+      description: >-
+        Returns `data.events` (newest first) and `data.timezone`. Each event has
+        `signal`, `source` (`MANUAL` or `AUTOMATIC`), `status` (`SENT`,
+        `FAILED`, `PENDING`, `SKIPPED`), `at`, `recipientEmail`,
+        `providerStatus`, and `errorMessage`. Returns 404 when the route is not
+        this shop's, the stop is not on the route, or an ID is not a uuid.
+      operationId: getAdminRouteStopCustomerEmailHistory
+      x-clever-audience: shopify-embedded-admin
+      x-side-effect: read
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Stop email history envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -4521,8 +4714,10 @@ paths:
       tags: [Shopify Embedded Admin]
       summary: Read the Dispatch customer email selection for a route
       description: >-
-        Returns `data.selection` (`signals`, `deliveryStopIds`, `updatedAt`,
-        `updatedBy`) or `null` when the office has not selected customers yet.
+        Returns `data.selection` (`mode`, `signals`, `deliveryStopIds`,
+        `updatedAt`, `updatedBy`) or `null` when the office has not selected
+        customers yet. Legacy stored selections without `mode` read as
+        `EXPLICIT`.
       operationId: getAdminRoutePlanCustomerEmailSelection
       x-clever-audience: shopify-embedded-admin
       x-side-effect: read
@@ -4544,11 +4739,14 @@ paths:
       tags: [Shopify Embedded Admin]
       summary: Save which customers get which customer emails for a route
       description: >-
-        Body `{ signals, deliveryStopIds }`. Saved at Dispatch. Automatic
-        customer email facts are queued and sent only for selected stops and
-        signals while automatic email is on; facts queued without a selection
-        are never claimed. Does not send email and does not change the route
-        version (`updatedAt`).
+        Body `{ mode, signals, deliveryStopIds }`. Omitted `mode` defaults to
+        `EXPLICIT` for backward compatibility. `EXPLICIT` sends only for listed
+        stops. `ALL_ELIGIBLE` sends for every eligible stop for the selected
+        signals, including eligible stops added after Dispatch; its stored
+        `deliveryStopIds` do not restrict matching. Saved at Dispatch. Automatic
+        customer email facts are queued and sent only while automatic email is
+        on; facts queued without a selection are never claimed. Does not send
+        email and does not change the route version (`updatedAt`).
       operationId: saveAdminRoutePlanCustomerEmailSelection
       x-clever-audience: shopify-embedded-admin
       x-side-effect: write-clever-db
@@ -4563,6 +4761,10 @@ paths:
               type: object
               required: [signals, deliveryStopIds]
               properties:
+                mode:
+                  type: string
+                  enum: [EXPLICIT, ALL_ELIGIBLE]
+                  default: EXPLICIT
                 signals:
                   type: array
                   items:
@@ -6713,6 +6915,192 @@ components:
           type: 'null'
         error:
           $ref: '#/components/schemas/Error'
+    CustomerEmailSignal:
+      type: string
+      enum: [DELIVERY_SCHEDULED, OUT_FOR_DELIVERY, DELIVERED, MISSED_DELIVERY, DRIVER_NEARBY]
+    CustomerEmailEtaWindow:
+      type: object
+      additionalProperties: false
+      required: [direction, minutes]
+      properties:
+        direction:
+          type: string
+          enum: [AROUND, BEFORE, AFTER]
+          description: AROUND widens both sides, BEFORE widens before ETA, and AFTER widens after ETA.
+        minutes:
+          type: integer
+          minimum: 5
+          maximum: 240
+    CustomerEmailDraftTemplate:
+      type: object
+      additionalProperties: false
+      required: [subject, body]
+      properties:
+        subject: { type: string, maxLength: 200 }
+        body: { type: string, maxLength: 10000 }
+    CustomerEmailDraftBranding:
+      type: object
+      description: Partial branding override merged with the current or default server branding.
+      properties:
+        accentColor: { type: string, pattern: '^#[0-9A-Fa-f]{6}$' }
+        address: { type: string, maxLength: 500 }
+        backgroundColor: { type: string, pattern: '^#[0-9A-Fa-f]{6}$' }
+        businessName: { type: string, maxLength: 120 }
+        contactEmail: { type: [string, 'null'], format: email }
+        footerText: { type: string, maxLength: 500 }
+        logoAltText: { type: string, maxLength: 120 }
+        logoLinkUrl: { type: [string, 'null'], format: uri }
+        logoMode: { type: string, enum: [hidden, image] }
+        logoUrl: { type: [string, 'null'], format: uri }
+        logoWidth: { type: integer, minimum: 48, maximum: 320 }
+        note: { type: string, maxLength: 500 }
+        phone: { type: string, maxLength: 80 }
+        previewText: { type: string, maxLength: 200 }
+        showPoweredByClever: { type: boolean }
+        surfaceColor: { type: string, pattern: '^#[0-9A-Fa-f]{6}$' }
+        textColor: { type: string, pattern: '^#[0-9A-Fa-f]{6}$' }
+        websiteUrl: { type: [string, 'null'], format: uri }
+      additionalProperties: true
+    CustomerEmailSamplePreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [signal, template]
+      properties:
+        signal: { $ref: '#/components/schemas/CustomerEmailSignal' }
+        template: { $ref: '#/components/schemas/CustomerEmailDraftTemplate' }
+        branding: { $ref: '#/components/schemas/CustomerEmailDraftBranding' }
+        etaWindow: { $ref: '#/components/schemas/CustomerEmailEtaWindow' }
+        senderName: { type: string, minLength: 1, maxLength: 120 }
+    CustomerEmailRenderedContent:
+      type: object
+      additionalProperties: false
+      required: [subject, body, html]
+      properties:
+        subject: { type: string }
+        body:
+          type: string
+          description: Rendered plain-text body used by provider text content.
+        html:
+          type: string
+          description: Exact server-rendered HTML used by provider HTML content.
+    CustomerEmailSamplePreviewEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [preview]
+          properties:
+            preview: { $ref: '#/components/schemas/CustomerEmailRenderedContent' }
+        error: { type: 'null' }
+    CustomerEmailTestRequest:
+      type: object
+      required: [confirmed, recipientEmail]
+      properties:
+        confirmed: { type: boolean, const: true }
+        recipientEmail: { type: string, format: email }
+        signal: { $ref: '#/components/schemas/CustomerEmailSignal' }
+        template: { $ref: '#/components/schemas/CustomerEmailDraftTemplate' }
+        branding: { $ref: '#/components/schemas/CustomerEmailDraftBranding' }
+        etaWindow: { $ref: '#/components/schemas/CustomerEmailEtaWindow' }
+        senderName: { type: string, minLength: 1, maxLength: 120 }
+        subject:
+          type: string
+          maxLength: 200
+          deprecated: true
+          description: Legacy draft subject used only when `template` is absent.
+        body:
+          type: string
+          maxLength: 10000
+          deprecated: true
+          description: Legacy draft body used only when `template` is absent.
+      additionalProperties: true
+    CustomerTrackingTimelineEntry:
+      type: object
+      additionalProperties: false
+      required: [kind, occurredAt, state]
+      properties:
+        kind:
+          type: string
+          enum: [PREPARING, SCHEDULED, OUT_FOR_DELIVERY, DRIVER_NEARBY, DELIVERED, MISSED, CANCELLED]
+        occurredAt:
+          type: [string, 'null']
+          format: date-time
+          description: >-
+            Recorded event time when evidence exists. For SCHEDULED, this is
+            the route assignment time, not the scheduled-email send time.
+        state:
+          type: string
+          enum: [COMPLETED, CURRENT, UPCOMING, NOT_RECORDED]
+    CustomerTrackingStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - address
+        - destination
+        - driver
+        - etaWindow
+        - items
+        - orderName
+        - recipientName
+        - stage
+        - stopsAway
+        - storeName
+        - timezone
+        - timeline
+      properties:
+        address: { type: string }
+        destination:
+          type: [object, 'null']
+          required: [latitude, longitude]
+          properties:
+            latitude: { type: number, minimum: -90, maximum: 90 }
+            longitude: { type: number, minimum: -180, maximum: 180 }
+          additionalProperties: false
+        driver:
+          type: [object, 'null']
+          required: [latitude, longitude, updatedAt]
+          properties:
+            latitude: { type: number, minimum: -90, maximum: 90 }
+            longitude: { type: number, minimum: -180, maximum: 180 }
+            updatedAt: { type: string, format: date-time }
+          additionalProperties: false
+        etaWindow:
+          type: [object, 'null']
+          required: [start, end]
+          properties:
+            start: { type: string, format: date-time }
+            end: { type: string, format: date-time }
+          additionalProperties: false
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, quantity]
+            properties:
+              name: { type: string }
+              quantity: { type: integer }
+        orderName: { type: string }
+        recipientName: { type: string }
+        stage:
+          type: string
+          enum: [PREPARING, ON_THE_WAY, DELIVERED, MISSED, CANCELLED]
+        stopsAway: { type: [integer, 'null'], minimum: 0 }
+        storeName: { type: string }
+        timezone: { type: [string, 'null'] }
+        timeline:
+          type: array
+          items: { $ref: '#/components/schemas/CustomerTrackingTimelineEntry' }
+    CustomerTrackingStatusEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, error]
+      properties:
+        data: { $ref: '#/components/schemas/CustomerTrackingStatus' }
+        error: { type: 'null' }
     CustomerEmailRouteCommandRequest:
       type: object
       required: [signal]

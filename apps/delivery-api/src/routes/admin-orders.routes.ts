@@ -62,6 +62,8 @@ type ParsedOrderSyncPayload = {
 };
 
 const ORDER_SYNC_TIMESTAMP_FIELDS = new Set(['cancelledAt', 'createdAt', 'processedAt', 'updatedAt']);
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
+const MAX_ORDER_ID_FILTER = 500;
 
 export type AdminOrdersDependencies = {
   ordersMapProjectionEnabled?: boolean;
@@ -1281,7 +1283,7 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
   const knownKeys = new Set([
     'deliveryArea', 'deliveryBatchEndDate', 'deliveryBatchStartDate', 'deliveryDate', 'deliveryDateFrom',
     'deliverySession', 'deliveryState', 'deliveryWeekday', 'geocodeStatus', 'operateDeliveryStatus',
-    'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'orderedDateTimeZone', 'orderNumberPrefix', 'planned', 'planningGroupKey', 'q',
+    'orderHealth', 'orderId', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'orderedDateTimeZone', 'orderNumberPrefix', 'planned', 'planningGroupKey', 'q',
     'readiness', 'routeOpsScope', 'routeOpsTab', 'routeOpsToday', 'routeScopeKey', 'scope', 'search',
     'serviceCategory', 'serviceType', 'tab'
   ]);
@@ -1378,6 +1380,12 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
   if (routeScopeKey !== null) filters.routeScopeKey = routeScopeKey;
   const planningGroupKey = readSingleQuery(query.planningGroupKey);
   if (planningGroupKey !== null) filters.planningGroupKey = planningGroupKey;
+  if (query.orderId !== undefined) {
+    // Route screens ask for just their own orders instead of the whole shop.
+    const orderIds = [...new Set(Array.isArray(query.orderId) ? query.orderId : [query.orderId])];
+    if (orderIds.length > MAX_ORDER_ID_FILTER || orderIds.some((id) => !UUID_PATTERN.test(id))) throw new Error('invalid orderId');
+    filters.orderIds = orderIds;
+  }
   const search = readSingleQuery(query.search);
   const legacySearch = readSingleQuery(query.q);
   if (search !== null || legacySearch !== null) filters.search = (search ?? legacySearch) as string;

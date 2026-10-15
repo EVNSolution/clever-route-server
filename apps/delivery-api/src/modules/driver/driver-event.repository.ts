@@ -36,6 +36,9 @@ import {
 
 export { DriverRouteCompletionIncompleteError } from './driver-route-completion-invariant.js';
 
+// Version 47 sends ROUTE_COMPLETED only after depot return or an explicit driver finish.
+const KFOOD_EXPLICIT_ROUTE_COMPLETION_MIN_VERSION_CODE = 47;
+
 export type RecordDriverEventInput = {
   appVersion?: string | null;
   attemptId?: string | null;
@@ -379,10 +382,10 @@ export class PrismaDriverEventRepository {
         await lockRoutePlanForSerializedEvent(transaction, input);
         const lockedReplay = await replayDriverCompletion(transaction, input);
         if (lockedReplay !== null) return lockedReplay;
-        // A simultaneous retry may have waited for the last-stop transaction.
-        // Recheck under its lock before the newly completed-work guard runs.
+        // A simultaneous retry may have waited for the last-stop or release transaction.
+        // Recheck under its lock before the completed-work guard runs.
         if (input.shopDomain === KFOOD_DELIVERY_SHOP_DOMAIN
-          && ['STOP_DELIVERED', 'STOP_FAILED', 'ROUTE_COMPLETED'].includes(input.eventType)) {
+          && ['STOP_DELIVERED', 'STOP_FAILED', 'ROUTE_COMPLETED', 'ROUTE_PAUSED'].includes(input.eventType)) {
           const committed = await findMatchingDriverEvent(transaction, input);
           if (committed !== null && completionInput !== null) throw new DriverCashCompletionError('CASH_COMPLETION_CONFLICT', 'Existing event has no completion receipt', 409);
           if (committed !== null) return {
@@ -1502,6 +1505,7 @@ async function validateDriverEventStateContext(
     throw new DriverEventScopeError('Return navigation access has expired');
   }
   if (hasDeliveryWorkCompleted(routePlan)
+    && !(input.eventType === 'ROUTE_PAUSED' && routePlan.status === 'IN_PROGRESS')
     && input.eventType !== 'LOCATION_UPDATED' && input.eventType !== 'ROUTE_COMPLETED' && input.eventType !== 'NOTE_ADDED') {
     throw new DriverEventRouteNotInProgressError('Delivery work is complete; only return navigation remains available');
   }
@@ -1546,7 +1550,11 @@ async function validateDriverEventStateContext(
       shopId
     });
   }
-  return input.eventType === 'ROUTE_COMPLETED' && hasDeliveryWorkCompleted(routePlan);
+  const supportsExplicitRouteCompletion = input.driverContractVersion === 2
+    && Number.isInteger(input.versionCode)
+    && (input.versionCode ?? 0) >= KFOOD_EXPLICIT_ROUTE_COMPLETION_MIN_VERSION_CODE;
+  return input.eventType === 'ROUTE_COMPLETED' && hasDeliveryWorkCompleted(routePlan)
+    && !supportsExplicitRouteCompletion;
 }
 
 async function applyDriverEventStateTransition(

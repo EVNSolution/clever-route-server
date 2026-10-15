@@ -1423,6 +1423,83 @@ describe('PrismaDriverEventRepository', () => {
     });
   });
 
+  test('allows release after delivery work completes without changing the completion marker or stops', async () => {
+    const completedRoute = {
+      id: 'route-plan-id', status: 'IN_PROGRESS', assignmentGeneration: 1n,
+      deliveryWorkCompletedAt: serverReceivedAt, deliveryWorkCompletedGeneration: 1n,
+      deliveryWorkCompletedVersionId: 'route-version-id',
+      driverNavigationUntil: new Date(serverReceivedAt.getTime() + 7_200_000)
+    };
+    const { prisma } = createPrismaHarness({ routePlan: completedRoute });
+    const repository = new PrismaDriverEventRepository(prisma as never, { now: () => serverReceivedAt });
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null, eventType: 'ROUTE_PAUSED', shopDomain: '7hrud1-xq.myshopify.com'
+    }))).resolves.toMatchObject({ duplicate: false });
+
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledExactlyOnceWith({
+      data: { status: 'READY' },
+      where: { driverId: 'driver-id', id: 'route-plan-id', shopId: 'shop-id', status: 'IN_PROGRESS' }
+    });
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+  });
+
+  test.each(['READY', 'COMPLETED'])('does not accept a new completed-work release from %s', async (status) => {
+    const completedRoute = {
+      id: 'route-plan-id', status, assignmentGeneration: 1n,
+      deliveryWorkCompletedAt: serverReceivedAt, deliveryWorkCompletedGeneration: 1n,
+      deliveryWorkCompletedVersionId: 'route-version-id',
+      driverNavigationUntil: new Date(serverReceivedAt.getTime() + 7_200_000)
+    };
+    const { prisma } = createPrismaHarness({ routePlan: completedRoute });
+    const repository = new PrismaDriverEventRepository(prisma as never, { now: () => serverReceivedAt });
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null, eventType: 'ROUTE_PAUSED', shopDomain: '7hrud1-xq.myshopify.com'
+    }))).rejects.toBeInstanceOf(status === 'READY' ? DriverEventScopeError : DriverEventRouteNotInProgressError);
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { driverContractVersion: 2, versionCode: 47, eventType: 'ROUTE_COMPLETED' },
+    { driverContractVersion: 2, versionCode: 48, eventType: 'ROUTE_COMPLETED' },
+    { driverContractVersion: 2, versionCode: 46, eventType: 'NOTE_ADDED' },
+    { driverContractVersion: 2, versionCode: undefined, eventType: 'NOTE_ADDED' },
+    { driverContractVersion: 2, versionCode: 47.5, eventType: 'NOTE_ADDED' },
+    { driverContractVersion: 1, versionCode: 47, eventType: 'NOTE_ADDED' },
+    { driverContractVersion: undefined, versionCode: 47, eventType: 'NOTE_ADDED' }
+  ])('records $eventType for completed work with contract $driverContractVersion and version $versionCode', async (metadata) => {
+    const completedRoute = {
+      id: 'route-plan-id', status: 'IN_PROGRESS', assignmentGeneration: 1n,
+      deliveryWorkCompletedAt: serverReceivedAt, deliveryWorkCompletedGeneration: 1n,
+      deliveryWorkCompletedVersionId: 'route-version-id',
+      driverNavigationUntil: new Date(serverReceivedAt.getTime() + 7_200_000)
+    };
+    const { prisma } = createPrismaHarness({
+      routePlan: completedRoute, driverEventRouteVersionColumnExists: true, routeEtaInputVersionId: 'route-version-id'
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never, { now: () => serverReceivedAt });
+
+    await repository.recordDriverEvent(baseInput({
+      deliveryStopId: null, eventType: 'ROUTE_COMPLETED', shopDomain: '7hrud1-xq.myshopify.com',
+      ...(metadata.driverContractVersion === undefined ? {} : { driverContractVersion: metadata.driverContractVersion }),
+      ...(metadata.versionCode === undefined ? {} : { versionCode: metadata.versionCode }),
+      assignmentGeneration: '1', expectedRouteVersionId: 'route-version-id'
+    }));
+    expect(prisma.driverEvent.create.mock.calls[0]?.[0]).toMatchObject({
+      data: { eventType: metadata.eventType }
+    });
+    if (metadata.eventType === 'ROUTE_COMPLETED') {
+      expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+        data: { status: 'COMPLETED' },
+        where: { driverId: 'driver-id', id: 'route-plan-id', shopId: 'shop-id', status: 'IN_PROGRESS' }
+      });
+    } else {
+      expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+    }
+  });
+
   test('treats explicit driver completion as authoritative even when a stop is not terminal', async () => {
     const { getCreatedDriverEventPayload, prisma } = createPrismaHarness({
       routeSequenceStops: [

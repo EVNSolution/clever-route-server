@@ -681,6 +681,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
   const routes: RouteMethodPair[] = [
     { method: 'delete', path: '/admin/customer-email/activation' },
     { method: 'post', path: '/admin/customer-email/activation' },
+    { method: 'post', path: '/admin/customer-email/sample-preview' },
     { method: 'get', path: '/admin/customer-email/settings' },
     { method: 'patch', path: '/admin/customer-email/settings' },
     { method: 'patch', path: '/admin/customer-email/settings/global' },
@@ -752,6 +753,7 @@ function expectedAdminAppFacingRoutes(): RouteMethodPair[] {
     { method: 'post', path: '/admin/route-plans/:routePlanId/refresh-order-data' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/start-time' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/stops' },
+    { method: 'get', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/customer-email/history' },
     { method: 'patch', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/override' },
     { method: 'post', path: '/admin/route-plans/:routePlanId/stops/:deliveryStopId/transition' },
     { method: 'get', path: '/admin/route-plans/:routePlanId/tracking' },

@@ -1,10 +1,86 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { CustomerEmailService } from '../src/modules/customer-email/customer-email.service.js';
+import {
+  buildStopEmailHistoryEvents,
+  CustomerEmailService,
+  CustomerEmailValidationError,
+  renderCustomerEmail,
+} from '../src/modules/customer-email/customer-email.service.js';
 import { defaultCustomerEmailSettings } from '../src/modules/customer-email/customer-email-settings.js';
+import { loadCustomerTrackingLinks } from '../src/modules/customer-tracking/customer-tracking-link.js';
+
+const testTrackingLinks = loadCustomerTrackingLinks({ DELIVERY_API_PUBLIC_URL: 'https://track.example.com', JWT_SECRET: 'test-secret' });
 import { BrevoCustomerEmailTransport, CustomerEmailTransportSendError } from '../src/modules/customer-email/customer-email-transport.js';
 
 describe('CustomerEmailService', () => {
+  test.each([
+    'DELIVERY_SCHEDULED',
+    'OUT_FOR_DELIVERY',
+    'DELIVERED',
+    'MISSED_DELIVERY',
+    'DRIVER_NEARBY',
+  ] as const)('renders required items and tracking content for legacy %s templates', (signal) => {
+    const deliveryStopId = '64c062a0-89d7-4673-9595-4319e29e53ba';
+    const rendered = renderCustomerEmail({
+      branding: defaultCustomerEmailSettings().branding,
+      context: {
+        customerName: 'Customer',
+        etaWindow: 'Wed, Oct 14, 9:30 AM – 10:30 AM EDT',
+        inventoryList: '2 x Fresh kimchi',
+        trackingLink: `https://track.example.com/t/${deliveryStopId}.abcdefghijklmnopqrstuv`,
+      },
+      deliveryStopId,
+      senderName: 'CLEVER',
+      signal,
+      template: { body: 'Hello {{customerName}}', subject: 'Delivery update' },
+    });
+
+    expect(rendered.body).toContain('Items in this delivery:\n2 x Fresh kimchi');
+    expect(rendered.body).toContain(`Tracking number: ${deliveryStopId}`);
+    expect(rendered.html).toContain('Track your delivery');
+    expect(rendered.html).toContain('#005bd3');
+    expect(rendered.html).toContain('#8dbbff');
+    expect(rendered.html).toContain('color:#ffffff');
+    expect(rendered.html).toContain('overflow-wrap:anywhere;word-break:break-word');
+    if (signal === 'DELIVERY_SCHEDULED') {
+      expect(rendered.body).toContain('Estimated arrival window: Wed, Oct 14');
+    }
+  });
+
+  test('does not duplicate required items when the saved template already contains inventoryList', () => {
+    const rendered = renderCustomerEmail({
+      branding: defaultCustomerEmailSettings().branding,
+      context: { inventoryList: '1 x Pear', trackingLink: '' },
+      deliveryStopId: '64c062a0-89d7-4673-9595-4319e29e53ba',
+      senderName: 'CLEVER',
+      signal: 'DELIVERED',
+      template: { body: 'Items:\n{{inventoryList}}', subject: 'Delivered' },
+    });
+
+    expect(rendered.body.match(/1 x Pear/gu)).toHaveLength(1);
+    expect(rendered.body).not.toContain('Tracking number:');
+  });
+
+  test('renders a provider-free sample preview with sample metadata and requested ETA settings', () => {
+    const { service, transport } = createHarness();
+    const preview = service.samplePreview({
+      etaWindow: { direction: 'BEFORE', minutes: 20 },
+      senderName: 'K-Food',
+      signal: 'DELIVERY_SCHEDULED',
+      template: {
+        body: '{{deliveryDate}} | {{deliveryWeekday}} | {{eta}} | {{etaWindow}}',
+        subject: 'Scheduled delivery',
+      },
+    });
+
+    expect(preview.subject).toBe('Scheduled delivery');
+    expect(preview.body).toContain('Wed, Oct 14 | Wednesday | Wed, Oct 14, 10:00 AM EDT | Wed, Oct 14, 9:40 AM – 10:00 AM EDT');
+    expect(preview.body).toContain('Items in this delivery:\n2 x Sample item\n1 x Another item');
+    expect(preview.body).toContain('Sample tracking number: 00000000-0000-4000-8000-000000000001');
+    expect(preview.html).toContain('Track your delivery');
+    expect(transport.send).not.toHaveBeenCalled();
+  });
+
   test('saves a Dispatch email selection only for stops on the route', async () => {
     const { prisma, service } = createHarness();
     prisma.routePlan.findFirst.mockResolvedValue({ id: 'route-id', routeStops: [{ deliveryStopId: 'stop-1' }], shopId: 'shop-id' });
@@ -15,8 +91,14 @@ describe('CustomerEmailService', () => {
     expect(prisma.$executeRaw).not.toHaveBeenCalled();
 
     await expect(service.setRouteEmailSelection({ ...input, deliveryStopIds: ['stop-1'] }))
-      .resolves.toMatchObject({ deliveryStopIds: ['stop-1'], signals: ['DELIVERED'], updatedBy: 'office' });
+      .resolves.toMatchObject({ deliveryStopIds: ['stop-1'], mode: 'EXPLICIT', signals: ['DELIVERED'], updatedBy: 'office' });
     expect(prisma.$executeRaw).toHaveBeenCalledOnce();
+
+    await expect(service.setRouteEmailSelection({ ...input, deliveryStopIds: ['stop-1'], mode: 'ALL_ELIGIBLE' }))
+      .resolves.toMatchObject({ deliveryStopIds: ['stop-1'], mode: 'ALL_ELIGIBLE', signals: ['DELIVERED'] });
+    const persisted = (prisma.$executeRaw.mock.calls.at(-1) as unknown[] | undefined)
+      ?.find((value) => typeof value === 'string' && value.includes('ALL_ELIGIBLE'));
+    expect(persisted).toBeDefined();
   });
 
   test('activates automatic delivery only through the consent-scoped command', async () => {
@@ -187,6 +269,35 @@ describe('CustomerEmailService', () => {
       },
       where: { id: 'shop-id', updatedAt },
     }));
+  });
+
+  test('saves the ETA window option with global settings and rejects an invalid one', async () => {
+    const { prisma, service } = createHarness();
+    const updatedAt = new Date('2026-08-05T00:00:00.000Z');
+    const current = { ...defaultCustomerEmailSettings(), senderEmail: 'old@example.com' };
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt });
+    prisma.shop.updateMany.mockResolvedValue({ count: 1 });
+    const payload = {
+      branding: current.branding,
+      expectedVersion: 1,
+      replyTo: null,
+      senderEmail: 'old@example.com',
+      senderName: 'Sender',
+    };
+
+    expect(current.etaWindow).toEqual({ direction: 'AROUND', minutes: 30 });
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'AFTER', minutes: 60 } },
+      shopDomain: 'example.myshopify.com',
+    })).resolves.toMatchObject({ etaWindow: { direction: 'AFTER', minutes: 60 }, globalVersion: 2 });
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'SIDEWAYS', minutes: 60 } },
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toBeInstanceOf(CustomerEmailValidationError);
+    await expect(service.saveGlobalSettings({
+      payload: { ...payload, etaWindow: { direction: 'BEFORE', minutes: 1 } },
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toBeInstanceOf(CustomerEmailValidationError);
   });
 
   test('rejects stale global settings saves without updating', async () => {
@@ -499,7 +610,7 @@ describe('CustomerEmailService', () => {
       shopDomain: 'example.myshopify.com',
       signal: 'DELIVERY_SCHEDULED',
     });
-    const renderedBody = 'Window Aug 4, 2026, 5:30 AM EDT - Aug 4, 2026, 6:30 AM EDT';
+    const renderedBody = 'Window Tue, Aug 4, 5:30 AM – 6:30 AM EDT\n\nItems in this delivery:\n1 x Kimchi';
     expect(preview).toMatchObject({ recipients: [{ rendered: { body: renderedBody } }] });
 
     await expect(service.sendAutomatic({
@@ -510,12 +621,70 @@ describe('CustomerEmailService', () => {
       shopDomain: 'example.myshopify.com',
       signal: 'DELIVERY_SCHEDULED',
     })).resolves.toMatchObject({ status: 'SENT' });
-    expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({ body: renderedBody }));
+    expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
+      body: renderedBody,
+      renderedHtml: preview?.recipients[0]?.rendered.html,
+    }));
+  });
+
+  test('renders a signed tracking link for each recipient stop', async () => {
+    const { prisma, service } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      customerEmailSettings: {
+        ...defaults,
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...defaults.templates,
+          OUT_FOR_DELIVERY: { body: 'Track {{trackingLink}}', enabled: true, subject: 'Out', version: 2 },
+        },
+      },
+      stops: [stopRow({ email: 'customer@example.com', id: '11111111-1111-4111-8111-111111111111', sequence: 1, status: 'PENDING' })],
+    }));
+
+    const preview = await service.preview({ routePlanId: 'route-id', shopDomain: 'example.myshopify.com', signal: 'OUT_FOR_DELIVERY' });
+    expect(preview?.recipients[0]?.rendered.body).toMatch(
+      /^Track https:\/\/track\.example\.com\/t\/11111111-1111-4111-8111-111111111111\.[A-Za-z0-9_-]{22}\n\nItems in this delivery:\n1 x Kimchi\n\nTracking number: 11111111-1111-4111-8111-111111111111$/u,
+    );
   });
 
   test.each([
-    ['OUT_FOR_DELIVERY', new Date('2026-08-04T10:00:00.000Z'), 'Aug 4, 2026, 6:00 AM EDT'],
-    ['DRIVER_NEARBY', new Date('2026-01-01T04:15:00.000Z'), 'Dec 31, 2025, 11:15 PM EST'],
+    [{ direction: 'BEFORE', minutes: 45 }, 'Window Tue, Aug 4, 5:15 AM – 6:00 AM EDT'],
+    [{ direction: 'AFTER', minutes: 60 }, 'Window Tue, Aug 4, 6:00 AM – 7:00 AM EDT'],
+    [{ direction: 'AROUND', minutes: 15 }, 'Window Tue, Aug 4, 5:45 AM – 6:15 AM EDT'],
+  ] as const)('renders the ETA window from the %o option', async (etaWindow, etaBody) => {
+    const { prisma, service } = createHarness();
+    const defaults = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      constraints: { routeScope: { timezone: 'America/New_York' } },
+      customerEmailSettings: {
+        ...defaults,
+        etaWindow,
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...defaults.templates,
+          DELIVERY_SCHEDULED: { body: 'Window {{etaWindow}}', enabled: true, subject: 'Scheduled', version: 2 },
+        },
+      },
+      stops: [stopRow({
+        email: 'customer@example.com',
+        estimatedArrivalAt: new Date('2026-08-04T10:00:00.000Z'),
+        id: 'stop-1',
+        sequence: 1,
+        status: 'PENDING',
+      })],
+    }));
+
+    await expect(service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ recipients: [{ rendered: { body: `${etaBody}\n\nItems in this delivery:\n1 x Kimchi` } }] });
+  });
+
+  test.each([
+    ['OUT_FOR_DELIVERY', new Date('2026-08-04T10:00:00.000Z'), 'Tue, Aug 4, 6:00 AM EDT'],
+    ['DRIVER_NEARBY', new Date('2026-01-01T04:15:00.000Z'), 'Wed, Dec 31, 11:15 PM EST'],
   ] as const)('renders %s ETA in the authoritative local timezone for preview and delivery', async (signal, eta, renderedEta) => {
     const { prisma, service, transport } = createHarness();
     const defaults = defaultCustomerEmailSettings();
@@ -546,7 +715,7 @@ describe('CustomerEmailService', () => {
       shopDomain: 'example.myshopify.com',
       signal,
     });
-    const renderedBody = `ETA ${renderedEta} on 2026-08-04`;
+    const renderedBody = `ETA ${renderedEta} on Tue, Aug 4\n\nItems in this delivery:\n1 x Kimchi`;
     expect(preview).toMatchObject({
       recipients: [{ rendered: { body: renderedBody, subject: renderedEta } }],
     });
@@ -614,7 +783,7 @@ describe('CustomerEmailService', () => {
     })).resolves.toMatchObject({
       recipients: [{
         diagnostics: { body: [] },
-        rendered: { body: 'ETA Nov 1, 2026, 1:00 AM EST\nWindow Nov 1, 2026, 1:30 AM EDT - Nov 1, 2026, 1:30 AM EST' },
+        rendered: { body: 'ETA Sun, Nov 1, 1:00 AM EST\nWindow Sun, Nov 1, 1:30 AM EDT – Sun, Nov 1, 1:30 AM EST\n\nItems in this delivery:\n1 x Kimchi' },
       }],
     });
 
@@ -634,7 +803,7 @@ describe('CustomerEmailService', () => {
           { code: 'MISSING_TEMPLATE_VALUE', key: 'eta' },
           { code: 'MISSING_TEMPLATE_VALUE', key: 'etaWindow' },
         ] },
-        rendered: { body: 'ETA \nWindow ' },
+        rendered: { body: 'ETA \nWindow \n\nItems in this delivery:\n1 x Kimchi' },
       }],
     });
   });
@@ -1616,9 +1785,13 @@ describe('CustomerEmailService', () => {
     transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
 
     await expect(service.sendTest({
+      branding: { businessName: 'Draft K-Food' },
       confirmed: true,
+      etaWindow: { direction: 'BEFORE', minutes: 20 },
       recipientEmail: 'customer@example.com',
+      senderName: 'Draft Sender',
       shopDomain: 'example.myshopify.com',
+      template: { body: 'Draft body', subject: 'Draft subject' },
     })).resolves.toMatchObject({
       messageId: 'message-id',
       provider: 'brevo',
@@ -1627,15 +1800,65 @@ describe('CustomerEmailService', () => {
     expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
       branding: expect.objectContaining({
         accentColor: '#0055aa',
+        businessName: 'Draft K-Food',
         note: 'Footer',
         previewText: 'Preview',
       }) as unknown,
+      body: expect.stringContaining('Draft body') as unknown,
+      senderName: 'Draft Sender',
       signal: 'TEST',
+      subject: 'Draft subject',
     }));
   });
 });
 
 describe('BrevoCustomerEmailTransport', () => {
+  test('sends the exact shared-renderer HTML while preserving text content', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
+    const transport = new BrevoCustomerEmailTransport({ apiKey: 'secret', fetchImpl });
+
+    await transport.send({
+      body: 'Rendered text body',
+      commandId: 'command-rendered-html',
+      recipientEmail: 'customer@example.com',
+      renderedHtml: '<!doctype html><html><body>Exact rendered HTML</body></html>',
+      replyTo: null,
+      senderEmail: 'sender@example.com',
+      senderName: 'Sender',
+      signal: 'TEST',
+      subject: 'Subject',
+      tags: ['test'],
+    });
+
+    const [, request] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const payload = JSON.parse(request.body as string) as { htmlContent: string; textContent: string };
+    expect(payload.htmlContent).toBe('<!doctype html><html><body>Exact rendered HTML</body></html>');
+    expect(payload.textContent).toBe('Rendered text body');
+  });
+
+  test('links https URLs in the body and keeps trailing punctuation outside the link', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
+    const transport = new BrevoCustomerEmailTransport({ apiKey: 'secret', fetchImpl, timeoutMs: 1234 });
+
+    await transport.send({
+      branding: defaultCustomerEmailSettings().branding,
+      body: 'Track: https://track.example.com/t/abc.def.\nSee "https://example.com/x" or http://plain.example.com',
+      commandId: 'command-1:stop-1',
+      recipientEmail: 'customer@example.com',
+      replyTo: null,
+      senderEmail: 'sender@example.com',
+      senderName: 'Sender',
+      signal: 'OUT_FOR_DELIVERY',
+      subject: 'Out',
+      tags: [],
+    });
+
+    const [, request] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const { htmlContent } = JSON.parse(request.body as string) as { htmlContent: string };
+    expect(htmlContent).toContain('Track: <a class="email-link" href="https://track.example.com/t/abc.def" style="color:#1f6feb;text-decoration:underline">https://track.example.com/t/abc.def</a>.<br />');
+    expect(htmlContent).toContain('See &quot;<a class="email-link" href="https://example.com/x" style="color:#1f6feb;text-decoration:underline">https://example.com/x</a>&quot; or http://plain.example.com');
+  });
+
   test('sends escaped neutral HTML with subject heading, body, divider, and boxed footer', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
     const transport = new BrevoCustomerEmailTransport({
@@ -1689,12 +1912,17 @@ describe('BrevoCustomerEmailTransport', () => {
     const parsedBody = JSON.parse(request.body as string) as { htmlContent: string; textContent: string };
     expect(parsedBody.htmlContent).toContain('<meta name="color-scheme" content="light dark">');
     expect(parsedBody.htmlContent).toContain('<meta name="supported-color-schemes" content="light dark">');
+    expect(parsedBody.htmlContent).toContain('<meta name="viewport" content="width=device-width, initial-scale=1">');
+    expect(parsedBody.htmlContent).toContain('.email-link { color:#8dbbff !important; }');
+    expect(parsedBody.htmlContent).toContain('.email-track-button { background:#8dbbff !important;border-color:#bedbff !important;color:#102440 !important; }');
     expect(parsedBody.htmlContent).toMatch(/<h1[^>]*>Subject &lt;urgent&gt;<\/h1>[\s\S]*Hello &lt;customer&gt;<br \/><br \/>Items:<br \/>Fresh kimchi × 2<br \/>Korean pear × 1[\s\S]*<hr/u);
     expect(parsedBody.htmlContent).toContain('overflow-wrap:anywhere');
     expect(parsedBody.htmlContent).not.toContain('white-space:pre-wrap');
     expect(parsedBody.htmlContent).toContain('Footer &lt;script&gt;alert(1)&lt;/script&gt;');
     expect(parsedBody.htmlContent).toContain('+1 555 0100');
     expect(parsedBody.htmlContent).toContain('mailto:hello@example.com');
+    expect(parsedBody.htmlContent).toContain('class="email-text" style="color:#111111;font-size:14px;font-weight:700');
+    expect(parsedBody.htmlContent).toContain('class="email-link" href="mailto:hello@example.com"');
     expect(parsedBody.htmlContent).toContain('alt="Sender &amp; Co Team"');
     expect(parsedBody.htmlContent).toContain('<td valign="top" width="160" style="padding:0 16px 0 0;width:160px">');
     expect(parsedBody.htmlContent).toMatch(/<td[^>]*border:1px solid #d0d7de[^>]*>[\s\S]*<table role="presentation"[\s\S]*alt="Sender &amp; Co Team"[\s\S]*Footer &lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
@@ -1777,7 +2005,7 @@ function createHarness(attempts?: {
   };
   return {
     prisma,
-    service: new CustomerEmailService(prisma as never, transport, attempts as never),
+    service: new CustomerEmailService(prisma as never, transport, attempts as never, testTrackingLinks),
     transport,
   };
 }
@@ -1834,7 +2062,7 @@ function stopRow(input: {
         email: input.email === undefined ? `${input.id}@example.com` : input.email,
         id: `order-${input.sequence}`,
         name: `Order #${input.sequence}`,
-        orderItems: input.items ?? [],
+        orderItems: input.items ?? [{ lineIndex: 0, name: 'Kimchi', options: [], quantity: 1 }],
       },
       orderId: `order-${input.sequence}`,
       postalCode: 'M1M 1M1',
@@ -1854,3 +2082,68 @@ function dispatchIdentity() {
     signal: 'DELIVERY_SCHEDULED',
   };
 }
+
+describe('buildStopEmailHistoryEvents', () => {
+  test('merges manual and automatic emails newest first with one status vocabulary', () => {
+    const at = (value: string) => new Date(value);
+    const events = buildStopEmailHistoryEvents(
+      [
+        { attempts: [], createdAt: at('2026-10-14T12:00:00Z'), dispatch: { signal: 'DELIVERY_SCHEDULED' }, errorMessage: null, providerStatus: 'delivered', recipientEmail: 'a@example.com', sentAt: at('2026-10-14T12:00:05Z'), status: 'SENT' },
+        { attempts: [{ completedAt: at('2026-10-14T09:00:03Z') }], createdAt: at('2026-10-14T09:00:00Z'), dispatch: { signal: 'DELIVERY_SCHEDULED' }, errorMessage: null, providerStatus: null, recipientEmail: 'a@example.com', sentAt: null, status: 'FAILED' },
+        { attempts: [], createdAt: at('2026-10-13T09:00:00Z'), dispatch: { signal: 'DELIVERY_SCHEDULED' }, errorMessage: 'Provider refused', providerStatus: null, recipientEmail: 'a@example.com', sentAt: null, status: 'FAILED' },
+        { attempts: [], createdAt: at('2026-10-13T08:00:00Z'), dispatch: { signal: 'DELIVERY_SCHEDULED' }, errorMessage: null, providerStatus: null, recipientEmail: 'a@example.com', sentAt: null, status: 'UNKNOWN' },
+      ],
+      [
+        { errorMessage: null, metadata: { signal: 'OUT_FOR_DELIVERY' }, occurredAt: at('2026-10-15T13:00:00Z'), providerStatus: null, recipientEmailSnapshot: 'a@example.com', sentAt: at('2026-10-15T13:00:04Z'), status: 'SENT' },
+        { errorMessage: 'Template is off', metadata: { signal: 'DELIVERED' }, occurredAt: at('2026-10-15T15:00:00Z'), providerStatus: null, recipientEmailSnapshot: null, sentAt: null, status: 'SKIPPED' },
+        { errorMessage: null, metadata: { signal: 'DRIVER_NEARBY' }, occurredAt: at('2026-10-15T14:00:00Z'), providerStatus: null, recipientEmailSnapshot: 'a@example.com', sentAt: null, status: 'QUEUED' },
+        { errorMessage: 'Bounced', metadata: null, occurredAt: at('2026-10-15T14:30:00Z'), providerStatus: null, recipientEmailSnapshot: 'a@example.com', sentAt: null, status: 'DEAD' },
+      ],
+    );
+
+    expect(events.map(({ at: time, signal, source, status }) => [time, signal, source, status])).toEqual([
+      ['2026-10-15T15:00:00.000Z', 'DELIVERED', 'AUTOMATIC', 'SKIPPED'],
+      ['2026-10-15T14:30:00.000Z', null, 'AUTOMATIC', 'FAILED'],
+      ['2026-10-15T14:00:00.000Z', 'DRIVER_NEARBY', 'AUTOMATIC', 'PENDING'],
+      ['2026-10-15T13:00:04.000Z', 'OUT_FOR_DELIVERY', 'AUTOMATIC', 'SENT'],
+      ['2026-10-14T12:00:05.000Z', 'DELIVERY_SCHEDULED', 'MANUAL', 'SENT'],
+      ['2026-10-14T09:00:03.000Z', 'DELIVERY_SCHEDULED', 'MANUAL', 'SENT'],
+      ['2026-10-13T09:00:00.000Z', 'DELIVERY_SCHEDULED', 'MANUAL', 'FAILED'],
+      ['2026-10-13T08:00:00.000Z', 'DELIVERY_SCHEDULED', 'MANUAL', 'PENDING'],
+    ]);
+    expect(events[4]).toMatchObject({ providerStatus: 'delivered', recipientEmail: 'a@example.com' });
+  });
+});
+
+describe('CustomerEmailService.getStopEmailHistory', () => {
+  test('reads only a stop on a route of this shop and returns the route timezone', async () => {
+    const { prisma: harnessPrisma, service } = createHarness();
+    // The shared harness has no automatic fact table on purpose; manual sends must never touch it.
+    const prisma = Object.assign(harnessPrisma, { customerRouteNotificationFact: { findMany: vi.fn().mockResolvedValue([]) } });
+    const input = { deliveryStopId: 'stop-1', routePlanId: 'route-1', shopDomain: 'example.myshopify.com' };
+    prisma.routePlan.findFirst.mockResolvedValueOnce(null);
+    await expect(service.getStopEmailHistory(input)).resolves.toBeNull();
+    prisma.routePlan.findFirst.mockResolvedValueOnce({ constraints: {}, routeStops: [], shop: { commerceConnections: [] }, shopId: 'shop-1' });
+    await expect(service.getStopEmailHistory(input)).resolves.toBeNull();
+    expect(prisma.customerEmailManualDispatchRecipient.findMany).not.toHaveBeenCalled();
+
+    prisma.routePlan.findFirst.mockResolvedValueOnce({
+      constraints: { timezone: 'America/Toronto' },
+      routeStops: [{ deliveryStopId: 'stop-1' }],
+      shop: { commerceConnections: [] },
+      shopId: 'shop-1',
+    });
+    prisma.customerRouteNotificationFact.findMany.mockResolvedValueOnce([
+      { errorMessage: null, metadata: { signal: 'OUT_FOR_DELIVERY' }, occurredAt: new Date('2026-10-15T13:00:00Z'), providerStatus: null, recipientEmailSnapshot: 'a@example.com', sentAt: new Date('2026-10-15T13:00:04Z'), status: 'SENT' },
+    ]);
+    await expect(service.getStopEmailHistory(input)).resolves.toEqual({
+      events: [expect.objectContaining({ signal: 'OUT_FOR_DELIVERY', source: 'AUTOMATIC', status: 'SENT' })],
+      timezone: 'America/Toronto',
+    });
+    const [routePlanQuery] = (prisma.routePlan.findFirst.mock.lastCall ?? []) as unknown[];
+    expect(routePlanQuery).toMatchObject({ where: { id: 'route-1', shop: { is: { shopDomain: 'example.myshopify.com' } } } });
+    expect(prisma.customerEmailManualDispatchRecipient.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { deliveryStopId: 'stop-1', shopId: 'shop-1' },
+    }));
+  });
+});
