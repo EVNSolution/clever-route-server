@@ -61,6 +61,8 @@ export type DriverDiagnosticIdentifiers = {
 };
 
 export type DriverDiagnosticBlocker = DriverDiagnosticIdentifiers & {
+  // Short cause label from the app such as COMPLETION_SYNC:TypeError. Never an error message.
+  detail?: string;
   httpStatus?: number;
   lastObservedAt: string;
   reason: DriverDiagnosticReasonCode;
@@ -208,6 +210,7 @@ function sanitizeBlocker(value: unknown): DriverDiagnosticBlocker | null {
   const identifiers = sanitizeIdentifiers(value);
   const hasHttpStatus = Object.hasOwn(value, 'httpStatus');
   const httpStatus = hasHttpStatus ? safeNonNegativeInteger(value.httpStatus) : undefined;
+  const detail = typeof value.detail === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/u.test(value.detail) ? value.detail : undefined;
   if (
     lastObservedAt === undefined
     || since === undefined
@@ -220,6 +223,7 @@ function sanitizeBlocker(value: unknown): DriverDiagnosticBlocker | null {
   ) return null;
   return {
     ...(identifiers ?? {}),
+    ...(detail === undefined ? {} : { detail }),
     ...(httpStatus === undefined ? {} : { httpStatus }),
     lastObservedAt,
     reason: value.reason as DriverDiagnosticReasonCode,

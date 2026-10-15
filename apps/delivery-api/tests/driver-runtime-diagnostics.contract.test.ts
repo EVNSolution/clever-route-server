@@ -197,6 +197,15 @@ describe('driver diagnostic contract parser', () => {
     }))).toBeNull();
   });
 
+  test('keeps a short blocker cause label and drops free text', () => {
+    const detailOf = (detail: string) => parseDriverDiagnosticSnapshot(snapshot({
+      blockers: [{ ...blocker({ reason: 'LOCATION_PROCESSING_FAILED', stage: 'PROCESSING' }), detail }]
+    }))?.blockers?.[0]?.detail;
+    expect(detailOf('COMPLETION_SYNC:TypeError')).toBe('COMPLETION_SYNC:TypeError');
+    expect(detailOf('Failed for 100 Queen St W')).toBeUndefined();
+    expect(detailOf('x'.repeat(65))).toBeUndefined();
+  });
+
   test.each(['read', 'write', 'remove'] as const)('round-trips the allowlisted completion assistance %s identifier', (operation) => {
     const clientEventId = `completion-assistance-${operation}:${REQUEST_ID}`;
     const payload = envelope();
