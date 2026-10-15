@@ -94,12 +94,11 @@ export async function persistAutomaticCustomerEmailFacts(
     }
   }
 
+  // Route start already sends Out for delivery to every stop, so the first stops get no Nearby at that moment.
   const routeStarted = input.eventType === 'ROUTE_STARTED' || routePlan.driverEvents.length > 0;
-  if (routeStarted && nearbyProgressEventTypes.has(input.eventType)) {
+  if (routeStarted && nearbyProgressEventTypes.has(input.eventType) && input.eventType !== 'ROUTE_STARTED') {
     const threshold = normalizeRouteOpsUiSettings(shop.routeOpsUiSettings).nearbyStopsThreshold;
-    const progressSequence = input.eventType === 'ROUTE_STARTED'
-      ? 0
-      : routeStops.find((stop) => stop.deliveryStop.id === input.deliveryStopId)?.sequence;
+    const progressSequence = routeStops.find((stop) => stop.deliveryStop.id === input.deliveryStopId)?.sequence;
     const remaining = progressSequence === undefined ? [] : routeStops.filter((stop) =>
       stop.sequence > progressSequence
       && !terminalStopStatuses.has(stop.deliveryStop.status)

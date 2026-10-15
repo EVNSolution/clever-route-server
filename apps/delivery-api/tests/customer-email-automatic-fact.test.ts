@@ -125,7 +125,7 @@ describe('persistAutomaticCustomerEmailFacts', () => {
     });
   });
 
-  test('queues Nearby for all route-start stops when fewer than the threshold remain', async () => {
+  test('queues no Nearby at route start because Out for delivery already covers every stop', async () => {
     const settings = enabledSettings();
     const prisma = harness(settings, 'customer@example.test', selectedConstraints({
       deliveryStopIds: ['stop-1', 'stop-2'],
@@ -138,12 +138,9 @@ describe('persistAutomaticCustomerEmailFacts', () => {
     await expect(persistAutomaticCustomerEmailFacts(prisma as never, event({
       deliveryStopId: null,
       eventType: 'ROUTE_STARTED',
-    }))).resolves.toBe(2);
+    }))).resolves.toBe(0);
 
-    expect(prisma.customerRouteNotificationFact.createMany.mock.calls[0]?.[0].data).toEqual([
-      expect.objectContaining({ deliveryStopId: 'stop-1' }),
-      expect.objectContaining({ deliveryStopId: 'stop-2' }),
-    ]);
+    expect(prisma.customerRouteNotificationFact.createMany).not.toHaveBeenCalled();
   });
 
   test('advances Nearby by pending route order and excludes terminal stops', async () => {
