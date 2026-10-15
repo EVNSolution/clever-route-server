@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import {
+  buildStopEmailHistoryEvents,
   CustomerEmailService,
   CustomerEmailValidationError,
   renderCustomerEmail,
@@ -2081,3 +2082,68 @@ function dispatchIdentity() {
     signal: 'DELIVERY_SCHEDULED',
   };
 }
+
+describe('buildStopEmailHistoryEvents', () => {
+  test('merges manual and automatic emails newest first with one status vocabulary', () => {
+    const at = (value: string) => new Date(value);
+    const events = buildStopEmailHistoryEvents(
+      [
+        { attempts: [], createdAt: at('2026-10-14T12:00:00Z'), dispatch: { signal: 'DELIVERY_SCHEDULED' }, errorMessage: null, providerStatus: 'delivered', recipientEmail: 'a@example.com', sentAt: at('2026-10-14T12:00:05Z'), status: 'SENT' },
+        { attempts: [{ completedAt: at('2026-10-14T09:00:03Z') }], createdAt: at('2026-10-14T09:00:00Z'), dispatch: { signal: 'DELIVERY_SCHEDULED' }, errorMessage: null, providerStatus: null, recipientEmail: 'a@example.com', sentAt: null, status: 'FAILED' },
+        { attempts: [], createdAt: at('2026-10-13T09:00:00Z'), dispatch: { signal: 'DELIVERY_SCHEDULED' }, errorMessage: 'Provider refused', providerStatus: null, recipientEmail: 'a@example.com', sentAt: null, status: 'FAILED' },
+        { attempts: [], createdAt: at('2026-10-13T08:00:00Z'), dispatch: { signal: 'DELIVERY_SCHEDULED' }, errorMessage: null, providerStatus: null, recipientEmail: 'a@example.com', sentAt: null, status: 'UNKNOWN' },
+      ],
+      [
+        { errorMessage: null, metadata: { signal: 'OUT_FOR_DELIVERY' }, occurredAt: at('2026-10-15T13:00:00Z'), providerStatus: null, recipientEmailSnapshot: 'a@example.com', sentAt: at('2026-10-15T13:00:04Z'), status: 'SENT' },
+        { errorMessage: 'Template is off', metadata: { signal: 'DELIVERED' }, occurredAt: at('2026-10-15T15:00:00Z'), providerStatus: null, recipientEmailSnapshot: null, sentAt: null, status: 'SKIPPED' },
+        { errorMessage: null, metadata: { signal: 'DRIVER_NEARBY' }, occurredAt: at('2026-10-15T14:00:00Z'), providerStatus: null, recipientEmailSnapshot: 'a@example.com', sentAt: null, status: 'QUEUED' },
+        { errorMessage: 'Bounced', metadata: null, occurredAt: at('2026-10-15T14:30:00Z'), providerStatus: null, recipientEmailSnapshot: 'a@example.com', sentAt: null, status: 'DEAD' },
+      ],
+    );
+
+    expect(events.map(({ at: time, signal, source, status }) => [time, signal, source, status])).toEqual([
+      ['2026-10-15T15:00:00.000Z', 'DELIVERED', 'AUTOMATIC', 'SKIPPED'],
+      ['2026-10-15T14:30:00.000Z', null, 'AUTOMATIC', 'FAILED'],
+      ['2026-10-15T14:00:00.000Z', 'DRIVER_NEARBY', 'AUTOMATIC', 'PENDING'],
+      ['2026-10-15T13:00:04.000Z', 'OUT_FOR_DELIVERY', 'AUTOMATIC', 'SENT'],
+      ['2026-10-14T12:00:05.000Z', 'DELIVERY_SCHEDULED', 'MANUAL', 'SENT'],
+      ['2026-10-14T09:00:03.000Z', 'DELIVERY_SCHEDULED', 'MANUAL', 'SENT'],
+      ['2026-10-13T09:00:00.000Z', 'DELIVERY_SCHEDULED', 'MANUAL', 'FAILED'],
+      ['2026-10-13T08:00:00.000Z', 'DELIVERY_SCHEDULED', 'MANUAL', 'PENDING'],
+    ]);
+    expect(events[4]).toMatchObject({ providerStatus: 'delivered', recipientEmail: 'a@example.com' });
+  });
+});
+
+describe('CustomerEmailService.getStopEmailHistory', () => {
+  test('reads only a stop on a route of this shop and returns the route timezone', async () => {
+    const { prisma: harnessPrisma, service } = createHarness();
+    // The shared harness has no automatic fact table on purpose; manual sends must never touch it.
+    const prisma = Object.assign(harnessPrisma, { customerRouteNotificationFact: { findMany: vi.fn().mockResolvedValue([]) } });
+    const input = { deliveryStopId: 'stop-1', routePlanId: 'route-1', shopDomain: 'example.myshopify.com' };
+    prisma.routePlan.findFirst.mockResolvedValueOnce(null);
+    await expect(service.getStopEmailHistory(input)).resolves.toBeNull();
+    prisma.routePlan.findFirst.mockResolvedValueOnce({ constraints: {}, routeStops: [], shop: { commerceConnections: [] }, shopId: 'shop-1' });
+    await expect(service.getStopEmailHistory(input)).resolves.toBeNull();
+    expect(prisma.customerEmailManualDispatchRecipient.findMany).not.toHaveBeenCalled();
+
+    prisma.routePlan.findFirst.mockResolvedValueOnce({
+      constraints: { timezone: 'America/Toronto' },
+      routeStops: [{ deliveryStopId: 'stop-1' }],
+      shop: { commerceConnections: [] },
+      shopId: 'shop-1',
+    });
+    prisma.customerRouteNotificationFact.findMany.mockResolvedValueOnce([
+      { errorMessage: null, metadata: { signal: 'OUT_FOR_DELIVERY' }, occurredAt: new Date('2026-10-15T13:00:00Z'), providerStatus: null, recipientEmailSnapshot: 'a@example.com', sentAt: new Date('2026-10-15T13:00:04Z'), status: 'SENT' },
+    ]);
+    await expect(service.getStopEmailHistory(input)).resolves.toEqual({
+      events: [expect.objectContaining({ signal: 'OUT_FOR_DELIVERY', source: 'AUTOMATIC', status: 'SENT' })],
+      timezone: 'America/Toronto',
+    });
+    const [routePlanQuery] = (prisma.routePlan.findFirst.mock.lastCall ?? []) as unknown[];
+    expect(routePlanQuery).toMatchObject({ where: { id: 'route-1', shop: { is: { shopDomain: 'example.myshopify.com' } } } });
+    expect(prisma.customerEmailManualDispatchRecipient.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { deliveryStopId: 'stop-1', shopId: 'shop-1' },
+    }));
+  });
+});
