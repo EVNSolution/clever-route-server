@@ -3145,6 +3145,41 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlan.deleteMany).not.toHaveBeenCalled();
   });
 
+  test('deletes an in-progress route when every stop already finished', async () => {
+    const { prisma } = createPrismaHarness({
+      existingRoutePlanStops: [{ deliveryStop: { status: 'DELIVERED' } }, { deliveryStop: { status: 'FAILED' } }] as never,
+      routePlanToDelete: { id: 'route-plan-id', status: 'IN_PROGRESS' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).resolves.toEqual({ routePlanId: 'route-plan-id', deleted: true });
+
+    expect(prisma.routePlan.deleteMany).toHaveBeenCalledWith({
+      where: { id: 'route-plan-id', shopId: 'shop-id' }
+    });
+  });
+
+  test('keeps an in-progress route with an open stop blocked', async () => {
+    const { prisma } = createPrismaHarness({
+      existingRoutePlanStops: [{ deliveryStop: { status: 'DELIVERED' } }, { deliveryStop: { status: 'EN_ROUTE' } }] as never,
+      routePlanToDelete: { id: 'route-plan-id', status: 'IN_PROGRESS' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
+    expect(prisma.routePlan.deleteMany).not.toHaveBeenCalled();
+  });
+
   test('maps retained POD foreign-key protection to a route deletion domain error', async () => {
     const { prisma } = createPrismaHarness({
       routePlanDeleteError: new Prisma.PrismaClientKnownRequestError('retained proof media', {
@@ -3164,6 +3199,24 @@ describe('PrismaRoutePlanRepository', () => {
       code: 'ROUTE_DELETE_BLOCKED',
       message: 'Route has retained delivery records and cannot be deleted yet.'
     });
+  });
+
+  test('maps a driver event foreign-key hit to the same route deletion domain error', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanDeleteError: new Prisma.PrismaClientKnownRequestError('driver events', {
+        clientVersion: '6.19.3',
+        code: 'P2003',
+        meta: { constraint: 'driver_events_routePlanId_shopId_fkey' }
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toMatchObject({ code: 'ROUTE_DELETE_BLOCKED' });
   });
 
   test('deletes a route generated from a parent grouping', async () => {

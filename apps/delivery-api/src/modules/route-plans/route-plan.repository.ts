@@ -1634,7 +1634,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         where: { id: input.routePlanId, shopId: shop.id }
       });
       if (lockedRoutePlan === null) throw new RoutePlanDeleteBlockedError('Route changed while deletion was being prepared.');
-      if (lockedRoutePlan.status === 'IN_PROGRESS') {
+      // An office that closes every stop from the web leaves the plan IN_PROGRESS until the driver app ends it.
+      const finishedInProgress = lockedRoutePlan.status === 'IN_PROGRESS'
+        && await everyRouteStopFinished(tx, input.routePlanId, shop.id);
+      if (lockedRoutePlan.status === 'IN_PROGRESS' && !finishedInProgress) {
         throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
       }
       const lockedGroupingRefs = await tx.routeGroupingChildVersion.findMany({
@@ -1666,7 +1669,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       });
       await closeDsvExecutionHook(tx, { shopId: shop.id, routePlanId: input.routePlanId, reason: 'CANCELLED' });
       const deleted = await tx.routePlan.deleteMany({
-        where: { id: input.routePlanId, shopId: shop.id, status: { not: 'IN_PROGRESS' } }
+        where: finishedInProgress
+          ? { id: input.routePlanId, shopId: shop.id }
+          : { id: input.routePlanId, shopId: shop.id, status: { not: 'IN_PROGRESS' } }
       });
       if (deleted.count !== 1) throw new RoutePlanDeleteBlockedError('In-progress routes cannot be deleted.');
       await collapseRouteGroupingSplitAfterChildDelete(tx, {
@@ -3047,6 +3052,20 @@ async function hasCurrentRouteGroupingChild(tx: Prisma.TransactionClient, routeP
   return (await readCurrentRouteGroupingChild(tx, routePlanId)) !== null;
 }
 
+const finishedDeliveryStopStatuses = new Set(['CANCELLED', 'DELIVERED', 'FAILED', 'SKIPPED']);
+
+async function everyRouteStopFinished(
+  tx: Pick<Prisma.TransactionClient, 'routePlanStop'>,
+  routePlanId: string,
+  shopId: string
+): Promise<boolean> {
+  const stops = await tx.routePlanStop.findMany({
+    select: { deliveryStop: { select: { status: true } } },
+    where: { routePlanId, shopId }
+  });
+  return stops.length > 0 && stops.every((stop) => finishedDeliveryStopStatuses.has(stop.deliveryStop.status));
+}
+
 function sameUniqueStringSet(left: string[], right: string[]): boolean {
   const leftSet = new Set(left);
   const rightSet = new Set(right);
@@ -3321,11 +3340,9 @@ function isRouteGeometryCommitConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
 }
 
+// Any foreign-key hit on delete means execution records (driver events, proof media, sessions) still point at the route.
 function isRetainedProofMediaForeignKeyConflict(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2003') return false;
-  return Object.values(error.meta ?? {}).some(
-    (value) => typeof value === 'string' && value.includes('driver_proof_media')
-  );
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
 }
 
 function routeLifecycleEventQuery() {
