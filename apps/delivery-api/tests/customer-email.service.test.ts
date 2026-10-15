@@ -24,7 +24,7 @@ describe('CustomerEmailService', () => {
       branding: defaultCustomerEmailSettings().branding,
       context: {
         customerName: 'Customer',
-        etaWindow: 'Oct 14, 2026, 9:30 AM EDT - Oct 14, 2026, 10:30 AM EDT',
+        etaWindow: 'Wed, Oct 14, 9:30 AM – 10:30 AM EDT',
         inventoryList: '2 x Fresh kimchi',
         trackingLink: `https://track.example.com/t/${deliveryStopId}.abcdefghijklmnopqrstuv`,
       },
@@ -42,7 +42,7 @@ describe('CustomerEmailService', () => {
     expect(rendered.html).toContain('color:#ffffff');
     expect(rendered.html).toContain('overflow-wrap:anywhere;word-break:break-word');
     if (signal === 'DELIVERY_SCHEDULED') {
-      expect(rendered.body).toContain('Estimated arrival window: Oct 14, 2026');
+      expect(rendered.body).toContain('Estimated arrival window: Wed, Oct 14');
     }
   });
 
@@ -73,7 +73,7 @@ describe('CustomerEmailService', () => {
     });
 
     expect(preview.subject).toBe('Scheduled delivery');
-    expect(preview.body).toContain('2026-10-14 | Wednesday | Oct 14, 2026, 10:00 AM EDT | Oct 14, 2026, 9:40 AM EDT - Oct 14, 2026, 10:00 AM EDT');
+    expect(preview.body).toContain('Wed, Oct 14 | Wednesday | Wed, Oct 14, 10:00 AM EDT | Wed, Oct 14, 9:40 AM – 10:00 AM EDT');
     expect(preview.body).toContain('Items in this delivery:\n2 x Sample item\n1 x Another item');
     expect(preview.body).toContain('Sample tracking number: 00000000-0000-4000-8000-000000000001');
     expect(preview.html).toContain('Track your delivery');
@@ -609,7 +609,7 @@ describe('CustomerEmailService', () => {
       shopDomain: 'example.myshopify.com',
       signal: 'DELIVERY_SCHEDULED',
     });
-    const renderedBody = 'Window Aug 4, 2026, 5:30 AM EDT - Aug 4, 2026, 6:30 AM EDT\n\nItems in this delivery:\n1 x Kimchi';
+    const renderedBody = 'Window Tue, Aug 4, 5:30 AM – 6:30 AM EDT\n\nItems in this delivery:\n1 x Kimchi';
     expect(preview).toMatchObject({ recipients: [{ rendered: { body: renderedBody } }] });
 
     await expect(service.sendAutomatic({
@@ -648,9 +648,9 @@ describe('CustomerEmailService', () => {
   });
 
   test.each([
-    [{ direction: 'BEFORE', minutes: 45 }, 'Window Aug 4, 2026, 5:15 AM EDT - Aug 4, 2026, 6:00 AM EDT'],
-    [{ direction: 'AFTER', minutes: 60 }, 'Window Aug 4, 2026, 6:00 AM EDT - Aug 4, 2026, 7:00 AM EDT'],
-    [{ direction: 'AROUND', minutes: 15 }, 'Window Aug 4, 2026, 5:45 AM EDT - Aug 4, 2026, 6:15 AM EDT'],
+    [{ direction: 'BEFORE', minutes: 45 }, 'Window Tue, Aug 4, 5:15 AM – 6:00 AM EDT'],
+    [{ direction: 'AFTER', minutes: 60 }, 'Window Tue, Aug 4, 6:00 AM – 7:00 AM EDT'],
+    [{ direction: 'AROUND', minutes: 15 }, 'Window Tue, Aug 4, 5:45 AM – 6:15 AM EDT'],
   ] as const)('renders the ETA window from the %o option', async (etaWindow, etaBody) => {
     const { prisma, service } = createHarness();
     const defaults = defaultCustomerEmailSettings();
@@ -682,8 +682,8 @@ describe('CustomerEmailService', () => {
   });
 
   test.each([
-    ['OUT_FOR_DELIVERY', new Date('2026-08-04T10:00:00.000Z'), 'Aug 4, 2026, 6:00 AM EDT'],
-    ['DRIVER_NEARBY', new Date('2026-01-01T04:15:00.000Z'), 'Dec 31, 2025, 11:15 PM EST'],
+    ['OUT_FOR_DELIVERY', new Date('2026-08-04T10:00:00.000Z'), 'Tue, Aug 4, 6:00 AM EDT'],
+    ['DRIVER_NEARBY', new Date('2026-01-01T04:15:00.000Z'), 'Wed, Dec 31, 11:15 PM EST'],
   ] as const)('renders %s ETA in the authoritative local timezone for preview and delivery', async (signal, eta, renderedEta) => {
     const { prisma, service, transport } = createHarness();
     const defaults = defaultCustomerEmailSettings();
@@ -714,7 +714,7 @@ describe('CustomerEmailService', () => {
       shopDomain: 'example.myshopify.com',
       signal,
     });
-    const renderedBody = `ETA ${renderedEta} on 2026-08-04\n\nItems in this delivery:\n1 x Kimchi`;
+    const renderedBody = `ETA ${renderedEta} on Tue, Aug 4\n\nItems in this delivery:\n1 x Kimchi`;
     expect(preview).toMatchObject({
       recipients: [{ rendered: { body: renderedBody, subject: renderedEta } }],
     });
@@ -782,7 +782,7 @@ describe('CustomerEmailService', () => {
     })).resolves.toMatchObject({
       recipients: [{
         diagnostics: { body: [] },
-        rendered: { body: 'ETA Nov 1, 2026, 1:00 AM EST\nWindow Nov 1, 2026, 1:30 AM EDT - Nov 1, 2026, 1:30 AM EST\n\nItems in this delivery:\n1 x Kimchi' },
+        rendered: { body: 'ETA Sun, Nov 1, 1:00 AM EST\nWindow Sun, Nov 1, 1:30 AM EDT – Sun, Nov 1, 1:30 AM EST\n\nItems in this delivery:\n1 x Kimchi' },
       }],
     });
 

@@ -1494,20 +1494,37 @@ export function resolveCustomerEmailTimezone(routePlan: {
 
 function formatEtaWindow(eta: Date, timezone: string, window: CustomerEmailEtaWindow): string {
   const { end, start } = customerEmailEtaWindowRange(eta, window);
-  return `${formatEta(start, timezone)} - ${formatEta(end, timezone)}`;
+  const startParts = etaParts(start, timezone);
+  const endParts = etaParts(end, timezone);
+  // Same day and same zone: "Wed, Oct 14, 9:30 AM – 10:30 AM EDT". A midnight or DST crossing keeps both full stamps.
+  return startParts.day === endParts.day && startParts.zone === endParts.zone
+    ? `${startParts.day}, ${startParts.time} – ${endParts.time} ${endParts.zone}`
+    : `${formatEta(start, timezone)} – ${formatEta(end, timezone)}`;
 }
 
 function formatEta(eta: Date, timezone: string): string {
-  return new Intl.DateTimeFormat('en-US', {
-    day: 'numeric',
+  const { day, time, zone } = etaParts(eta, timezone);
+  return `${day}, ${time} ${zone}`;
+}
+
+function etaParts(value: Date, timezone: string): { day: string; time: string; zone: string } {
+  const parts = new Intl.DateTimeFormat('en-US', {
     hour: 'numeric',
     hour12: true,
     minute: '2-digit',
-    month: 'short',
     timeZone: timezone,
     timeZoneName: 'short',
-    year: 'numeric',
-  }).format(eta);
+  }).formatToParts(value);
+  return {
+    day: formatDay(value, timezone),
+    // Some ICU builds put U+202F before AM/PM; plain-text email keeps an ordinary space.
+    time: parts.filter((part) => part.type !== 'timeZoneName').map((part) => part.value).join('').replace(/\u202f/gu, ' ').trim(),
+    zone: parts.find((part) => part.type === 'timeZoneName')?.value ?? '',
+  };
+}
+
+function formatDay(value: Date, timezone: string): string {
+  return new Intl.DateTimeFormat('en-US', { day: 'numeric', month: 'short', timeZone: timezone, weekday: 'short' }).format(value);
 }
 
 function readNonEmptyString(value: unknown): string | null {
@@ -1648,7 +1665,8 @@ function formatItemOptions(value: unknown): string {
 }
 
 function formatDate(value: Date): string {
-  return value.toISOString().slice(0, 10);
+  // deliveryDate and planDate are @db.Date values stored as UTC midnight.
+  return formatDay(value, 'UTC');
 }
 
 function assertConfigured(settings: CustomerEmailSettings): void {
