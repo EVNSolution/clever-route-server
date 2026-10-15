@@ -166,7 +166,7 @@ describe('PrismaDriverAuthRepository', () => {
     const session = await repository.refreshSession({ refreshToken: 'stored-refresh-token' });
 
     expect(prisma.driverAccountSession.update).toHaveBeenCalledWith({
-      data: { lastUsedAt: anyDateMatcher },
+      data: { expiresAt: new Date('2100-01-01T00:00:00.000Z'), lastUsedAt: anyDateMatcher },
       where: { id: 'account-session-id' }
     });
     expect(session).toEqual({
@@ -177,6 +177,26 @@ describe('PrismaDriverAuthRepository', () => {
       tokenVersion: 0
     });
     expect(prisma.driverSession.findUnique).not.toHaveBeenCalled();
+  });
+
+  test('slides a used account session forward by a full 30-day window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-15T00:00:00.000Z'));
+    try {
+      const fixture = { ...accountSessionFixture(), expiresAt: new Date('2026-10-20T00:00:00.000Z') };
+      const { prisma } = createPrismaHarness({ accountRefreshSession: fixture });
+      const repository = new PrismaDriverAuthRepository(prisma as never);
+
+      const session = await repository.refreshSession({ refreshToken: 'stored-refresh-token' });
+
+      expect(session).toMatchObject({ expiresAt: new Date('2026-11-14T00:00:00.000Z'), refreshToken: 'stored-refresh-token' });
+      expect(prisma.driverAccountSession.update).toHaveBeenCalledWith({
+        data: { expiresAt: new Date('2026-11-14T00:00:00.000Z'), lastUsedAt: new Date('2026-10-15T00:00:00.000Z') },
+        where: { id: 'account-session-id' }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
