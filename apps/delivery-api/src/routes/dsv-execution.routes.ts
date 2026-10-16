@@ -36,8 +36,9 @@ export type DsvDriverExecutionPrincipalResolver = {
   resolve(input: { accountId: string; tokenVersion: number }): Promise<DsvDriverExecutionAuth>;
 };
 
-// A store-review driver has no operational executions (dsv-store-review-isolation.md). The execution list
-// answers it with no items so the driver app can open its review route; every other endpoint stays 401.
+// A store-review driver has no operational executions or notifications (dsv-store-review-isolation.md).
+// Those two lists answer it with no items so the driver app can open its review route and inbox; every
+// other endpoint stays 401.
 export class DsvStoreReviewDriverError extends Error {
   constructor() {
     super('Store-review driver has no operational executions');
@@ -160,7 +161,7 @@ export function registerDsvExecutionRoutes(app: FastifyInstance, dependencies: D
         ...(limit === null ? {} : { limit }),
         principal: auth.principal,
       }));
-    }));
+    }, { items: [], nextCursor: null }));
 
   app.get<{ Params: { id: string } }>('/api/dsv/driver/operational-notifications/:id/resolve', driverOptions, (request, reply) =>
     withDriver(request, reply, dependencies, async (auth) => {
