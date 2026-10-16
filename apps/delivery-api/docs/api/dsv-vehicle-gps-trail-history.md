@@ -102,8 +102,12 @@ When the window is found:
   keep only what lies inside the window. A marker outside it becomes `null`.
 - `dailyRoute` keeps only anchors inside the window, cuts `coordinates` from
   the first to the last kept anchor, and renumbers `coordinateIndex`.
-  `bridges` keep only those with both ends inside. When fewer than two anchors
-  remain, `dailyRoute` is `null`.
+  `bridges` keep only those with both ends inside. `sourceSampleCount` is set
+  to the number of kept anchors, so `anchors.length === sourceSampleCount`
+  still holds. A bridge keeps its `inferredTunnel` only when the anchors it
+  points at (`fromObservedAt`, `confirmedByObservedAt`) are inside; otherwise
+  the bridge stays without it. When fewer than two anchors remain, or the kept
+  anchors cover fewer than two coordinates, `dailyRoute` is `null`.
 - `roadMatchedGeometry` drops lines with fewer than two anchors inside, cuts
   `coordinates`, and renumbers `coordinateIndex` and `lineIndex`. When no line
   remains it is `null`.

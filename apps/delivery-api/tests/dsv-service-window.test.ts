@@ -150,6 +150,43 @@ describe('trimTrailToServiceWindow', () => {
     expect(trimmed.dailyRoute?.bridges).toHaveLength(2);
   });
 
+  test('the cut daily route keeps what the web adapter requires', () => {
+    const { dailyRoute, sessions } = fixture();
+    const trimmed = trimTrailToServiceWindow(sessions, dailyRoute, { endMs, startMs }).dailyRoute;
+    expect(trimmed?.sourceSampleCount).toBe(trimmed?.anchors.length);
+    expect(trimmed?.sourceSampleCount).toBe(4);
+  });
+
+  test('a daily route whose kept anchors all sit on one coordinate is dropped', () => {
+    const { dailyRoute, sessions } = fixture();
+    dailyRoute.anchors = dailyRoute.anchors.map((anchor) => ({ ...anchor, coordinateIndex: 2 }));
+    const trimmed = trimTrailToServiceWindow(sessions, dailyRoute, { endMs, startMs });
+    expect(trimmed.dailyRoute).toBeNull();
+  });
+
+  test('an inferred tunnel is dropped when the anchor it points at is outside the window', () => {
+    const { dailyRoute, sessions } = fixture();
+    const tunnel = (fromObservedAt: string, confirmedByObservedAt: string) => ({
+      confirmedByObservedAt,
+      coordinates: [[127, 37.5], [127.001, 37.5]] as Array<[number, number]>,
+      corridorId: 'test',
+      fromObservedAt,
+      source: 'OSRM_TUNNEL_ROUTE' as const,
+      toObservedAt: times[3]!,
+      type: 'LineString' as const,
+    });
+    dailyRoute.bridges = [
+      { fromObservedAt: times[2]!, inferredTunnel: tunnel(times[2]!, times[4]!), reason: 'IMPLAUSIBLE_JUMP', toObservedAt: times[3]! },
+    ];
+    // confirmedBy (times[4]) is inside: the tunnel stays.
+    const kept = trimTrailToServiceWindow(sessions, dailyRoute, { endMs, startMs }).dailyRoute;
+    expect(kept?.bridges[0]?.inferredTunnel).toBeDefined();
+    // The window ends before confirmedBy: the bridge stays, the tunnel goes.
+    const cut = trimTrailToServiceWindow(sessions, dailyRoute, { endMs: Date.parse(times[3]!), startMs }).dailyRoute;
+    expect(cut?.bridges).toHaveLength(1);
+    expect(cut?.bridges[0]).not.toHaveProperty('inferredTunnel');
+  });
+
   test('a geometry line with fewer than two anchors inside is dropped and lineIndex is renumbered', () => {
     const { sessions } = fixture();
     const geometry = {

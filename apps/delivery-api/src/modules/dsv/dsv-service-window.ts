@@ -142,6 +142,8 @@ function trimGeometry(
   return coordinates.length === 0 ? null : { ...geometry, anchors, coordinates };
 }
 
+// The web adapter rejects the whole payload unless: anchors.length === sourceSampleCount, coordinates has 2+ points,
+// and an inferredTunnel points at anchors that still exist. Keep all three true after cutting.
 function trimDailyRoute(
   route: UvisVehicleDailyRoute,
   inside: (observedAt: string) => boolean,
@@ -150,10 +152,21 @@ function trimDailyRoute(
   if (kept.length < 2) return null;
   const from = Math.min(...kept.map((anchor) => anchor.coordinateIndex));
   const to = Math.max(...kept.map((anchor) => anchor.coordinateIndex));
+  const coordinates = route.coordinates.slice(from, to + 1);
+  // Anchors that all sit on one coordinate (a vehicle waiting at the center) draw no line.
+  if (coordinates.length < 2) return null;
+  const keptAt = new Set(kept.map((anchor) => anchor.observedAt));
   return {
     ...route,
     anchors: kept.map((anchor) => ({ ...anchor, coordinateIndex: anchor.coordinateIndex - from })),
-    bridges: route.bridges.filter((bridge) => inside(bridge.fromObservedAt) && inside(bridge.toObservedAt)),
-    coordinates: route.coordinates.slice(from, to + 1),
+    bridges: route.bridges
+      .filter((bridge) => inside(bridge.fromObservedAt) && inside(bridge.toObservedAt))
+      .map(({ inferredTunnel, ...bridge }) => (
+        inferredTunnel !== undefined && keptAt.has(inferredTunnel.fromObservedAt) && keptAt.has(inferredTunnel.confirmedByObservedAt)
+          ? { ...bridge, inferredTunnel }
+          : bridge
+      )),
+    coordinates,
+    sourceSampleCount: kept.length,
   };
 }
