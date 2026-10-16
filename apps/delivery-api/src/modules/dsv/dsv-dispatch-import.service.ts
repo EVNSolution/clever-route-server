@@ -171,8 +171,11 @@ export type DsvTransportConditionTemperaturePolicyInput = {
   temperatureMinC?: number | null | undefined;
 };
 
+// Internal only: HTTP routes never pass options, so the review classification stays out of API input.
+export type DsvDispatchImportCommitOptions = { isStoreReviewData?: boolean };
+
 export type DsvDispatchImportService = {
-  commit(input: DsvDispatchImportInput & { actor: string; shopDomain: string }): Promise<DsvDispatchImportView>;
+  commit(input: DsvDispatchImportInput & { actor: string; shopDomain: string }, options?: DsvDispatchImportCommitOptions): Promise<DsvDispatchImportView>;
   createCondition(input: {
     actor: string;
     code: string;
@@ -289,11 +292,15 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     return previewView(diff, rows);
   }
 
-  async commit(input: DsvDispatchImportInput & { actor: string; shopDomain: string }): Promise<DsvDispatchImportView> {
+  async commit(
+    input: DsvDispatchImportInput & { actor: string; shopDomain: string },
+    options: DsvDispatchImportCommitOptions = {},
+  ): Promise<DsvDispatchImportView> {
+    const isStoreReviewData = options.isStoreReviewData ?? false;
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) throw new DsvDispatchImportShopNotFoundError();
     const rows = await this.canonicalizeRows(input.rows, input.shopDomain);
-    const diff = await this.buildPreviewForRows(this.prisma, shop.id, { ...input, rows });
+    const diff = await this.buildPreviewForRows(this.prisma, shop.id, { ...input, rows }, isStoreReviewData);
     const preview = previewView(diff, rows);
     if (input.previewHash !== undefined && input.previewHash !== diff.previewHash) {
       throw new DsvDispatchImportConflictError('DISPATCH_IMPORT_PREVIEW_STALE');
@@ -313,7 +320,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         shop: { connect: { id: shop.id } },
         sourceHash: diff.sourceHash,
         sourceKind: dsvDispatchImportSourceKind,
-        isStoreReviewData: false,
+        isStoreReviewData,
         status: stageStatus(diff),
         rows: {
           create: diff.rows.map((row) => {
