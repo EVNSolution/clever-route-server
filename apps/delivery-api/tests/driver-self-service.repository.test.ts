@@ -54,7 +54,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       where: { id: 'shop-id' }
     });
     expect(prisma.driver.findFirst).toHaveBeenCalledWith({
-      select: { accountId: true, displayName: true, id: true, phone: true, status: true },
+      select: { accountId: true, displayName: true, id: true, isStoreReviewData: true, phone: true, status: true },
       where: { id: 'driver-id', shopId: 'shop-id', status: 'ACTIVE' }
     });
     expect(prisma.routePlan.findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -63,6 +63,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       take: 104,
       where: routePlanWhereMatcher({
         driverId: 'driver-id',
+        isStoreReviewData: false,
         planDate: { gte: new Date('2026-05-01T00:00:00.000Z'), lte: new Date('2026-05-31T00:00:00.000Z') },
         shopId: 'shop-id',
         status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }

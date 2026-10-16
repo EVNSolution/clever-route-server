@@ -117,6 +117,44 @@ describe('Driver self-service routes', () => {
     }
   });
 
+  test('returns route history for the account token when no route is open', async () => {
+    const { app, resolveDriverAccountScope, selfService } = await createAppHarness();
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${accountToken()}` },
+        method: 'GET',
+        url: '/driver/routes?status=completed&from=2026-05-01'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(resolveDriverAccountScope).toHaveBeenCalledWith({ accountId: 'account-id', tokenVersion: 0 });
+      expect(selfService.listDriverRoutes).toHaveBeenCalledWith(expect.objectContaining({
+        driverId: 'driver-id',
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id',
+        status: 'completed'
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects an account token whose driver scope does not resolve', async () => {
+    const { app, selfService } = await createAppHarness({ activeToken: false });
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${accountToken()}` },
+        method: 'GET',
+        url: '/driver/routes?status=completed'
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(selfService.listDriverRoutes).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects invalid driver route history filters', async () => {
     const { app, selfService } = await createAppHarness();
 
@@ -514,6 +552,15 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
     shopId: 'shop-id'
   }));
 
+  const resolveDriverAccountScope = vi.fn<
+    NonNullable<NonNullable<DriverApiDependencies['driverTokenAccessRepository']>['resolveDriverAccountScope']>
+  >(() => Promise.resolve(input.activeToken === false ? null : {
+    accountId: 'account-id',
+    driverId: 'driver-id',
+    shopDomain: 'example.myshopify.com',
+    shopId: 'shop-id'
+  }));
+
   const app = await buildApp({
     driverApi: {
       driverEventService: {
@@ -525,6 +572,7 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
       driverTokenAccessRepository: {
         isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
         isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
+        resolveDriverAccountScope,
         resolveDriverRouteAccess
       },
       jwtSecret: secret,
@@ -532,7 +580,7 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
     }
   });
 
-  return { app, resolveDriverRouteAccess, selfService };
+  return { app, resolveDriverAccountScope, resolveDriverRouteAccess, selfService };
 }
 
 function driverToken(): string {
