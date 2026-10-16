@@ -49,7 +49,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
 
   test('falls back to the driver phone timezone when the route carries none', async () => {
     // Prod routes carry no timezone. 2026-10-16T22:00Z is Saturday 07:00 in Seoul but Friday 18:00 in Toronto.
-    const fridayRoute = { ...routePlanRecord({ planDate: '2026-10-16' }), constraints: {} };
+    const fridayRoute = withoutTimezone(routePlanRecord({ planDate: '2026-10-16' }));
     const now = () => new Date('2026-10-16T22:00:00.000Z');
     const toronto = new PrismaDriverRouteAccessRepository(
       createPrismaHarness({ deviceTimezone: 'America/Toronto', phoneRoutePlans: [fridayRoute] }).prisma as never, undefined, now
@@ -69,7 +69,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
   });
 
   test('keeps a route for one day of grace when neither route nor phone has a timezone', async () => {
-    const noTimezone = (planDate: string) => ({ ...routePlanRecord({ planDate }), constraints: {} });
+    const noTimezone = (planDate: string) => withoutTimezone(routePlanRecord({ planDate }));
     const repository = new PrismaDriverRouteAccessRepository(
       createPrismaHarness({ phoneRoutePlans: [noTimezone('2026-10-15'), noTimezone('2026-10-14')] }).prisma as never,
       undefined,
@@ -954,6 +954,10 @@ function createPrismaHarness(
       }
     }
   };
+}
+
+function withoutTimezone(record: ReturnType<typeof routePlanRecord>): ReturnType<typeof routePlanRecord> {
+  return { ...record, constraints: { ...record.constraints, timezone: 'not-a-timezone' } };
 }
 
 function routePlanRecord(

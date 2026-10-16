@@ -52,7 +52,7 @@ describe('private route access projections', () => {
     vi.stubEnv('KFOOD_PRIVATE_DEMO_ACCOUNT_ID', undefined);
     const privateRoute = route();
     const prisma = { routePlan: { findUnique: vi.fn().mockResolvedValue(privateRoute), findMany: vi.fn().mockResolvedValue([privateRoute]) },
-      driver: { findMany: vi.fn().mockResolvedValue([]) } };
+      driver: { findMany: vi.fn().mockResolvedValue([]) }, driverPushToken: { findFirst: vi.fn().mockResolvedValue(null) } };
     await expect(new PrismaDriverRouteAccessRepository(prisma as never).lookupRouteAccess({ accountId, routeContext }))
       .resolves.toEqual({ status: 'NOT_FOUND' });
   });
@@ -61,7 +61,7 @@ describe('private route access projections', () => {
     activate();
     const privateRoute = route();
     const findUnique = vi.fn().mockResolvedValue(privateRoute);
-    const repository = new PrismaDriverRouteAccessRepository({ routePlan: { findUnique } } as never);
+    const repository = new PrismaDriverRouteAccessRepository({ driverPushToken: { findFirst: vi.fn().mockResolvedValue(null) }, routePlan: { findUnique } } as never);
     await expect(repository.lookupRouteAccess({ accountId, routeContext: routeId })).resolves.toMatchObject({ status: 'INVITED' });
     findUnique.mockResolvedValue(route('other-account'));
     await expect(repository.lookupRouteAccess({ accountId: 'other-account', routeContext: routeId })).resolves.toEqual({ status: 'NOT_FOUND' });
