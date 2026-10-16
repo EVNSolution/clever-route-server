@@ -52,3 +52,23 @@ cannot be reverse-resolved to an intended address. Obtain the intended two place
 before changing coordinates. Update canonical destination, order/stop/import
 coordinates consistently and regenerate route geometry; retain the no-real-delivery
 designation. Do not substitute arbitrary land coordinates or modify real deliveries.
+
+## Merged-destination variant demo
+
+`node dist/scripts/dsv-review-variant-demo.js` builds a hidden review route for one
+driver from the spellings of already-merged destinations. It checks that each
+merged place comes back to the driver as one stop.
+
+- Set `DSV_REVIEW_DEMO_SHOP_ID`, `DSV_REVIEW_DEMO_ACCOUNT_ID`,
+  `DSV_REVIEW_DEMO_DRIVER_ID` and `DSV_REVIEW_DEMO_PLAN_DATE`
+  (`DSV_REVIEW_DEMO_GROUPS` defaults to 6).
+- Dry-run prints the spellings, the predicted stops per group and a fingerprint.
+- `--apply` needs `DSV_REVIEW_DEMO_EXPECTED_FINGERPRINT` and a new absolute
+  `DSV_REVIEW_DEMO_SNAPSHOT_PATH`.
+- Apply classifies the account and driver as review, imports the rows through the
+  normal dispatch import as review data, and reads the route back as the driver app
+  does.
+- Every name gets the `데모 ` prefix, because a review row must not share an
+  identity with a real destination.
+- After apply, this login sees only review routes. To restore it, set the two
+  flags from the snapshot back to their old values.
