@@ -1,6 +1,11 @@
 import type { PrismaClient } from '@prisma/client';
 
 import {
+  DEPOT_RETURN_THRESHOLD_METERS,
+  haversineMeters,
+  resolveDepotDeparture
+} from './depot-departure.js';
+import {
   ROUTE_TRACKING_SCHEMA_VERSION,
   ROUTE_TRACKING_V1_POLICY
 } from './route-tracking.policy.js';
@@ -17,6 +22,7 @@ import {
   type RouteTrackingEventWindow,
 } from './route-tracking.event-window.js';
 import type {
+  RouteDepotEvidenceV1,
   RouteTrackingPositionEventV1,
   RouteExecutionEvidenceV1,
   RouteExecutionLifecycleEvidenceV1,
@@ -32,8 +38,6 @@ import type {
 } from './route-tracking.types.js';
 
 type RouteTrackingPrismaClient = Pick<PrismaClient, 'driverEvent' | 'routePlan' | 'routePlanStop' | 'routeTrackingGeometry'>;
-
-const DEPOT_RETURN_THRESHOLD_METERS = 150;
 
 const ROUTE_TRACKING_PROGRESS_EVENT_TYPES: RouteTrackingProgressEventType[] = [
   'ROUTE_STARTED',
@@ -350,13 +354,29 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       where: { id: routePlanId }
     });
     const routeEndMode = readRouteEndMode(routePlan?.constraints);
+    const depot = readCoordinate(routePlan?.depotLatitude, routePlan?.depotLongitude);
+    const depotDeparture = resolveDepotDeparture({
+      depot,
+      endAt: completion === null ? null : new Date(completion.occurredAt),
+      samples: positions.map((position) => ({
+        id: position.eventId,
+        latitude: position.latitude,
+        longitude: position.longitude,
+        observedAt: new Date(position.occurredAt)
+      })),
+      startedAt: start === null ? null : new Date(start.occurredAt),
+      startedPosition: start === null || start.latitude === null || start.longitude === null
+        ? null
+        : { latitude: start.latitude, longitude: start.longitude }
+    });
     return {
       completion,
+      depotDeparture: depotDeparture.evidence,
       firstPosition,
       lastPosition,
       returnToDepot: buildReturnEvidence({
         completion,
-        depot: readCoordinate(routePlan?.depotLatitude, routePlan?.depotLongitude),
+        depot,
         lastPosition,
         routeEndMode
       }),
@@ -375,16 +395,10 @@ function emptyExecutionEvidence(
 ): RouteExecutionEvidenceV1 {
   return {
     completion: null,
+    depotDeparture: unavailableReturnEvidence(),
     firstPosition,
     lastPosition,
-    returnToDepot: {
-      distanceToDepotMeters: null,
-      evidenceEventId: null,
-      observedAt: null,
-      source: 'NONE',
-      status: 'UNAVAILABLE',
-      thresholdMeters: DEPOT_RETURN_THRESHOLD_METERS
-    },
+    returnToDepot: unavailableReturnEvidence(),
     routeEndMode: null,
     schemaVersion: 'route_execution_evidence.v1',
     start: null,
@@ -412,7 +426,7 @@ function buildReturnEvidence(input: {
   depot: { latitude: number; longitude: number } | null;
   lastPosition: RouteTrackingPositionEventV1 | null;
   routeEndMode: 'END_AT_LAST_STOP' | 'RETURN_TO_DEPOT';
-}): RouteExecutionEvidenceV1['returnToDepot'] {
+}): RouteDepotEvidenceV1 {
   if (input.routeEndMode === 'END_AT_LAST_STOP') {
     return {
       distanceToDepotMeters: null,
@@ -449,7 +463,7 @@ function buildReturnEvidence(input: {
   };
 }
 
-function unavailableReturnEvidence(): RouteExecutionEvidenceV1['returnToDepot'] {
+function unavailableReturnEvidence(): RouteDepotEvidenceV1 {
   return {
     distanceToDepotMeters: null,
     evidenceEventId: null,
@@ -465,18 +479,6 @@ function readRouteEndMode(value: unknown): 'END_AT_LAST_STOP' | 'RETURN_TO_DEPOT
   return (value as Record<string, unknown>).routeEndMode === 'RETURN_TO_DEPOT'
     ? 'RETURN_TO_DEPOT'
     : 'END_AT_LAST_STOP';
-}
-
-function haversineMeters(
-  left: { latitude: number; longitude: number },
-  right: { latitude: number; longitude: number }
-): number {
-  const radians = (degrees: number): number => degrees * Math.PI / 180;
-  const latitudeDelta = radians(right.latitude - left.latitude);
-  const longitudeDelta = radians(right.longitude - left.longitude);
-  const a = Math.sin(latitudeDelta / 2) ** 2
-    + Math.cos(radians(left.latitude)) * Math.cos(radians(right.latitude)) * Math.sin(longitudeDelta / 2) ** 2;
-  return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 export function createRouteTrackingProgressEvent(input: {

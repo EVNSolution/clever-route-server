@@ -7956,6 +7956,10 @@ components:
         actualCompletedAt:
           type: string
           format: date-time
+        actualDepartedAt:
+          type: string
+          format: date-time
+          description: Derived depot departure. First vehicle GPS sample outside the depot radius after the depot arrival that follows ROUTE_STARTED. Omitted until the departure is confirmed. The ROUTE_STARTED event is not changed.
         assignmentStatus:
           type: string
           enum: [UNASSIGNED, ASSIGNED]
@@ -8624,7 +8628,8 @@ components:
           format: date-time
         startSource:
           type: string
-          enum: [PLANNED_DEPARTURE, ROUTE_STARTED]
+          enum: [PLANNED_DEPARTURE, ROUTE_STARTED, DEPOT_ARRIVAL]
+          description: DEPOT_ARRIVAL starts the first session at the first GPS sample inside the depot radius after ROUTE_STARTED.
         startEventId:
           type: string
           nullable: true
