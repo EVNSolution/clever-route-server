@@ -999,7 +999,8 @@ export function registerDriverEventRoutes(
   const driverSelfService = dependencies.driverSelfService;
   if (driverSelfService !== undefined) {
     app.get<{ Querystring: DriverRoutesHistoryQuery }>('/driver/routes', async (request, reply) => {
-      const authentication = await authenticateDriverRequest(request, dependencies);
+      // History is also read after the day's routes are done, when the app holds only its account token.
+      const authentication = await authenticateDriverRouteOrAccountRequest(request, dependencies);
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
@@ -1828,6 +1829,31 @@ function readLiveRouteChangeTokenVersion(request: FastifyRequest, dependencies: 
   return verifyDriverRouteToken(token, now === undefined
     ? { secret: dependencies.jwtSecret }
     : { now, secret: dependencies.jwtSecret }).tokenVersion;
+}
+
+async function authenticateDriverRouteOrAccountRequest(
+  request: FastifyRequest,
+  dependencies: DriverApiDependencies
+): Promise<{ status: 'authenticated'; context: Omit<DriverRouteAccessScope, 'routePlanId'> } | { status: 'invalid' | 'missing' }> {
+  const routeAuthentication = await authenticateDriverRequest(request, dependencies);
+  if (routeAuthentication.status !== 'invalid') return routeAuthentication;
+  const token = extractBearerToken(request.headers.authorization);
+  const resolveAccount = dependencies.driverTokenAccessRepository?.resolveDriverAccountScope;
+  if (token === null || resolveAccount === undefined) return { status: 'invalid' };
+  try {
+    const now = dependencies.now?.();
+    const account = verifyDriverAccountToken(
+      token,
+      now === undefined ? { secret: dependencies.jwtSecret } : { now, secret: dependencies.jwtSecret }
+    );
+    const scope = await resolveAccount.call(dependencies.driverTokenAccessRepository, {
+      accountId: account.accountId,
+      tokenVersion: account.tokenVersion
+    });
+    return scope === null ? { status: 'invalid' } : { status: 'authenticated', context: scope };
+  } catch {
+    return { status: 'invalid' };
+  }
 }
 
 async function authenticateDriverRequest(

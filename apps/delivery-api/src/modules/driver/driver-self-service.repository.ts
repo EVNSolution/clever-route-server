@@ -33,7 +33,7 @@ export type DriverSelfServicePrismaClient = Pick<
 >;
 
 type ScopedDriverRecord = {
-  driver: DriverSelfProfile & { accountId: string | null };
+  driver: DriverSelfProfile & { accountId: string | null; isStoreReviewData: boolean };
   shop: {
     id: string;
     shopDomain: string;
@@ -98,6 +98,8 @@ export class PrismaDriverSelfServiceRepository {
           },
           shopId: scoped.shop.id,
           ...visibleDsvRouteWhere(scoped.shop.id),
+          // Review and operational routes never mix in one driver's history (dsv-store-review-isolation.md).
+          isStoreReviewData: scoped.driver.isStoreReviewData,
           status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] },
           ...(cursor === null ? {} : {
             OR: [
@@ -415,7 +417,10 @@ export class PrismaDriverSelfServiceRepository {
       throw new DriverSelfServiceScopeError(`Driver not found for shop: ${input.driverId}`);
     }
 
-    return { driver: { ...toDriverProfile(driver), accountId: driver.accountId }, shop };
+    return {
+      driver: { ...toDriverProfile(driver), accountId: driver.accountId, isStoreReviewData: driver.isStoreReviewData === true },
+      shop
+    };
   }
 }
 
@@ -428,6 +433,7 @@ const driverProfileSelect = {
 
 const scopedDriverProfileSelect = {
   accountId: true,
+  isStoreReviewData: true,
   ...driverProfileSelect
 } as const;
 

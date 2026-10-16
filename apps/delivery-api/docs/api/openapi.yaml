@@ -5624,10 +5624,15 @@ paths:
     get:
       tags: [Driver Mobile]
       summary: List route-history summaries for the bearer-token driver
+      description: >-
+        Accepts a route token, or the driver account token when no route is open. The account
+        must have exactly one active driver whose review classification matches the account.
+        History lists only routes with that driver's review classification.
       operationId: listDriverRoutes
       x-source-file: src/routes/driver-events.routes.ts
       security:
         - DriverAccessToken: []
+        - DriverAccountAccessToken: []
       parameters:
         - name: from
           in: query

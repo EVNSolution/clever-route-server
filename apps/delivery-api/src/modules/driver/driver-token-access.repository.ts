@@ -32,6 +32,8 @@ export type DriverRouteTokenAccessCheckInput = {
   tokenVersion: number;
 };
 
+export type DriverAccountScope = Omit<DriverRouteAccessScope, 'routePlanId'>;
+
 export type DriverRouteAccessScope = {
   accountId: string;
   driverId: string;
@@ -68,6 +70,32 @@ export class PrismaDriverTokenAccessRepository {
     });
 
     return driver !== null && !isPrivateDriverDemoAppId(driver.shop?.appId) && driver.tokenVersion === input.tokenVersion;
+  }
+
+  /**
+   * The account's one active driver, for account-scoped reads such as route history when no route is open.
+   * The driver's review classification must match the account's, as for route access.
+   */
+  async resolveDriverAccountScope(input: DriverAccountTokenAccessCheckInput): Promise<DriverAccountScope | null> {
+    const account = await this.prisma.driverAccount.findUnique({
+      select: { isStoreReviewAccount: true, status: true, tokenVersion: true },
+      where: { id: input.accountId }
+    });
+    if (account?.status !== 'ACTIVE' || account.tokenVersion !== input.tokenVersion) return null;
+    const drivers = await this.prisma.driver.findMany({
+      select: { id: true, isStoreReviewData: true, shop: { select: { appId: true, id: true, shopDomain: true } } },
+      take: 2,
+      where: { accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE' }
+    });
+    const driver = drivers.length === 1 ? drivers[0] : undefined;
+    if (driver === undefined || isPrivateDriverDemoAppId(driver.shop.appId)
+      || driver.isStoreReviewData !== account.isStoreReviewAccount) return null;
+    return {
+      accountId: input.accountId,
+      driverId: driver.id,
+      shopDomain: normalizeDriverCommerceDomain(driver.shop.shopDomain),
+      shopId: driver.shop.id
+    };
   }
 
   async resolveDriverRouteAccess(
@@ -158,4 +186,4 @@ export class PrismaDriverTokenAccessRepository {
 export type DriverTokenAccessRepositoryApi = Pick<
   PrismaDriverTokenAccessRepository,
   'isDriverAccessTokenActive' | 'isDriverAccountAccessTokenActive' | 'resolveDriverRouteAccess'
->;
+> & Partial<Pick<PrismaDriverTokenAccessRepository, 'resolveDriverAccountScope'>>;

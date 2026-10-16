@@ -4,6 +4,24 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrismaDriverTokenAccessRepository } from '../src/modules/driver/driver-token-access.repository.js';
 
 describe('PrismaDriverTokenAccessRepository', () => {
+  test('resolves the account scope only for one active driver of the same review classification', async () => {
+    const driver = (isStoreReviewData: boolean, id = 'driver-id') => ({
+      id, isStoreReviewData, shop: { appId: 'clever', id: 'shop-id', shopDomain: 'DSV-Demo.local' }
+    });
+    const scope = (account: unknown, drivers: unknown[]) => new PrismaDriverTokenAccessRepository({
+      driver: { findMany: vi.fn(() => Promise.resolve(drivers)) },
+      driverAccount: { findUnique: vi.fn(() => Promise.resolve(account)) }
+    } as never).resolveDriverAccountScope({ accountId: 'account-id', tokenVersion: 2 });
+    const review = { isStoreReviewAccount: true, status: 'ACTIVE', tokenVersion: 2 };
+
+    await expect(scope(review, [driver(true)])).resolves.toEqual({
+      accountId: 'account-id', driverId: 'driver-id', shopDomain: 'dsv-demo.local', shopId: 'shop-id'
+    });
+    await expect(scope(review, [driver(false)])).resolves.toBeNull();
+    await expect(scope(review, [driver(true), driver(true, 'second')])).resolves.toBeNull();
+    await expect(scope({ ...review, tokenVersion: 3 }, [driver(true)])).resolves.toBeNull();
+  });
+
   test('rejects route token access when two current child versions are projected', async () => {
     const { prisma } = createPrismaHarness({
       account: { status: 'ACTIVE', tokenVersion: 2 },
