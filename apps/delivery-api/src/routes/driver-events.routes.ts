@@ -29,6 +29,11 @@ import {
   type DriverDestinationNotesServiceContract,
   type DriverLunchEntryStatus
 } from '../modules/driver/driver-destination-notes.repository.js';
+import {
+  DriverDestinationVisitsCursorError,
+  DriverDestinationVisitsScopeError,
+  type DriverDestinationVisitsServiceContract
+} from '../modules/driver/driver-destination-visits.repository.js';
 import type { DriverRouteMapPreviewServiceApi } from '../modules/driver/driver-route-map-preview.service.js';
 import type {
   DriverSyncHeartbeatInput,
@@ -134,6 +139,7 @@ export type DriverApiDependencies = {
   driverConsentService?: DriverConsentServiceContract;
   driverDeliverySpaceService?: DriverDeliverySpaceServiceContract;
   driverDestinationNotesService?: DriverDestinationNotesServiceContract;
+  driverDestinationVisitsService?: DriverDestinationVisitsServiceContract;
   driverRouteOrderService?: DriverRouteOrderServiceContract;
   driverEventService: {
     admitDriverEventAttempt(input: DriverEventAttemptAdmissionInput): Promise<{ attemptId: string; attemptNumber: number }>;
@@ -664,6 +670,45 @@ export function registerDriverEventRoutes(
               : error.code === 'ROUTE_SCOPE_REJECTED' ? 403
                 : 409;
             return reply.code(status).send(errorResponse(error.code, error.message));
+          }
+          throw error;
+        }
+      }
+    );
+  }
+
+  const driverDestinationVisitsService = dependencies.driverDestinationVisitsService;
+  if (driverDestinationVisitsService !== undefined) {
+    // The driver's own visits to a destination with the notes of each visit. Readable without an open route.
+    app.get<{ Params: DriverDestinationNotesParams; Querystring: { cursor?: unknown } }>(
+      '/driver/destinations/:destinationId/visits',
+      async (request, reply) => {
+        const authentication = await authenticateDriverRouteOrAccountRequest(request, dependencies);
+        if (authentication.status !== 'authenticated') {
+          return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
+        }
+        reply.header('Cache-Control', 'private, no-store');
+        let destinationId: string;
+        try {
+          destinationId = readRequiredString(request.params.destinationId);
+        } catch {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination visits request'));
+        }
+        const cursor = typeof request.query.cursor === 'string' && request.query.cursor !== '' ? request.query.cursor : null;
+        try {
+          const result = await driverDestinationVisitsService.list({
+            cursor,
+            destinationId,
+            driverId: authentication.context.driverId,
+            shopId: authentication.context.shopId
+          });
+          return reply.code(200).send({ data: result, error: null });
+        } catch (error) {
+          if (error instanceof DriverDestinationVisitsCursorError) {
+            return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination visits cursor'));
+          }
+          if (error instanceof DriverDestinationVisitsScopeError) {
+            return reply.code(404).send(errorResponse('DESTINATION_NOT_FOUND', 'Destination is not visible to this driver'));
           }
           throw error;
         }

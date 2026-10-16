@@ -449,6 +449,7 @@ model Shop {
   deliveryCustomerProfileOrderLinks    DeliveryCustomerProfileOrderLink[]
   destinationTips                      DestinationTip[]
   destinationTipAudits                 DestinationTipAudit[]
+  destinationNoteRevisions             DestinationNoteRevision[]
   routeGroupings                       RouteGrouping[]
   routeGroupingOrders                  RouteGroupingOrder[]
   routeGroupingPolygons                RouteGroupingPolygon[]
@@ -1294,6 +1295,7 @@ model DeliveryCustomerProfile {
   mergedProfiles                     DeliveryCustomerProfile[]          @relation("DeliveryCustomerProfileMerge")
   orderLinks                         DeliveryCustomerProfileOrderLink[]
   destinationTips                    DestinationTip[]
+  noteRevisions                      DestinationNoteRevision[]
   currentOrders                      Order[]                            @relation("OrderCurrentDestination")
   dsvAuditEvents                     DsvAuditEvent[]
   dsvDispatchImportRows              DsvDispatchImportRow[]
@@ -1332,6 +1334,29 @@ model DestinationTip {
   @@index([shopId, destinationId, status, updatedAt])
   @@index([shopId, sourceDeliveryStopId])
   @@map("destination_tips")
+}
+
+// Append-only history of the driver destination notes. The driverMemo/driverOpenTime/... columns on
+// DeliveryCustomerProfile stay the current values; each change also adds one row per changed field here,
+// so a driver can read the notes as they were on an earlier visit. LEGACY rows are the values present
+// when this table was created.
+model DestinationNoteRevision {
+  id            String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId        String                  @db.Uuid
+  shop          Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  destinationId String                  @db.Uuid
+  destination   DeliveryCustomerProfile @relation(fields: [destinationId, shopId], references: [id, shopId], onDelete: Cascade)
+  field         String                  @db.VarChar(32)
+  value         String?                 @db.Text
+  source        String                  @db.VarChar(16)
+  driverId      String?                 @db.Uuid
+  routePlanId   String?                 @db.Uuid
+  changedAt     DateTime                @db.Timestamptz(6)
+  createdAt     DateTime                @default(now()) @db.Timestamptz(6)
+
+  @@index([shopId, destinationId, changedAt])
+  @@index([shopId, routePlanId])
+  @@map("destination_note_revisions")
 }
 
 model DestinationTipAudit {

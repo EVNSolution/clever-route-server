@@ -7,6 +7,10 @@ import {
 } from '../src/modules/driver/driver-self-service.types.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
 import {
+  DriverDestinationVisitsCursorError,
+  DriverDestinationVisitsScopeError
+} from '../src/modules/driver/driver-destination-visits.repository.js';
+import {
   signDriverAccountToken,
   signDriverRouteToken
 } from '../src/modules/driver/driver-token-verifier.js';
@@ -150,6 +154,25 @@ describe('Driver self-service routes', () => {
 
       expect(response.statusCode).toBe(401);
       expect(selfService.listDriverRoutes).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('lists destination visits with the account token and maps scope and cursor errors', async () => {
+    const { app, destinationVisits } = await createAppHarness();
+    const headers = { authorization: `Bearer ${accountToken()}` };
+    try {
+      const ok = await app.inject({ headers, method: 'GET', url: '/driver/destinations/destination-id/visits?cursor=abc' });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.headers['cache-control']).toBe('private, no-store');
+      expect(ok.json()).toEqual({ data: { nextCursor: null, visits: [] }, error: null });
+      expect(destinationVisits.list).toHaveBeenCalledWith({
+        cursor: 'abc', destinationId: 'destination-id', driverId: 'driver-id', shopId: 'shop-id'
+      });
+      expect((await app.inject({ headers, method: 'GET', url: '/driver/destinations/hidden/visits' })).statusCode).toBe(404);
+      expect((await app.inject({ headers, method: 'GET', url: '/driver/destinations/destination-id/visits?cursor=broken' })).statusCode).toBe(400);
+      expect((await app.inject({ method: 'GET', url: '/driver/destinations/destination-id/visits' })).statusCode).toBe(401);
     } finally {
       await app.close();
     }
@@ -552,6 +575,14 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
     shopId: 'shop-id'
   }));
 
+  const destinationVisits = {
+    list: vi.fn<NonNullable<DriverApiDependencies['driverDestinationVisitsService']>['list']>((request) => {
+      if (request.cursor === 'broken') return Promise.reject(new DriverDestinationVisitsCursorError('bad'));
+      if (request.destinationId === 'hidden') return Promise.reject(new DriverDestinationVisitsScopeError());
+      return Promise.resolve({ nextCursor: null, visits: [] });
+    })
+  };
+
   const resolveDriverAccountScope = vi.fn<
     NonNullable<NonNullable<DriverApiDependencies['driverTokenAccessRepository']>['resolveDriverAccountScope']>
   >(() => Promise.resolve(input.activeToken === false ? null : {
@@ -569,6 +600,7 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
         recordDriverEvent: vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'unused-event-id' }))
       },
       driverSelfService: selfService,
+      driverDestinationVisitsService: destinationVisits,
       driverTokenAccessRepository: {
         isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
         isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
@@ -580,7 +612,7 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
     }
   });
 
-  return { app, resolveDriverAccountScope, resolveDriverRouteAccess, selfService };
+  return { app, destinationVisits, resolveDriverAccountScope, resolveDriverRouteAccess, selfService };
 }
 
 function driverToken(): string {

@@ -36,7 +36,18 @@ export type DriverDestinationNotesServiceContract = {
   update(input: UpdateDriverDestinationNotesInput): Promise<DriverDestinationNotes>;
 };
 
-type DestinationNotesPrisma = Pick<PrismaClient, 'deliveryCustomerProfile' | 'routePlanStop'>;
+type DestinationNotesPrisma = Pick<PrismaClient, '$transaction' | 'deliveryCustomerProfile' | 'destinationNoteRevision' | 'routePlanStop'>;
+
+export type DestinationNoteField = 'lunchEntryStatus' | 'lunchTimeRange' | 'memo' | 'openTime' | 'requiredArrivalTime';
+
+// Profile column of each note field; a change to a column is also written to destination_note_revisions.
+export const DESTINATION_NOTE_COLUMNS = [
+  ['memo', 'driverMemo'],
+  ['openTime', 'driverOpenTime'],
+  ['lunchTimeRange', 'driverLunchTimeRange'],
+  ['lunchEntryStatus', 'driverLunchEntryStatus'],
+  ['requiredArrivalTime', 'driverRequiredArrivalTime'],
+] as const satisfies ReadonlyArray<readonly [DestinationNoteField, string]>;
 export type DestinationNotesRecord = {
   driverLunchEntryStatus: string | null;
   driverLunchEntryStatusUpdatedAt: Date | null;
@@ -168,13 +179,28 @@ export class PrismaDriverDestinationNotesRepository implements DriverDestination
       changedAt
     );
 
+    const revisions = DESTINATION_NOTE_COLUMNS
+      .filter(([, column]) => Object.prototype.hasOwnProperty.call(data, column))
+      .map(([field, column]) => ({
+        changedAt,
+        destinationId: projection.destinationId,
+        driverId: input.driverId,
+        field,
+        routePlanId: input.routePlanId,
+        shopId: input.shopId,
+        source: 'DRIVER',
+        value: data[column] as string | null
+      }));
     const saved = Object.keys(data).length === 0
       ? current
-      : await this.prisma.deliveryCustomerProfile.update({
-          data,
-          select: driverDestinationNotesSelect,
-          where: { id_shopId: { id: projection.destinationId, shopId: input.shopId } }
-        });
+      : (await this.prisma.$transaction([
+          this.prisma.deliveryCustomerProfile.update({
+            data,
+            select: driverDestinationNotesSelect,
+            where: { id_shopId: { id: projection.destinationId, shopId: input.shopId } }
+          }),
+          this.prisma.destinationNoteRevision.createMany({ data: revisions })
+        ]))[0];
     if (Object.keys(data).length === 0) return projection.notes;
     const nextProfiles = profiles.map((profile) => profile.id === projection.destinationId ? { ...profile, ...saved } : profile);
     return buildCanonicalDestinationProjection(nextProfiles).get(input.destinationId)?.notes ?? toDriverDestinationNotes(saved);
