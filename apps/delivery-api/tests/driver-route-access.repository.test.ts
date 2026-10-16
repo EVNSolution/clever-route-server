@@ -47,6 +47,38 @@ describe('PrismaDriverRouteAccessRepository', () => {
       .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ routeAccess: { routePlanId: routePlanId } }] });
   });
 
+  test('falls back to the driver phone timezone when the route carries none', async () => {
+    // Prod routes carry no timezone. 2026-10-16T22:00Z is Saturday 07:00 in Seoul but Friday 18:00 in Toronto.
+    const fridayRoute = { ...routePlanRecord({ planDate: '2026-10-16' }), constraints: {} };
+    const now = () => new Date('2026-10-16T22:00:00.000Z');
+    const toronto = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ deviceTimezone: 'America/Toronto', phoneRoutePlans: [fridayRoute] }).prisma as never, undefined, now
+    );
+    await expect(toronto.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ routeAccess: { routePlanId: routePlanId } }] });
+
+    const seoul = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({
+        deviceTimezone: 'Asia/Seoul',
+        phoneDrivers: [{ authSubject: 'driver-auth-subject', id: 'driver-id', status: 'ACTIVE' }],
+        phoneRoutePlans: [fridayRoute]
+      }).prisma as never, undefined, now
+    );
+    await expect(seoul.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [] });
+  });
+
+  test('keeps a route for one day of grace when neither route nor phone has a timezone', async () => {
+    const noTimezone = (planDate: string) => ({ ...routePlanRecord({ planDate }), constraints: {} });
+    const repository = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ phoneRoutePlans: [noTimezone('2026-10-15'), noTimezone('2026-10-14')] }).prisma as never,
+      undefined,
+      () => new Date('2026-10-16T22:00:00.000Z')
+    );
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ companyGuidance: { deliveryDate: '2026-10-15' } }] });
+  });
+
   test('does not issue access when two current child versions are projected', async () => {
     const routePlan = routePlanRecord();
     const child = routePlan.routeGroupingChildVersions?.[0];
@@ -868,11 +900,15 @@ function createPrismaHarness(
     phoneRoutePlans?: ReturnType<typeof routePlanRecord>[];
     phoneRoutePlanResponses?: Array<ReturnType<typeof routePlanRecord>[]>;
     publicRouteContext?: { groupingId: string } | null;
+    deviceTimezone?: string | null;
   } = {}
 ): {
   prisma: {
     driver: {
       findMany: ReturnType<typeof vi.fn>;
+    };
+    driverPushToken: {
+      findFirst: ReturnType<typeof vi.fn>;
     };
     routeGroupingChildVersion: {
       findFirst: ReturnType<typeof vi.fn>;
@@ -892,6 +928,11 @@ function createPrismaHarness(
     prisma: {
       driver: {
         findMany: vi.fn(() => Promise.resolve(overrides.phoneDrivers ?? []))
+      },
+      driverPushToken: {
+        findFirst: vi.fn(() => Promise.resolve(
+          overrides.deviceTimezone === undefined || overrides.deviceTimezone === null ? null : { timezone: overrides.deviceTimezone }
+        ))
       },
       routeGroupingChildVersion: {
         findFirst: vi.fn(() => Promise.resolve(overrides.publicRouteContext ?? null))
