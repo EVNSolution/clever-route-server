@@ -35,6 +35,12 @@ import {
   type UvisVehicleTrailMarker,
 } from '../uvis/uvis-vehicle-trail-materializer.js';
 import { buildUvisVehicleDailyRoute } from '../uvis/uvis-vehicle-daily-route.js';
+import {
+  findCenterArrivalMs,
+  findLastStopReached,
+  trimTrailToServiceWindow,
+  type DsvV1ServiceWindow,
+} from './dsv-service-window.js';
 import { hasImplausibleGpsJump } from '../uvis/uvis-vehicle-trail-evidence.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 import { DEPOT_DEPARTURE_LOOKBACK_MS, resolveDepotDeparture } from '../route-tracking/depot-departure.js';
@@ -140,6 +146,8 @@ export type DsvV1VehicleGpsTrailHistoryInput = {
   includeDailyRoute?: boolean;
   serviceDate?: string | null;
   vehicleId: string;
+  // 'service' keeps only center arrival to last stop arrival; see dsv-service-window.ts.
+  window?: 'service';
 };
 
 export type DsvV1VehicleGpsTrailSample = {
@@ -179,6 +187,8 @@ export type DsvV1VehicleGpsTrailSession = {
 export type DsvV1VehicleGpsTrailHistoryResult = {
   dailyRoute?: ReturnType<typeof buildUvisVehicleDailyRoute>;
   serviceDate: string;
+  // Present only for window=service. Null when no center arrival was found and the full trail is returned.
+  serviceWindow?: DsvV1ServiceWindow | null;
   sessions: DsvV1VehicleGpsTrailSession[];
   timezone: string;
   vehicleId: string;
@@ -1038,7 +1048,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     if (vehicle === null) throw new DsvV1ReadQueryError('NOT_FOUND', 'Vehicle not found.');
 
     const shop = await this.prisma.shop.findUnique({
-      select: { routeOpsUiSettings: true },
+      select: { defaultDepotLatitude: true, defaultDepotLongitude: true, routeOpsUiSettings: true },
       where: { id: shopId },
     });
     const plannedDepartureTime = normalizeRouteOpsUiSettings(shop?.routeOpsUiSettings).plannedDepartureTime;
@@ -1126,22 +1136,74 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       sessions,
       vehicleId: vehicle.id,
     });
-    return {
-      ...(input.includeDailyRoute === true ? {
-        dailyRoute: buildUvisVehicleDailyRoute(validSamples.map((sample) => ({
+    const dailyRoute = input.includeDailyRoute === true
+      ? buildUvisVehicleDailyRoute(validSamples.map((sample) => ({
           ignitionOn: sample.ignitionOn,
           latitude: sample.latitude,
           longitude: sample.longitude,
           observedAt: sample.observedAt.toISOString(),
           speedKph: decimalToNumber(sample.speedKph),
           staleAfter: sample.staleAfter.toISOString(),
-        })), materializedTrail),
-      } : {}),
-      serviceDate,
-      sessions: sortGpsTrailSessions([...sessions, ...uncoveredSessions]),
-      timezone,
-      vehicleId: vehicle.id,
+        })), materializedTrail)
+      : undefined;
+    const allSessions = sortGpsTrailSessions([...sessions, ...uncoveredSessions]);
+    const base = { serviceDate, timezone, vehicleId: vehicle.id };
+    if (input.window !== 'service') {
+      return { ...base, ...(dailyRoute === undefined ? {} : { dailyRoute }), sessions: allSessions };
+    }
+
+    // Center = settings departure location (shops.defaultDepotLatitude/Longitude), the value the control UI reads.
+    const latitude = decimalToNumber(shop?.defaultDepotLatitude ?? null);
+    const longitude = decimalToNumber(shop?.defaultDepotLongitude ?? null);
+    const startMs = findCenterArrivalMs(
+      validSamples,
+      latitude === null || longitude === null ? null : { latitude, longitude },
+    );
+    if (startMs === null) {
+      return { ...base, ...(dailyRoute === undefined ? {} : { dailyRoute }), serviceWindow: null, sessions: allSessions };
+    }
+    const end = findLastStopReached(await this.listVehicleServiceStops(shopId, routePlans.map((routePlan) => routePlan.id)));
+    const trimmed = trimTrailToServiceWindow(allSessions, dailyRoute, { endMs: end?.endedAtMs ?? null, startMs });
+    return {
+      ...base,
+      ...(trimmed.dailyRoute === undefined ? {} : { dailyRoute: trimmed.dailyRoute }),
+      serviceWindow: {
+        endedAt: end === null ? null : new Date(end.endedAtMs).toISOString(),
+        endSource: end?.source ?? null,
+        startedAt: new Date(startMs).toISOString(),
+        startSource: 'CENTER_STAY',
+      },
+      sessions: trimmed.sessions,
     };
+  }
+
+  // Stops of the given route plans with the events that count as reaching them, for the service window end.
+  private async listVehicleServiceStops(
+    shopId: string,
+    routePlanIds: readonly string[],
+  ): Promise<Array<{ events: Array<{ eventType: string; occurredAt: Date }> }>> {
+    if (routePlanIds.length === 0) return [];
+    const plans = await this.prisma.routePlan.findMany({
+      select: {
+        id: true,
+        routeStops: {
+          select: {
+            deliveryStop: {
+              select: {
+                driverEvents: {
+                  select: { eventType: true, occurredAt: true, routePlanId: true },
+                  where: { eventType: { in: ['STOP_ARRIVED', 'STOP_DELIVERED', 'STOP_FAILED'] }, shopId },
+                },
+              },
+            },
+          },
+        },
+      },
+      where: { id: { in: [...routePlanIds] }, shopId },
+    });
+    return plans.flatMap((plan) => plan.routeStops.map((stop) => ({
+      events: stop.deliveryStop.driverEvents.filter((event) => event.routePlanId === plan.id),
+    })));
   }
 
   // Departure times per route plan: the first ROUTE_STARTED (the button press) and the GPS-derived depot leave time.

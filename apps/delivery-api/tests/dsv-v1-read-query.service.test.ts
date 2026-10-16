@@ -2011,6 +2011,134 @@ describe('PrismaDsvV1ReadQueryService', () => {
     }
   });
 
+  describe('vehicle GPS trail history service window', () => {
+    // Center 37.5/127.0 is the shop departure location. Default sample position is about 13 km away.
+    const at = (time: string) => `2026-08-04T${time}:00.000Z`;
+    const sample = (time: string, place: { latitude?: string; longitude?: string } = {}) =>
+      gpsSample({ ...place, observedAt: at(time), staleAfter: at('23:00') });
+    const centerPlace = { latitude: '37.5000000', longitude: '127.0000000' };
+    const samples = [
+      sample('00:00'),
+      sample('00:20', centerPlace),
+      sample('00:25', centerPlace),
+      sample('00:40', centerPlace),
+      sample('01:00'),
+      sample('02:00', { latitude: '37.6500000' }),
+      sample('03:00', { latitude: '37.7000000' }),
+    ];
+    const routePlanRow = {
+      constraints: { scheduledStartAt: at('00:00') },
+      depotLatitude: '37.5000000',
+      depotLongitude: '127.0000000',
+      driverEvents: [{ eventType: 'ROUTE_STARTED', id: 'start-1', occurredAt: new Date(at('00:00')) }],
+      id: 'route-a',
+      planDate: new Date('2026-08-04T00:00:00.000Z'),
+    };
+    const stopEvents = (events: Array<{ eventType: string; time: string }>) => ({
+      deliveryStop: {
+        driverEvents: events.map((event) => ({
+          eventType: event.eventType,
+          occurredAt: new Date(at(event.time)),
+          routePlanId: 'route-a',
+        })),
+      },
+    });
+    function harness(options: {
+      center?: { latitude: string | null; longitude: string | null };
+      stops?: Array<ReturnType<typeof stopEvents>>;
+    } = {}) {
+      const prisma = prismaMock({
+        commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+        routePlan: { findMany: vi.fn((args: { select?: { routeStops?: unknown } }) => Promise.resolve(
+          args.select?.routeStops === undefined
+            ? [routePlanRow]
+            : [{ id: 'route-a', routeStops: options.stops ?? [] }],
+        )) },
+        shop: { findUnique: vi.fn(() => Promise.resolve({
+          defaultDepotLatitude: (options.center ?? { latitude: '37.5000000' }).latitude,
+          defaultDepotLongitude: (options.center ?? { longitude: '127.0000000' }).longitude,
+          routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:30' },
+        })) },
+        uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve(samples)) },
+        vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+      });
+      const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+      return { prisma, service };
+    }
+    const countSamples = (result: Awaited<ReturnType<PrismaDsvV1ReadQueryService['listVehicleGpsTrailHistory']>>) =>
+      result.sessions.flatMap((session) => session.segments.flatMap((segment) => segment.samples)).length;
+
+    test('without window the response and queries are the same as before', async () => {
+      const { prisma, service } = harness();
+      const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+        serviceDate: '2026-08-04',
+        vehicleId: 'vehicle-a',
+      });
+
+      expect(Object.hasOwn(result, 'serviceWindow')).toBe(false);
+      expect(countSamples(result)).toBe(samples.length);
+      expect(prisma.routePlan.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    test('window=service cuts from the center stay to arrival at the last stop', async () => {
+      const { service } = harness({
+        stops: [
+          stopEvents([{ eventType: 'STOP_ARRIVED', time: '01:00' }, { eventType: 'STOP_DELIVERED', time: '01:10' }]),
+          // No arrival event: the delivered time stands in, and it is earlier than the other arrival.
+          stopEvents([{ eventType: 'STOP_DELIVERED', time: '01:30' }]),
+          stopEvents([{ eventType: 'STOP_ARRIVED', time: '02:00' }, { eventType: 'STOP_DELIVERED', time: '02:30' }]),
+        ],
+      });
+      const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+        serviceDate: '2026-08-04',
+        vehicleId: 'vehicle-a',
+        window: 'service',
+      });
+
+      expect(result.serviceWindow).toEqual({
+        endedAt: at('02:00'),
+        endSource: 'STOP_ARRIVED',
+        startedAt: at('00:20'),
+        startSource: 'CENTER_STAY',
+      });
+      const kept = result.sessions.flatMap((session) => session.segments.flatMap((segment) => segment.samples));
+      expect(kept.map((item) => item.observedAt)).toEqual([
+        at('00:20'), at('00:25'), at('00:40'), at('01:00'), at('02:00'),
+      ]);
+    });
+
+    test('an unreached stop leaves the end open', async () => {
+      const { service } = harness({
+        stops: [stopEvents([{ eventType: 'STOP_ARRIVED', time: '01:00' }]), stopEvents([])],
+      });
+      const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+        serviceDate: '2026-08-04',
+        vehicleId: 'vehicle-a',
+        window: 'service',
+      });
+
+      expect(result.serviceWindow).toEqual({
+        endedAt: null,
+        endSource: null,
+        startedAt: at('00:20'),
+        startSource: 'CENTER_STAY',
+      });
+      expect(countSamples(result)).toBe(samples.length - 1);
+    });
+
+    test('without a center arrival serviceWindow is null and the whole trail is returned', async () => {
+      const { service } = harness({ center: { latitude: null, longitude: null } });
+      const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+        serviceDate: '2026-08-04',
+        vehicleId: 'vehicle-a',
+        window: 'service',
+      });
+
+      expect(result.serviceWindow).toBeNull();
+      expect(countSamples(result)).toBe(samples.length);
+    });
+  });
+
   test('developer admin excludes review route sessions and review driver assignments', async () => {
     const gpsPrisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },

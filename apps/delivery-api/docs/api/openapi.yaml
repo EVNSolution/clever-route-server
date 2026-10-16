@@ -588,6 +588,13 @@ paths:
           in: query
           required: false
           schema: { type: boolean, default: false }
+        - name: window
+          in: query
+          required: false
+          description: >-
+            `service` returns only the service window: center arrival to arrival at the last stop. Without it the
+            whole service date is returned and `serviceWindow` is absent. Any other value is a 400.
+          schema: { type: string, enum: [service] }
       responses:
         '200':
           description: Vehicle GPS trail sessions split at stale gaps and implausible raw jumps, with an optional daily route.
@@ -8675,6 +8682,32 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/DsvV1VehicleDailyRoute'
+        serviceWindow:
+          nullable: true
+          description: >-
+            Present only for `window=service`. Null when no center arrival was found (no departure location, or no
+            stay of 10 minutes or more within 300 m); the whole trail is then returned.
+          type: object
+          required: [startedAt, endedAt, startSource, endSource]
+          properties:
+            startedAt:
+              type: string
+              format: date-time
+              description: First point of the first stay of 10 minutes or more within 300 m of the departure location.
+            endedAt:
+              type: string
+              format: date-time
+              nullable: true
+              description: Arrival at the last stop. Null while any stop is not reached yet.
+            startSource:
+              type: string
+              enum: [CENTER_STAY]
+            endSource:
+              type: string
+              nullable: true
+              enum: [STOP_ARRIVED, STOP_RESULT, null]
+              description: STOP_RESULT when a stop has no arrival event and its delivered or failed event stands in.
+          additionalProperties: false
       additionalProperties: false
     DsvV1VehicleDailyRoute:
       type: object
