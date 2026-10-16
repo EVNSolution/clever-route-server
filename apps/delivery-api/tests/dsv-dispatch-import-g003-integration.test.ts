@@ -538,7 +538,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     });
     await expect(prisma.driverRouteNotificationAttempt.count({ where: { shopId: fixture.shopId } })).resolves.toBe(0);
 
-    const driverAccess = new PrismaDriverRouteAccessRepository(prisma);
+    const driverAccess = new PrismaDriverRouteAccessRepository(prisma, undefined, fixtureNow);
     await expect(driverAccess.lookupRouteAccess({
       accountId: firstAccountId,
       routeContext: firstOrder.currentRouteVersion.routePlan.id,
@@ -816,7 +816,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     await expect(prisma.routeGroupingChildVersion.findFirstOrThrow({
       where: { routePlanId, status: 'CURRENT', supersededAt: null },
     })).resolves.toMatchObject({ notificationStatus: 'SKIPPED', publishedAt: null });
-    await expect(new PrismaDriverRouteAccessRepository(prisma).lookupRouteAccess({
+    await expect(new PrismaDriverRouteAccessRepository(prisma, undefined, fixtureNow).lookupRouteAccess({
       accountId,
       routeContext: routePlanId,
     })).resolves.toEqual({ status: 'NOT_FOUND' });
@@ -2353,6 +2353,9 @@ async function createManualReadyRoutePlan(prisma: PrismaClient, input: {
   });
   return { routePlanId: routePlan.id };
 }
+
+// Route lookup hides ready routes of past days; the fixtures are dated 2026-07-22.
+const fixtureNow = (): Date => new Date('2026-07-22T12:00:00.000Z');
 
 function dispatchInput(sellerOrderKey: string): DsvDispatchImportInput {
   return {
