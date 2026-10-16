@@ -7922,6 +7922,10 @@ components:
         estimatedArrivalAt:
           type: string
           format: date-time
+        etaCalculatedAt:
+          type: string
+          format: date-time
+          description: Time the current route plan stop ETA was last calculated. Omitted when the ETA has no calculation time.
         etaStatus:
           $ref: '#/components/schemas/DsvV1EtaStatus'
         eventSummary:

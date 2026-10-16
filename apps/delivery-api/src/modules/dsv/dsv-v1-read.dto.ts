@@ -77,6 +77,7 @@ export type DsvV1SessionDto = {
 
 export type DsvV1RoutePlanStopEtaInput = {
   estimatedArrivalAt?: Date | string | null;
+  etaCalculatedAt?: Date | string | null;
   etaInputRouteVersionId?: string | null;
   etaSource?: string | null;
   etaStatus: DsvV1EtaStatus;
@@ -134,6 +135,7 @@ export type DsvV1SellerOrderSummaryDto = {
   destinationId: string;
   driverId?: string;
   estimatedArrivalAt?: string;
+  etaCalculatedAt?: string;
   etaStatus: DsvV1EtaStatus;
   eventSummary: DsvV1EventSummaryDto[];
   latitude?: number;
@@ -605,6 +607,7 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
     destinationId: row.destinationId,
     ...(row.driverId === undefined || row.driverId === null ? {} : { driverId: row.driverId }),
     ...optionalIso('estimatedArrivalAt', row.estimatedArrivalAt),
+    ...optionalIso('etaCalculatedAt', row.etaCalculatedAt),
     etaStatus: row.etaStatus,
     eventSummary: mapDsvV1EventSummary(row.eventRows ?? []),
     ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),
