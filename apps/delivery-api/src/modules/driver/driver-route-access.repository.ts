@@ -16,7 +16,13 @@ import type {
 
 import { isPrivateDriverDemoAppId, isPrivateDriverDemoScope } from './private-driver-demo.js';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
-import { driverServiceDate, driverServiceDateAsDbDate } from './driver-route-timezone.js';
+import {
+  DRIVER_SERVICE_TIMEZONE,
+  driverServiceDate,
+  driverServiceDateAsDbDate,
+  isIanaTimezone,
+  localDateInTimeZone
+} from './driver-route-timezone.js';
 import type {
   DriverRouteAccessAmbiguousMatch,
   DriverRouteAccessCompanyGuidance,
@@ -133,7 +139,11 @@ export class PrismaDriverRouteAccessRepository {
       }
     });
 
-    if (routePlan === null || hasExpiredKfoodNavigation(routePlan, this.now())) {
+    if (
+      routePlan === null
+      || hasExpiredKfoodNavigation(routePlan, this.now())
+      || !isCurrentDriverRoute(routePlan, this.now())
+    ) {
       return { status: 'NOT_FOUND' };
     }
 
@@ -162,7 +172,10 @@ export class PrismaDriverRouteAccessRepository {
     if (tenantVisiblePlans.length > 0 && visiblePlans.length === 0) {
       return { status: 'ROUTES_FOUND', routes: [] };
     }
-    const routes = visiblePlans.flatMap((routePlan): DriverRouteAccessInvitedRoute[] => {
+    // A ready route of a past delivery date is a leftover assignment: the phone must not list it,
+    // because tapping it while another route is active releases that route.
+    const currentPlans = visiblePlans.filter(plan => isCurrentDriverRoute(plan, this.now()));
+    const routes = currentPlans.flatMap((routePlan): DriverRouteAccessInvitedRoute[] => {
       const result = mapRoutePlan(routePlan, { accountId, routeContext: routePlan.id });
       return result.status === 'INVITED' ? [result] : [];
     });
@@ -461,6 +474,14 @@ function isDriverVisibleRoutePlan(routePlan: DriverRoutePlanRecord): boolean {
 function hasExpiredKfoodNavigation(routePlan: DriverRoutePlanRecord, now: Date): boolean {
   return isKfoodDeliveryScope({ ...routePlan.shop, shopId: routePlan.shop.id, accountId: routePlan.driver?.accountId ?? null })
     && hasDeliveryNavigationGraceExpired(routePlan, now);
+}
+
+/** In-progress routes stay listed on any date; not-started routes only for today or a later delivery date. */
+function isCurrentDriverRoute(routePlan: DriverRoutePlanRecord, now: Date): boolean {
+  if (toRouteExecutionStatus(routePlan.status) === 'IN_PROGRESS') return true;
+  const timezone = readString(objectOrNull(routePlan.constraints)?.timezone);
+  const today = localDateInTimeZone(now, timezone !== null && isIanaTimezone(timezone) ? timezone : DRIVER_SERVICE_TIMEZONE);
+  return routePlan.planDate.toISOString().slice(0, 10) >= today;
 }
 
 function isPrivateRouteVisible(routePlan: DriverRoutePlanRecord, accountId: string): boolean {

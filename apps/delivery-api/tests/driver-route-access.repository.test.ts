@@ -1,5 +1,5 @@
 import { visibleDsvRouteWhere } from '../src/modules/dsv/dsv-test-visibility.js';
-import { describe, expect, test, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
 import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
@@ -7,6 +7,46 @@ import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/ro
 const routePlanId = '11111111-1111-4111-8111-111111111111';
 
 describe('PrismaDriverRouteAccessRepository', () => {
+  // The fixture route is dated 2026-05-12; the lookup hides ready routes of an earlier delivery date.
+  beforeAll(() => { vi.useFakeTimers({ now: new Date('2026-05-12T12:00:00.000Z'), toFake: ['Date'] }); });
+  afterAll(() => { vi.useRealTimers(); });
+
+  test('hides ready routes of a past delivery date and keeps in-progress ones', async () => {
+    const staleReadyId = '44444444-4444-4444-8444-444444444444';
+    const oldInProgressId = '55555555-5555-4555-8555-555555555555';
+    const { prisma } = createPrismaHarness({
+      phoneRoutePlans: [
+        routePlanRecord({ id: staleReadyId, name: 'Leftover', planDate: '2026-05-11' }),
+        routePlanRecord({ id: oldInProgressId, name: 'Overnight', planDate: '2026-05-01', status: 'IN_PROGRESS' }),
+        routePlanRecord({ planDate: '2026-05-12' })
+      ]
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({
+        status: 'ROUTES_FOUND',
+        routes: [{ routeAccess: { routePlanId: oldInProgressId } }, { routeAccess: { routePlanId: routePlanId } }]
+      });
+
+    const byId = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ routePlan: routePlanRecord({ id: staleReadyId, planDate: '2026-05-11' }) }).prisma as never
+    );
+    await expect(byId.lookupRouteAccess({ accountId: 'account-id', routeContext: staleReadyId }))
+      .resolves.toEqual({ status: 'NOT_FOUND' });
+  });
+
+  test('judges today by the route timezone, not UTC', async () => {
+    // 2026-05-12T03:00Z is still 2026-05-11 23:00 in America/Toronto (the fixture timezone).
+    const repository = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ phoneRoutePlans: [routePlanRecord({ planDate: '2026-05-11' })] }).prisma as never,
+      undefined,
+      () => new Date('2026-05-12T03:00:00.000Z')
+    );
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ routeAccess: { routePlanId: routePlanId } }] });
+  });
+
   test('does not issue access when two current child versions are projected', async () => {
     const routePlan = routePlanRecord();
     const child = routePlan.routeGroupingChildVersions?.[0];
