@@ -1118,9 +1118,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
 
     const confirmed = await build(routeWith([started])).listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
     expect(confirmed.items[0]?.actualDepartedAt).toEqual(new Date('2026-07-22T00:40:00.000Z'));
+    expect(confirmed.items[0]?.routeStartedAt).toEqual(started.occurredAt);
     expect(findSamples).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
-        observedAt: expect.objectContaining({ gte: started.occurredAt }) as unknown,
+        // Reads from the 3 h look-back so a start pressed after leaving the depot still finds the depot stay.
+        observedAt: expect.objectContaining({ gte: new Date('2026-07-21T21:00:00.000Z') }) as unknown,
         sourceKind: 'VEHICLE_GPS',
         vehicleId: 'vehicle-a',
       }) as unknown,
@@ -1133,10 +1135,21 @@ describe('PrismaDsvV1ReadQueryService', () => {
     ])).listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
     expect(completedEarly.items[0]?.actualDepartedAt).toBeNull();
 
+    // A start pressed after the vehicle left: the last depot stay before the start gives the departure.
+    findSamples.mockImplementationOnce(() => Promise.resolve([
+      sample('p1', '2026-07-21T23:30:00.000Z', '37.5001000'),
+      sample('p2', '2026-07-21T23:45:00.000Z', '37.5300000'),
+      sample('p3', '2026-07-22T00:10:00.000Z', '37.6000000'),
+    ]));
+    const startedLate = await build(routeWith([started])).listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
+    expect(startedLate.items[0]?.actualDepartedAt).toEqual(new Date('2026-07-21T23:45:00.000Z'));
+    expect(startedLate.items[0]?.routeStartedAt).toEqual(started.occurredAt);
+
     // Without any ROUTE_STARTED no GPS is read at all.
     findSamples.mockClear();
     const notStarted = await build(routeWith([])).listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
     expect(notStarted.items[0]?.actualDepartedAt).toBeNull();
+    expect(notStarted.items[0]?.routeStartedAt).toBeNull();
     expect(findSamples).not.toHaveBeenCalled();
   });
 

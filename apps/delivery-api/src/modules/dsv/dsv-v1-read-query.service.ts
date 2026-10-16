@@ -43,7 +43,7 @@ import {
 } from './dsv-service-window.js';
 import { hasImplausibleGpsJump } from '../uvis/uvis-vehicle-trail-evidence.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
-import { resolveDepotDeparture, type DepotDeparture } from '../route-tracking/depot-departure.js';
+import { DEPOT_DEPARTURE_LOOKBACK_MS, resolveDepotDeparture } from '../route-tracking/depot-departure.js';
 import {
   occurredAtWithinRouteTrackingEventWindow,
   resolveRouteTrackingEventWindow,
@@ -645,7 +645,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     return {
       items: pageRows.map((row) => toSellerOrderSummaryRow(
         row,
-        departures.get(row.currentRouteVersion?.routePlanId ?? '')?.departedAt ?? null,
+        departures.get(row.currentRouteVersion?.routePlanId ?? '') ?? null,
       )),
       page: toPage(nextOrderCursor(rows, limit, context)),
     };
@@ -1206,13 +1206,15 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     })));
   }
 
-  // Derived departure time per route plan: ROUTE_STARTED events stay untouched, vehicle GPS decides the depot leave time.
-  // ponytail: reads at most depotSampleChunkSize * depotSampleMaxChunks vehicle samples per route plan, so a vehicle that
-  // never reaches the depot within ~5 h of the start stays UNCONFIRMED. Raise the ceiling if real routes need more.
+  // Departure times per route plan: the first ROUTE_STARTED (the button press) and the GPS-derived depot leave time.
+  // ROUTE_STARTED events stay untouched.
+  // ponytail: reads at most depotSampleChunkSize * depotSampleMaxChunks vehicle samples per route plan, from the
+  // look-back before the start, so a vehicle that never reaches the depot within ~5 h stays UNCONFIRMED.
   private async readDepotDepartures(
     shopId: string,
     rows: readonly CustomerDeliveryOrderRow[],
-  ): Promise<Map<string, DepotDeparture>> {
+  ): Promise<Map<string, RouteDepartureTimes>> {
+    const departures = new Map<string, RouteDepartureTimes>();
     const plans = new Map<string, {
       depot: { latitude: number; longitude: number };
       endAt: Date | null;
@@ -1230,7 +1232,9 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       const started = routeEvents
         .filter((event) => event.eventType === 'ROUTE_STARTED')
         .sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime())[0];
-      if (depotLatitude === null || depotLongitude === null || started === undefined) continue;
+      if (started === undefined) continue;
+      departures.set(routePlanId, { departedAt: null, routeStartedAt: started.occurredAt });
+      if (depotLatitude === null || depotLongitude === null) continue;
       const completedAt = routeEvents
         .filter((event) => event.eventType === 'ROUTE_COMPLETED' && event.occurredAt.getTime() >= started.occurredAt.getTime())
         .map((event) => event.occurredAt)
@@ -1247,11 +1251,10 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         vehicleId: routePlan.vehicleId,
       });
     }
-    const departures = new Map<string, DepotDeparture>();
     await Promise.all([...plans].map(async ([routePlanId, plan]) => {
       const samples: Array<{ id: string; latitude: number; longitude: number; observedAt: Date }> = [];
       const windowEnd = plan.endAt ?? new Date(plan.startedAt.getTime() + depotDepartureMaxWindowMs);
-      let departure: DepotDeparture | null = null;
+      let departedAt: Date | null = null;
       for (let chunkIndex = 0; chunkIndex < depotSampleMaxChunks; chunkIndex += 1) {
         const lastObservedAt = samples.at(-1)?.observedAt;
         const chunk = await this.prisma.uvisVehicleTelemetrySample.findMany({
@@ -1262,7 +1265,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
             latitude: { not: null },
             longitude: { not: null },
             observedAt: {
-              gte: plan.startedAt,
+              gte: new Date(plan.startedAt.getTime() - DEPOT_DEPARTURE_LOOKBACK_MS),
               lt: windowEnd,
               ...(lastObservedAt === undefined ? {} : { gt: lastObservedAt }),
             },
@@ -1278,16 +1281,16 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
             samples.push({ id: sample.id, latitude, longitude, observedAt: sample.observedAt });
           }
         }
-        departure = resolveDepotDeparture({
+        ({ departedAt } = resolveDepotDeparture({
           depot: plan.depot,
           endAt: plan.endAt,
           samples,
           startedAt: plan.startedAt,
           startedPosition: plan.startedPosition,
-        });
-        if (departure.departedAt !== null || chunk.length < depotSampleChunkSize) break;
+        }));
+        if (departedAt !== null || chunk.length < depotSampleChunkSize) break;
       }
-      if (departure !== null) departures.set(routePlanId, departure);
+      departures.set(routePlanId, { departedAt, routeStartedAt: plan.startedAt });
     }));
     return departures;
   }
@@ -1646,6 +1649,8 @@ const recordEventSelect = {
   longitude: true,
   occurredAt: true,
 } satisfies Prisma.DriverEventSelect;
+
+type RouteDepartureTimes = { departedAt: Date | null; routeStartedAt: Date };
 
 const depotSampleChunkSize = 500;
 const depotSampleMaxChunks = 4;
@@ -2011,7 +2016,7 @@ function requireOrderDestinationId(destinationId: string | null, orderId: string
   });
 }
 
-function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow, actualDepartedAt: Date | null = null): DsvV1SellerOrderSummaryRow {
+function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow, departure: RouteDepartureTimes | null = null): DsvV1SellerOrderSummaryRow {
   const stop = row.deliveryStops[0] ?? null;
   const importRow = stop?.dsvDispatchImportRows[0] ?? null;
   const eta = stop === null ? null : selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
@@ -2031,7 +2036,8 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow, actualDepartedAt
   });
   return {
     actualCompletedAt: latestDeliveredAt(stop?.driverEvents ?? []),
-    actualDepartedAt,
+    actualDepartedAt: departure?.departedAt ?? null,
+    routeStartedAt: departure?.routeStartedAt ?? null,
     assignmentStatus: currentRouteDriverId === null ? 'UNASSIGNED' : 'ASSIGNED',
     ...(importRow === null ? {} : { conditionCode: importRow.conditionCode, shippedBoxes: importRow.shippedBoxes }),
     customerId: row.customer?.id ?? '',
