@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import { PrismaDriverAssignedRouteRepository } from './driver-assigned-route.repository.js';
 import { PrismaDriverRouteOrderService } from './driver-route-order.service.js';
 import { PrismaDriverDestinationNotesRepository } from './driver-destination-notes.repository.js';
+import { PrismaDriverDestinationVisitsRepository } from './driver-destination-visits.repository.js';
 import { PrismaDriverConsentRepository } from './driver-consent.repository.js';
 import { PrismaDriverEventRepository } from './driver-event.repository.js';
 import { loadDriverRouteCompletionInvariantMode, loadDriverRouteCompletionReviewRetentionDays } from './driver-route-completion-invariant.js';
@@ -190,6 +191,7 @@ export function loadDriverApiDependencies(
     completionAssistanceService: new PrismaCompletionAssistanceService(input.prisma, { env: input.env }),
     driverRouteOrderService: new PrismaDriverRouteOrderService(input.prisma, routeGeometryRefresher),
     driverDestinationNotesService: new PrismaDriverDestinationNotesRepository(input.prisma),
+    driverDestinationVisitsService: new PrismaDriverDestinationVisitsRepository(input.prisma),
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma, {
       attemptRetentionDays: loadDriverEventAttemptRetentionPolicy(input.env).retentionDays,

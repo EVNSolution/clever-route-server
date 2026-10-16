@@ -5249,6 +5249,76 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /driver/destinations/{destinationId}/visits:
+    get:
+      tags: [Driver Mobile]
+      summary: List the driver's own visits to a destination, newest first, with the notes of each visit
+      description: >-
+        A visit is a route of this driver with a delivered or failed stop at the destination, including
+        profiles merged into it. notes are the destination notes in force when the visit ended, from
+        destination_note_revisions; changedFields are the fields the driver changed on that route.
+        Accepts a route token or the driver account token. Pages hold 20 visits.
+      operationId: listDriverDestinationVisits
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+        - DriverAccountAccessToken: []
+      parameters:
+        - name: destinationId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: One page of visits.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, error]
+                properties:
+                  error: { type: 'null' }
+                  data:
+                    type: object
+                    required: [visits, nextCursor]
+                    properties:
+                      nextCursor: { type: [string, 'null'] }
+                      visits:
+                        type: array
+                        items:
+                          type: object
+                          required: [routePlanId, routeName, deliveryDate, visitedAt, outcome, orderCount, boxCount, orderNotes, notes, changedFields]
+                          properties:
+                            routePlanId: { type: string }
+                            routeName: { type: string }
+                            deliveryDate: { type: string, format: date }
+                            visitedAt: { type: [string, 'null'], format: date-time }
+                            outcome: { type: string, enum: [DELIVERED, FAILED, PARTIAL] }
+                            orderCount: { type: integer, minimum: 0 }
+                            boxCount: { type: integer, minimum: 0 }
+                            orderNotes: { type: array, items: { type: string } }
+                            changedFields:
+                              type: array
+                              items: { type: string, enum: [memo, openTime, lunchTimeRange, lunchEntryStatus, requiredArrivalTime] }
+                            notes:
+                              type: object
+                              required: [memo, openTime, lunchTimeRange, lunchEntryStatus, requiredArrivalTime]
+                              properties:
+                                memo: { type: [string, 'null'] }
+                                openTime: { type: [string, 'null'] }
+                                lunchTimeRange: { type: [string, 'null'] }
+                                lunchEntryStatus: { type: [string, 'null'] }
+                                requiredArrivalTime: { type: [string, 'null'] }
+        '400':
+          description: Invalid destination or cursor.
+        '401':
+          description: Missing or invalid token.
+        '404':
+          description: The destination is not visible to this driver.
   /driver/destinations/{destinationId}/notes:
     patch:
       tags: [Driver Mobile]

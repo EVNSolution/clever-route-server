@@ -109,6 +109,13 @@ describe('PrismaDriverDestinationNotesRepository', () => {
       select: driverDestinationNotesSelect,
       where: { id_shopId: { id: 'destination-id', shopId: 'shop-id' } }
     });
+    // Each changed field also becomes one revision, tied to the driver and the route of this visit.
+    const revision = { changedAt: now, destinationId: 'destination-id', driverId: 'driver-id', routePlanId: 'route-plan-id', shopId: 'shop-id', source: 'DRIVER' };
+    expect(prisma.destinationNoteRevision.createMany).toHaveBeenCalledWith({ data: [
+      { ...revision, field: 'memo', value: '정문 경비실 호출' },
+      { ...revision, field: 'openTime', value: '08:30' },
+      { ...revision, field: 'lunchEntryStatus', value: 'AVAILABLE' }
+    ] });
     expect(result).toEqual({
       lunchEntryStatus: 'AVAILABLE',
       lunchEntryStatusUpdatedAt: now.toISOString(),
@@ -169,9 +176,13 @@ function createPrismaHarness(input: {
   };
   return {
     prisma: {
+      $transaction: vi.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
       deliveryCustomerProfile: {
         findMany: vi.fn(() => Promise.resolve(input.profiles ?? [existing])),
         update: vi.fn(({ data }: { data: Record<string, unknown> }) => Promise.resolve({ ...updated, ...data }))
+      },
+      destinationNoteRevision: {
+        createMany: vi.fn(({ data }: { data: unknown[] }) => Promise.resolve({ count: data.length }))
       },
       routePlanStop: {
         findFirst: vi.fn(() => Promise.resolve(

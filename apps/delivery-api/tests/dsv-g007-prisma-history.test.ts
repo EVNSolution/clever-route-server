@@ -111,6 +111,7 @@ const dispatchGroupingBackfillMigrationPath = new URL(
 const kfoodDeliveryOptionsMigrationName = '20261009090000_kfood_delivery_options_settlement';
 const driverAverageStopTimeMigrationName = '20261010120000_driver_average_stop_time';
 const dsvCustomerInviteHistoryMigrationName = '20261016100000_dsv_customer_invite_history';
+const destinationNoteRevisionsMigrationName = '20261017090000_destination_note_revisions';
 const kfoodDeliveryOptionsMigrationPath = new URL(
   `../prisma/migrations/${kfoodDeliveryOptionsMigrationName}/migration.sql`,
   import.meta.url
@@ -170,10 +171,11 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(121);
+    expect(migrations).toHaveLength(122);
     expect(migrations[118]).toBe(kfoodDeliveryOptionsMigrationName);
     expect(migrations[119]).toBe(driverAverageStopTimeMigrationName);
     expect(migrations[120]).toBe(dsvCustomerInviteHistoryMigrationName);
+    expect(migrations[121]).toBe(destinationNoteRevisionsMigrationName);
     expect(migrations).toContain('20261008090000_driver_stop_completion_receipts');
     expect(migrations).toContain('20261007140000_kfood_live_route_draft_discard');
     expect(migrations).toContain('20261007120000_kfood_live_route_changes');
@@ -459,7 +461,8 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.slice(0, 118).at(-1)).toBe('20261008090000_dsv_delivery_exception_email');
     expect(migrations.slice(0, 119).at(-1)).toBe(kfoodDeliveryOptionsMigrationName);
     expect(migrations.slice(0, 120).at(-1)).toBe(driverAverageStopTimeMigrationName);
-    expect(migrations.at(-1)).toBe(dsvCustomerInviteHistoryMigrationName);
+    expect(migrations.slice(0, 121).at(-1)).toBe(dsvCustomerInviteHistoryMigrationName);
+    expect(migrations.at(-1)).toBe(destinationNoteRevisionsMigrationName);
   });
 
   test('adds immutable destination completion ownership without a payload backfill or mutable account link', async () => {
@@ -696,7 +699,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('schema preserves historical DB defaults instead of planning default drops', async () => {
     const schema = await readFile(schemaPath, 'utf8');
 
-    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(65);
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(66);
     expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(27);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });
