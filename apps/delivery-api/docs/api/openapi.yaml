@@ -7959,7 +7959,11 @@ components:
         actualDepartedAt:
           type: string
           format: date-time
-          description: Derived depot departure. First vehicle GPS sample outside the depot radius after the depot arrival that follows ROUTE_STARTED. Omitted until the departure is confirmed. The ROUTE_STARTED event is not changed.
+          description: Derived depot departure. First vehicle GPS sample outside the depot radius after the depot arrival that follows ROUTE_STARTED. When the start was pressed after the vehicle had already left, the end of the last depot stay within 3 hours before ROUTE_STARTED. Omitted until the departure is confirmed. The ROUTE_STARTED event is not changed.
+        routeStartedAt:
+          type: string
+          format: date-time
+          description: First ROUTE_STARTED of the route plan (the driver's start button). Omitted until the route starts.
         assignmentStatus:
           type: string
           enum: [UNASSIGNED, ASSIGNED]

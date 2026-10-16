@@ -86,6 +86,8 @@ export type DsvV1RoutePlanStopEtaInput = {
 export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   actualCompletedAt?: Date | string | null;
   actualDepartedAt?: Date | string | null;
+  // First ROUTE_STARTED of the route plan, i.e. when the driver pressed the start button.
+  routeStartedAt?: Date | string | null;
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   conditionCode?: string | null;
   customerId: string;
@@ -126,6 +128,7 @@ export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
 export type DsvV1SellerOrderSummaryDto = {
   actualCompletedAt?: string;
   actualDepartedAt?: string;
+  routeStartedAt?: string;
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   conditionCode?: string;
   customerId: string;
@@ -599,6 +602,7 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
   return {
     ...optionalIso('actualCompletedAt', row.actualCompletedAt),
     ...optionalIso('actualDepartedAt', row.actualDepartedAt),
+    ...optionalIso('routeStartedAt', row.routeStartedAt),
     assignmentStatus: row.assignmentStatus,
     ...(row.conditionCode === undefined || row.conditionCode === null ? {} : { conditionCode: row.conditionCode }),
     customerId: row.customerId,
