@@ -96,6 +96,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       driverId: 'driver-1',
       estimatedArrivalAt: new Date('2026-07-23T01:02:03.000Z'),
       actualDepartedAt: new Date('2026-07-23T00:20:00.000Z'),
+      routeStartedAt: new Date('2026-07-23T00:05:00.000Z'),
       etaCalculatedAt: new Date('2026-07-23T00:50:00.000Z'),
       eventRows: [
         { eventType: 'STOP_ARRIVED', occurredAt: new Date('2026-07-23T00:58:00.000Z') },
@@ -167,6 +168,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       },
       longitude: 127.1234567,
       routePlanId: 'route-plan-1',
+      routeStartedAt: '2026-07-23T00:05:00.000Z',
       routeStopSequence: 4,
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',

@@ -2,6 +2,8 @@ import type { RouteDepotEvidenceV1 } from './route-tracking.types.js';
 
 // Same radius that decides a return to the depot.
 export const DEPOT_RETURN_THRESHOLD_METERS = 150;
+// ponytail: a start pressed more than 3 h after the vehicle left the depot stays UNCONFIRMED; widen if drivers do that.
+export const DEPOT_DEPARTURE_LOOKBACK_MS = 3 * 60 * 60 * 1000;
 
 export type DepotPoint = { latitude: number; longitude: number };
 export type DepotDepartureSample = DepotPoint & { id: string; observedAt: Date };
@@ -27,6 +29,9 @@ export function haversineMeters(left: DepotPoint, right: DepotPoint): number {
  * - Arrival: the first position inside the radius at or after the start. A start pressed inside the radius arrives at
  *   the start time.
  * - Departure: the first position outside the radius after that arrival.
+ * - A start pressed after the vehicle already left: when the last position before the start is outside the radius and
+ *   the vehicle stayed inside within DEPOT_DEPARTURE_LOOKBACK_MS before the start, that stay is the arrival and its
+ *   first outside position is the departure.
  * `endAt` (the route completion) closes the window, so the final return to the depot is not read as a departure.
  * `samples` must be sorted by `observedAt` ascending.
  */
@@ -44,6 +49,19 @@ export function resolveDepotDeparture(input: {
     sample.observedAt.getTime() >= startedAt.getTime()
     && (endAt === null || sample.observedAt.getTime() < endAt.getTime()));
   const startedInside = input.startedPosition !== null && inside(input.startedPosition);
+  if (!startedInside) {
+    const before = input.samples.filter((sample) =>
+      sample.observedAt.getTime() < startedAt.getTime()
+      && sample.observedAt.getTime() >= startedAt.getTime() - DEPOT_DEPARTURE_LOOKBACK_MS);
+    let lastInside = before.length - 1;
+    while (lastInside >= 0 && !inside(before[lastInside]!)) lastInside -= 1;
+    if (lastInside >= 0 && lastInside < before.length - 1) {
+      let firstInside = lastInside;
+      while (firstInside > 0 && inside(before[firstInside - 1]!)) firstInside -= 1;
+      const departure = before[lastInside + 1]!;
+      return depotDeparture(before[firstInside]!.observedAt, departure.observedAt, { depot, sample: departure }, 'CONFIRMED');
+    }
+  }
   const arrival = startedInside ? null : inWindow.find((sample) => inside(sample)) ?? null;
   const arrivedAt = startedInside ? startedAt : arrival?.observedAt ?? null;
   if (arrivedAt === null) return depotDeparture(null, null, null, 'UNCONFIRMED');

@@ -47,16 +47,43 @@ describe('resolveDepotDeparture', () => {
     expect(result.evidence.status).toBe('CONFIRMED');
   });
 
-  test('positions before the start are ignored', () => {
+  test('a start pressed after leaving the depot departs at the end of the last stay before it', () => {
     const result = resolveDepotDeparture({
       depot,
       endAt: null,
-      samples: [sample('early', 0, near), sample('out', 1, far), sample('late', 9, far)],
+      samples: [sample('road', 0, far), sample('in1', 1, near), sample('in2', 3, near), sample('out', 4, far), sample('late', 9, far)],
+      startedAt: at(6),
+      startedPosition: far,
+    });
+
+    expect(result.arrivedAt).toEqual(at(1));
+    expect(result.departedAt).toEqual(at(4));
+    expect(result.evidence).toMatchObject({ evidenceEventId: 'out', status: 'CONFIRMED' });
+  });
+
+  test('a vehicle still inside at the start uses the positions after the start', () => {
+    const result = resolveDepotDeparture({
+      depot,
+      endAt: null,
+      samples: [sample('in', 1, near), sample('in2', 7, near), sample('out', 9, far)],
       startedAt: at(5),
       startedPosition: null,
     });
 
-    expect(result.arrivedAt).toBeNull();
+    expect(result.arrivedAt).toEqual(at(7));
+    expect(result.departedAt).toEqual(at(9));
+  });
+
+  test('a depot stay older than the look-back is ignored', () => {
+    const result = resolveDepotDeparture({
+      depot,
+      endAt: null,
+      samples: [sample('old', 0, near), sample('out', 1, far), sample('late', 250, far)],
+      startedAt: at(200),
+      startedPosition: null,
+    });
+
+    expect(result.departedAt).toBeNull();
     expect(result.evidence.status).toBe('UNCONFIRMED');
   });
 
