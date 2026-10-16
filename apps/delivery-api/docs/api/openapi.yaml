@@ -1241,10 +1241,55 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
   /api/dsv/customers/{customerId}/accounts/invitations:
+    get:
+      tags: [DSV Control]
+      summary: List customer invitation history
+      description: Lists every signup and password-reset link issued for the customer, newest first. The link itself is never returned.
+      operationId: listDsvCustomerInvitations
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: customerId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Invitation history ordered by createdAt descending.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, error]
+                properties:
+                  data:
+                    type: object
+                    required: [invitations]
+                    properties:
+                      invitations:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, accountId, inviteeLabel, invitedByDisplayName, purpose, createdAt, expiresAt, status]
+                          properties:
+                            id: { type: string, format: uuid }
+                            accountId: { type: string, format: uuid }
+                            inviteeLabel: { type: [string, 'null'], description: Free text typed by the administrator. Null for invites issued before the field existed. }
+                            invitedByDisplayName: { type: [string, 'null'], description: Null when the issuing administrator is unknown or was deleted. }
+                            purpose: { type: string, enum: [SIGNUP, PASSWORD_RESET] }
+                            createdAt: { type: string, format: date-time }
+                            expiresAt: { type: string, format: date-time }
+                            status: { type: string, enum: [PENDING, CONSUMED, REVOKED, EXPIRED] }
+                        additionalProperties: false
+                    additionalProperties: false
+                  error: { type: 'null' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [DSV Control]
       summary: Create a 48-hour customer signup link
-      description: Creates an unclaimed customer account and returns a one-time setup URL. Reissuing a link revokes the prior unconsumed signup link.
+      description: Creates an unclaimed customer account and returns a one-time setup URL. Reissuing a link revokes the prior unconsumed signup link. The requesting administrator is recorded as the inviter. Re-invites and password resets copy inviteeLabel from the previous invite.
       operationId: createDsvCustomerSignupInvitation
       x-source-file: src/routes/dsv-control.routes.ts
       security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
@@ -1257,7 +1302,14 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, additionalProperties: false }
+            schema:
+              type: object
+              properties:
+                inviteeLabel:
+                  type: string
+                  maxLength: 100
+                  description: Who the link is for. Trimmed by the server; a blank value is treated as absent.
+              additionalProperties: false
       responses:
         '201':
           description: One-time fragment URL and expiry returned to the authorized administrator.
@@ -7911,6 +7963,10 @@ components:
         actualCompletedAt:
           type: string
           format: date-time
+        actualDepartedAt:
+          type: string
+          format: date-time
+          description: Derived depot departure. First vehicle GPS sample outside the depot radius after the depot arrival that follows ROUTE_STARTED. Omitted until the departure is confirmed. The ROUTE_STARTED event is not changed.
         assignmentStatus:
           type: string
           enum: [UNASSIGNED, ASSIGNED]
@@ -7929,6 +7985,10 @@ components:
         estimatedArrivalAt:
           type: string
           format: date-time
+        etaCalculatedAt:
+          type: string
+          format: date-time
+          description: Time the current route plan stop ETA was last calculated. Omitted when the ETA has no calculation time.
         etaStatus:
           $ref: '#/components/schemas/DsvV1EtaStatus'
         eventSummary:
@@ -8575,7 +8635,8 @@ components:
           format: date-time
         startSource:
           type: string
-          enum: [PLANNED_DEPARTURE, ROUTE_STARTED]
+          enum: [PLANNED_DEPARTURE, ROUTE_STARTED, DEPOT_ARRIVAL]
+          description: DEPOT_ARRIVAL starts the first session at the first GPS sample inside the depot radius after ROUTE_STARTED.
         startEventId:
           type: string
           nullable: true

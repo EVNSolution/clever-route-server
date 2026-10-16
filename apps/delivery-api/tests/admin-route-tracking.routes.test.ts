@@ -291,6 +291,14 @@ function trackingSnapshot(positionOverrides: Partial<{
   return {
     executionEvidence: {
       completion: null,
+      depotDeparture: {
+        distanceToDepotMeters: null,
+        evidenceEventId: null,
+        observedAt: null,
+        source: 'NONE' as const,
+        status: 'UNAVAILABLE' as const,
+        thresholdMeters: 150
+      },
       firstPosition: position,
       lastPosition: position,
       returnToDepot: {

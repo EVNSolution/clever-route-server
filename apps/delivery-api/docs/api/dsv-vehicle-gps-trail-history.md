@@ -23,6 +23,11 @@ Response:
   metadata on the previous session.
 - The first session begins at the earlier of the configured departure time and
   the first `ROUTE_STARTED` event.
+- When a GPS sample is inside the depot radius (150 m, the same radius as the
+  return-to-depot check) at or after the first `ROUTE_STARTED`, the first
+  session starts at that sample with `startSource: 'DEPOT_ARRIVAL'` and
+  `startEventId: null`. Earlier samples are kept in collection-only sessions.
+  A start pressed inside the radius keeps `ROUTE_STARTED`.
 - `ROUTE_PAUSED` closes the current session so paused movement is not joined to
   a later restart.
 - Every valid UVIS GPS sample in the service-date window is returned. Samples

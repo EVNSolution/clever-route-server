@@ -553,6 +553,83 @@ describe('PrismaDsvCustomerAccountService', () => {
     expect(inviteCreateCalls[0]?.[0].data.purpose).toBe('PASSWORD_RESET');
   });
 
+  test('records the invitee label and requesting administrator on a new signup invite', async () => {
+    const harness = createHarness();
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ id: shopId, shopDomain: 'tomatonofood.com' });
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ customers: [{ displayName: '토마토물류', id: customerId }] });
+    harness.tx.customerAccount.findUniqueOrThrow.mockResolvedValue(accountWithInvite());
+
+    await harness.service.createSignupInvitation({
+      actorId: 'admin-1',
+      customerId,
+      inviteeLabel: 'Ethan Han',
+      requestId: 'req-label',
+      shopDomain: 'tomatonofood.com',
+    });
+
+    expect(harness.tx.dsvCustomerAccountInvite.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ inviteeLabel: 'Ethan Han', invitedByAccountId: 'admin-1' }) as unknown,
+    });
+    expect(harness.tx.dsvCustomerAccountInvite.findFirst).not.toHaveBeenCalled();
+  });
+
+  test('stores a null label when a new signup invite has none', async () => {
+    const harness = createHarness();
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ id: shopId, shopDomain: 'tomatonofood.com' });
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ customers: [{ displayName: '토마토물류', id: customerId }] });
+    harness.tx.customerAccount.findUniqueOrThrow.mockResolvedValue(accountWithInvite());
+
+    await harness.service.createSignupInvitation({ actorId: 'admin-1', customerId, requestId: 'req-nolabel', shopDomain: 'tomatonofood.com' });
+
+    expect(harness.tx.dsvCustomerAccountInvite.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ inviteeLabel: null }) as unknown,
+    });
+  });
+
+  test('copies the previous invite label on password reset', async () => {
+    const harness = createHarness();
+    harness.prisma.customerAccount.findFirst.mockResolvedValueOnce({ ...activatedAccount(), email: null });
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ id: shopId, shopDomain: 'tomatonofood.com' });
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ customers: [{ displayName: '토마토물류', id: customerId }] });
+    harness.tx.customerAccount.findUnique.mockResolvedValueOnce({ customerId, issuer: 'CLEVER_DSV', passwordHash: 'password-hash', shopId });
+    harness.tx.customerAccount.findUniqueOrThrow.mockResolvedValue(accountWithInvite({ email: null, invites: [], passwordHash: 'password-hash', status: 'ACTIVE' }));
+    harness.tx.dsvCustomerAccountInvite.findFirst.mockResolvedValueOnce({ inviteeLabel: 'Ethan Han' });
+
+    await harness.service.requestPasswordReset({ accountId, actorId: 'admin-2', requestId: 'req-reset-label', shopDomain: 'tomatonofood.com' });
+
+    expect(harness.tx.dsvCustomerAccountInvite.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { accountId } }));
+    expect(harness.tx.dsvCustomerAccountInvite.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ inviteeLabel: 'Ethan Han', invitedByAccountId: 'admin-2', purpose: 'PASSWORD_RESET' }) as unknown,
+    });
+  });
+
+  test('lists invitation history newest first with status and inviter name', async () => {
+    const harness = createHarness();
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ id: shopId, shopDomain: 'tomatonofood.com' });
+    const future = new Date(Date.now() + 60_000);
+    const past = new Date(Date.now() - 60_000);
+    const base = { accountId, createdAt: new Date('2026-10-01T00:00:00.000Z'), consumedAt: null, expiresAt: future, revokedAt: null };
+    harness.prisma.dsvCustomerAccountInvite.findMany.mockResolvedValueOnce([
+      { ...base, id: 'i-pending', inviteeLabel: 'Ethan Han', invitedBy: { displayName: '관제 담당' }, purpose: 'SIGNUP' },
+      { ...base, id: 'i-expired', expiresAt: past, inviteeLabel: null, invitedBy: null, purpose: 'SIGNUP' },
+      { ...base, id: 'i-revoked', invitedBy: null, inviteeLabel: null, purpose: 'SIGNUP', revokedAt: past },
+      { ...base, consumedAt: past, id: 'i-consumed', invitedBy: { displayName: null }, inviteeLabel: null, purpose: 'PASSWORD_RESET', revokedAt: past },
+    ]);
+
+    const result = await harness.service.listInvitations({ customerId, shopDomain: 'tomatonofood.com' });
+
+    expect(harness.prisma.dsvCustomerAccountInvite.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: { createdAt: 'desc' },
+      where: { customerId, shopId },
+    }));
+    expect(result.map((item) => [item.id, item.status, item.inviteeLabel, item.invitedByDisplayName])).toEqual([
+      ['i-pending', 'PENDING', 'Ethan Han', '관제 담당'],
+      ['i-expired', 'EXPIRED', null, null],
+      ['i-revoked', 'REVOKED', null, null],
+      ['i-consumed', 'CONSUMED', null, null],
+    ]);
+  });
+
   test('discards only unclaimed accounts after revoking their links, with an audit event', async () => {
     const harness = createHarness();
     harness.prisma.customerAccount.findFirst.mockResolvedValueOnce({ ...activatedAccount(), loginId: null, passwordHash: null, passwordSalt: null, status: 'INACTIVE' });
@@ -608,6 +685,7 @@ function createHarness(options: { webPublicOrigin?: string | undefined } = {}) {
     dsvAuditEvent: { create: vi.fn(() => Promise.resolve({ id: 'audit-1' })) },
     dsvCustomerAccountInvite: {
       create: vi.fn<(input: unknown) => Promise<{ id: string }>>(() => Promise.resolve({ id: 'invite-1' })),
+      findFirst: vi.fn<(input: unknown) => Promise<{ inviteeLabel: string | null } | null>>(() => Promise.resolve(null)),
       updateMany: vi.fn<(input: unknown) => Promise<{ count: number }>>(() => Promise.resolve({ count: 1 })),
     },
   };
@@ -620,7 +698,10 @@ function createHarness(options: { webPublicOrigin?: string | undefined } = {}) {
       update: vi.fn(),
     },
     dsvAuditEvent: { create: vi.fn() },
-    dsvCustomerAccountInvite: { findUnique: vi.fn<(input: unknown) => Promise<unknown>>() },
+    dsvCustomerAccountInvite: {
+      findMany: vi.fn<(input: unknown) => Promise<unknown>>(),
+      findUnique: vi.fn<(input: unknown) => Promise<unknown>>(),
+    },
     shop: { findUnique: vi.fn<(input: unknown) => Promise<unknown>>() },
   };
   return {

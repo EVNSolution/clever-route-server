@@ -937,6 +937,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       ],
       routePlanStops: [{
         estimatedArrivalAt: new Date('2026-07-22T02:00:00.000Z'),
+        etaCalculatedAt: new Date('2026-07-22T01:30:00.000Z'),
         etaInputRouteVersionId: 'route-version-a',
         etaSource: 'ROUTE_CALCULATION',
         etaStatus: 'READY',
@@ -974,6 +975,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       items: [{
         actualCompletedAt: new Date('2026-07-22T01:00:00.000Z'),
         conditionCode: 'COLD',
+        etaCalculatedAt: new Date('2026-07-22T01:30:00.000Z'),
         eventRows: [{ eventType: 'STOP_DELIVERED', occurredAt: new Date('2026-07-22T01:00:00.000Z') }],
         routeStopSequence: 4,
         sellerOrderKey: 'SO-A',
@@ -1077,6 +1079,65 @@ describe('PrismaDsvV1ReadQueryService', () => {
     await expect(service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
       items: [{ etaStatus: 'PENDING', routeStopSequence: 5 }],
     });
+    const dispatches = await service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
+    expect(dispatches.items[0]).not.toHaveProperty('etaCalculatedAt');
+  });
+
+  test('dispatch rows carry the derived depot departure and leave the key out until it is confirmed', async () => {
+    const routeWith = (events: Array<{ eventType: string; occurredAt: Date; latitude?: unknown; longitude?: unknown }>) => customerDeliveryOrderRow({
+      currentRouteVersion: {
+        driverId: 'driver-a',
+        routePlan: {
+          depotLatitude: '37.5000000',
+          depotLongitude: '127.0000000',
+          driverEvents: events,
+          trackingGeometry: null,
+          vehicle: { id: 'vehicle-a', label: '차량 A', licensePlate: null },
+          vehicleId: 'vehicle-a',
+        },
+        routePlanId: 'route-a',
+      },
+    });
+    const started = { eventType: 'ROUTE_STARTED', occurredAt: new Date('2026-07-22T00:00:00.000Z') };
+    const sample = (id: string, observedAt: string, latitude: string) => ({
+      id,
+      latitude,
+      longitude: '127.0000000',
+      observedAt: new Date(observedAt),
+    });
+    const findSamples = vi.fn(() => Promise.resolve([
+      sample('s1', '2026-07-22T00:05:00.000Z', '37.6000000'),
+      sample('s2', '2026-07-22T00:20:00.000Z', '37.5001000'),
+      sample('s3', '2026-07-22T00:40:00.000Z', '37.5300000'),
+    ]));
+    const build = (row: ReturnType<typeof customerDeliveryOrderRow>) => new PrismaDsvV1ReadQueryService(prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([row])) },
+      uvisVehicleTelemetrySample: { findMany: findSamples },
+    }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
+
+    const confirmed = await build(routeWith([started])).listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
+    expect(confirmed.items[0]?.actualDepartedAt).toEqual(new Date('2026-07-22T00:40:00.000Z'));
+    expect(findSamples).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        observedAt: expect.objectContaining({ gte: started.occurredAt }) as unknown,
+        sourceKind: 'VEHICLE_GPS',
+        vehicleId: 'vehicle-a',
+      }) as unknown,
+    }));
+
+    // A completion before the vehicle reaches the depot closes the window: no departure is claimed.
+    const completedEarly = await build(routeWith([
+      started,
+      { eventType: 'ROUTE_COMPLETED', occurredAt: new Date('2026-07-22T00:10:00.000Z') },
+    ])).listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
+    expect(completedEarly.items[0]?.actualDepartedAt).toBeNull();
+
+    // Without any ROUTE_STARTED no GPS is read at all.
+    findSamples.mockClear();
+    const notStarted = await build(routeWith([])).listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
+    expect(notStarted.items[0]?.actualDepartedAt).toBeNull();
+    expect(findSamples).not.toHaveBeenCalled();
   });
 
   test('dispatch summaries derive ownership from current child driver and keep route plan while ETA is pending', async () => {
@@ -1311,6 +1372,43 @@ describe('PrismaDsvV1ReadQueryService', () => {
       ],
       timezone: 'Asia/Seoul',
       vehicleId: 'vehicle-a',
+    });
+  });
+
+  test('vehicle GPS trail history starts the first session at the depot arrival after ROUTE_STARTED', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([{
+        constraints: {},
+        depotLatitude: '37.5000000',
+        depotLongitude: '127.0000000',
+        driverEvents: [
+          { eventType: 'ROUTE_STARTED', id: 'start-1', latitude: '37.6000000', longitude: '127.1000000', occurredAt: new Date('2026-08-04T00:00:00.000Z') },
+        ],
+        id: 'route-a',
+        planDate: new Date('2026-08-04T00:00:00.000Z'),
+      }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:30' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        gpsSample({ observedAt: '2026-08-04T00:01:00.000Z', staleAfter: '2026-08-04T00:03:00.000Z' }),
+        gpsSample({ latitude: '37.5000000', longitude: '127.0000000', observedAt: '2026-08-04T00:10:00.000Z', staleAfter: '2026-08-04T00:12:00.000Z' }),
+        gpsSample({ latitude: '37.5000000', longitude: '127.0000000', observedAt: '2026-08-04T00:11:00.000Z', staleAfter: '2026-08-04T00:13:00.000Z' }),
+      ])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), { serviceDate: '2026-08-04', vehicleId: 'vehicle-a' });
+
+    expect(result.sessions.find((session) => session.routePlanId === 'route-a')).toMatchObject({
+      startedAt: '2026-08-04T00:10:00.000Z',
+      startEventId: null,
+      startSource: 'DEPOT_ARRIVAL',
+    });
+    // The drive to the depot stays visible only as a collection-only session, never as the route trail.
+    expect(result.sessions.find((session) => session.routePlanId !== 'route-a')).toMatchObject({
+      segments: [{ samples: [{ observedAt: '2026-08-04T00:01:00.000Z' }] }],
+      startedAt: '2026-08-04T00:01:00.000Z',
     });
   });
 
@@ -2184,7 +2282,9 @@ function customerDeliveryOrderRow(input: {
     driverId: string | null;
     routePlan: {
       constraints?: unknown;
-      driverEvents?: Array<{ eventType: string; occurredAt: Date }>;
+      depotLatitude?: unknown;
+      depotLongitude?: unknown;
+      driverEvents?: Array<{ eventType: string; id?: string; latitude?: unknown; longitude?: unknown; occurredAt: Date }>;
       planDate?: Date;
       trackingGeometry: { lastLatitude: unknown; lastLongitude: unknown; lastOccurredAt?: Date } | null;
       vehicle: { id: string; label: string; licensePlate: string | null } | null;
@@ -2200,6 +2300,7 @@ function customerDeliveryOrderRow(input: {
   longitude?: unknown;
   routePlanStops?: Array<{
     estimatedArrivalAt: Date | null;
+    etaCalculatedAt?: Date | null;
     etaInputRouteVersionId: string | null;
     etaSource: string | null;
     etaStatus: string;

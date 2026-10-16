@@ -664,6 +664,52 @@ describe('DSV control routes', () => {
       expect(missingCsrf.statusCode).toBe(403);
       expect(customerAccountService.createSignupInvitation).not.toHaveBeenCalled();
 
+      for (const payload of [{ inviteeLabel: 'x'.repeat(101) }, { inviteeLabel: 7 }, { other: 'x' }]) {
+        const invalid = await app.inject({
+          headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+          method: 'POST',
+          payload,
+          url: `/api/dsv/customers/${customerId}/accounts/invitations`,
+        });
+        expect(invalid.statusCode).toBe(400);
+      }
+      expect(customerAccountService.createSignupInvitation).not.toHaveBeenCalled();
+
+      const labeled = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { inviteeLabel: '  Ethan Han  ' },
+        url: `/api/dsv/customers/${customerId}/accounts/invitations`,
+      });
+      expect(labeled.statusCode).toBe(201);
+      expect(customerAccountService.createSignupInvitation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ actorId: adminAccountId, inviteeLabel: 'Ethan Han' }),
+      );
+      customerAccountService.createSignupInvitation.mockClear();
+
+      const history = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'GET',
+        url: `/api/dsv/customers/${customerId}/accounts/invitations`,
+      });
+      expect(history.statusCode).toBe(200);
+      expect(history.json()).toEqual({
+        data: {
+          invitations: [{
+            accountId: customerAccountId,
+            createdAt: '2026-08-09T01:00:00.000Z',
+            expiresAt: '2026-08-11T01:00:00.000Z',
+            id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+            invitedByDisplayName: '관제 담당',
+            inviteeLabel: 'Ethan Han',
+            purpose: 'SIGNUP',
+            status: 'PENDING',
+          }],
+        },
+        error: null,
+      });
+      expect(customerAccountService.listInvitations).toHaveBeenCalledWith({ customerId, shopDomain: 'tomatonofood.com' });
+
       const create = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'POST',
@@ -2783,6 +2829,7 @@ function createCustomerAccountService(): DsvCustomerAccountService & {
   createSignupInvitation: ReturnType<typeof vi.fn<DsvCustomerAccountService['createSignupInvitation']>>;
   discardUnclaimed: ReturnType<typeof vi.fn<DsvCustomerAccountService['discardUnclaimed']>>;
   listAccounts: ReturnType<typeof vi.fn<DsvCustomerAccountService['listAccounts']>>;
+  listInvitations: ReturnType<typeof vi.fn<DsvCustomerAccountService['listInvitations']>>;
   login: ReturnType<typeof vi.fn<DsvCustomerAccountService['login']>>;
   setStatus: ReturnType<typeof vi.fn<DsvCustomerAccountService['setStatus']>>;
   validateInvitation: ReturnType<typeof vi.fn<DsvCustomerAccountService['validateInvitation']>>;
@@ -2812,6 +2859,16 @@ function createCustomerAccountService(): DsvCustomerAccountService & {
     complete: vi.fn<DsvCustomerAccountService['complete']>(() => Promise.resolve(identity)),
     createSignupInvitation: vi.fn<DsvCustomerAccountService['createSignupInvitation']>(() => Promise.resolve({ account, invitation })),
     listAccounts: vi.fn<DsvCustomerAccountService['listAccounts']>(() => Promise.resolve([account])),
+    listInvitations: vi.fn<DsvCustomerAccountService['listInvitations']>(() => Promise.resolve([{
+      accountId: customerAccountId,
+      createdAt: new Date('2026-08-09T01:00:00.000Z'),
+      expiresAt: new Date('2026-08-11T01:00:00.000Z'),
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      invitedByDisplayName: '관제 담당',
+      inviteeLabel: 'Ethan Han',
+      purpose: 'SIGNUP',
+      status: 'PENDING',
+    }])),
     login: vi.fn<DsvCustomerAccountService['login']>(() => Promise.resolve(identity)),
     reinvite: vi.fn<DsvCustomerAccountService['reinvite']>(() => Promise.resolve({ account, invitation })),
     discardUnclaimed: vi.fn<DsvCustomerAccountService['discardUnclaimed']>(() => Promise.resolve({ accountId: account.id })),

@@ -77,6 +77,7 @@ export type DsvV1SessionDto = {
 
 export type DsvV1RoutePlanStopEtaInput = {
   estimatedArrivalAt?: Date | string | null;
+  etaCalculatedAt?: Date | string | null;
   etaInputRouteVersionId?: string | null;
   etaSource?: string | null;
   etaStatus: DsvV1EtaStatus;
@@ -84,6 +85,7 @@ export type DsvV1RoutePlanStopEtaInput = {
 
 export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   actualCompletedAt?: Date | string | null;
+  actualDepartedAt?: Date | string | null;
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   conditionCode?: string | null;
   customerId: string;
@@ -123,6 +125,7 @@ export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
 
 export type DsvV1SellerOrderSummaryDto = {
   actualCompletedAt?: string;
+  actualDepartedAt?: string;
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   conditionCode?: string;
   customerId: string;
@@ -134,6 +137,7 @@ export type DsvV1SellerOrderSummaryDto = {
   destinationId: string;
   driverId?: string;
   estimatedArrivalAt?: string;
+  etaCalculatedAt?: string;
   etaStatus: DsvV1EtaStatus;
   eventSummary: DsvV1EventSummaryDto[];
   latitude?: number;
@@ -594,6 +598,7 @@ export function mapDsvV1SessionPrincipal(
 export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): DsvV1SellerOrderSummaryDto {
   return {
     ...optionalIso('actualCompletedAt', row.actualCompletedAt),
+    ...optionalIso('actualDepartedAt', row.actualDepartedAt),
     assignmentStatus: row.assignmentStatus,
     ...(row.conditionCode === undefined || row.conditionCode === null ? {} : { conditionCode: row.conditionCode }),
     customerId: row.customerId,
@@ -605,6 +610,7 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
     destinationId: row.destinationId,
     ...(row.driverId === undefined || row.driverId === null ? {} : { driverId: row.driverId }),
     ...optionalIso('estimatedArrivalAt', row.estimatedArrivalAt),
+    ...optionalIso('etaCalculatedAt', row.etaCalculatedAt),
     etaStatus: row.etaStatus,
     eventSummary: mapDsvV1EventSummary(row.eventRows ?? []),
     ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),

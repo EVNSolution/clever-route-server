@@ -95,6 +95,8 @@ describe('G005 DSV v1 read DTO adapter', () => {
       destinationId: 'destination-1',
       driverId: 'driver-1',
       estimatedArrivalAt: new Date('2026-07-23T01:02:03.000Z'),
+      actualDepartedAt: new Date('2026-07-23T00:20:00.000Z'),
+      etaCalculatedAt: new Date('2026-07-23T00:50:00.000Z'),
       eventRows: [
         { eventType: 'STOP_ARRIVED', occurredAt: new Date('2026-07-23T00:58:00.000Z') },
         { eventType: 'STOP_FAILED', occurredAt: new Date('2026-07-23T01:00:00.000Z') },
@@ -130,6 +132,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
     });
 
     expect(dto).toEqual({
+      actualDepartedAt: '2026-07-23T00:20:00.000Z',
       assignmentStatus: 'ASSIGNED',
       conditionCode: 'COLD',
       customerId: 'customer-1',
@@ -139,6 +142,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       destinationId: 'destination-1',
       driverId: 'driver-1',
       estimatedArrivalAt: '2026-07-23T01:02:03.000Z',
+      etaCalculatedAt: '2026-07-23T00:50:00.000Z',
       etaStatus: 'READY',
       eventSummary: [
         { occurredAt: '2026-07-23T00:58:00.000Z', type: 'STOP_ARRIVED' },

@@ -34,6 +34,19 @@ export type DsvCustomerInvitationIssue = {
   };
 };
 
+export type DsvCustomerInvitationStatus = 'PENDING' | 'CONSUMED' | 'REVOKED' | 'EXPIRED';
+
+export type DsvCustomerInvitationHistoryItem = {
+  accountId: string;
+  createdAt: Date;
+  expiresAt: Date;
+  id: string;
+  invitedByDisplayName: string | null;
+  inviteeLabel: string | null;
+  purpose: DsvCustomerAccountInvitePurpose;
+  status: DsvCustomerInvitationStatus;
+};
+
 export type DsvCustomerSessionIdentity = {
   accountId: string;
   activeSessionId: string;
@@ -44,9 +57,10 @@ export type DsvCustomerSessionIdentity = {
 
 export type DsvCustomerAccountService = {
   complete(input: { displayName?: string; loginId?: string; password: string; requestId: string; shopDomain: string; token: string }): Promise<DsvCustomerSessionIdentity>;
-  createSignupInvitation(input: { actorId: string | null; customerId: string; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
+  createSignupInvitation(input: { actorId: string | null; customerId: string; inviteeLabel?: string; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
   discardUnclaimed(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<{ accountId: string }>;
   listAccounts(input: { customerId: string; shopDomain: string }): Promise<DsvCustomerAccountSummary[]>;
+  listInvitations(input: { customerId: string; shopDomain: string }): Promise<DsvCustomerInvitationHistoryItem[]>;
   login(input: { id: string; password: string; requestId: string; shopDomain: string }): Promise<DsvCustomerSessionIdentity | null>;
   reinvite(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
   requestPasswordReset(input: { accountId: string; actorId: string | null; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue>;
@@ -84,11 +98,35 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     return accounts.map((account) => accountSummary(account, new Date()));
   }
 
-  async createSignupInvitation(input: { actorId: string | null; customerId: string; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue> {
+  async listInvitations(input: { customerId: string; shopDomain: string }): Promise<DsvCustomerInvitationHistoryItem[]> {
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null) return [];
+    const invites = await this.prisma.dsvCustomerAccountInvite.findMany({
+      include: { invitedBy: { select: { displayName: true } } },
+      orderBy: { createdAt: 'desc' },
+      where: { customerId: input.customerId, shopId: shop.id },
+    });
+    const now = Date.now();
+    return invites.map((invite) => ({
+      accountId: invite.accountId,
+      createdAt: invite.createdAt,
+      expiresAt: invite.expiresAt,
+      id: invite.id,
+      invitedByDisplayName: invite.invitedBy?.displayName ?? null,
+      inviteeLabel: invite.inviteeLabel,
+      purpose: invite.purpose,
+      status: invite.consumedAt !== null ? 'CONSUMED'
+        : invite.revokedAt !== null ? 'REVOKED'
+        : invite.expiresAt.getTime() <= now ? 'EXPIRED' : 'PENDING',
+    }));
+  }
+
+  async createSignupInvitation(input: { actorId: string | null; customerId: string; inviteeLabel?: string; requestId: string; shopDomain: string }): Promise<DsvCustomerInvitationIssue> {
     this.requireWebPublicOrigin();
     const invitation = await this.createInvite({
       actorId: input.actorId,
       customerId: input.customerId,
+      ...(input.inviteeLabel === undefined ? {} : { inviteeLabel: input.inviteeLabel }),
       purpose: 'SIGNUP',
       requestId: input.requestId,
       shopDomain: input.shopDomain,
@@ -345,6 +383,7 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
     accountId?: string;
     actorId: string | null;
     customerId: string;
+    inviteeLabel?: string;
     purpose: DsvCustomerAccountInvitePurpose;
     requestId: string;
     shopDomain: string;
@@ -393,6 +432,15 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
           throw new DsvCustomerAccountServiceError('BAD_REQUEST', 'Activated customer accounts must use password reset');
         }
       }
+      // A re-invite or reset keeps the label of the previous invite, so the history still says whose link it is.
+      const inviteeLabel = input.inviteeLabel
+        ?? (input.accountId === undefined
+          ? null
+          : (await tx.dsvCustomerAccountInvite.findFirst({
+              orderBy: { createdAt: 'desc' },
+              select: { inviteeLabel: true },
+              where: { accountId },
+            }))?.inviteeLabel ?? null);
       await tx.dsvCustomerAccountInvite.updateMany({
         data: { revokedAt: now },
         where: {
@@ -407,6 +455,8 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
           accountId,
           customerId: input.customerId,
           expiresAt,
+          inviteeLabel,
+          invitedByAccountId: input.actorId,
           purpose: input.purpose,
           shopId: shop.id,
           tokenHash,
