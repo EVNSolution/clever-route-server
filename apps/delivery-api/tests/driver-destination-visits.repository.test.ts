@@ -92,6 +92,24 @@ describe('PrismaDriverDestinationVisitsRepository', () => {
     });
   });
 
+  test('counts a note saved on this route after the minute-precision completion time', async () => {
+    // Production case 2026-10-16: completion entered as 17:27 (08:27:00Z), memo saved at 08:27:33Z on the same route.
+    const sameVisit = [{
+      id: 'route-18', name: '#617', planDate: new Date('2026-10-18T00:00:00.000Z'),
+      routeStops: [stop('DELIVERED', '2026-10-18T08:27:00.000Z', 'route-18', 7, null)],
+    }, ...routes];
+    const { prisma, repository } = harness({ routePlans: sameVisit });
+    prisma.destinationNoteRevision.findMany.mockResolvedValue([
+      ...revisions,
+      { changedAt: new Date('2026-10-18T08:27:33.000Z'), driverId: 'driver-id', field: 'memo', routePlanId: 'route-18', source: 'DRIVER', value: 'Use back door' },
+      { changedAt: new Date('2026-10-18T09:40:00.000Z'), driverId: 'driver-id', field: 'lunchEntryStatus', routePlanId: 'other-route', source: 'DRIVER', value: 'AVAILABLE' },
+    ]);
+
+    const [latest, previous] = (await repository.list(listInput)).visits;
+    expect(latest).toMatchObject({ changedFields: ['memo'], notes: { lunchEntryStatus: null, memo: 'Use back door' } });
+    expect(previous).toMatchObject({ changedFields: ['memo', 'openTime'], notes: { memo: '후문으로 변경' } });
+  });
+
   test('pages by plan date and id with a cursor that round-trips', async () => {
     const many = Array.from({ length: 21 }, (_, index) => ({
       ...routes[1]!, id: `route-${String(100 - index)}`, planDate: new Date(Date.UTC(2026, 8, 30 - index)),

@@ -131,18 +131,22 @@ export class PrismaDriverDestinationVisitsRepository implements DriverDestinatio
         : []);
       const visitedAt = deliveredTimes.reduce<Date | null>((latest, time) => latest === null || time > latest ? time : latest, null);
       const statuses = new Set(stops.map(({ status }) => status));
-      // Notes in force when the visit ended; a visit with no completion time reads them at the end of its day.
-      const asOf = visitedAt ?? new Date(route.planDate.getTime() + 24 * 60 * 60 * 1000);
+      // Notes in force when the visit ended. The entered completion time has minute precision, so the cutoff is
+      // the end of that minute; a visit with no completion time reads the notes at the end of its day. Changes
+      // the driver wrote on this route always belong to this visit, even if saved after the entered time.
+      const asOf = visitedAt === null
+        ? new Date(route.planDate.getTime() + 24 * 60 * 60 * 1000)
+        : new Date(visitedAt.getTime() + 60 * 1000);
+      const isThisVisit = (revision: { driverId: string | null; routePlanId: string | null; source: string }) =>
+        revision.source === 'DRIVER' && revision.routePlanId === route.id && revision.driverId === input.driverId;
       return {
         boxCount: stops.reduce((total, stop) => total + readShippedBoxes(stop.order.rawPayload), 0),
-        changedFields: [...new Set(revisions
-          .filter((revision) => revision.source === 'DRIVER' && revision.routePlanId === route.id
-            && revision.driverId === input.driverId)
-          .map(({ field }) => field as DestinationNoteField))],
+        changedFields: [...new Set(revisions.filter(isThisVisit).map(({ field }) => field as DestinationNoteField))],
         deliveryDate: route.planDate.toISOString().slice(0, 10),
         notes: Object.fromEntries(DESTINATION_NOTE_COLUMNS.map(([field]) => [
           field,
-          revisions.filter((revision) => revision.field === field && revision.changedAt <= asOf).at(-1)?.value ?? null,
+          revisions.filter((revision) => revision.field === field
+            && (isThisVisit(revision) || revision.changedAt < asOf)).at(-1)?.value ?? null,
         ])) as Record<DestinationNoteField, string | null>,
         orderCount: stops.length,
         orderNotes: [...new Set(stops.flatMap(({ instructions }) => instructions?.trim() ? [instructions.trim()] : []))],
