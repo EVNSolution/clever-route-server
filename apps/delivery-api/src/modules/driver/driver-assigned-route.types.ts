@@ -20,6 +20,8 @@ export type DriverAssignedRouteInput = {
 
 export type DriverAssignedRouteStop = {
   completion?: DriverStopCompletion | null;
+  /** When the driver marked this stop delivered (STOP_DELIVERED.occurredAt); null otherwise. */
+  completedAt?: string | null;
   address: {
     address1: string;
     address2: string | null;

@@ -80,6 +80,11 @@ describe('PrismaDriverSelfServiceRepository', () => {
         companyDisplayName: 'Tomatono Toronto',
         status: 'completed',
         stopCount: 3,
+        stops: [
+          { completedAt: '2026-05-19T08:10:00.000Z', deliveryStopId: 'stop-1', destinationId: 'destination-1', destinationName: 'Customer 1', sequence: 1, status: 'DELIVERED' },
+          { completedAt: null, deliveryStopId: 'stop-2', destinationId: 'destination-2', destinationName: 'Customer 2', sequence: 2, status: 'FAILED' },
+          { completedAt: null, deliveryStopId: 'stop-3', destinationId: 'destination-3', destinationName: '#1003', sequence: 3, status: 'ASSIGNED' }
+        ],
         timezone: 'America/Toronto'
       }
     ]);
@@ -578,8 +583,17 @@ function routeHistoryIncludeMatcher(driverId: string): unknown {
     where: { driverId, eventType: { in: ['ROUTE_STARTED', 'ROUTE_COMPLETED'] } }
   });
 
+  const stopDeliveredMatcher: unknown = expect.objectContaining({ where: { driverId, eventType: 'STOP_DELIVERED' } });
+  const deliveryStopSelectMatcher: unknown = expect.objectContaining({ driverEvents: stopDeliveredMatcher });
+  const routeStopSelectMatcher: unknown = expect.objectContaining({ deliveryStop: { select: deliveryStopSelectMatcher } });
+  const routeStopsMatcher: unknown = expect.objectContaining({
+    orderBy: { sequence: 'asc' },
+    select: routeStopSelectMatcher
+  });
+
   return expect.objectContaining({
-    driverEvents: driverEventsMatcher
+    driverEvents: driverEventsMatcher,
+    routeStops: routeStopsMatcher
   });
 }
 
@@ -606,11 +620,22 @@ function routePlanRecord(input: {
     id: input.id ?? routePlanId,
     name: 'Tuesday AM Route',
     planDate: new Date('2026-05-19T00:00:00.000Z'),
-    routeStops: input.routeStops ?? [
+    routeStops: (input.routeStops ?? [
       { deliveryStop: { status: 'DELIVERED' } },
       { deliveryStop: { status: 'FAILED' } },
       { deliveryStop: { status: 'ASSIGNED' } }
-    ],
+    ]).map(({ deliveryStop: { status } }, index) => ({
+      deliveryStop: {
+        driverEvents: status === 'DELIVERED'
+          ? [{ occurredAt: new Date('2026-05-19T08:10:00.000Z'), routePlanId: input.id ?? routePlanId }]
+          : [],
+        id: `stop-${index + 1}`,
+        order: { destinationId: `destination-${index + 1}`, name: `#100${index + 1}` },
+        recipientName: index === 2 ? null : `Customer ${index + 1}`,
+        status
+      },
+      sequence: index + 1
+    })),
     shop: { shopDomain: 'example.myshopify.com' },
     status: input.status ?? 'PUBLISHED'
   };

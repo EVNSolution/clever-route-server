@@ -115,6 +115,7 @@ type AssignedRoutePlanStopRecord = {
     }>;
     driverEvents: Array<{
       driverId: string | null;
+      eventType: string;
       id: string;
       occurredAt: Date;
       routePlanId: string | null;
@@ -198,8 +199,8 @@ const assignedRouteInclude = {
           stopCompletionReceipt: { select: { result: true } },
           driverEvents: {
             orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
-            select: { driverId: true, id: true, occurredAt: true, routePlanId: true },
-            where: { eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED' }
+            select: { driverId: true, eventType: true, id: true, occurredAt: true, routePlanId: true },
+            where: { eventType: { in: ['TIME_CONSTRAINT_ACKNOWLEDGED', 'STOP_DELIVERED'] } }
           },
           dsvDispatchChangeRequests: {
             orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -545,9 +546,15 @@ function toAssignedRouteStop(
     timeWindowEnd: deliveryStop.timeWindowEnd,
     timeWindowStart: deliveryStop.timeWindowStart
   });
+  const ownEvent = (event: { driverId: string | null; routePlanId: string | null }) =>
+    event.driverId === routePlan.driverId && event.routePlanId === routePlan.id;
   const acknowledgement = deliveryStop.driverEvents.find((event) =>
-    event.driverId === routePlan.driverId && event.routePlanId === routePlan.id
+    event.eventType === 'TIME_CONSTRAINT_ACKNOWLEDGED' && ownEvent(event)
   ) ?? null;
+  // The time the driver entered on 배송완료; events are newest first.
+  const delivered = deliveryStop.status === 'DELIVERED'
+    ? deliveryStop.driverEvents.find((event) => event.eventType === 'STOP_DELIVERED' && ownEvent(event)) ?? null
+    : null;
   const canonicalDestination = deliveryStop.order.destinationId === null
     ? undefined
     : destinations.get(deliveryStop.order.destinationId);
@@ -610,6 +617,7 @@ function toAssignedRouteStop(
       ?? readInteger(rawPayload?.shipped_boxes),
     specialInstructionNote: normalizeRawNote(deliveryStop.instructions),
     status: deliveryStop.status,
+    completedAt: delivered?.occurredAt.toISOString() ?? null,
     routeConstraintStatus: timeConstraintState.routeConstraintStatus,
     timeConstraintAcknowledgement: acknowledgement === null
       ? null
