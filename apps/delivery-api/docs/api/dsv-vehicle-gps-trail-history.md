@@ -12,6 +12,8 @@ Query:
 - `serviceDate` optional `YYYY-MM-DD`; defaults to the tenant-local current date.
 - `includeDailyRoute=true` optionally includes a continuous daily `LineString` with
   sample anchors and bridge reasons. The default response is unchanged.
+- `window=service` optionally returns only the service window (rules below).
+  Without it the response is unchanged. Any other value is a 400.
 
 Response:
 
@@ -65,3 +67,54 @@ Response:
   available, the endpoint continues through the first depot-return sample; when
   that is not available, it ends at the last valid UVIS GPS sample in the
   service-date window.
+
+## Service window (`window=service`)
+
+Service window = center arrival to arrival at the last stop. Raw GPS samples
+are not deleted; the window only limits what this response returns.
+
+Rules:
+
+1. Center: the settings departure location (`departureLatitude`,
+   `departureLongitude` in operation settings). Both names are
+   `shops.defaultDepotLatitude` and `shops.defaultDepotLongitude`; there is one
+   source, so no value can differ.
+2. Center arrival: the first point of the first stay within 300 m that lasted
+   10 minutes or more. A stay lasts from its first point to the first point
+   outside the radius, or to the last point inside when no point is outside.
+   A pass-by is not an arrival.
+3. End: the arrival event (`STOP_ARRIVED`) time of the last stop. A stop with
+   no arrival event uses its `STOP_DELIVERED` or `STOP_FAILED` time. If any
+   stop is not reached yet, the end is `null` (open). Return to the center is
+   not part of the window. With no stops the end is `null`.
+4. No center arrival (no departure location, or no qualifying stay): nothing is
+   trimmed, the whole trail is returned, and `serviceWindow` is `null`.
+5. Live telemetry (`telemetry current`) is not affected.
+
+When the window is found:
+
+- `sessions[].segments[].samples`, `roadMatchedGeometry`, and `trailMarker`
+  keep only what lies inside the window. A marker outside it becomes `null`.
+- `dailyRoute` keeps only anchors inside the window, cuts `coordinates` from
+  the first to the last kept anchor, and renumbers `coordinateIndex`.
+  `bridges` keep only those with both ends inside. When fewer than two anchors
+  remain, `dailyRoute` is `null`.
+- `roadMatchedGeometry` drops lines with fewer than two anchors inside, cuts
+  `coordinates`, and renumbers `coordinateIndex` and `lineIndex`. When no line
+  remains it is `null`.
+- Segments left without samples and sessions left without segments are removed.
+
+`serviceWindow`:
+
+```json
+{
+  "startedAt": "2026-10-13T21:20:00.000Z",
+  "endedAt": "2026-10-14T05:41:00.000Z",
+  "startSource": "CENTER_STAY",
+  "endSource": "STOP_ARRIVED"
+}
+```
+
+`endedAt` and `endSource` are `null` while a stop is not reached yet.
+`endSource` is `STOP_RESULT` when the last stop used a delivered or failed
+event. `serviceWindow` is `null` when no center arrival was found.
