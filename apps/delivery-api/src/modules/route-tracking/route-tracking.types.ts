@@ -86,18 +86,22 @@ export type RouteExecutionLifecycleEvidenceV1 = {
   receivedAt: string;
 };
 
+export type RouteDepotEvidenceV1 = {
+  distanceToDepotMeters: number | null;
+  evidenceEventId: string | null;
+  observedAt: string | null;
+  source: 'LOCATION_UPDATED' | 'ROUTE_COMPLETED' | 'NONE';
+  status: 'CONFIRMED' | 'NOT_REQUIRED' | 'UNAVAILABLE' | 'UNCONFIRMED';
+  thresholdMeters: number;
+};
+
 export type RouteExecutionEvidenceV1 = {
   completion: RouteExecutionLifecycleEvidenceV1 | null;
+  // Derived from positions after ROUTE_STARTED; `observedAt` is the first position outside the depot radius.
+  depotDeparture: RouteDepotEvidenceV1;
   firstPosition: RouteTrackingPositionEventV1 | null;
   lastPosition: RouteTrackingPositionEventV1 | null;
-  returnToDepot: {
-    distanceToDepotMeters: number | null;
-    evidenceEventId: string | null;
-    observedAt: string | null;
-    source: 'LOCATION_UPDATED' | 'ROUTE_COMPLETED' | 'NONE';
-    status: 'CONFIRMED' | 'NOT_REQUIRED' | 'UNAVAILABLE' | 'UNCONFIRMED';
-    thresholdMeters: number;
-  };
+  returnToDepot: RouteDepotEvidenceV1;
   routeEndMode: 'END_AT_LAST_STOP' | 'RETURN_TO_DEPOT' | null;
   schemaVersion: 'route_execution_evidence.v1';
   start: RouteExecutionLifecycleEvidenceV1 | null;

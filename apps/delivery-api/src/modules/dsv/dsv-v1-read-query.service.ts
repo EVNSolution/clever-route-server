@@ -37,6 +37,7 @@ import {
 import { buildUvisVehicleDailyRoute } from '../uvis/uvis-vehicle-daily-route.js';
 import { hasImplausibleGpsJump } from '../uvis/uvis-vehicle-trail-evidence.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
+import { resolveDepotDeparture, type DepotDeparture } from '../route-tracking/depot-departure.js';
 import {
   occurredAtWithinRouteTrackingEventWindow,
   resolveRouteTrackingEventWindow,
@@ -172,7 +173,7 @@ export type DsvV1VehicleGpsTrailSession = {
   sessionIndex: number;
   startedAt: string;
   startEventId: string | null;
-  startSource: 'PLANNED_DEPARTURE' | 'ROUTE_STARTED';
+  startSource: 'DEPOT_ARRIVAL' | 'PLANNED_DEPARTURE' | 'ROUTE_STARTED';
 };
 
 export type DsvV1VehicleGpsTrailHistoryResult = {
@@ -629,8 +630,13 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         },
       },
     });
+    const pageRows = rows.slice(0, limit);
+    const departures = await this.readDepotDepartures(principal.shopId, pageRows);
     return {
-      items: rows.slice(0, limit).map(toSellerOrderSummaryRow),
+      items: pageRows.map((row) => toSellerOrderSummaryRow(
+        row,
+        departures.get(row.currentRouteVersion?.routePlanId ?? '')?.departedAt ?? null,
+      )),
       page: toPage(nextOrderCursor(rows, limit, context)),
     };
   }
@@ -654,7 +660,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         },
       },
     });
-    const summaries = stops.map(toSellerOrderSummaryRow);
+    const summaries = stops.map((stop) => toSellerOrderSummaryRow(stop));
     return {
       assignedCount: summaries.filter((summary) => summary.assignmentStatus === 'ASSIGNED').length,
       failedEtaCount: summaries.filter((summary) => summary.etaStatus === 'FAILED').length,
@@ -1045,7 +1051,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         depotLongitude: true,
         driverEvents: {
           orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
-          select: { eventType: true, id: true, occurredAt: true },
+          select: { eventType: true, id: true, latitude: true, longitude: true, occurredAt: true },
           where: { eventType: { in: ['ROUTE_COMPLETED', 'ROUTE_PAUSED', 'ROUTE_STARTED'] }, shopId },
         },
         id: true,
@@ -1136,6 +1142,92 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       timezone,
       vehicleId: vehicle.id,
     };
+  }
+
+  // Derived departure time per route plan: ROUTE_STARTED events stay untouched, vehicle GPS decides the depot leave time.
+  // ponytail: reads at most depotSampleChunkSize * depotSampleMaxChunks vehicle samples per route plan, so a vehicle that
+  // never reaches the depot within ~5 h of the start stays UNCONFIRMED. Raise the ceiling if real routes need more.
+  private async readDepotDepartures(
+    shopId: string,
+    rows: readonly CustomerDeliveryOrderRow[],
+  ): Promise<Map<string, DepotDeparture>> {
+    const plans = new Map<string, {
+      depot: { latitude: number; longitude: number };
+      endAt: Date | null;
+      startedAt: Date;
+      startedPosition: { latitude: number; longitude: number } | null;
+      vehicleId: string;
+    }>();
+    for (const row of rows) {
+      const routePlanId = row.currentRouteVersion?.routePlanId ?? null;
+      const routePlan = row.currentRouteVersion?.routePlan ?? null;
+      if (routePlanId === null || routePlan === null || plans.has(routePlanId) || routePlan.vehicleId === null) continue;
+      const depotLatitude = decimalToNumber(routePlan.depotLatitude);
+      const depotLongitude = decimalToNumber(routePlan.depotLongitude);
+      const routeEvents = row.currentRouteVersion?.routePlan?.driverEvents ?? [];
+      const started = routeEvents
+        .filter((event) => event.eventType === 'ROUTE_STARTED')
+        .sort((left, right) => left.occurredAt.getTime() - right.occurredAt.getTime())[0];
+      if (depotLatitude === null || depotLongitude === null || started === undefined) continue;
+      const completedAt = routeEvents
+        .filter((event) => event.eventType === 'ROUTE_COMPLETED' && event.occurredAt.getTime() >= started.occurredAt.getTime())
+        .map((event) => event.occurredAt)
+        .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
+      const startedLatitude = decimalToNumber(started.latitude);
+      const startedLongitude = decimalToNumber(started.longitude);
+      plans.set(routePlanId, {
+        depot: { latitude: depotLatitude, longitude: depotLongitude },
+        endAt: completedAt,
+        startedAt: started.occurredAt,
+        startedPosition: startedLatitude === null || startedLongitude === null
+          ? null
+          : { latitude: startedLatitude, longitude: startedLongitude },
+        vehicleId: routePlan.vehicleId,
+      });
+    }
+    const departures = new Map<string, DepotDeparture>();
+    await Promise.all([...plans].map(async ([routePlanId, plan]) => {
+      const samples: Array<{ id: string; latitude: number; longitude: number; observedAt: Date }> = [];
+      const windowEnd = plan.endAt ?? new Date(plan.startedAt.getTime() + depotDepartureMaxWindowMs);
+      let departure: DepotDeparture | null = null;
+      for (let chunkIndex = 0; chunkIndex < depotSampleMaxChunks; chunkIndex += 1) {
+        const lastObservedAt = samples.at(-1)?.observedAt;
+        const chunk = await this.prisma.uvisVehicleTelemetrySample.findMany({
+          orderBy: [{ observedAt: 'asc' }, { id: 'asc' }],
+          select: { id: true, latitude: true, longitude: true, observedAt: true },
+          take: depotSampleChunkSize,
+          where: {
+            latitude: { not: null },
+            longitude: { not: null },
+            observedAt: {
+              gte: plan.startedAt,
+              lt: windowEnd,
+              ...(lastObservedAt === undefined ? {} : { gt: lastObservedAt }),
+            },
+            shopId,
+            sourceKind: 'VEHICLE_GPS',
+            vehicleId: plan.vehicleId,
+          },
+        });
+        for (const sample of chunk) {
+          const latitude = decimalToNumber(sample.latitude);
+          const longitude = decimalToNumber(sample.longitude);
+          if (latitude !== null && longitude !== null) {
+            samples.push({ id: sample.id, latitude, longitude, observedAt: sample.observedAt });
+          }
+        }
+        departure = resolveDepotDeparture({
+          depot: plan.depot,
+          endAt: plan.endAt,
+          samples,
+          startedAt: plan.startedAt,
+          startedPosition: plan.startedPosition,
+        });
+        if (departure.departedAt !== null || chunk.length < depotSampleChunkSize) break;
+      }
+      if (departure !== null) departures.set(routePlanId, departure);
+    }));
+    return departures;
   }
 
   private async readUvisTrailMaterialization(input: {
@@ -1493,6 +1585,10 @@ const recordEventSelect = {
   occurredAt: true,
 } satisfies Prisma.DriverEventSelect;
 
+const depotSampleChunkSize = 500;
+const depotSampleMaxChunks = 4;
+const depotDepartureMaxWindowMs = 24 * 60 * 60 * 1000;
+
 const routePlanStopSelect = {
   estimatedArrivalAt: true,
   etaCalculatedAt: true,
@@ -1552,6 +1648,8 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
         routePlan: {
           select: {
             constraints: true,
+            depotLatitude: true,
+            depotLongitude: true,
             planDate: true,
             vehicle: {
               select: {
@@ -1570,7 +1668,7 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
             },
             driverEvents: {
               orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
-              select: publicEventSelect,
+              select: { ...publicEventSelect, latitude: true, longitude: true },
               where: { eventType: { in: ['ROUTE_COMPLETED', 'ROUTE_PAUSED', 'ROUTE_STARTED'] }, shopId },
             },
             status: true,
@@ -1737,7 +1835,7 @@ type GpsTrailRoutePlanRow = Prisma.RoutePlanGetPayload<{
     depotLatitude: true;
     depotLongitude: true;
     driverEvents: {
-      select: { eventType: true; id: true; occurredAt: true };
+      select: { eventType: true; id: true; latitude: true; longitude: true; occurredAt: true };
     };
     id: true;
     planDate: true;
@@ -1851,7 +1949,7 @@ function requireOrderDestinationId(destinationId: string | null, orderId: string
   });
 }
 
-function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrderSummaryRow {
+function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow, actualDepartedAt: Date | null = null): DsvV1SellerOrderSummaryRow {
   const stop = row.deliveryStops[0] ?? null;
   const importRow = stop?.dsvDispatchImportRows[0] ?? null;
   const eta = stop === null ? null : selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
@@ -1871,6 +1969,7 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
   });
   return {
     actualCompletedAt: latestDeliveredAt(stop?.driverEvents ?? []),
+    actualDepartedAt,
     assignmentStatus: currentRouteDriverId === null ? 'UNASSIGNED' : 'ASSIGNED',
     ...(importRow === null ? {} : { conditionCode: importRow.conditionCode, shippedBoxes: importRow.shippedBoxes }),
     customerId: row.customer?.id ?? '',
@@ -2154,6 +2253,22 @@ function gpsTrailSessionsForRoutePlan(input: {
   const completions = input.routePlan.driverEvents.filter((event) => event.eventType === 'ROUTE_COMPLETED');
   const pauses = input.routePlan.driverEvents.filter((event) => event.eventType === 'ROUTE_PAUSED');
   const depot = depotCoordinate(input.routePlan);
+  // The first execution starts at the depot arrival, so the drive to the depot is not drawn.
+  const firstStarted = input.routePlan.driverEvents.find((event) => event.eventType === 'ROUTE_STARTED') ?? null;
+  const depotArrival = firstStarted === null || sessionStarts.length === 0 ? null : resolveDepotDeparture({
+    depot,
+    endAt: completions.find((event) => event.occurredAt.getTime() >= firstStarted.occurredAt.getTime())?.occurredAt ?? null,
+    samples: input.samples.map((sample, index) => ({ ...sample, id: String(index) })),
+    startedAt: firstStarted.occurredAt,
+    startedPosition: readEventPosition(firstStarted),
+  }).arrivedAt;
+  if (
+    depotArrival !== null
+    && depotArrival.getTime() > sessionStarts[0]!.startedAt.getTime()
+    && (sessionStarts[1] === undefined || depotArrival.getTime() < sessionStarts[1].startedAt.getTime())
+  ) {
+    sessionStarts = [{ eventId: null, source: 'DEPOT_ARRIVAL' as const, startedAt: depotArrival }, ...sessionStarts.slice(1)];
+  }
 
   return sessionStarts.map((start, index) => {
     const nextStart = sessionStarts[index + 1] ?? null;
@@ -2466,6 +2581,12 @@ function readScheduledStartAt(value: unknown): Date | null {
 
 function jsonString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function readEventPosition(event: { latitude: unknown; longitude: unknown }): { latitude: number; longitude: number } | null {
+  const latitude = decimalToNumber(event.latitude);
+  const longitude = decimalToNumber(event.longitude);
+  return latitude === null || longitude === null ? null : { latitude, longitude };
 }
 
 function depotCoordinate(routePlan: GpsTrailRoutePlanRow): { latitude: number; longitude: number } | null {
