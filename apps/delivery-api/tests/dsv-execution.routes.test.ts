@@ -6,6 +6,7 @@ import { signDriverAccountToken, signDriverRouteToken } from '../src/modules/dri
 import { createDsvAdminPrincipal } from '../src/modules/dsv/dsv-principal.js';
 import { createAdminWebSession } from '../src/routes/admin-ui-session.js';
 import {
+  DsvStoreReviewDriverError,
   PrismaDsvDriverExecutionPrincipalResolver,
   registerDsvExecutionRoutes,
   type DsvExecutionRouteDependencies,
@@ -344,5 +345,37 @@ describe('DSV execution HTTP routes', () => {
         status: 'ACTIVE',
       }),
     }));
+  });
+
+  test('answers a store-review driver with no executions and keeps every other driver endpoint closed', async () => {
+    const { app, commands, driverPrincipalResolver, headers } = setup();
+    driverPrincipalResolver.resolve.mockRejectedValue(new DsvStoreReviewDriverError());
+    try {
+      const list = await app.inject({ headers, method: 'GET', url: '/api/dsv/driver/executions' });
+      expect(list.statusCode).toBe(200);
+      expect(list.json()).toEqual({ data: { items: [], limit: 100 }, error: null });
+      const start = await app.inject({
+        headers, method: 'POST', payload: {}, url: `/api/dsv/driver/executions/${ids.context}/start`,
+      });
+      expect(start.statusCode).toBe(401);
+      expect((await app.inject({ headers, method: 'GET', url: '/api/dsv/driver/operational-notifications' })).statusCode).toBe(401);
+      expect(commands.start).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('marks only a lone review-classified driver of a review account as a store-review driver', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+    const resolver = new PrismaDsvDriverExecutionPrincipalResolver({ driver: { count, findMany } } as never);
+    await expect(resolver.resolve({ accountId: ids.account, tokenVersion: 3 })).rejects.toBeInstanceOf(DsvStoreReviewDriverError);
+    expect(count).toHaveBeenCalledWith({ where: expect.objectContaining({
+      account: { id: ids.account, isStoreReviewAccount: true, status: 'ACTIVE', tokenVersion: 3 },
+      isStoreReviewData: true,
+    }) });
+    const unknown = resolver.resolve({ accountId: ids.account, tokenVersion: 3 });
+    await expect(unknown).rejects.toThrow('does not resolve');
+    await expect(unknown).rejects.not.toBeInstanceOf(DsvStoreReviewDriverError);
   });
 });

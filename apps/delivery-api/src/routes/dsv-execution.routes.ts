@@ -36,6 +36,14 @@ export type DsvDriverExecutionPrincipalResolver = {
   resolve(input: { accountId: string; tokenVersion: number }): Promise<DsvDriverExecutionAuth>;
 };
 
+// A store-review driver has no operational executions (dsv-store-review-isolation.md). The execution list
+// answers it with no items so the driver app can open its review route; every other endpoint stays 401.
+export class DsvStoreReviewDriverError extends Error {
+  constructor() {
+    super('Store-review driver has no operational executions');
+  }
+}
+
 export class PrismaDsvDriverExecutionPrincipalResolver implements DsvDriverExecutionPrincipalResolver {
   constructor(private readonly prisma: Pick<PrismaClient, 'driver'>) {}
 
@@ -52,7 +60,17 @@ export class PrismaDsvDriverExecutionPrincipalResolver implements DsvDriverExecu
       },
     });
     const driver = drivers.length === 1 ? drivers[0] : undefined;
-    if (driver === undefined) throw new Error('Driver account does not resolve to one active DSV driver');
+    if (driver === undefined) {
+      const reviewDrivers = drivers.length === 0 ? await this.prisma.driver.count({ where: {
+        account: { id: input.accountId, isStoreReviewAccount: true, status: 'ACTIVE', tokenVersion: input.tokenVersion },
+        accountId: input.accountId,
+        dsvProfile: { isNot: null },
+        isStoreReviewData: true,
+        status: 'ACTIVE',
+      } }) : 0;
+      if (reviewDrivers === 1) throw new DsvStoreReviewDriverError();
+      throw new Error('Driver account does not resolve to one active DSV driver');
+    }
     return {
       accountId: input.accountId,
       principal: {
@@ -184,7 +202,7 @@ export function registerDsvExecutionRoutes(app: FastifyInstance, dependencies: D
       if (query === null || (query.serviceDate !== undefined && serviceDate === null)) return failure(reply, 400, 'BAD_REQUEST');
       if (dependencies.contexts === undefined) return failure(reply, 503, 'DEPENDENCY_UNAVAILABLE');
       return success(reply, await dependencies.contexts.list({ principal: auth.principal, ...(serviceDate === null ? {} : { serviceDate }) }));
-    }));
+    }, { items: [], limit: 100 }));
 
   app.post<{ Params: { id: string } }>('/api/dsv/driver/executions/:id/start', driverOptions, (request, reply) =>
     withDriver(request, reply, dependencies, async (auth) => {
@@ -382,6 +400,7 @@ async function withDriver(
   reply: FastifyReply,
   dependencies: DsvExecutionRouteDependencies,
   action: (auth: DsvDriverExecutionAuth) => Promise<unknown>,
+  storeReviewDriverData?: unknown,
 ): Promise<unknown> {
   const bearer = request.headers.authorization?.match(/^Bearer (\S+)$/u)?.[1];
   let auth: DsvDriverExecutionAuth;
@@ -390,7 +409,10 @@ async function withDriver(
     const token = verifyDriverAccountToken(bearer, { secret: dependencies.driverJwtSecret });
     if (!uuid.test(token.accountId)) throw new Error('invalid account');
     auth = await dependencies.driverPrincipalResolver.resolve({ accountId: token.accountId, tokenVersion: token.tokenVersion });
-  } catch { return failure(reply, 401, 'UNAUTHORIZED'); }
+  } catch (error) {
+    if (error instanceof DsvStoreReviewDriverError && storeReviewDriverData !== undefined) return success(reply, storeReviewDriverData);
+    return failure(reply, 401, 'UNAUTHORIZED');
+  }
   try { return await action(auth); } catch (error) { return mappedFailure(request, reply, error); }
 }
 
