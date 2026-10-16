@@ -99,6 +99,7 @@ export type DsvV1ControlReadResult = DsvV1ControlSummaryInput & { timezone: stri
 
 type DsvV1EtaReadRow = {
   estimatedArrivalAt: Date | null;
+  etaCalculatedAt: Date | null;
   etaInputRouteVersionId: string | null;
   etaSource: string | null;
   etaStatus: string;
@@ -1494,6 +1495,7 @@ const recordEventSelect = {
 
 const routePlanStopSelect = {
   estimatedArrivalAt: true,
+  etaCalculatedAt: true,
   etaInputRouteVersionId: true,
   etaSource: true,
   etaStatus: true,
@@ -2031,6 +2033,7 @@ function etaFields(eta: (DsvV1EtaReadRow & { etaStatus: DsvV1EtaStatus }) | null
   if (eta === null) return {};
   return {
     ...(eta.estimatedArrivalAt === null ? {} : { estimatedArrivalAt: eta.estimatedArrivalAt }),
+    ...(eta.etaCalculatedAt === null ? {} : { etaCalculatedAt: eta.etaCalculatedAt }),
     ...(eta.etaInputRouteVersionId === null ? {} : { etaInputRouteVersionId: eta.etaInputRouteVersionId }),
     ...(eta.etaSource === null ? {} : { etaSource: eta.etaSource }),
   };
@@ -2093,6 +2096,7 @@ function selectCanonicalEta(
   if (selected === null) return null;
   return {
     estimatedArrivalAt: selected.estimatedArrivalAt,
+    etaCalculatedAt: selected.etaCalculatedAt,
     etaInputRouteVersionId: selected.etaInputRouteVersionId,
     etaSource: selected.etaSource,
     etaStatus: toDtoEtaStatus(selected.etaStatus),

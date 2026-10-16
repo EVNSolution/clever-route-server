@@ -937,6 +937,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       ],
       routePlanStops: [{
         estimatedArrivalAt: new Date('2026-07-22T02:00:00.000Z'),
+        etaCalculatedAt: new Date('2026-07-22T01:30:00.000Z'),
         etaInputRouteVersionId: 'route-version-a',
         etaSource: 'ROUTE_CALCULATION',
         etaStatus: 'READY',
@@ -974,6 +975,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       items: [{
         actualCompletedAt: new Date('2026-07-22T01:00:00.000Z'),
         conditionCode: 'COLD',
+        etaCalculatedAt: new Date('2026-07-22T01:30:00.000Z'),
         eventRows: [{ eventType: 'STOP_DELIVERED', occurredAt: new Date('2026-07-22T01:00:00.000Z') }],
         routeStopSequence: 4,
         sellerOrderKey: 'SO-A',
@@ -1077,6 +1079,8 @@ describe('PrismaDsvV1ReadQueryService', () => {
     await expect(service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
       items: [{ etaStatus: 'PENDING', routeStopSequence: 5 }],
     });
+    const dispatches = await service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' });
+    expect(dispatches.items[0]).not.toHaveProperty('etaCalculatedAt');
   });
 
   test('dispatch summaries derive ownership from current child driver and keep route plan while ETA is pending', async () => {
@@ -2072,6 +2076,7 @@ function customerDeliveryOrderRow(input: {
   longitude?: unknown;
   routePlanStops?: Array<{
     estimatedArrivalAt: Date | null;
+    etaCalculatedAt?: Date | null;
     etaInputRouteVersionId: string | null;
     etaSource: string | null;
     etaStatus: string;
