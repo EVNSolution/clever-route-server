@@ -70,8 +70,9 @@ merged place comes back to the driver as one stop.
   does.
 - Every name gets the `데모 ` prefix, because a review row must not share an
   identity with a real destination.
-- The operational execution list (`GET /api/dsv/driver/executions`) answers a
+- The operational execution list (`GET /api/dsv/driver/executions`) and the
+  notification list (`GET /api/dsv/driver/operational-notifications`) answer a
   review driver with no items instead of 401, so the 0.2.0 driver app can open the
-  review route. Start and delivery-exception commands stay 401 for review drivers.
+  review route and its 알림함. Every other driver operational endpoint stays 401.
 - After apply, this login sees only review routes. To restore it, set the two
   flags from the snapshot back to their old values.

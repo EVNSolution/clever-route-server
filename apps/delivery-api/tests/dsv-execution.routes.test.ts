@@ -347,8 +347,8 @@ describe('DSV execution HTTP routes', () => {
     }));
   });
 
-  test('answers a store-review driver with no executions and keeps every other driver endpoint closed', async () => {
-    const { app, commands, driverPrincipalResolver, headers } = setup();
+  test('answers a store-review driver with no executions or notifications and keeps every other driver endpoint closed', async () => {
+    const { app, commands, driverPrincipalResolver, headers, notifications } = setup();
     driverPrincipalResolver.resolve.mockRejectedValue(new DsvStoreReviewDriverError());
     try {
       const list = await app.inject({ headers, method: 'GET', url: '/api/dsv/driver/executions' });
@@ -358,8 +358,14 @@ describe('DSV execution HTTP routes', () => {
         headers, method: 'POST', payload: {}, url: `/api/dsv/driver/executions/${ids.context}/start`,
       });
       expect(start.statusCode).toBe(401);
-      expect((await app.inject({ headers, method: 'GET', url: '/api/dsv/driver/operational-notifications' })).statusCode).toBe(401);
+      const inbox = await app.inject({ headers, method: 'GET', url: '/api/dsv/driver/operational-notifications' });
+      expect(inbox.statusCode).toBe(200);
+      expect(inbox.json()).toEqual({ data: { items: [], nextCursor: null }, error: null });
+      expect((await app.inject({
+        headers, method: 'GET', url: `/api/dsv/driver/operational-notifications/${ids.notification}/resolve`,
+      })).statusCode).toBe(401);
       expect(commands.start).not.toHaveBeenCalled();
+      expect(notifications.list).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
