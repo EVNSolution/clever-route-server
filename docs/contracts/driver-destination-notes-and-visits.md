@@ -27,7 +27,10 @@
 - A visit is one route of this driver with a `DELIVERED` or `FAILED` stop at the destination.
 - `outcome` is DELIVERED, FAILED or PARTIAL.
 - `visitedAt` is the latest `STOP_DELIVERED.occurredAt` of the visit. This is the time the driver entered.
-- `notes` are the latest revisions per field with `changedAt <= visitedAt`.
+- `notes` hold the latest revision per field among these:
+  - the revisions this driver wrote on that route, at any time;
+  - other revisions changed before the end of the `visitedAt` minute.
+- The minute is padded because the entered completion time has minute precision.
 - A visit without a completion time reads `notes` at the end of its plan date.
 - `changedFields` lists the fields this driver changed on that route.
 - `orderNotes` are the distinct stop instructions of that visit.
