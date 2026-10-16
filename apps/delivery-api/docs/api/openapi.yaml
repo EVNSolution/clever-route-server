@@ -10597,6 +10597,12 @@ components:
           type:
             - string
             - 'null'
+        completedAt:
+          description: Time the driver entered on 배송완료 for a DELIVERED stop of this route; null otherwise.
+          format: date-time
+          type:
+            - string
+            - 'null'
         routeConstraintStatus:
           enum: [NOT_APPLICABLE, UNCONFIRMED, PENDING_RECALCULATION, NOT_EVALUATED]
           type: string
@@ -10792,6 +10798,28 @@ components:
           type:
             - string
             - 'null'
+        stops:
+          description: Stops in delivery order. completedAt is the time the driver entered on 배송완료.
+          type: array
+          items:
+            type: object
+            required: [deliveryStopId, sequence, destinationId, destinationName, status, completedAt]
+            properties:
+              deliveryStopId:
+                type: string
+              sequence:
+                type: integer
+              destinationId:
+                type: string
+              destinationName:
+                type: string
+              status:
+                type: string
+              completedAt:
+                format: date-time
+                type:
+                  - string
+                  - 'null'
     DriverRouteFeedbackRequest:
       type: object
       required: [reviewNote]

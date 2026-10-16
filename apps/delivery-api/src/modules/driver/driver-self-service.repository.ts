@@ -51,7 +51,17 @@ type RouteProgressRecord = {
   status: string;
 };
 
-type RoutePlanHistoryRecord = RouteProgressRecord & {
+type RoutePlanHistoryRecord = Omit<RouteProgressRecord, 'routeStops'> & {
+  routeStops: Array<{
+    sequence: number;
+    deliveryStop: {
+      driverEvents: { occurredAt: Date; routePlanId: string | null }[];
+      id: string;
+      order: { destinationId: string | null; name: string };
+      recipientName: string | null;
+      status: string;
+    };
+  }>;
   constraints: unknown;
   id: string;
   name: string;
@@ -432,9 +442,21 @@ function routeHistoryIncludeFor(driverId: string) {
       }
     },
     routeStops: {
-      include: {
+      orderBy: { sequence: 'asc' },
+      select: {
+        sequence: true,
         deliveryStop: {
-          select: { status: true }
+          select: {
+            driverEvents: {
+              orderBy: { occurredAt: 'desc' },
+              select: { occurredAt: true, routePlanId: true },
+              where: { driverId, eventType: DriverEventType.STOP_DELIVERED }
+            },
+            id: true,
+            order: { select: { destinationId: true, name: true } },
+            recipientName: true,
+            status: true
+          }
         }
       }
     },
@@ -471,6 +493,16 @@ function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHisto
     companyDisplayName: readCompanyDisplayName(routePlan.constraints, routePlan.shop.shopDomain),
     status: toHistoryStatus(routePlan),
     stopCount: stopStatuses.length,
+    stops: routePlan.routeStops.map(({ deliveryStop, sequence }) => ({
+      completedAt: deliveryStop.status === 'DELIVERED'
+        ? deliveryStop.driverEvents.find((event) => event.routePlanId === routePlan.id)?.occurredAt.toISOString() ?? null
+        : null,
+      deliveryStopId: deliveryStop.id,
+      destinationId: deliveryStop.order.destinationId ?? deliveryStop.id,
+      destinationName: deliveryStop.recipientName?.trim() || deliveryStop.order.name,
+      sequence,
+      status: deliveryStop.status,
+    })),
     timezone: readIanaTimezone(routePlan.constraints),
   };
 }

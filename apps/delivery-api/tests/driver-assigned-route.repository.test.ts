@@ -151,7 +151,7 @@ type LooseAssignedRouteStop = Omit<MutableRoutePlanRecord['routeStops'][number],
     MutableRoutePlanRecord['routeStops'][number]['deliveryStop'],
     'driverEvents' | 'instructions' | 'order' | 'timeWindowEnd' | 'timeWindowStart'
   > & {
-    driverEvents: Array<{ driverId: string; id: string; occurredAt: Date; routePlanId: string }>;
+    driverEvents: Array<{ driverId: string; eventType: string; id: string; occurredAt: Date; routePlanId: string }>;
     instructions: string | null;
     order: Omit<MutableRoutePlanRecord['routeStops'][number]['deliveryStop']['order'], 'dsvAuditEvents' | 'rawPayload'> & {
       dsvAuditEvents: Array<Record<string, unknown>>;
@@ -402,6 +402,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             shippedBoxes: 4,
             specialInstructionNote: '오전 11시 배송',
             status: 'ASSIGNED',
+            completedAt: null,
             routeConstraintStatus: 'NOT_EVALUATED',
             timeConstraintAcknowledgement: null,
             timeWindow: {
@@ -780,6 +781,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     routePlan.routeStops[0]!.deliveryStop.driverEvents = [
       {
         driverId: 'driver-id',
+        eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
         id: 'ack-event-id',
         occurredAt: new Date('2026-05-12T07:00:00.000Z'),
         routePlanId: 'route-plan-id'
@@ -859,6 +861,28 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         ]
       }
     });
+  });
+
+  test('reports the driver-entered 배송완료 time for a delivered stop of this route only', async () => {
+    const routePlan = structuredClone(routePlanRecord) as Omit<MutableRoutePlanRecord, 'routeStops'> & {
+      routeStops: LooseAssignedRouteStop[];
+    };
+    const stop = routePlan.routeStops[0]!.deliveryStop;
+    (stop as { status: string }).status = 'DELIVERED';
+    stop.driverEvents = [
+      { driverId: 'driver-id', eventType: 'STOP_DELIVERED', id: 'other-route', occurredAt: new Date('2026-05-12T09:00:00.000Z'), routePlanId: 'other-route-id' },
+      { driverId: 'driver-id', eventType: 'STOP_DELIVERED', id: 'delivered', occurredAt: new Date('2026-05-12T08:31:00.000Z'), routePlanId: 'route-plan-id' },
+      { driverId: 'driver-id', eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED', id: 'ack', occurredAt: new Date('2026-05-12T07:00:00.000Z'), routePlanId: 'route-plan-id' }
+    ];
+    const { prisma } = createPrismaHarness({ routePlan });
+    const result = await new PrismaDriverAssignedRouteRepository(prisma as never).getAssignedRoute({
+      driverId: 'driver-id', routeContext: 'route-plan-id', shopDomain: 'dev1.tomatonofood.com', shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({ status: 'ASSIGNED_ROUTE', route: { stops: [{
+      completedAt: '2026-05-12T08:31:00.000Z',
+      timeConstraintAcknowledgement: { acknowledgedAt: '2026-05-12T07:00:00.000Z', eventId: 'ack' }
+    }] } });
   });
 
   test('derives FAILED eta snapshot after pickup when clock ETA is unavailable', async () => {

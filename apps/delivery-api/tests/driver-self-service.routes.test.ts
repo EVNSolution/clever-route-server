@@ -95,6 +95,7 @@ describe('Driver self-service routes', () => {
               companyDisplayName: 'Tomatono',
               status: 'completed',
               stopCount: 4,
+              stops: [],
               timezone: 'America/Toronto'
             }
           ],
@@ -480,6 +481,7 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
           companyDisplayName: 'Tomatono',
           status: 'completed',
           stopCount: 4,
+          stops: [],
           timezone: 'America/Toronto'
         }
       ],

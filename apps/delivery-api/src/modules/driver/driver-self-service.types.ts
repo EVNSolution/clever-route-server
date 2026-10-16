@@ -24,6 +24,15 @@ export type DriverRouteHistoryItem = {
   companyDisplayName: string;
   status: DriverRouteHistoryStatus;
   stopCount: number;
+  /** Stops in delivery order. completedAt is the time the driver entered on 배송완료. */
+  stops: Array<{
+    completedAt: string | null;
+    deliveryStopId: string;
+    destinationId: string;
+    destinationName: string;
+    sequence: number;
+    status: string;
+  }>;
   timezone: string;
 };
 
