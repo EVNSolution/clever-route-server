@@ -17,7 +17,6 @@ import type {
 import { isPrivateDriverDemoAppId, isPrivateDriverDemoScope } from './private-driver-demo.js';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import {
-  DRIVER_SERVICE_TIMEZONE,
   driverServiceDate,
   driverServiceDateAsDbDate,
   isIanaTimezone,
@@ -32,7 +31,7 @@ import type {
 } from './driver-route-access.types.js';
 type DriverRouteAccessPrismaClient = Pick<
   PrismaClient,
-  'driver' | 'routeGroupingChildVersion' | 'routePlan'
+  'driver' | 'driverPushToken' | 'routeGroupingChildVersion' | 'routePlan'
 >;
 
 type DriverRoutePlanRecord = {
@@ -142,7 +141,7 @@ export class PrismaDriverRouteAccessRepository {
     if (
       routePlan === null
       || hasExpiredKfoodNavigation(routePlan, this.now())
-      || !isCurrentDriverRoute(routePlan, this.now())
+      || !isCurrentDriverRoute(routePlan, this.now(), await this.driverDeviceTimezone(input.accountId))
     ) {
       return { status: 'NOT_FOUND' };
     }
@@ -174,7 +173,8 @@ export class PrismaDriverRouteAccessRepository {
     }
     // A ready route of a past delivery date is a leftover assignment: the phone must not list it,
     // because tapping it while another route is active releases that route.
-    const currentPlans = visiblePlans.filter(plan => isCurrentDriverRoute(plan, this.now()));
+    const deviceTimezone = await this.driverDeviceTimezone(accountId);
+    const currentPlans = visiblePlans.filter(plan => isCurrentDriverRoute(plan, this.now(), deviceTimezone));
     const routes = currentPlans.flatMap((routePlan): DriverRouteAccessInvitedRoute[] => {
       const result = mapRoutePlan(routePlan, { accountId, routeContext: routePlan.id });
       return result.status === 'INVITED' ? [result] : [];
@@ -226,6 +226,17 @@ export class PrismaDriverRouteAccessRepository {
     return {
       status: 'DISABLED'
     };
+  }
+
+  /** The driver's phone timezone from its latest active push token; routes carry no timezone of their own on prod. */
+  private async driverDeviceTimezone(accountId: string): Promise<string | null> {
+    const token = await this.prisma.driverPushToken.findFirst({
+      orderBy: { lastSeenAt: 'desc' },
+      select: { timezone: true },
+      where: { accountId, status: 'ACTIVE' }
+    });
+    const timezone = token?.timezone?.trim() ?? '';
+    return timezone !== '' && isIanaTimezone(timezone) ? timezone : null;
   }
 
   private async ensureStandbyRoute(
@@ -476,11 +487,18 @@ function hasExpiredKfoodNavigation(routePlan: DriverRoutePlanRecord, now: Date):
     && hasDeliveryNavigationGraceExpired(routePlan, now);
 }
 
-/** In-progress routes stay listed on any date; not-started routes only for today or a later delivery date. */
-function isCurrentDriverRoute(routePlan: DriverRoutePlanRecord, now: Date): boolean {
+/**
+ * In-progress routes stay listed on any date; not-started routes only for today or a later delivery date.
+ * "Today" is the route's own timezone, else the driver's phone timezone, else UTC with one day of grace so
+ * a route is never hidden on its delivery day anywhere on earth.
+ */
+function isCurrentDriverRoute(routePlan: DriverRoutePlanRecord, now: Date, deviceTimezone: string | null): boolean {
   if (toRouteExecutionStatus(routePlan.status) === 'IN_PROGRESS') return true;
-  const timezone = readString(objectOrNull(routePlan.constraints)?.timezone);
-  const today = localDateInTimeZone(now, timezone !== null && isIanaTimezone(timezone) ? timezone : DRIVER_SERVICE_TIMEZONE);
+  const routeTimezone = readString(objectOrNull(routePlan.constraints)?.timezone);
+  const timezone = routeTimezone !== null && isIanaTimezone(routeTimezone) ? routeTimezone : deviceTimezone;
+  const today = timezone === null
+    ? localDateInTimeZone(new Date(now.getTime() - 86_400_000), 'UTC')
+    : localDateInTimeZone(now, timezone);
   return routePlan.planDate.toISOString().slice(0, 10) >= today;
 }
 
