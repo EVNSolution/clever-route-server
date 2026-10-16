@@ -379,13 +379,14 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     requiredScopes: ['dsv:control:read'],
   });
   registerReadRoute(app, dependencies, 'vehicles/:vehicleId/gps-trail-history', {
-    allowedQuery: ['includeDailyRoute', 'serviceDate'],
+    allowedQuery: ['includeDailyRoute', 'serviceDate', 'window'],
     handler: async (principal, query) => {
       const history = await requireQueryService(dependencies).listVehicleGpsTrailHistory(
         requireAdminPrincipal(principal), query,
       );
       return query.includeDailyRoute === true ? history : {
         serviceDate: history.serviceDate,
+        ...(history.serviceWindow === undefined ? {} : { serviceWindow: history.serviceWindow }),
         sessions: history.sessions,
         timezone: history.timezone,
         vehicleId: history.vehicleId,
@@ -1293,12 +1294,15 @@ function parseVehicleGpsTrailHistoryQuery(request: FastifyRequest): DsvV1Vehicle
   const vehicleId = readUuidParam(request, 'vehicleId');
   const serviceDate = readServiceDate(request);
   const includeDailyRoute = readSingleQueryString(request, 'includeDailyRoute');
-  if (vehicleId === null || serviceDate === null || includeDailyRoute === null) return null;
+  const window = readSingleQueryString(request, 'window');
+  if (vehicleId === null || serviceDate === null || includeDailyRoute === null || window === null) return null;
   if (includeDailyRoute !== undefined && includeDailyRoute !== 'true' && includeDailyRoute !== 'false') return null;
+  if (window !== undefined && window !== 'service') return null;
   return {
     ...(includeDailyRoute === undefined ? {} : { includeDailyRoute: includeDailyRoute === 'true' }),
     ...(serviceDate === undefined ? {} : { serviceDate }),
     vehicleId,
+    ...(window === undefined ? {} : { window }),
   };
 }
 

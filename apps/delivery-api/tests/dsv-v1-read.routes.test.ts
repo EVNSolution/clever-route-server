@@ -1497,6 +1497,44 @@ describe('DSV v1 read routes', () => {
         { includeDailyRoute: true, serviceDate: '2026-08-04', vehicleId },
       );
 
+      const serviceWindow = {
+        endedAt: null,
+        endSource: null,
+        startedAt: '2026-08-04T00:20:00.000Z',
+        startSource: 'CENTER_STAY' as const,
+      };
+      queryService.listVehicleGpsTrailHistory.mockResolvedValueOnce({
+        serviceDate: '2026-08-04',
+        serviceWindow,
+        sessions: [],
+        timezone: 'Asia/Seoul',
+        vehicleId,
+      });
+      const windowResponse = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/vehicles/${vehicleId}/gps-trail-history?serviceDate=2026-08-04&window=service`,
+      });
+      expect(windowResponse.statusCode).toBe(200);
+      expectDsvV1Envelope(windowResponse, {
+        serviceDate: '2026-08-04',
+        serviceWindow,
+        sessions: [],
+        timezone: 'Asia/Seoul',
+        vehicleId,
+      });
+      expect(queryService.listVehicleGpsTrailHistory).toHaveBeenLastCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        { serviceDate: '2026-08-04', vehicleId, window: 'service' },
+      );
+
+      const badWindow = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/vehicles/${vehicleId}/gps-trail-history?serviceDate=2026-08-04&window=day`,
+      });
+      expect(badWindow.statusCode).toBe(400);
+
       const invalid = await app.inject({
         headers: { cookie: admin.cookie },
         method: 'GET',
