@@ -1076,6 +1076,10 @@ model DsvCustomerAccountInvite {
   consumedAt DateTime?                       @db.Timestamptz(6)
   revokedAt  DateTime?                       @db.Timestamptz(6)
   createdAt  DateTime                        @default(now()) @db.Timestamptz(6)
+  // Free text the administrator typed to tell links apart. Re-invites and password resets copy it from the previous invite.
+  inviteeLabel       String?          @db.Text
+  invitedByAccountId String?          @db.Uuid
+  invitedBy          DsvAdminAccount? @relation(fields: [invitedByAccountId], references: [id], onDelete: SetNull)
 
   @@index([accountId, purpose, expiresAt])
   @@index([shopId, customerId, purpose, expiresAt], map: "dsv_customer_account_invites_shopId_customerId_purpose_expiresA")
@@ -1101,6 +1105,7 @@ model DsvAdminAccount {
   lastAuthenticatedAt  DateTime?             @db.Timestamptz(6)
   createdAt            DateTime              @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime              @updatedAt @db.Timestamptz(6)
+  customerInvitesSent  DsvCustomerAccountInvite[]
 
   @@index([status])
   @@map("dsv_admin_accounts")

@@ -429,6 +429,15 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       });
     }, ['dsv:customers:read']));
 
+  app.get<{ Params: { customerId: string } }>(`${apiRoot}/customers/:customerId/accounts/invitations`, (request, reply) =>
+    withDsvSession(request, reply, dependencies, async ({ principal, shopDomain }) => {
+      const service = requireCustomerAccountService(dependencies);
+      if (!uuidPattern.test(request.params.customerId)) return sendError(reply, 400, 'BAD_REQUEST', 'customerId must be a UUID');
+      await dependencies.storeReviewAccess.assertAccessible(principal, { customerIds: [request.params.customerId] });
+      const invitations = await service.listInvitations({ customerId: request.params.customerId, shopDomain });
+      return sendData(reply, { invitations });
+    }, ['dsv:customers:read']));
+
   app.post<{ Params: { customerId: string } }>(`${apiRoot}/customers/:customerId/accounts/invitations`, (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ actor, principal, shopDomain }) => {
       const service = requireCustomerAccountService(dependencies);
@@ -442,6 +451,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
           customerId: request.params.customerId,
           requestId: request.id,
           shopDomain,
+          ...(input.inviteeLabel === undefined ? {} : { inviteeLabel: input.inviteeLabel }),
         }), 201);
       } catch (error) {
         return sendCustomerAccountServiceError(reply, error);
@@ -1825,10 +1835,14 @@ function readAdminAccountStatus(value: unknown): DsvAdminAccountStatus | null {
   return body.status === 'ACTIVE' || body.status === 'DISABLED' ? body.status : null;
 }
 
-function readCustomerAccountInvitationBody(value: unknown): Record<string, never> | null {
+function readCustomerAccountInvitationBody(value: unknown): { inviteeLabel?: string } | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyKeys(body, [])) return null;
-  return {};
+  if (body === null || !hasOnlyAllowedKeys(body, ['inviteeLabel'])) return null;
+  if (body.inviteeLabel === undefined) return {};
+  if (typeof body.inviteeLabel !== 'string') return null;
+  const inviteeLabel = body.inviteeLabel.trim();
+  if (inviteeLabel.length > 100) return null;
+  return inviteeLabel === '' ? {} : { inviteeLabel };
 }
 
 function readCustomerAccountStatus(value: unknown): 'ACTIVE' | 'DISABLED' | null {
