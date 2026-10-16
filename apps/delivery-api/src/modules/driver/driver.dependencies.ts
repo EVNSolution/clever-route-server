@@ -133,6 +133,8 @@ type LoadDriverApiDependenciesInput = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   driverNotificationDispatcher?: Pick<PrismaDsvDriverNotificationDispatcher, 'dispatchByIdempotencyKey'>;
   env: DriverApiRuntimeEnv & AdminRoutePlanRuntimeEnv;
+  /** Clock for route visibility; tests pin it to their fixture's service date. */
+  now?: () => Date;
   prisma: PrismaClient;
   orderMessageService?: Pick<DsvOrderMessageService, 'markDriverMessageRead'>;
   operationalAlertRepository?: PrismaOperationalAlertRepository;
@@ -243,7 +245,7 @@ export function loadDriverApiDependencies(
     }),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     ...(input.routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler: input.routeOptimizationScheduler }),
-    routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma, input.routeGroupingService)
+    routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma, input.routeGroupingService, input.now)
   };
 }
 

@@ -130,6 +130,8 @@ export async function createDsvIsolatedHttpHarness(): Promise<DsvIsolatedHttpHar
       JWT_SECRET: driverJwtSecret,
       NODE_ENV: 'test',
     },
+    // The synthetic route is dated DSV_ISOLATED_SERVICE_DATE; route lookup hides ready routes of past days.
+    now: () => new Date(`${DSV_ISOLATED_SERVICE_DATE}T02:00:00.000Z`),
     prisma,
   });
   let current: FixtureRecord | null = null;
