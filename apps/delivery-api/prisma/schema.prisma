@@ -410,6 +410,7 @@ model Shop {
   defaultDepotAddress                  String?                                @db.Text
   defaultDepotLatitude                 Decimal?                               @db.Decimal(10, 7)
   defaultDepotLongitude                Decimal?                               @db.Decimal(10, 7)
+  defaultDepotTimezone                 String?                                @db.Text
   locale                               String?                                @db.Text
   routeScopeConfig                     Json?
   routeOpsUiSettings                   Json?

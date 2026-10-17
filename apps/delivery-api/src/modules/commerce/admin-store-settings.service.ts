@@ -11,6 +11,7 @@ import {
   type RouteOpsUiSettingsDto,
 } from "../route-ops/route-ops-ui-settings.js";
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { centerTimezoneFromCoordinates } from '../route-ops/center-timezone.js';
 import { normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 import {
@@ -90,6 +91,7 @@ export class PrismaAdminStoreSettingsService {
         defaultDepotAddress: input.defaultDepotAddress,
         defaultDepotLatitude: input.defaultDepotLatitude,
         defaultDepotLongitude: input.defaultDepotLongitude,
+        defaultDepotTimezone: centerTimezoneFromCoordinates(input.defaultDepotLatitude, input.defaultDepotLongitude),
         ...(dsvOperationalSettings === undefined ? {} : { dsvOperationalSettings }),
         locale: input.locale,
         ...(routeOpsUiSettings === undefined ? {} : { routeOpsUiSettings }),
@@ -110,6 +112,7 @@ export class PrismaAdminStoreSettingsService {
         defaultDepotAddress: input.defaultDepotAddress,
         defaultDepotLatitude: input.defaultDepotLatitude,
         defaultDepotLongitude: input.defaultDepotLongitude,
+        defaultDepotTimezone: centerTimezoneFromCoordinates(input.defaultDepotLatitude, input.defaultDepotLongitude),
         ...(dsvOperationalSettings === undefined ? {} : { dsvOperationalSettings }),
         locale: input.locale,
         ...(routeOpsUiSettings === undefined ? {} : { routeOpsUiSettings }),

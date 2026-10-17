@@ -85,6 +85,7 @@ import {
 import { hashPushToken } from './driver-push-token.service.js';
 import { createRouteGroupingInventory, syncRouteGroupingInventoryOrders } from '../inventory/inventory.service.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
+import { centerTimezoneFromCoordinates } from '../route-ops/center-timezone.js';
 import {
   completeLiveRouteChildReplacement,
   LiveRouteChangeError,
@@ -547,7 +548,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           data: {
             defaultDepotAddress: input.depot.address,
             defaultDepotLatitude: decimalString(input.depot.latitude),
-            defaultDepotLongitude: decimalString(input.depot.longitude)
+            defaultDepotLongitude: decimalString(input.depot.longitude),
+            defaultDepotTimezone: centerTimezoneFromCoordinates(input.depot.latitude, input.depot.longitude)
           },
           where: { id: shop.id }
         });

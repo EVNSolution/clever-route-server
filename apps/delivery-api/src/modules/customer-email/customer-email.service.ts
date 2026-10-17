@@ -199,6 +199,7 @@ type CustomerEmailRoutePlanRow = {
   shop: {
     commerceConnections: Array<{ timezone: string | null }>;
     customerEmailSettings: unknown;
+    defaultDepotTimezone?: string | null;
     id: string;
     routeOpsUiSettings: unknown;
     shopDomain: string;
@@ -236,7 +237,7 @@ export class CustomerEmailService {
       select: {
         constraints: true,
         routeStops: { select: { deliveryStopId: true }, where: { deliveryStopId: input.deliveryStopId } },
-        shop: { select: { commerceConnections: { select: { timezone: true }, where: { status: 'ACTIVE' } } } },
+        shop: { select: { commerceConnections: { select: { timezone: true }, where: { status: 'ACTIVE' } }, defaultDepotTimezone: true } },
         shopId: true,
       },
       where: { id: input.routePlanId, shop: { is: shopWhereInput(input) } },
@@ -913,6 +914,7 @@ export class CustomerEmailService {
           select: {
             commerceConnections: { select: { timezone: true }, where: { status: 'ACTIVE' } },
             customerEmailSettings: true,
+            defaultDepotTimezone: true,
             id: true,
             routeOpsUiSettings: true,
             shopDomain: true,
@@ -1592,11 +1594,13 @@ export function buildStopEmailHistoryEvents(
 
 export function resolveCustomerEmailTimezone(routePlan: {
   constraints: unknown;
-  shop: { commerceConnections: Array<{ timezone: string | null }> };
+  shop: { commerceConnections: Array<{ timezone: string | null }>; defaultDepotTimezone?: string | null };
 }): string | null {
   const constraints = isRecord(routePlan.constraints) ? routePlan.constraints : null;
   const routeScope = constraints !== null && isRecord(constraints.routeScope) ? constraints.routeScope : null;
+  // The tenant center timezone (settings) is the source of truth; route values are legacy fallbacks.
   const routeTimezone = [
+    readNonEmptyString(routePlan.shop.defaultDepotTimezone),
     readNonEmptyString(constraints?.timezone),
     readNonEmptyString(routeScope?.timezone),
     readNonEmptyString(constraints?.scheduledStartTimeZone),

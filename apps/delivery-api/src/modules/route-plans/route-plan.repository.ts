@@ -2246,6 +2246,7 @@ async function persistPlannedRouteEta(
             select: { timezone: true },
             where: { status: 'ACTIVE' }
           },
+          defaultDepotTimezone: true,
           routeOpsUiSettings: true
         }
       },
@@ -2371,6 +2372,7 @@ function plannedRouteEtaStart(input: {
   planDate: Date;
   shop: {
     commerceConnections: Array<{ timezone: string | null }>;
+    defaultDepotTimezone?: string | null;
     routeOpsUiSettings: unknown;
   };
 }): Date | null {
@@ -2378,7 +2380,9 @@ function plannedRouteEtaStart(input: {
   if (scheduledStartAt !== null) return new Date(scheduledStartAt);
   const constraints = objectOrNull(input.constraints);
   const routeScope = objectOrNull(constraints?.routeScope);
+  // The tenant center timezone (settings) is the source of truth; route values are legacy fallbacks.
   const routeTimezone = [
+    input.shop.defaultDepotTimezone?.trim() || null,
     readString(constraints?.timezone),
     readString(routeScope?.timezone),
     readString(constraints?.scheduledStartTimeZone)

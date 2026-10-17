@@ -68,6 +68,34 @@ describe('PrismaDriverRouteAccessRepository', () => {
       .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [] });
   });
 
+  test('judges today by the tenant center timezone before the route or the phone', async () => {
+    // 2026-10-16T22:00Z is Saturday in Seoul but Friday 18:00 in Toronto. The phone says Seoul; the center says Toronto.
+    const fridayRoute = withCenterTimezone(withoutTimezone(routePlanRecord({ planDate: '2026-10-16' })), 'America/Toronto');
+    const repository = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ deviceTimezone: 'Asia/Seoul', phoneRoutePlans: [fridayRoute] }).prisma as never,
+      undefined,
+      () => new Date('2026-10-16T22:00:00.000Z')
+    );
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ routeAccess: { routePlanId: routePlanId } }] });
+  });
+
+  test('hides a past-day route once the tenant center reaches the next day, whatever the phone says', async () => {
+    // 2026-10-17T05:00Z is already Saturday 14:00 in Seoul center; a Toronto phone must not keep Friday alive.
+    const fridayRoute = withCenterTimezone(withoutTimezone(routePlanRecord({ planDate: '2026-10-16' })), 'Asia/Seoul');
+    const repository = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({
+        deviceTimezone: 'America/Toronto',
+        phoneDrivers: [{ authSubject: 'driver-auth-subject', id: 'driver-id', status: 'ACTIVE' }],
+        phoneRoutePlans: [fridayRoute]
+      }).prisma as never,
+      undefined,
+      () => new Date('2026-10-17T05:00:00.000Z')
+    );
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [] });
+  });
+
   test('keeps a route for one day of grace when neither route nor phone has a timezone', async () => {
     const noTimezone = (planDate: string) => withoutTimezone(routePlanRecord({ planDate }));
     const repository = new PrismaDriverRouteAccessRepository(
@@ -165,7 +193,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
           take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { id: true, appId: true, shopDomain: true } },
+        shop: { select: { id: true, appId: true, shopDomain: true, defaultDepotTimezone: true } },
         status: true
       },
       where: {
@@ -260,7 +288,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
           take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { id: true, appId: true, shopDomain: true } },
+        shop: { select: { id: true, appId: true, shopDomain: true, defaultDepotTimezone: true } },
         status: true
       },
       where: {
@@ -743,7 +771,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
           take: 2,
           where: { status: 'CURRENT', supersededAt: null }
         },
-        shop: { select: { id: true, appId: true, shopDomain: true } },
+        shop: { select: { id: true, appId: true, shopDomain: true, defaultDepotTimezone: true } },
         status: true
       },
       take: 3,
@@ -954,6 +982,10 @@ function createPrismaHarness(
       }
     }
   };
+}
+
+function withCenterTimezone<T extends { shop: object }>(record: T, defaultDepotTimezone: string): T {
+  return { ...record, shop: { ...record.shop, defaultDepotTimezone } };
 }
 
 function withoutTimezone(record: ReturnType<typeof routePlanRecord>): ReturnType<typeof routePlanRecord> {

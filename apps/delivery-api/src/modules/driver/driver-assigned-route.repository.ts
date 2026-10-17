@@ -74,6 +74,7 @@ type AssignedRoutePlanRecord = {
   driverEvents: Array<{ createdAt: Date }>;
   shop: {
     commerceConnections: Array<{ timezone: string | null }>;
+    defaultDepotTimezone?: string | null;
     shopDomain: string;
   };
   status: string;
@@ -250,6 +251,7 @@ const assignedRouteInclude = {
         select: { timezone: true },
         where: { status: 'ACTIVE' }
       },
+      defaultDepotTimezone: true,
       shopDomain: true
     }
   }
@@ -454,7 +456,7 @@ function toAssignedRouteResult(
       stops: [...routePlan.routeStops]
         .sort((left, right) => left.sequence - right.sequence)
         .map((routeStop) => toAssignedRouteStop(routeStop, routePlan, destinations)),
-      timezone: readTimezone(routePlan.constraints, routePlan.shop.commerceConnections)
+      timezone: readTimezone(routePlan.constraints, routePlan.shop.commerceConnections, routePlan.shop.defaultDepotTimezone)
     }
   };
 }
@@ -761,7 +763,14 @@ function readRouteEndMode(value: unknown): RoutePlanEndMode {
   return constraints?.routeEndMode === 'RETURN_TO_DEPOT' ? 'RETURN_TO_DEPOT' : 'END_AT_LAST_STOP';
 }
 
-function readTimezone(value: unknown, commerceConnections: Array<{ timezone: string | null }>): string {
+function readTimezone(
+  value: unknown,
+  commerceConnections: Array<{ timezone: string | null }>,
+  centerTimezone: string | null | undefined
+): string {
+  // The tenant center timezone (settings) is the source of truth; route values are legacy fallbacks.
+  const center = centerTimezone?.trim() ?? '';
+  if (center !== '' && isIanaTimezone(center)) return center;
   const constraints = objectOrNull(value);
   const routeScope = objectOrNull(constraints?.routeScope);
   const routeTimezone = [
