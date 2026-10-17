@@ -63,6 +63,7 @@ import type {
   WooSyncRunDto,
 } from "../types";
 import { readErrorMessage, today } from "../utils/format";
+import { useRefreshOnReturn } from "../utils/useRefreshOnReturn";
 
 export const ORDERS_TABLE_COLUMN_COUNT = 9;
 export type OrderMetadataPatch = {
@@ -231,10 +232,12 @@ function editableMetadataField(
 }
 
 export function OrdersPage({
+  active = true,
   bootstrap,
   navigate,
   setError,
 }: {
+  active?: boolean;
   bootstrap: BootstrapPayload;
   navigate(path: string): void;
   setError(error: string | null): void;
@@ -434,6 +437,11 @@ export function OrdersPage({
   useEffect(() => {
     void refreshHistoryOrders();
   }, [selectedDateKey, shouldFetchHistoryOrders]);
+
+  useRefreshOnReturn(active, () => {
+    void refreshOrders();
+    void refreshHistoryOrders();
+  });
 
   useLayoutEffect(() => {
     const snapshot = pendingScrollRestoreRef.current;

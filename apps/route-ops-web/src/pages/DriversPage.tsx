@@ -12,6 +12,7 @@ import { Badge, Kpi } from '../components/primitives';
 import { getDriversCopy, resolveLocale } from '../i18n';
 import type { BootstrapPayload, DriverDto } from '../types';
 import { readErrorMessage } from '../utils/format';
+import { useRefreshOnReturn } from '../utils/useRefreshOnReturn';
 
 const DEFAULT_COUNTRY: CountryCode = 'US';
 const COUNTRY_RESULT_LIMIT = 12;
@@ -96,7 +97,7 @@ export function buildCanonicalPhone(countryCode: CountryCode, nationalPhone: str
   return parsed.number;
 }
 
-export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPayload; setError(error: string | null): void }): ReactElement {
+export function DriversPage({ active = true, bootstrap, setError }: { active?: boolean; bootstrap: BootstrapPayload; setError(error: string | null): void }): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getDriversCopy(locale);
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
@@ -132,6 +133,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
   }, [setError]);
 
   useEffect(refresh, [refresh]);
+  useRefreshOnReturn(active, refresh);
 
   useEffect(() => {
     if (!countryPickerOpen) setCountrySearch(selectedCountryOption.label);

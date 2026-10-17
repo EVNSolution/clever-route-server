@@ -46,6 +46,7 @@ import type {
   StoreSettingsDto,
 } from "../types";
 import { readErrorMessage } from "../utils/format";
+import { useRefreshOnReturn } from "../utils/useRefreshOnReturn";
 
 type RouteEndMode = RoutePlanDetailDto["routePlan"]["routeEndMode"];
 type SaveRouteInput = Parameters<typeof saveRoute>[0];
@@ -211,11 +212,13 @@ export function buildRouteSaveDraftInput({
 }
 
 export function RoutesPage({
+  active = true,
   bootstrap,
   navigate,
   routePlanId,
   setError,
 }: {
+  active?: boolean;
   bootstrap: BootstrapPayload;
   navigate(path: string): void;
   routePlanId: string | null;
@@ -287,6 +290,9 @@ export function RoutesPage({
   useEffect(() => {
     if (routePlanId === null) void refreshRoutes();
   }, [refreshRoutes, routePlanId]);
+  useRefreshOnReturn(active, () => {
+    if (routePlanId === null) void refreshRoutes();
+  });
 
   useEffect(() => {
     setDetail(null);
