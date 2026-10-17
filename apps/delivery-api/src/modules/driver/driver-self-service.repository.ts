@@ -24,6 +24,7 @@ import {
   type UpdateDriverProfileInput
 } from './driver-self-service.types.js';
 import { coerceIanaTimezone } from './driver-route-timezone.js';
+import { resolveRouteTimezone } from '../route-ops/route-timezone.js';
 import { ROUTE_DRIVER_VISIBLE_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import { hasDeliveryWorkCompleted, toRouteDeliveryDisplayStatus } from '../route-plans/kfood-delivery-completion.js';
 
@@ -66,7 +67,7 @@ type RoutePlanHistoryRecord = Omit<RouteProgressRecord, 'routeStops'> & {
   id: string;
   name: string;
   planDate: Date;
-  shop: { shopDomain: string };
+  shop: { defaultDepotTimezone?: string | null; shopDomain: string };
   status: string;
 };
 
@@ -466,7 +467,7 @@ function routeHistoryIncludeFor(driverId: string) {
         }
       }
     },
-    shop: { select: { shopDomain: true } }
+    shop: { select: { defaultDepotTimezone: true, shopDomain: true } }
   } as const;
 }
 
@@ -509,7 +510,10 @@ function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHisto
       sequence,
       status: deliveryStop.status,
     })),
-    timezone: readIanaTimezone(routePlan.constraints),
+    timezone: coerceIanaTimezone(resolveRouteTimezone({
+      centerTimezone: routePlan.shop.defaultDepotTimezone,
+      constraints: routePlan.constraints
+    })),
   };
 }
 
@@ -550,11 +554,6 @@ function readCurrency(values: unknown[]): string {
   return 'CAD';
 }
 
-function readIanaTimezone(value: unknown): string {
-  const constraints = objectOrNull(value);
-  const routeScope = objectOrNull(constraints?.routeScope);
-  return coerceIanaTimezone(readString(constraints?.timezone) ?? readString(routeScope?.timezone));
-}
 function encodeRouteHistoryCursor(routePlan: RoutePlanHistoryRecord): string {
   return Buffer.from(JSON.stringify({ id: routePlan.id, planDate: formatDateOnly(routePlan.planDate) }), 'utf8').toString('base64url');
 }

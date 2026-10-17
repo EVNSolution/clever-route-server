@@ -87,6 +87,7 @@ export class CustomerTrackingService {
           select: {
             commerceConnections: { select: { timezone: true } },
             customerEmailSettings: true,
+            defaultDepotTimezone: true,
             routeOpsUiSettings: true,
           },
         },

@@ -61,12 +61,6 @@ function timeZoneOffsetMs(date: Date, timezone: string): number {
   ) - date.getTime();
 }
 
-export const DRIVER_SERVICE_TIMEZONE = 'Asia/Seoul';
-
-export function driverServiceDate(now: Date): string {
-  return localDateInTimeZone(now, DRIVER_SERVICE_TIMEZONE);
-}
-
 /** Calendar date (YYYY-MM-DD) of `now` in the given IANA timezone. */
 export function localDateInTimeZone(now: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -78,8 +72,4 @@ export function localDateInTimeZone(now: Date, timeZone: string): string {
   const part = (type: Intl.DateTimeFormatPartTypes): string =>
     parts.find((item) => item.type === type)?.value ?? '';
   return `${part('year')}-${part('month')}-${part('day')}`;
-}
-
-export function driverServiceDateAsDbDate(now: Date): Date {
-  return new Date(`${driverServiceDate(now)}T00:00:00.000Z`);
 }

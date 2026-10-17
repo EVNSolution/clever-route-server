@@ -43,6 +43,7 @@ import {
 } from './dsv-service-window.js';
 import { hasImplausibleGpsJump } from '../uvis/uvis-vehicle-trail-evidence.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
+import { resolveRouteTimezone } from '../route-ops/route-timezone.js';
 import { DEPOT_DEPARTURE_LOOKBACK_MS, resolveDepotDeparture } from '../route-tracking/depot-departure.js';
 import {
   occurredAtWithinRouteTrackingEventWindow,
@@ -1316,6 +1317,9 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
   }
 
   private async resolveTenantTimezone(shopId: string): Promise<string> {
+    const shop = await this.prisma.shop.findUnique({ select: { defaultDepotTimezone: true }, where: { id: shopId } });
+    const centerTimezone = resolveRouteTimezone({ centerTimezone: shop?.defaultDepotTimezone });
+    if (centerTimezone !== null) return centerTimezone;
     const connections = await this.prisma.commerceConnection.findMany({
       distinct: ['timezone'],
       select: { timezone: true },

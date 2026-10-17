@@ -85,6 +85,7 @@ import {
 import { hashPushToken } from './driver-push-token.service.js';
 import { createRouteGroupingInventory, syncRouteGroupingInventoryOrders } from '../inventory/inventory.service.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
+import { centerTimezoneFromCoordinates } from '../route-ops/route-timezone.js';
 import {
   completeLiveRouteChildReplacement,
   LiveRouteChangeError,
@@ -228,6 +229,8 @@ type DepotCoordinates = {
   address: string | null;
   latitude: number;
   longitude: number;
+  /** Tenant center timezone; stored on a new route once, never rewritten. */
+  timezone?: string | null;
 };
 
 type OptimizedChildRouteCandidate = {
@@ -547,7 +550,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           data: {
             defaultDepotAddress: input.depot.address,
             defaultDepotLatitude: decimalString(input.depot.latitude),
-            defaultDepotLongitude: decimalString(input.depot.longitude)
+            defaultDepotLongitude: decimalString(input.depot.longitude),
+            defaultDepotTimezone: centerTimezoneFromCoordinates(input.depot.latitude, input.depot.longitude)
           },
           where: { id: shop.id }
         });
@@ -3926,7 +3930,7 @@ function groupingRoutesListSelect() {
       }
     },
     planDate: true,
-    shop: { select: { defaultDepotAddress: true, defaultDepotLatitude: true, defaultDepotLongitude: true } },
+    shop: { select: { defaultDepotAddress: true, defaultDepotLatitude: true, defaultDepotLongitude: true, defaultDepotTimezone: true } },
     status: true,
     updatedAt: true
   } satisfies Prisma.RouteGroupingSelect;
@@ -3974,7 +3978,7 @@ function groupingListInclude() {
       },
       orderBy: { sourceSequence: 'asc' as const }
     },
-    shop: { select: { defaultDepotAddress: true, defaultDepotLatitude: true, defaultDepotLongitude: true } }
+    shop: { select: { defaultDepotAddress: true, defaultDepotLatitude: true, defaultDepotLongitude: true, defaultDepotTimezone: true } }
   } satisfies Prisma.RouteGroupingInclude;
 }
 
@@ -5491,9 +5495,10 @@ function sourceRouteConstraints(group: LoadedGrouping, assignments: LoadedAssign
   return policies[0];
 }
 
-function routeConstraints(group: LoadedGrouping, depot?: DepotCoordinates | null): Prisma.InputJsonObject {
+export function routeConstraints(group: LoadedGrouping, depot?: DepotCoordinates | null): Prisma.InputJsonObject {
   return {
-    ...(depot === undefined || depot === null ? {} : { depot }),
+    ...(depot === undefined || depot === null ? {} : { depot: { address: depot.address, latitude: depot.latitude, longitude: depot.longitude } }),
+    ...(depot?.timezone ? { timezone: depot.timezone } : {}),
     routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
     routeScope: { deliveryDate: formatDateOnly(group.planDate), deliverySession: group.deliverySession, routeScopeKey: group.routeScopeKey, serviceType: group.serviceType }
   };
@@ -6137,7 +6142,7 @@ function hasValidDepotCoordinates(depot: CreateRouteGroupingInput['depot']): dep
 }
 
 function readDepotFromShop(group: {
-  shop: { defaultDepotAddress: string | null; defaultDepotLatitude: unknown; defaultDepotLongitude: unknown };
+  shop: { defaultDepotAddress: string | null; defaultDepotLatitude: unknown; defaultDepotLongitude: unknown; defaultDepotTimezone?: string | null };
 }): DepotCoordinates | null {
   const latitude = decimalNumber(group.shop.defaultDepotLatitude);
   const longitude = decimalNumber(group.shop.defaultDepotLongitude);
@@ -6145,7 +6150,8 @@ function readDepotFromShop(group: {
   return {
     address: typeof group.shop.defaultDepotAddress === 'string' ? group.shop.defaultDepotAddress : null,
     latitude,
-    longitude
+    longitude,
+    timezone: group.shop.defaultDepotTimezone ?? null
   };
 }
 

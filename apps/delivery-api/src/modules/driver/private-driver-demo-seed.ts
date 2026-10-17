@@ -87,7 +87,7 @@ export async function seedPrivateDriverDemo(prisma: PrismaClient, input: { apply
     await tx.shop.create({ data: {
       id: config.shopId, appId: KFOOD_PRIVATE_DEMO_APP_ID, shopDomain: KFOOD_PRIVATE_DEMO_SHOP_DOMAIN,
       locale: 'en-CA', defaultDepotAddress: 'Synthetic demo · Toronto City Hall grounds',
-      defaultDepotLatitude: DEPOT.latitude, defaultDepotLongitude: DEPOT.longitude,
+      defaultDepotLatitude: DEPOT.latitude, defaultDepotLongitude: DEPOT.longitude, defaultDepotTimezone: TIMEZONE,
       customerEmailSettings: email,
       routeOpsUiSettings: { privateDriverDemoSeed: manifest, seededAt: now.toISOString() }
     } });

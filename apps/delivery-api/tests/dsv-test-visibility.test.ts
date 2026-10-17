@@ -62,6 +62,7 @@ describe('reviewed DSV presentation exclusions', () => {
       order: { findMany: orderFind }, deliveryStop: { findMany: stopFind, count: stopCount },
       vehicle: { findMany: vehicleFind }, $queryRaw: sql,
       commerceConnection: { findMany: vi.fn().mockResolvedValue([]) },
+      shop: { findUnique: vi.fn().mockResolvedValue(null) },
     } as never);
     for (const principal of [developer, operator]) {
       await service.listDispatches(principal, { serviceDate: '2026-07-23', limit: 1 });

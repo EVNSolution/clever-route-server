@@ -1,9 +1,7 @@
 import type { Prisma } from '@prisma/client';
 
-import {
-  isIanaTimezone,
-  localDateTimeInTimeZoneToUtc
-} from '../driver/driver-route-timezone.js';
+import { localDateTimeInTimeZoneToUtc } from '../driver/driver-route-timezone.js';
+import { resolveRouteTimezone } from '../route-ops/route-timezone.js';
 
 export type RouteTrackingEventWindow = {
   anchorSource: 'PLAN_DATE' | 'ROUTE_STARTED';
@@ -21,14 +19,10 @@ export function resolveRouteTrackingEventWindow(input: {
   serviceDate?: string | null | undefined;
   startOccurredAt?: Date | string | null | undefined;
 }): RouteTrackingEventWindow | null {
-  const constraints = objectOrNull(input.constraints);
-  const routeScope = objectOrNull(constraints?.routeScope);
-  const routeTimezone = [
-    readString(constraints?.timezone),
-    readString(routeScope?.timezone),
-    readString(constraints?.scheduledStartTimeZone)
-  ].find((timezone): timezone is string => timezone !== null && isIanaTimezone(timezone));
-  if (routeTimezone === undefined) return null;
+  // Route-owned inputs only: this window decides what tracking data is kept, redacted or finalized, so a
+  // later edit of the tenant center must not move it.
+  const routeTimezone = resolveRouteTimezone({ constraints: input.constraints });
+  if (routeTimezone === null) return null;
   const startedServiceDate = readDateOnly(input.serviceDate)
     ?? localDateOnly(input.startOccurredAt, routeTimezone);
   const serviceDate = startedServiceDate ?? formatDateOnly(input.planDate);
@@ -116,14 +110,4 @@ function readDateOnly(value: string | null | undefined): string | null {
   } catch {
     return null;
   }
-}
-
-function objectOrNull(value: unknown): Record<string, unknown> | null {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-function readString(value: unknown): string | null {
-  const text = typeof value === 'string' ? value.trim() : '';
-  return text || null;
 }
