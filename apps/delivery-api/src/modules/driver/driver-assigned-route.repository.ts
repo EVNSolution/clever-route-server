@@ -20,7 +20,8 @@ import type {
   DriverAssignedRouteStopPoint
 } from './driver-assigned-route.types.js';
 import { buildDriverRouteEtaSnapshot, type DriverRouteEtaStop } from './driver-route-eta.js';
-import { coerceIanaTimezone, isIanaTimezone } from './driver-route-timezone.js';
+import { coerceIanaTimezone } from './driver-route-timezone.js';
+import { resolveRouteTimezone } from '../route-ops/route-timezone.js';
 import type {
   RoutePlanDetail,
   RoutePlanDetailStop,
@@ -764,28 +765,11 @@ function readRouteEndMode(value: unknown): RoutePlanEndMode {
 }
 
 function readTimezone(
-  value: unknown,
+  constraints: unknown,
   commerceConnections: Array<{ timezone: string | null }>,
   centerTimezone: string | null | undefined
 ): string {
-  // The tenant center timezone (settings) is the source of truth; route values are legacy fallbacks.
-  const center = centerTimezone?.trim() ?? '';
-  if (center !== '' && isIanaTimezone(center)) return center;
-  const constraints = objectOrNull(value);
-  const routeScope = objectOrNull(constraints?.routeScope);
-  const routeTimezone = [
-    readString(constraints?.timezone),
-    readString(routeScope?.timezone),
-    readString(constraints?.scheduledStartTimeZone)
-  ].find((timezone): timezone is string => timezone !== null && isIanaTimezone(timezone));
-  if (routeTimezone !== undefined) return routeTimezone;
-
-  const connectionTimezones = [...new Set(
-    commerceConnections
-      .map((connection) => connection.timezone?.trim() ?? '')
-      .filter((timezone) => timezone !== '' && isIanaTimezone(timezone))
-  )];
-  return coerceIanaTimezone(connectionTimezones.length === 1 ? connectionTimezones[0] ?? null : null);
+  return coerceIanaTimezone(resolveRouteTimezone({ centerTimezone, commerceConnections, constraints }));
 }
 
 function readScheduledStartAt(value: unknown): string | null {

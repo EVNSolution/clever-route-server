@@ -73,7 +73,7 @@ import { resolveNormalizedPaymentStatus } from '../payments/normalized-payment-s
 import { resolveOrderPayment } from '../payments/order-payment.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 import { recordInventorySourceItemDeltas } from '../inventory/inventory.service.js';
-import { isIanaTimezone, localDateTimeInTimeZoneToUtc } from '../driver/driver-route-timezone.js';
+import { localDateTimeInTimeZoneToUtc } from '../driver/driver-route-timezone.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { DEFAULT_SHOPIFY_ADMIN_API_VERSION } from '../shopify/shopify-api-version.js';
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
@@ -85,6 +85,7 @@ import {
   syncRoutePlanStopsPreservingRows
 } from '../route-grouping/route-grouping.service.js';
 import { RouteGroupingValidationError } from '../route-grouping/route-grouping.types.js';
+import { resolveRouteTimezone } from '../route-ops/route-timezone.js';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
 const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 const ROUTE_COPY_SOURCE_KIND = 'CLEVER_ROUTE_COPY';
@@ -2378,22 +2379,14 @@ function plannedRouteEtaStart(input: {
 }): Date | null {
   const scheduledStartAt = readScheduledStartAt(input.constraints);
   if (scheduledStartAt !== null) return new Date(scheduledStartAt);
-  const constraints = objectOrNull(input.constraints);
-  const routeScope = objectOrNull(constraints?.routeScope);
-  // The tenant center timezone (settings) is the source of truth; route values are legacy fallbacks.
-  const routeTimezone = [
-    input.shop.defaultDepotTimezone?.trim() || null,
-    readString(constraints?.timezone),
-    readString(routeScope?.timezone),
-    readString(constraints?.scheduledStartTimeZone)
-  ].find((value): value is string => value !== null && isIanaTimezone(value));
-  const connectionTimezones = [...new Set(input.shop.commerceConnections
-    .map((connection) => connection.timezone?.trim() ?? '')
-    .filter((value) => value !== '' && isIanaTimezone(value)))];
+  const routeScope = objectOrNull(objectOrNull(input.constraints)?.routeScope);
   const serviceType = readString(routeScope?.serviceType);
-  const timezone = routeTimezone
-    ?? (connectionTimezones.length === 1 ? connectionTimezones[0] : null)
-    ?? (serviceType === 'DSV_DISPATCH' ? 'Asia/Seoul' : 'UTC');
+  // DSV dispatch is a Korea-only service, so its routes may default to Seoul; no other route may guess a city.
+  const timezone = resolveRouteTimezone({
+    centerTimezone: input.shop.defaultDepotTimezone,
+    commerceConnections: input.shop.commerceConnections,
+    constraints: input.constraints
+  }) ?? (serviceType === 'DSV_DISPATCH' ? 'Asia/Seoul' : 'UTC');
   const departureTime = readDepartureTime(input.constraints)
     ?? plannedDepartureTime(input.shop.routeOpsUiSettings);
   try {

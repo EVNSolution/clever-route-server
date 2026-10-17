@@ -25,7 +25,7 @@ import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.
 import { readRouteEmailSelection, ROUTE_EMAIL_SELECTION_KEY, type RouteEmailSelection } from './customer-email-route-selection.js';
 import { DEFAULT_SHOPIFY_APP_ID, appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { PrismaCustomerDeliveryNotificationAttemptRepository } from './customer-delivery-notification-attempt.repository.js';
-import { isIanaTimezone } from '../driver/driver-route-timezone.js';
+import { resolveRouteTimezone } from '../route-ops/route-timezone.js';
 import { customerTrackingUrl, type CustomerTrackingLinks } from '../customer-tracking/customer-tracking-link.js';
 
 export type CustomerEmailPreviewInput = {
@@ -1596,21 +1596,11 @@ export function resolveCustomerEmailTimezone(routePlan: {
   constraints: unknown;
   shop: { commerceConnections: Array<{ timezone: string | null }>; defaultDepotTimezone?: string | null };
 }): string | null {
-  const constraints = isRecord(routePlan.constraints) ? routePlan.constraints : null;
-  const routeScope = constraints !== null && isRecord(constraints.routeScope) ? constraints.routeScope : null;
-  // The tenant center timezone (settings) is the source of truth; route values are legacy fallbacks.
-  const routeTimezone = [
-    readNonEmptyString(routePlan.shop.defaultDepotTimezone),
-    readNonEmptyString(constraints?.timezone),
-    readNonEmptyString(routeScope?.timezone),
-    readNonEmptyString(constraints?.scheduledStartTimeZone),
-  ].find((value): value is string => value !== null && isIanaTimezone(value));
-  if (routeTimezone !== undefined) return routeTimezone;
-
-  const connectionTimezones = [...new Set(routePlan.shop.commerceConnections
-    .map((connection) => connection.timezone?.trim() ?? '')
-    .filter((value) => value !== '' && isIanaTimezone(value)))];
-  return connectionTimezones.length === 1 ? connectionTimezones[0] ?? null : null;
+  return resolveRouteTimezone({
+    centerTimezone: routePlan.shop.defaultDepotTimezone,
+    commerceConnections: routePlan.shop.commerceConnections,
+    constraints: routePlan.constraints
+  });
 }
 
 function formatEtaWindow(eta: Date, timezone: string, window: CustomerEmailEtaWindow): string {
@@ -1646,10 +1636,6 @@ function etaParts(value: Date, timezone: string): { day: string; time: string; z
 
 function formatDay(value: Date, timezone: string): string {
   return new Intl.DateTimeFormat('en-US', { day: 'numeric', month: 'short', timeZone: timezone, weekday: 'short' }).format(value);
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
 const SAMPLE_DELIVERY_STOP_ID = '00000000-0000-4000-8000-000000000001';

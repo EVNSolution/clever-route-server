@@ -47,32 +47,21 @@ describe('PrismaDriverRouteAccessRepository', () => {
       .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ routeAccess: { routePlanId: routePlanId } }] });
   });
 
-  test('falls back to the driver phone timezone when the route carries none', async () => {
-    // Prod routes carry no timezone. 2026-10-16T22:00Z is Saturday 07:00 in Seoul but Friday 18:00 in Toronto.
-    const fridayRoute = withoutTimezone(routePlanRecord({ planDate: '2026-10-16' }));
-    const now = () => new Date('2026-10-16T22:00:00.000Z');
-    const toronto = new PrismaDriverRouteAccessRepository(
-      createPrismaHarness({ deviceTimezone: 'America/Toronto', phoneRoutePlans: [fridayRoute] }).prisma as never, undefined, now
-    );
-    await expect(toronto.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
-      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ routeAccess: { routePlanId: routePlanId } }] });
-
-    const seoul = new PrismaDriverRouteAccessRepository(
-      createPrismaHarness({
-        deviceTimezone: 'Asia/Seoul',
-        phoneDrivers: [{ authSubject: 'driver-auth-subject', id: 'driver-id', status: 'ACTIVE' }],
-        phoneRoutePlans: [fridayRoute]
-      }).prisma as never, undefined, now
-    );
-    await expect(seoul.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
-      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [] });
-  });
-
-  test('judges today by the tenant center timezone before the route or the phone', async () => {
-    // 2026-10-16T22:00Z is Saturday in Seoul but Friday 18:00 in Toronto. The phone says Seoul; the center says Toronto.
+  test('judges today by the tenant center timezone, not the Seoul clock', async () => {
+    // 2026-10-16T22:00Z is Saturday 07:00 in Seoul but Friday 18:00 in Toronto.
     const fridayRoute = withCenterTimezone(withoutTimezone(routePlanRecord({ planDate: '2026-10-16' })), 'America/Toronto');
     const repository = new PrismaDriverRouteAccessRepository(
-      createPrismaHarness({ deviceTimezone: 'Asia/Seoul', phoneRoutePlans: [fridayRoute] }).prisma as never,
+      createPrismaHarness({ phoneRoutePlans: [fridayRoute] }).prisma as never, undefined, () => new Date('2026-10-16T22:00:00.000Z')
+    );
+    await expect(repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null }))
+      .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ routeAccess: { routePlanId: routePlanId } }] });
+  });
+
+  test('judges today by the tenant center timezone before the route own value', async () => {
+    // The route says Seoul; the tenant center says Toronto, where 2026-10-16T22:00Z is still Friday.
+    const fridayRoute = withCenterTimezone(withRouteTimezone(routePlanRecord({ planDate: '2026-10-16' }), 'Asia/Seoul'), 'America/Toronto');
+    const repository = new PrismaDriverRouteAccessRepository(
+      createPrismaHarness({ phoneRoutePlans: [fridayRoute] }).prisma as never,
       undefined,
       () => new Date('2026-10-16T22:00:00.000Z')
     );
@@ -80,12 +69,11 @@ describe('PrismaDriverRouteAccessRepository', () => {
       .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [{ routeAccess: { routePlanId: routePlanId } }] });
   });
 
-  test('hides a past-day route once the tenant center reaches the next day, whatever the phone says', async () => {
-    // 2026-10-17T05:00Z is already Saturday 14:00 in Seoul center; a Toronto phone must not keep Friday alive.
+  test('hides a past-day route once the tenant center reaches the next day', async () => {
+    // 2026-10-17T05:00Z is already Saturday 14:00 in a Seoul center.
     const fridayRoute = withCenterTimezone(withoutTimezone(routePlanRecord({ planDate: '2026-10-16' })), 'Asia/Seoul');
     const repository = new PrismaDriverRouteAccessRepository(
       createPrismaHarness({
-        deviceTimezone: 'America/Toronto',
         phoneDrivers: [{ authSubject: 'driver-auth-subject', id: 'driver-id', status: 'ACTIVE' }],
         phoneRoutePlans: [fridayRoute]
       }).prisma as never,
@@ -96,7 +84,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       .resolves.toMatchObject({ status: 'ROUTES_FOUND', routes: [] });
   });
 
-  test('keeps a route for one day of grace when neither route nor phone has a timezone', async () => {
+  test('keeps a route for one day of grace when neither the tenant nor the route has a timezone', async () => {
     const noTimezone = (planDate: string) => withoutTimezone(routePlanRecord({ planDate }));
     const repository = new PrismaDriverRouteAccessRepository(
       createPrismaHarness({ phoneRoutePlans: [noTimezone('2026-10-15'), noTimezone('2026-10-14')] }).prisma as never,
@@ -507,7 +495,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
   test.each([false, true])('limits standby discovery to the driver review classification %s', async (isStoreReviewData) => {
     const { prisma } = createPrismaHarness({
       phoneDrivers: [{ id: 'driver-id', authSubject: 'driver-driver-id', isStoreReviewData,
-        shop: { id: 'shop-id', shopDomain: 'dsv.example' }, status: 'ACTIVE' }],
+        shop: { id: 'shop-id', shopDomain: 'dsv.example', defaultDepotTimezone: 'Asia/Seoul' }, status: 'ACTIVE' }],
       phoneRoutePlans: [], publicRouteContext: null,
     });
     const saveDraft = vi.fn();
@@ -519,12 +507,25 @@ describe('PrismaDriverRouteAccessRepository', () => {
     expect(saveDraft).not.toHaveBeenCalled();
   });
 
+  test('does not look for a standby route when the tenant has no center timezone', async () => {
+    const { prisma } = createPrismaHarness({
+      phoneDrivers: [{ id: 'driver-id', authSubject: 'driver-driver-id', isStoreReviewData: false,
+        shop: { id: 'shop-id', shopDomain: 'dsv.example', defaultDepotTimezone: null }, status: 'ACTIVE' }],
+      phoneRoutePlans: [], publicRouteContext: null,
+    });
+    const saveDraft = vi.fn();
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never, { saveDraft } as never);
+    await repository.lookupRouteAccess({ accountId: 'account-id', routeContext: null });
+    expect(prisma.routeGroupingChildVersion.findFirst).not.toHaveBeenCalled();
+    expect(saveDraft).not.toHaveBeenCalled();
+  });
+
   test('materializes a vehicle-less standby route only for today\'s public delivery grouping', async () => {
     const standbyRoutePlanId = '44444444-4444-4444-8444-444444444444';
     const { prisma } = createPrismaHarness({
       phoneDrivers: [{
         id: 'driver-id',
-        shop: { id: 'shop-id', shopDomain: 'tomatono.myshopify.com' },
+        shop: { id: 'shop-id', shopDomain: 'tomatono.myshopify.com', defaultDepotTimezone: 'America/Toronto' },
         status: 'ACTIVE'
       }],
       phoneRoutePlanResponses: [
@@ -919,7 +920,7 @@ function createPrismaHarness(
       authSubject?: string | null;
       id?: string;
       isStoreReviewData?: boolean;
-      shop?: { id: string; shopDomain: string };
+      shop?: { defaultDepotTimezone?: string | null; id: string; shopDomain: string };
       status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
     }>;
     routePlan?: ReturnType<typeof routePlanRecord> | null;
@@ -928,15 +929,11 @@ function createPrismaHarness(
     phoneRoutePlans?: ReturnType<typeof routePlanRecord>[];
     phoneRoutePlanResponses?: Array<ReturnType<typeof routePlanRecord>[]>;
     publicRouteContext?: { groupingId: string } | null;
-    deviceTimezone?: string | null;
   } = {}
 ): {
   prisma: {
     driver: {
       findMany: ReturnType<typeof vi.fn>;
-    };
-    driverPushToken: {
-      findFirst: ReturnType<typeof vi.fn>;
     };
     routeGroupingChildVersion: {
       findFirst: ReturnType<typeof vi.fn>;
@@ -956,11 +953,6 @@ function createPrismaHarness(
     prisma: {
       driver: {
         findMany: vi.fn(() => Promise.resolve(overrides.phoneDrivers ?? []))
-      },
-      driverPushToken: {
-        findFirst: vi.fn(() => Promise.resolve(
-          overrides.deviceTimezone === undefined || overrides.deviceTimezone === null ? null : { timezone: overrides.deviceTimezone }
-        ))
       },
       routeGroupingChildVersion: {
         findFirst: vi.fn(() => Promise.resolve(overrides.publicRouteContext ?? null))
@@ -986,6 +978,10 @@ function createPrismaHarness(
 
 function withCenterTimezone<T extends { shop: object }>(record: T, defaultDepotTimezone: string): T {
   return { ...record, shop: { ...record.shop, defaultDepotTimezone } };
+}
+
+function withRouteTimezone(record: ReturnType<typeof routePlanRecord>, timezone: string): ReturnType<typeof routePlanRecord> {
+  return { ...record, constraints: { ...record.constraints, timezone } };
 }
 
 function withoutTimezone(record: ReturnType<typeof routePlanRecord>): ReturnType<typeof routePlanRecord> {

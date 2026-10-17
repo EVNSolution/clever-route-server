@@ -27,6 +27,8 @@
     "driver:event-attempts:cleanup": "node dist/scripts/cleanup-driver-event-attempts.js",
     "driver:route-completion-invariant:report": "tsx src/scripts/report-driver-route-completion-invariant.ts",
     "driver:rolling-eta:backfill": "node dist/scripts/backfill-rolling-route-eta.js",
+    "shop:center-timezone:backfill": "node dist/scripts/backfill-shop-center-timezone.js",
+    "shop:leftovers:cleanup": "node dist/scripts/cleanup-leftover-shops.js",
     "customer-email:reconcile": "node dist/scripts/reconcile-customer-email.js",
     "driver:proof-media:evidence:seed": "tsx src/scripts/proof-media-evidence-seed.ts",
     "driver:proof-media:evidence:verify": "tsx src/scripts/proof-media-evidence-verify.ts",

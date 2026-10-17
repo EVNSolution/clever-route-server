@@ -11,7 +11,7 @@ import {
   type RouteOpsUiSettingsDto,
 } from "../route-ops/route-ops-ui-settings.js";
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
-import { centerTimezoneFromCoordinates } from '../route-ops/center-timezone.js';
+import { centerTimezoneFromCoordinates } from '../route-ops/route-timezone.js';
 import { normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 import { assertShopifyShopPrivacyWriteAllowed } from '../shopify/order-privacy-redaction.js';
 import {

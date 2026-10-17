@@ -13,6 +13,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('customer deliveries start from Order scoped by shopId and principal customerId', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
@@ -182,6 +183,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
     }) as never, () => new Date('2026-07-24T00:00:00.000Z'));
 
@@ -198,6 +200,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     };
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
     }) as never, () => new Date('2026-07-22T05:00:00.000Z'));
 
@@ -254,6 +257,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'America/Toronto' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
     }) as never, () => new Date('2026-07-21T12:00:00.000Z'));
 
@@ -264,6 +268,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('resolves tenant timezone from the single active commerce connection timezone', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'America/Toronto' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-23T03:30:00.000Z'));
 
@@ -275,9 +280,23 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
   });
 
+  test('resolves tenant timezone from the saved center before any connection or fallback', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ defaultDepotTimezone: 'America/Toronto' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-23T03:30:00.000Z'));
+
+    await expect(service.resolveTenantDates('shop-a')).resolves.toMatchObject({
+      timezone: 'America/Toronto',
+      today: '2026-07-22',
+    });
+  });
+
   test('falls back explicitly to Asia/Seoul when no active connection timezone exists', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T15:30:00.000Z'));
 
@@ -290,9 +309,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('rejects conflicting or invalid active connection timezones as typed configuration errors', async () => {
     const conflicting = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }, { timezone: 'UTC' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
     }) as never);
     const invalid = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Not/A_Timezone' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
     }) as never);
 
     await expect(conflicting.resolveTenantDates('shop-a')).rejects.toMatchObject({
@@ -308,6 +329,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('allows an explicit historical customer date and rejects window/serviceDate mismatch', async () => {
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
     }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
@@ -322,6 +344,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('enforces default and max cursor limits', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
@@ -339,6 +362,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     ];
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve(rows)) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
@@ -360,6 +384,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     ];
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve(rows)) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
@@ -514,6 +539,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('scopes one record per delivery stop through the related order shop', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       deliveryStop: {
         count: vi.fn(() => Promise.resolve(0)),
         findMany: vi.fn(() => Promise.resolve([])),
@@ -563,6 +589,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('returns proof metadata and an ordered event timeline for each delivery record', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       deliveryStop: {
         count: vi.fn(() => Promise.resolve(1)),
         findMany: vi.fn(() => Promise.resolve([{
@@ -948,6 +975,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
     }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
@@ -988,6 +1016,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const row = customerDeliveryOrderRow();
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
       uvisVehicleTelemetryCurrent: { findMany: vi.fn(() => Promise.resolve([
         {
@@ -1035,6 +1064,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const findMany = vi.fn(() => Promise.resolve([]));
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany },
     }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
@@ -1063,6 +1093,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
     }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
@@ -1112,6 +1143,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     ]));
     const build = (row: ReturnType<typeof customerDeliveryOrderRow>) => new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
       uvisVehicleTelemetrySample: { findMany: findSamples },
     }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
@@ -1170,6 +1202,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
@@ -1206,6 +1239,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const row = customerDeliveryOrderRow({ deliveryStatus });
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([row])) },
     }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
@@ -1217,6 +1251,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('dispatch search applies partial order number and destination name to the same service date query', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
@@ -1239,6 +1274,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('control reads are unpaginated', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
       routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
     });
@@ -1962,6 +1998,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
     const dispatchPrisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
     });
     const driverPrisma = prismaMock({ driver: { findMany: vi.fn(() => Promise.resolve([])) } });
@@ -1996,6 +2033,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('developer admin excludes store-review rows in admin reads and customer-scope adapters', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never);
@@ -2174,6 +2212,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('customer principals cannot read store-review orders or route scope', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve(null)) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never);

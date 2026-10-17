@@ -61,9 +61,6 @@ function timeZoneOffsetMs(date: Date, timezone: string): number {
   ) - date.getTime();
 }
 
-/** Legacy fallback only: used when neither the tenant center nor the phone reports a timezone. */
-export const DRIVER_SERVICE_TIMEZONE = 'Asia/Seoul';
-
 /** Calendar date (YYYY-MM-DD) of `now` in the given IANA timezone. */
 export function localDateInTimeZone(now: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat('en-CA', {

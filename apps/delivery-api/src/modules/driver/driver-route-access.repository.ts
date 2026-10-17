@@ -16,11 +16,8 @@ import type {
 
 import { isPrivateDriverDemoAppId, isPrivateDriverDemoScope } from './private-driver-demo.js';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
-import {
-  DRIVER_SERVICE_TIMEZONE,
-  isIanaTimezone,
-  localDateInTimeZone
-} from './driver-route-timezone.js';
+import { localDateInTimeZone } from './driver-route-timezone.js';
+import { resolveRouteTimezone } from '../route-ops/route-timezone.js';
 import type {
   DriverRouteAccessAmbiguousMatch,
   DriverRouteAccessCompanyGuidance,
@@ -141,7 +138,7 @@ export class PrismaDriverRouteAccessRepository {
     if (
       routePlan === null
       || hasExpiredKfoodNavigation(routePlan, this.now())
-      || !isCurrentDriverRoute(routePlan, this.now(), await this.driverDeviceTimezone(input.accountId))
+      || !isCurrentDriverRoute(routePlan, this.now())
     ) {
       return { status: 'NOT_FOUND' };
     }
@@ -173,13 +170,12 @@ export class PrismaDriverRouteAccessRepository {
     }
     // A ready route of a past delivery date is a leftover assignment: the phone must not list it,
     // because tapping it while another route is active releases that route.
-    const deviceTimezone = await this.driverDeviceTimezone(accountId);
-    const currentPlans = visiblePlans.filter(plan => isCurrentDriverRoute(plan, this.now(), deviceTimezone));
+    const currentPlans = visiblePlans.filter(plan => isCurrentDriverRoute(plan, this.now()));
     let hasRouteForToday = false;
     const routes = currentPlans.flatMap((routePlan): DriverRouteAccessInvitedRoute[] => {
       const result = mapRoutePlan(routePlan, { accountId, routeContext: routePlan.id });
       if (result.status !== 'INVITED') return [];
-      hasRouteForToday ||= result.companyGuidance.deliveryDate === driverToday(this.now(), routePlan, deviceTimezone);
+      hasRouteForToday ||= result.companyGuidance.deliveryDate === driverToday(this.now(), routePlan);
       return [result];
     });
 
@@ -228,17 +224,6 @@ export class PrismaDriverRouteAccessRepository {
     };
   }
 
-  /** The driver's phone timezone from its latest active push token; routes carry no timezone of their own on prod. */
-  private async driverDeviceTimezone(accountId: string): Promise<string | null> {
-    const token = await this.prisma.driverPushToken.findFirst({
-      orderBy: { lastSeenAt: 'desc' },
-      select: { timezone: true },
-      where: { accountId, status: 'ACTIVE' }
-    });
-    const timezone = token?.timezone?.trim() ?? '';
-    return timezone !== '' && isIanaTimezone(timezone) ? timezone : null;
-  }
-
   private async ensureStandbyRoute(
     accountId: string
   ): Promise<'CREATED' | 'NO_PUBLIC_DELIVERY' | 'UNAVAILABLE'> {
@@ -257,14 +242,13 @@ export class PrismaDriverRouteAccessRepository {
       }
     });
 
-    const deviceTimezone = await this.driverDeviceTimezone(accountId);
     for (const driver of drivers) {
       // Private routes never participate in public standby assignment.
       if (isPrivateDriverDemoAppId(driver.shop.appId)) continue;
-      const today = localDateInTimeZone(
-        this.now(),
-        firstIanaTimezone(driver.shop.defaultDepotTimezone, deviceTimezone) ?? DRIVER_SERVICE_TIMEZONE
-      );
+      // Without a saved center timezone the tenant's today is unknown; do not guess a city.
+      const timezone = resolveRouteTimezone({ centerTimezone: driver.shop.defaultDepotTimezone });
+      if (timezone === null) continue;
+      const today = localDateInTimeZone(this.now(), timezone);
       const publicRoute = await this.prisma.routeGroupingChildVersion.findFirst({
         orderBy: [
           { grouping: { planDate: 'desc' } },
@@ -494,30 +478,19 @@ function hasExpiredKfoodNavigation(routePlan: DriverRoutePlanRecord, now: Date):
 
 /**
  * In-progress routes stay listed on any date; not-started routes only for today or a later delivery date.
- * "Today" is the route's own timezone, else the driver's phone timezone, else UTC with one day of grace so
- * a route is never hidden on its delivery day anywhere on earth.
+ * "Today" follows the route's tenant timezone. When none is known, UTC minus one day keeps a route visible
+ * through its delivery day anywhere on earth instead of hiding it.
  */
-function isCurrentDriverRoute(routePlan: DriverRoutePlanRecord, now: Date, deviceTimezone: string | null): boolean {
+function isCurrentDriverRoute(routePlan: DriverRoutePlanRecord, now: Date): boolean {
   if (toRouteExecutionStatus(routePlan.status) === 'IN_PROGRESS') return true;
-  return routePlan.planDate.toISOString().slice(0, 10) >= driverToday(now, routePlan, deviceTimezone);
+  return routePlan.planDate.toISOString().slice(0, 10) >= driverToday(now, routePlan);
 }
 
-function firstIanaTimezone(...candidates: Array<string | null | undefined>): string | null {
-  const trimmed = candidates.map((value) => value?.trim() ?? '');
-  return trimmed.find((value) => value !== '' && isIanaTimezone(value)) ?? null;
-}
-
-/**
- * The driver's calendar today for a route: the tenant center's timezone (settings, follows edits), then the
- * route's own timezone, then the phone's. With none of them, UTC minus one day keeps a route visible through the
- * local evening instead of hiding it.
- */
-function driverToday(now: Date, routePlan: DriverRoutePlanRecord, deviceTimezone: string | null): string {
-  const timezone = firstIanaTimezone(
-    routePlan.shop.defaultDepotTimezone,
-    readString(objectOrNull(routePlan.constraints)?.timezone),
-    deviceTimezone
-  );
+function driverToday(now: Date, routePlan: DriverRoutePlanRecord): string {
+  const timezone = resolveRouteTimezone({
+    centerTimezone: routePlan.shop.defaultDepotTimezone,
+    constraints: routePlan.constraints
+  });
   return timezone === null
     ? localDateInTimeZone(new Date(now.getTime() - 86_400_000), 'UTC')
     : localDateInTimeZone(now, timezone);
@@ -544,7 +517,7 @@ function buildCompanyGuidance(routePlan: DriverRoutePlanRecord): DriverRouteAcce
     pickupGuidance: readString(constraints?.pickupGuidance),
     routeName: routePlan.name,
     shopDomain,
-    timezone: firstIanaTimezone(routePlan.shop.defaultDepotTimezone) ?? readString(constraints?.timezone)
+    timezone: resolveRouteTimezone({ centerTimezone: routePlan.shop.defaultDepotTimezone, constraints: routePlan.constraints })
   };
 }
 
