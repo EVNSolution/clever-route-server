@@ -92,3 +92,33 @@ Thumbs.db
 # Secret-bearing vendor specifications are local evidence, never repository content.
 docs/private/
 docs/**/*인터페이스사양서*.pdf
+
+# Internal working docs stay local. Only docs that code, tests or workflows read are tracked.
+/docs/*
+!/docs/adr/
+!/docs/api/
+!/docs/deployment/
+!/docs/evidence/
+!/docs/migration/
+!/docs/observability/
+!/docs/security/
+/docs/adr/*
+!/docs/adr/tenant-order-identity.md
+/docs/deployment/*
+!/docs/deployment/dsv-store-review-isolation.md
+!/docs/deployment/route-ops-ci-deploy-validation.md
+!/docs/deployment/route-ops-multi-coverage-routing.md
+!/docs/deployment/route-ops-vroom.md
+/docs/evidence/*
+!/docs/evidence/routes-correction-2-contract.md
+/docs/migration/*
+!/docs/migration/g002-rehearsal-manifest.md
+!/docs/migration/g007-baseline-manifest.md
+!/docs/migration/source-inventory.md
+!/docs/migration/wordpress-woocommerce-access-checklist.md
+/docs/observability/*
+!/docs/observability/driver-event-contract-cloudwatch.md
+!/docs/observability/dsv-g007-monitor-policy.json
+!/docs/observability/dsv-g007-operations.md
+/docs/security/*
+!/docs/security/public-docs-sanitized-review.md
